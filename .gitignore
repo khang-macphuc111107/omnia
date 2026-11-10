@@ -46,3 +46,5 @@ Thumbs.db
 .DS_Store
 
 # Keep explicit workspace governance files visible even under ignored trees only when force-added.
+
+research/

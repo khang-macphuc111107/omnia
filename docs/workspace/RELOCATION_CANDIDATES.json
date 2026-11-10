@@ -142,10 +142,10 @@
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
-      "source": "upstream_tools\\rea",
+      "source": "research\\repos\\rea",
       "proposedRoot": "research/repos",
-      "action": "defer-until-reference-audit",
-      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+      "action": "completed-hash-verified-relocation",
+      "reason": "Relocated after zero-hit text triage and full before/after hash manifest."
     }
   ],
   "excluded": [

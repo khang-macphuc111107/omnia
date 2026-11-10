@@ -1,6 +1,6 @@
 {
   "schema": "omnia.workspace-ownership.v1",
-  "generatedUtc": "2026-11-10T18:34:03.0133430Z",
+  "generatedUtc": "2026-11-10T18:34:03.013343Z",
   "root": "D:\\Omnia",
   "policy": {
     "rootGitPurpose": "workspace-control-plane",
@@ -444,5 +444,15 @@
     "independent": "repos\\\\omnia-public;repo-original-20261001",
     "recovery": "backups;archive;_cleanup-quarantine-20261013;_cleanup-quarantine-20261110;quarantine",
     "operational": "artifacts;logs;tmp;output;downloads;CursorApp;LocalAppData;Roaming"
-  }
+  },
+  "relocations": [
+    {
+      "source": "upstream_tools\\rea",
+      "destination": "research\\repos\\rea",
+      "receipt": "C:\\Users\\khang\\.codex\\research\\omnia-restructure\\20261111\\relocation-rea",
+      "status": "relocated-and-hash-verified",
+      "fileCount": 34866,
+      "bytes": 915767448
+    }
+  ]
 }

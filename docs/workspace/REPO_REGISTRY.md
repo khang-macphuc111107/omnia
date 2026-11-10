@@ -45,7 +45,7 @@ Generated from `REPO_REGISTRY.json` on 2026-11-11. This is an inventory and clas
 | `repos\omnia\upstream_extractions\harnesses\openhands-agent-sdk` | upstream-extraction | 0.388 | 0 | `` | directory |
 | `repos\omnia\upstream_extractions\harnesses\openhands-automation` | upstream-extraction | 0.294 | 0 | `` | directory |
 | `repos\omnia\upstream_extractions\notebooks\gemini-notebook` | upstream-extraction | 1.304 | 50 | `master` | directory |
-| `upstream_tools\rea` | upstream-extraction | 0.853 | 0 | `main` | directory |
+| `research\repos\rea` | upstream-extraction | 0.853 | 0 | `main` | directory |
 
 ## Mutation policy
 
@@ -53,3 +53,4 @@ Generated from `REPO_REGISTRY.json` on 2026-11-11. This is an inventory and clas
 - `research-upstream` and `upstream-extraction` entries may be relocated only after path-reference audit and a source-preserving manifest.
 - A root Git clean status does not imply a child repository is clean.
 - The 283.58 GiB primary product tree has 3,158 dirty entries and remains the owning source.
+
