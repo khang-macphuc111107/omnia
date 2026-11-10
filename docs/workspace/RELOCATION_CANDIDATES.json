@@ -146,6 +146,12 @@
       "proposedRoot": "research/repos",
       "action": "completed-hash-verified-relocation",
       "reason": "Relocated after zero-hit text triage and full before/after hash manifest."
+    },
+    {
+      "source": "projects\\omnia-public",
+      "proposedRoot": "projects",
+      "action": "completed-hash-verified-relocation",
+      "reason": "Clean public staging repository; updated release staging script to explicit workspace paths."
     }
   ],
   "excluded": [

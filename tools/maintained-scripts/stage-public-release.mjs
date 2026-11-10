@@ -26,3 +26,4 @@ for (const directory of directories) {
   });
 }
 console.log(`Staged public release at ${destination}`);
+
