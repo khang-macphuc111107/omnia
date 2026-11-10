@@ -1,7 +1,197 @@
 {
-  "generatedUtc": "2026-11-10T18:41:27.4447838Z",
+  "schema": "omnia.relocation-candidates.v1",
+  "generatedUtc": "2026-11-10T18:41:58.0447739Z",
   "sourceRegistry": "C:\\Users\\khang\\.codex\\research\\omnia-restructure\\20261111\\REPO_REGISTRY.json",
-  "candidates": [],
-  "excluded": [],
-  "schema": "omnia.relocation-candidates.v1"
+  "candidates": [
+    {
+      "source": "LocalAppData\\OmniaGitResearch",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "LocalAppData\\OmniaResearch\\aider",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "LocalAppData\\OmniaResearch\\continue",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "LocalAppData\\OmniaResearch\\opencode",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\research\\upstreams\\anthropic-claude-code",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\research\\upstreams\\claude-code",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\research\\upstreams\\claude-code-official",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\research\\upstreams\\deepseek-harness",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\research\\upstreams\\openai-codex",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\cli\\kimi-cli",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\desktop-apps\\cherry-studio",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app\\vendor\\ghostty",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\downloaders\\gdrive-downloader",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\herdr-core",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\herdr-core\\vendor\\ghostty",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\hermes-agent",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\kimi-code",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\opencode",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\openhands",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\openhands-agent-sdk",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\harnesses\\openhands-automation",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "repos\\omnia\\upstream_extractions\\notebooks\\gemini-notebook",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    },
+    {
+      "source": "upstream_tools\\rea",
+      "proposedRoot": "research/repos",
+      "action": "defer-until-reference-audit",
+      "reason": "nested provenance or upstream extraction; moving now could break source pointers"
+    }
+  ],
+  "excluded": [
+    {
+      "source": "_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\deepseek-harness",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\openai-codex",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\00",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\01",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\02",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\03",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\00",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\01",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\02",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\03",
+      "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "repos\\omnia",
+      "reason": "preserve owning source/history or recovery evidence"
+    }
+  ]
 }
