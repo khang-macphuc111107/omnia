@@ -1,5 +1,5 @@
-# Workspace control-plane ignores
-# Child repositories and large operational trees retain their own ownership.
+# Product source is tracked at this root.
+# Transitional recovery/reference trees retain their existing ownership.
 repos/
 publish-worktree/
 repo-original-20261001/
@@ -8,7 +8,6 @@ LocalAppData/
 Roaming/
 CursorApp/
 claude-appasar-extracted/
-src-tauri/
 archive/
 backups/
 quarantine/
@@ -25,6 +24,8 @@ downloads/
 .claude/
 node_modules/
 target/
+**/target/
+**/target-*/
 dist/
 .cache/
 .vite/

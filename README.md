@@ -1,17 +1,40 @@
-# Omnia workspace
+# Omnia
 
-`D:\Omnia` is the workspace control-plane root. It contains manifests, decisions and receipts for the Omnia ecosystem while preserving independent source repositories and recovery material.
+Windows-first native Rust AI workspace under active development.
 
-## Layout policy
+## Start here
 
-- `repos/omnia`: primary product repository; its Git history and dirty worktree remain independently owned.
-- `publish-worktree`: linked worktree; do not move or delete its `.git` pointer casually.
-- `docs/workspace`: topology, ownership, decisions and restore mappings.
-- `artifacts`, `backups`, `archive`, `quarantine`, `_cleanup-quarantine-*`: evidence or recovery material; excluded from the root index.
-- `tools`, `scripts`, `research`, `output`, `downloads`: operational or reference material; index only explicit manifests and documentation.
+- Product code: [`native/`](native/) and [`src-tauri/crates/`](src-tauri/crates/).
+- Specs, tasks, DoD and migration gates: [`docs/workspace/ACTIVE_SCOPE.md`](docs/workspace/ACTIVE_SCOPE.md).
+- Prompt editor and attachments: [`docs/workspace/COMPOSER_REQUIREMENTS.md`](docs/workspace/COMPOSER_REQUIREMENTS.md).
+- Recovery and topology records: [`docs/workspace/`](docs/workspace/).
 
-The root Git repository tracks workspace governance. A clean root status means the governance files are committed; it does not claim that every child repository has no local changes.
+## Native development
 
-## Safety rule
+From the repository root on Windows with Rust and the MSVC build tools:
 
-Nested Git metadata is preserved until a source-preserving snapshot, path mapping and restore check exist. Flattening or deleting `.git` metadata without those receipts would destroy provenance and is not a valid cleanup.
+```powershell
+cargo metadata --manifest-path native/Cargo.toml --locked --no-deps --format-version 1
+cargo test --manifest-path native/Cargo.toml --locked
+cargo run --manifest-path native/Cargo.toml --locked
+```
+
+The native package is an independent workspace. Shared path dependencies are
+included under `src-tauri/crates`; the directory name reflects compatibility
+origin and does not require a Tauri shell for the native package.
+See [`native/README.md`](native/README.md) for evaluation-shell limits.
+
+## Delivery status
+
+Native source and shared crates have been copied into this root with per-file
+byte verification. Final UI, production chat/provider delivery, IDE/browser
+integration and measured resource performance remain incomplete.
+
+Migration remains active. Previous primary/release/rebuild checkouts contain
+different changes and retain recovery ownership until reconciliation. Bulk
+research, backups and operational data still need relocation or retirement.
+Source at this root does not establish whole-workspace cleanup or feature parity.
+
+Private chat archives, credentials and browser profiles stay outside published
+Git. Shared specifications require review and redaction. GitHub publication
+and fresh-clone delivery have not yet been verified.

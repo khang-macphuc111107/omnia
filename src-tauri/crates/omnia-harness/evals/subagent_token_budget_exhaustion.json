@@ -1,0 +1,22 @@
+{
+  "name": "subagent_token_budget_exhaustion",
+  "description": "A child reaches the shared session budget and the parent is refused its next model request.",
+  "tools": "builtin_task",
+  "permission_mode": "full",
+  "workspace": { "files": { "data.txt": "budget-fixture\n" } },
+  "config": { "token_budget": 100 },
+  "allow_unused_turns": true,
+  "prompts": ["Delegate one bounded lookup."],
+  "script": [
+    { "tool_calls": [{ "name": "task", "input": { "description": "inspect data", "prompt": "Read data.txt and report it.", "subagent_type": "explore" } }], "usage": { "input": 10, "output": 0 } },
+    { "kind": "subagent", "tool_calls": [{ "name": "read_file", "input": { "path": "data.txt" } }], "usage": { "input": 40, "output": 0 } },
+    { "kind": "subagent", "say": "CHILD_FINISHED", "usage": { "input": 50, "output": 0 } },
+    { "say": "PARENT_MUST_NOT_RUN", "usage": { "input": 1, "output": 0 } }
+  ],
+  "expect": {
+    "run_error": "Token budget reached (100/100)",
+    "tokens": { "eq": 10 },
+    "executed": { "exact": ["task", "read_file"] },
+    "events": { "budget_warning": { "eq": 1 }, "turn_completed": { "eq": 3 }, "run_completed": { "eq": 1 } }
+  }
+}

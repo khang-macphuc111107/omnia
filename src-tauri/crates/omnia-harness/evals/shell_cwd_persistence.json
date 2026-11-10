@@ -1,0 +1,19 @@
+{
+  "name": "shell_cwd_persistence",
+  "description": "cd in one shell call is still in effect in the next call (portable across PowerShell and bash: mkdir, cd and pwd exist in both).",
+  "requires": ["default_shell"],
+  "permission_mode": "full",
+  "prompts": ["Create a folder, enter it and tell me where you are."],
+  "script": [
+    { "tool_calls": [{ "name": "shell", "input": { "command": "mkdir persist_dir_xyz" } }] },
+    { "tool_calls": [{ "name": "shell", "input": { "command": "cd persist_dir_xyz" } }] },
+    { "tool_calls": [{ "name": "shell", "input": { "command": "pwd" } }] },
+    { "say": "In persist_dir_xyz." }
+  ],
+  "expect": {
+    "files": [{ "path": "persist_dir_xyz", "exists": true }],
+    "executed": { "exact": ["shell", "shell", "shell"] },
+    "results": [{ "tool": "shell", "contains": "persist_dir_xyz" }],
+    "no_results": [{ "is_error": true }]
+  }
+}

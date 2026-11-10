@@ -1,0 +1,31 @@
+[package]
+name = "omnia-harness"
+version = "0.1.0"
+description = "Provider-neutral agent harness for Omnia (no Tauri dependency)"
+edition = "2021"
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+dashmap = "6"
+globset = "0.4"
+ignore = "0.4"
+regex = "1"
+similar = "2"
+flate2 = "1"
+futures-util = "0.3"
+quick-xml = "0.42"
+rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "fs", "io-util", "net"] }
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

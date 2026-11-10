@@ -1,0 +1,23 @@
+{
+  "name": "deny_rule_respected",
+  "description": "A user deny rule beats full mode: writing *.lock is refused without asking, other writes proceed.",
+  "permission_mode": "full",
+  "rules": [{ "tool": "write_file", "pattern": "*.lock", "action": "deny" }],
+  "prompts": ["Write Cargo.lock and ok.txt."],
+  "script": [
+    { "tool_calls": [
+        { "name": "write_file", "input": { "path": "Cargo.lock", "content": "x" } },
+        { "name": "write_file", "input": { "path": "ok.txt", "content": "fine\n" } }
+    ] },
+    { "say": "Wrote ok.txt only." }
+  ],
+  "expect": {
+    "files": [
+      { "path": "Cargo.lock", "exists": false },
+      { "path": "ok.txt", "equals": "fine\n" }
+    ],
+    "executed": { "exact": ["write_file"] },
+    "events": { "approval_requested": { "eq": 0 } },
+    "results": [{ "tool": "write_file", "is_error": true, "contains": "Blocked by your rule" }]
+  }
+}

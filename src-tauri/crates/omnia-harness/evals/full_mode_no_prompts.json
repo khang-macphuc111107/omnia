@@ -1,0 +1,23 @@
+{
+  "name": "full_mode_no_prompts",
+  "description": "Full mode never asks: the approver would deny everything, yet writes and edits go through with zero approval events.",
+  "permission_mode": "full",
+  "workspace": { "files": { "a.txt": "alpha\n" } },
+  "approval": { "default": "deny" },
+  "prompts": ["Rewrite a.txt and create b.txt."],
+  "script": [
+    { "tool_calls": [
+        { "name": "write_file", "input": { "path": "b.txt", "content": "beta\n" } },
+        { "name": "edit_file", "input": { "path": "a.txt", "old_string": "alpha", "new_string": "ALPHA" } }
+    ] },
+    { "say": "Done." }
+  ],
+  "expect": {
+    "files": [
+      { "path": "a.txt", "equals": "ALPHA\n" },
+      { "path": "b.txt", "equals": "beta\n" }
+    ],
+    "events": { "approval_requested": { "eq": 0 } },
+    "no_results": [{ "is_error": true }]
+  }
+}

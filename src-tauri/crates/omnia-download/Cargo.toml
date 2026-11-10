@@ -1,0 +1,27 @@
+[package]
+name = "omnia-download"
+version = "0.1.0"
+description = "Omnia download engine: segmented HTTP, HLS, DASH, blob capture (no Tauri dependency)"
+edition = "2021"
+publish = false
+
+[dependencies]
+aes = "0.9.3"
+base64 = "0.23.1"
+bytes = "1.12.1"
+cbc = { version = "0.2.1", features = ["alloc"] }
+futures-util = "0.3"
+percent-encoding = "2.3.2"
+quick-xml = "0.42.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "cookies"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "fs", "io-util", "net"] }
+tokio-util = "0.7"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+sha2 = "0.11.1"
+tempfile = "3"

@@ -1,0 +1,17 @@
+{
+  "name": "transient_error_retried",
+  "description": "A retryable 503 is retried on the same model (one Retrying event) with no fallback when none is configured.",
+  "permission_mode": "full",
+  "config": { "model": "solo-model", "max_retries": 1 },
+  "prompts": ["Say hi."],
+  "script": [
+    { "error": { "status": 503, "message": "temporarily unavailable", "retryable": true } },
+    { "say": "Hi after retry." }
+  ],
+  "expect": {
+    "stop": "end_turn",
+    "models_requested": ["solo-model", "solo-model"],
+    "events": { "retrying": { "eq": 1 }, "model_fallback": { "eq": 0 } },
+    "final_text_contains": ["after retry"]
+  }
+}

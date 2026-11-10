@@ -1,0 +1,23 @@
+{
+  "name": "tool_error_recovery",
+  "description": "A bad edit comes back as an error result (not a crash); the model re-reads the file and retries with the right text.",
+  "permission_mode": "full",
+  "workspace": { "files": { "config.txt": "mode=slow\n" } },
+  "prompts": ["Make config.txt say mode=fast."],
+  "script": [
+    { "tool_calls": [{ "name": "edit_file", "input": { "path": "config.txt", "old_string": "mode=quick", "new_string": "mode=fast" } }] },
+    { "when_last_result_contains": "was not found", "tool_calls": [{ "name": "read_file", "input": { "path": "config.txt" } }] },
+    { "when_last_result_contains": "mode=slow",
+      "tool_calls": [{ "name": "edit_file", "input": { "path": "config.txt", "old_string": "mode=slow", "new_string": "mode=fast" } }] },
+    { "say": "Fixed after a retry." }
+  ],
+  "expect": {
+    "stop": "end_turn",
+    "files": [{ "path": "config.txt", "equals": "mode=fast\n" }],
+    "executed": { "exact": ["edit_file", "read_file", "edit_file"] },
+    "results": [
+      { "tool": "edit_file", "is_error": true, "contains": "old_string was not found" },
+      { "tool": "edit_file", "is_error": false }
+    ]
+  }
+}

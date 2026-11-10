@@ -1,9 +1,30 @@
 # Omnia workspace checkpoint — 2026-11-11
 
+## Current migration checkpoint
+
+- Native admission: **byte-copy verified**, 197 files / 2,588,993 bytes from
+  the rebuild checkout into `D:\Omnia\native` and `D:\Omnia\src-tauri\crates`.
+  Receipt: external `handoff-intake/NATIVE_ADMISSION.json`.
+- Root checks: `cargo metadata --locked` passed, `cargo fmt --check` passed,
+  and root native tests passed with output target outside `D:\Omnia`
+  (`4 + 1` direct native tests plus shared integration suites; see external
+  `native-root-tests.stdout.txt`). This is source/build evidence, not final
+  product or live-provider evidence.
+- Root README and ignore policy now describe the actual source-bearing root.
+- The previous primary/release/rebuild/goal-control trees remain preserved.
+  Reconciliation and Git retirement are still open.
+- History inventory: 852 rollout JSONL files, 2,256,736,449 bytes,
+  528,619 physical records and 14,630 bounded review units; semantic review
+  credit remains zero. Exact report is external under
+  `handoff-intake/history/REPORT.md`.
+- D: inventory is running as a read-only logical-size scan. No deletion has
+  been performed in this checkpoint.
+
 - Root: `D:\Omnia`
-- Root Git: initialized for governance files only.
+- Root Git: initialized; product source admission is staged but not yet committed.
 - Nested Git metadata: preserved; see `WORKSPACE_OWNERSHIP.json`.
-- Product source: `repos\omnia` remains the owning repository.
+- Product source: native source is now present at root; legacy/rebuild checkouts
+  remain independently owned until source reconciliation.
 - Linked worktree: `publish-worktree` remains linked.
 - Reversible changes: root-level loose files moved earlier with SHA-256 mapping in the research receipts.
 - Next gate: classify and snapshot any nested repo before flattening or metadata removal.

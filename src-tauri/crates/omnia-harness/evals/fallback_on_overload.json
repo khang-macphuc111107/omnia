@@ -1,0 +1,17 @@
+{
+  "name": "fallback_on_overload",
+  "description": "The primary model answers 529 overloaded; the run announces a fallback to the configured backup model and finishes there.",
+  "permission_mode": "full",
+  "config": { "model": "primary-model", "fallback_models": ["backup-model"], "max_retries": 0 },
+  "prompts": ["Say hi."],
+  "script": [
+    { "when_model": "primary-model", "error": { "status": 529, "message": "overloaded", "retryable": true } },
+    { "when_model": "backup-model", "say": "Hi from the backup model." }
+  ],
+  "expect": {
+    "stop": "end_turn",
+    "models_requested": ["primary-model", "backup-model"],
+    "events": { "model_fallback": { "eq": 1 }, "error": { "eq": 0 } },
+    "final_text_contains": ["backup model"]
+  }
+}

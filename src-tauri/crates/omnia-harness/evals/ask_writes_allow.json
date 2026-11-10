@@ -1,0 +1,19 @@
+{
+  "name": "ask_writes_allow",
+  "description": "ask_writes: reads run freely, the write asks once and runs after the user allows it.",
+  "permission_mode": "ask_writes",
+  "workspace": { "files": { "in.txt": "data\n" } },
+  "approval": { "default": "allow" },
+  "prompts": ["Copy in.txt to out.txt."],
+  "script": [
+    { "tool_calls": [{ "name": "read_file", "input": { "path": "in.txt" } }] },
+    { "tool_calls": [{ "name": "write_file", "input": { "path": "out.txt", "content": "data\n" } }] },
+    { "say": "Copied." }
+  ],
+  "expect": {
+    "files": [{ "path": "out.txt", "equals": "data\n" }],
+    "executed": { "exact": ["read_file", "write_file"] },
+    "events": { "approval_requested": { "eq": 1 }, "approval_decided": { "eq": 1 } },
+    "no_results": [{ "is_error": true }]
+  }
+}
