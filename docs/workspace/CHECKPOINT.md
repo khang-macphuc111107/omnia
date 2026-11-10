@@ -10,3 +10,6 @@
 
 - Repo registry: docs/workspace/REPO_REGISTRY.md; relocation candidates are deferred until reference audit.
 
+
+- Reference triage: docs/workspace/REFERENCE_AUDIT.md; no candidate moved because text hits require semantic review.
+
