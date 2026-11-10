@@ -76,6 +76,9 @@ qualification, history comprehension and disk cleanup are reported separately.
   rebuild checkout, with zero destination conflicts; receipt is external
   `handoff-intake/compatibility-admission.json`. Generated trees and caches
   were excluded, and no existing destination bytes were overwritten.
+- A follow-up host admission added 132 missing `src-tauri` source/resource
+  files with zero conflicts. `cargo metadata --locked` and `cargo fmt --check`
+  now pass for both `native/Cargo.toml` and `src-tauri/Cargo.toml`.
 - A bounded top-level D: inventory now records 46 immediate entries and
   50.57 GiB free. It deliberately has no recursive byte totals and no
   deletion credit; receipt: `D_DRIVE_TOPLEVEL_INVENTORY.json`.

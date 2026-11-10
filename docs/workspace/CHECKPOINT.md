@@ -31,6 +31,10 @@
   points at that level, and 50.57 GiB free. Recursive ownership/size
   classification remains open; receipt:
   `docs/workspace/D_DRIVE_TOPLEVEL_INVENTORY.json`.
+- Compatibility host repair: 132 missing `src-tauri` source/resource files
+  admitted with zero conflicts; Tauri metadata and formatting now pass.
+  Receipts are external `handoff-intake/compatibility-host-admission.json`,
+  `tauri-root-metadata.json` and `tauri-root-format.txt`.
 
 - Root: `D:\Omnia`
 - Root Git: initialized; product source admission is staged but not yet committed.
