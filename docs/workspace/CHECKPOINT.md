@@ -21,3 +21,5 @@
 - Relocated clean public staging repo `repos\omnia-public` to `projects\omnia-public`; 17,446-file hash verification passed and release script paths were updated.
 
 - Moved recovery snapshot `repo-original-20261001` into `backups\recovery\`; 1,379-file hash verification passed and cleanup tooling was updated.
+
+- Created and verified a complete Git bundle for `projects\omnia-public`; nested `.git` removal is recoverable but remains pending a separately isolated safe-delete step.

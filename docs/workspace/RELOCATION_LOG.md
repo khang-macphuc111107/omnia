@@ -24,3 +24,9 @@
 - Reason: empty-history recovery snapshot, now placed under the recovery tree.
 - Verification: 1,379 files; 16,836,960 bytes before and after; SHA-256/path manifest matched with zero mismatches or missing files.
 - Cleanup script `tools/migration/cleanup-verified-leftovers-20261012.ps1` was updated to the new path.
+
+## Nested Git removal readiness — `projects\omnia-public`
+
+- The public staging repository is clean and its full history is preserved in `backups\git-bundles\omnia-public-20261111.bundle`.
+- `git bundle verify` completed successfully with 16 refs and a complete history.
+- The nested `.git` directory remains present because the destructive recursive-delete step was not executed; this receipt makes the operation recoverable before a separately approved safe-delete action.
