@@ -23,6 +23,10 @@
   rebuild `81`, goal-control `0`; HEAD tree counts are recorded in
   `docs/workspace/source-divergence-ledger.json`. These counts are inventory
   evidence only, not a semantic merge or deletion decision.
+- HEAD reconciliation: 42,012-path union, 2,020-path four-way intersection;
+  138 of 277 common focus paths differ by bytes. Receipt:
+  `docs/workspace/head-path-reconciliation.json` and
+  `docs/workspace/shared-path-differences.json`.
 
 - Root: `D:\Omnia`
 - Root Git: initialized; product source admission is staged but not yet committed.

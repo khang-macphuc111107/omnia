@@ -81,6 +81,10 @@ qualification, history comprehension and disk cleanup are reported separately.
 - Current source ledger records primary `4,783`, release `133`, rebuild `81`
   and goal-control `0` porcelain entries. The ledger is bounded and does not
   decide whether a path is source, generated output or recoverable work.
+- HEAD path reconciliation found `42,012` paths in the union and only `2,020`
+  in the intersection of all four trees. Among 277 common focus paths
+  (`src-tauri`, manifests, CI and README), 138 have different bytes. This
+  proves reconciliation is required; it is not a merge decision.
 
 ## Immediate next actions
 
