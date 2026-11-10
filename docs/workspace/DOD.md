@@ -98,10 +98,20 @@ or contradiction resets the affected row and its consecutive-audit count.
   prompt is not a created chat or an active goal. Failed/stale prerequisites
   reset admission to `DEFERRED`.
 
-## Current native QA batch acceptance
+## Native QA batch acceptance and continuation
 
 This scoped batch supports `DOD-03`, `DOD-06`, `DOD-07` and `DOD-11`.
 It does not complete these parent gates or claim whole-product QA.
+
+The QA/documentation batch is committed as
+`952c211c219cb22fb851113139b66342d369c924` (r7/COMMIT.json). The post-commit
+preview was launched and retained in r8. The current documentation correction
+reconciles those completed actions; it does not rerun the historical QA suites.
+Before committing the correction, preserve before-bytes/hashes externally,
+verify all 16 parent task and DoD IDs, 12 product leaves, seven admission gates,
+transfer states, local references and JSON, and inspect the complete staged
+diff. Session admission remains `DEFERRED`; parent gate states above stay
+unchanged. ROOT-02/ROOT-03 preservation and reconciliation are next.
 
 - Bind the five affected QA entrypoints, both helpers, helper tests, native
   README and owning continuation documents to an explicit source manifest.
@@ -119,8 +129,11 @@ It does not complete these parent gates or claim whole-product QA.
 - Preserve `QUALITY-01` findings: status-panel text clipping in the r7 session
   capture and smoke `Missing UIA control: Edit `. A capture API success or
   exit-0 smoke result does not resolve these findings.
-- The fresh visible preview needs a separate post-commit receipt for process
-  identity, command, image and teardown. It cannot establish provider Send,
+- r8 has separate post-commit BASELINE, OBSERVATION and RETENTION receipts for
+  the preview's process identity, command, image and deliberate retention.
+  r9 reobserved the same live process identity and executable hash; it did not
+  refresh r8's pixels/visibility. Reobserve before acting and preserve the
+  preview for the user. These receipts cannot establish provider Send,
   physical input/IME, hidden/minimized capture, final design or performance.
 - Record agent/reviewer identity honestly. A root readback or repeated test is
   not an independent final audit; the whole-goal streak remains **0**.

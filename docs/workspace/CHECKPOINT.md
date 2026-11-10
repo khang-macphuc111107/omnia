@@ -1,4 +1,4 @@
-# Omnia checkpoint — 2026-11-11, continuation revision 4
+# Omnia checkpoint — 2026-11-11, continuation revision 5
 
 ## Resume here
 
@@ -6,19 +6,22 @@
   for the objective, 16 parent tasks, 12 product leaves and seven chat-admission
   gates; read [DOD.md](DOD.md) for acceptance and the independent audit rule.
 - Persistent tool goal was read active in this chat. Its API has no active
-  objective-edit operation; GOAL revision 5 owns the detailed objective.
+  objective-edit operation; GOAL revision 6 owns the detailed objective.
 - Additive steer is queued: finish the interrupted deliverable, checkpoint
   its next action, then consume additions in order. Corrections affecting
   current correctness apply at a safe boundary. Explicit cancellation or
   incompatible replacement supersedes only the named work.
-- Committed baseline: `8d2ad69fbe5b402c51cd92f285b2cc1ffc8686fe`, branch `master`,
-  `refactor: separate external data and complete migration contracts`.
-  The native QA batch and this documentation repair are not yet committed
-  at this checkpoint. Do not confuse them with the committed layout batch.
+- Inspected committed baseline: `952c211c219cb22fb851113139b66342d369c924`,
+  tree `2a0c592ed8c39b43ec411716a7546cecd0def230`, branch `master`,
+  `fix: isolate native QA outputs and reconcile continuation evidence`.
+  The QA batch is committed. The r9 documentation baseline reobserved clean
+  status before this correction; `8d2ad69` remains the earlier layout milestone.
+  The commit receipt for this correction belongs in the external r9 directory,
+  avoiding another commit solely to embed its own commit hash.
 - Final independent whole-goal audit streak: **0**. Session admission remains
   `DEFERRED`; no candidate/reviewer/created-chat/goal-activation receipt exists.
 
-## Current batch and ownership
+## Completed QA batch and current documentation ownership
 
 The r7 intake observed these exact intentional QA changes, all preserved in
 external `continuation-r7/before` before document edits:
@@ -29,6 +32,17 @@ external `continuation-r7/before` before document edits:
 | New, untracked | `native/qa-capture.ps1`, `native/qa-capture.tests.ps1`, `native/qa-paths.ps1`, `native/qa-paths.tests.ps1` |
 | Owning documents repaired in r7 | `GOAL.md`, `DOD.md`, this checkpoint |
 
+All of that logical batch is in commit `952c211`; r7/COMMIT.json records its
+successful commit and clean status. These paths are historical intake states,
+not a claim that they are currently dirty. The current bounded deliverable is
+the three-document goal/DoD/checkpoint correction in
+`continuation-r9-doc-reconciliation`. It preserves the complete task, product,
+DoD, research and session-admission denominators. Its before-bytes/hashes,
+corrected baseline, process reobservation, checks and commit receipt are external.
+The first baseline's unquoted `HEAD^{tree}` failed PowerShell argument parsing;
+`BASELINE-CORRECTED.json` uses the quoted argument and records the actual tree.
+The failed partial baseline is retained and supplies no tree evidence.
+
 Root integrator owns this serialized integration. Logs, captures, SQLite
 fixtures, executable targets, contracts and before/after receipts stay outside
 `D:\Omnia`. Git history owns the prior tracked bytes; external baseline copies
@@ -38,7 +52,8 @@ own the pre-existing uncommitted QA bytes. No old checkout metadata is retired.
 
 Private receipt root:
 `C:\Users\khang\.codex\research\omnia-restructure\20261111\handoff-intake`.
-`continuation-r7` contains fresh command/exit/stdout/stderr rerun receipts:
+`continuation-r7` contains the recorded command/exit/stdout/stderr rerun receipts.
+They are historical checks, not newly executed by this documentation batch:
 
 | Check | Cases | Result receipt | Scope |
 |---|---:|---|---|
@@ -96,13 +111,30 @@ not establish that an arbitrary external executable or database is trustworthy.
 
 ## Preview and active commands
 
-Continuation-r6 `BASELINE.json` records that old preview PID `2272` was stopped
-during resume. The r7 baseline observed no `omnia-native.exe` process. A
-replacement visible preview has **not yet been launched**. This does not waive
-the user's live-observation request. No persistent command session is owned
-by this checkpoint. Launch only after the reviewed logical QA commit, then
-record PID/start time, command, executable/capture hashes and retained/closed
-state in a new external receipt. Never infer liveness from an old screenshot.
+Continuation-r6 records that old preview PID `2272` was stopped during resume;
+the r7 baseline then observed no `omnia-native.exe`. After commit `952c211`,
+continuation-r8 launched and retained a replacement evaluation shell:
+
+- PID `38256`; start UTC `2026-11-10T22:22:44.9797906Z`; HWND `3014860`.
+- Executable is the external debug binary bound above; working directory
+  `D:\Omnia`; no `--session-db` was supplied.
+- r8/BASELINE.json, OBSERVATION.json and RETENTION.json own the launch,
+  visibility and retention evidence. The recording failure involving read-only
+  `$PID` occurred after launch; recovery identified the existing process and
+  recorded it without launching a duplicate.
+- r8 observed visible/responding/not minimized/not foreground. Capture:
+  `D:\OmniaData\qa\native\continuation-r8\native-preview-r8-window.png`,
+  1220 × 820, SHA-256
+  `460541807FA61BD2BCDE78E2A8468A675826BDCE05B445B6A8EB96178E37199F`.
+- r9/PREVIEW-REOBSERVATION.json, recorded
+  `2026-11-10T22:47:09.5471586Z`, found the same PID/start/path/hash/HWND,
+  alive and responding. This is a process check; visibility and pixel state
+  still have r8's observation time.
+
+Preserve this preview for the user. Reobserve identity before acting, relaunching
+or stopping it. No persistent terminal command session is owned here. The
+evaluation shell reports provider delivery, storage and draft persistence
+disconnected; this is not a final UI or working provider-chat qualification.
 
 ## Source closure and reconciliation
 
@@ -119,7 +151,7 @@ Continuation-r3 records an isolated local `--no-local --no-hardlinks` clone
 of `8d2ad69`, both locked no-deps metadata checks and native tests with exit 0.
 Existing Cargo registry/build caches were used; this is not a GitHub clone,
 cold installation, packaged behavior or complete compatibility build. Reuse
-only unchanged input scope; current QA helpers are later uncommitted files.
+only unchanged input scope; the QA helpers belong to later commit `952c211`.
 
 Corrected private NUL/rename-aware inventory at `2026-11-10T20:12:44Z`:
 
@@ -172,15 +204,18 @@ product requirements remain in GOAL without changing their denominator.
 
 ## Next executable actions
 
-1. Finish this documentation readback and the QA source/receipt comparison;
-   record parse/reference/diff checks and any remaining scope gaps externally.
-2. Inspect the full staged diff and commit only the native QA and owning-doc
-   batch. Preserve all known visual/UIA findings and zero final-audit credit.
-3. Open a fresh visible preview with isolated external data and an exact
-   post-commit receipt; then continue the existing queue.
-4. Preserve/reconcile source and common Git, verify restore/clone boundaries,
+1. Finish the interrupted three-document reconciliation, check links, exact
+   task/DoD/product/admission IDs and transfer states, parse admission JSON,
+   run `git diff --check` and inspect the complete intended diff. Record the
+   result externally. Preserve all known findings and zero final-audit credit.
+2. Commit only this logical documentation correction. Save the returned
+   commit/tree/status externally; the QA commit and preview launch are already
+   completed and must not be repeated.
+3. Preserve/reconcile source and common Git, verify restore/clone boundaries,
    continue measured drive cleanup and bounded refactoring, and carry history,
-   research and native-product requirements forward in GOAL's order.
-5. Publish only after privacy/license/account/clone gates. Create the follow-up
+   research and native-product requirements forward in GOAL's order. Begin
+   ROOT-02/ROOT-03 with fresh common-store topology and source state; do not
+   retire an owner from a status-only snapshot.
+4. Publish only after privacy/license/account/clone gates. Create the follow-up
    chat only under the seven reviewed admission gates and request its detailed
    persistent goal immediately. Creation and actual activation stay separate.

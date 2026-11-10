@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 5 — r7 executable-boundary repair, explicit DoD and queued continuation, 2026-11-11
+**Revision:** 6 — committed QA and retained preview reconciled; interrupted documentation first, 2026-11-11
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -83,8 +83,11 @@ overwriting the plan.
 
 Current sequence:
 
-1. Finish the goal, task, DoD and checkpoint text that was interrupted.
-2. Repair root instructions and stale evidence claims.
+1. Finish, check and commit the interrupted goal, task, DoD and checkpoint
+   reconciliation. The QA source batch is already committed; the r8 preview
+   is already launched and retained. Do not repeat those effects.
+2. Repair any remaining root-instruction or evidence contradictions against
+   the current owning bytes before carrying their claims.
 3. Correct source reconciliation and preserve working-tree/index ownership.
 4. Move classified bulk operations, research and recovery material outside
    the product checkout, repairing actual consumers.
@@ -263,8 +266,13 @@ coverage. Complete useful authorized fallback research and retain the gap.
   exit 0, 9,632 files / 12.1 GiB reported. Observed drive free-space increase
   was 11,357,032,448 bytes (about 10.58 GiB); the metrics have different
   definitions and concurrent system activity can affect the latter.
-- The committed root milestone is `8d2ad69fbe5b402c51cd92f285b2cc1ffc8686fe`.
-  Earlier admission milestones remain in Git history. Continuation-r3 records
+- The layout milestone is `8d2ad69fbe5b402c51cd92f285b2cc1ffc8686fe`.
+  The later QA/documentation batch is committed as
+  `952c211c219cb22fb851113139b66342d369c924`, tree
+  `2a0c592ed8c39b43ec411716a7546cecd0def230`; continuation-r7/COMMIT.json
+  records exit 0 and clean status after that commit. The r9 documentation
+  baseline reobserved that HEAD and clean status. Earlier admission milestones
+  remain in Git history. Continuation-r3 records
   an isolated local `--no-local --no-hardlinks` clone, both locked no-deps
   manifest checks and native tests with exit 0. Existing Cargo caches were
   used. It is not a cold installation, GitHub clone or final delivery receipt.
@@ -292,8 +300,18 @@ coverage. Complete useful authorized fallback research and retain the gap.
   smoke receipt's `Missing UIA control: Edit ` remain open under `QUALITY-01`.
 - Continuation-r6 records that old preview process `2272` was stopped during
   resume. At the r7 baseline no `omnia-native.exe` process was observed.
-  A fresh visible preview and its external receipt are the next batch action;
-  do not describe either an old screenshot or a launch request as a live app.
+  Continuation-r8 then launched and retained the evaluation shell: PID `38256`,
+  start `2026-11-10T22:22:44.9797906Z`, HWND `3014860`, using the bound external
+  debug executable without `--session-db`. Its BASELINE, OBSERVATION and
+  RETENTION receipts record visible/responding/not minimized/not foreground
+  and a 1220 × 820 capture. The initial receipt-recording error is preserved;
+  recovery reobserved the process without a duplicate launch.
+  Continuation-r9-doc-reconciliation/PREVIEW-REOBSERVATION.json reobserved
+  the same PID/start/executable/hash/window at `2026-11-10T22:47:09.5471586Z`
+  as alive and responding. This later process check does not refresh r8's
+  visibility or pixels. Keep the preview for the user; recheck identity before
+  operating it. It is an evaluation shell with provider/storage disconnected,
+  not completed native chat, final UI or measured performance.
 - GitHub publication and clean-clone delivery remain unverified.
 - Consecutive independent final audit rounds earned: **0**.
 
@@ -301,26 +319,25 @@ coverage. Complete useful authorized fallback research and retain the gap.
 
 1. Finish the interrupted goal/DoD/checkpoint repair before consuming any
    additive steer. Preserve all 16 parent tasks, 12 product leaves, research
-   denominators, seven chat-admission gates and their original acceptance.
-2. Review the native QA path/capture batch against the r7 rerun receipts, record
-   current hashes, parse affected scripts, run `git diff --check`, inspect the
-   complete staged diff and commit this logical batch. Re-run checks affected
-   by changed bytes or inputs; do not relabel an old run as a fresh test.
-3. Launch a fresh visible native evaluation preview after the commit, using
-   an external executable and isolated database/output. Record PID and start
-   time, command, executable/capture hashes, observation and teardown state.
+   denominators, 16 DoD gates, seven chat-admission gates and their original
+   acceptance. Check cross-file references, task/transfer consistency, JSON
+   and `git diff --check`; inspect and commit only this documentation correction.
+   Record the returned commit externally instead of creating a self-hash loop.
+2. The QA commit and preview launch above are completed scoped actions.
+   Preserve r7/r8 receipts, failures and the retained preview. Reuse tests only
+   for their unchanged inputs and scope; do not relabel them as rerun here.
    Keep status clipping and the smoke UIA finding open pending their repair.
-4. Continue source/common-Git ownership preservation and semantic
+3. Continue source/common-Git ownership preservation and semantic
    reconciliation, export/clone closure, measured drive cleanup and bounded
    code refactoring. Snapshot dirty/index/untracked/valuable-ignored work and
    prove restore ownership before moving or retiring the old owners.
-5. Continue private history acquisition/review/synthesis, research/skill
+4. Continue private history acquisition/review/synthesis, research/skill
    qualification and native product work with the exact remaining task/DoD
    denominators. Mutations, Git operations and Cargo builds remain serialized.
-6. Recheck affected status, references, source closure and QA after material
+5. Recheck affected status, references, source closure and QA after material
    changes; retain failures. Whole-goal final audit credit remains zero until
    eligible frozen scope meets the independent audit protocol in DOD.
-7. Review privacy, licenses and destination identity, publish and clean-clone
+6. Review privacy, licenses and destination identity, publish and clean-clone
    verify before session admission. Create the follow-up chat only after
    `SESSION_ADMISSION.json` is `READY`; request its detailed goal immediately
    and record actual activation/readback separately from chat creation.
