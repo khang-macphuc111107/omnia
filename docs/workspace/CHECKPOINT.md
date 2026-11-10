@@ -27,6 +27,10 @@
   138 of 277 common focus paths differ by bytes. Receipt:
   `docs/workspace/head-path-reconciliation.json` and
   `docs/workspace/shared-path-differences.json`.
+- Bounded D: top-level inventory: 46 immediate entries, no observed reparse
+  points at that level, and 50.57 GiB free. Recursive ownership/size
+  classification remains open; receipt:
+  `docs/workspace/D_DRIVE_TOPLEVEL_INVENTORY.json`.
 
 - Root: `D:\Omnia`
 - Root Git: initialized; product source admission is staged but not yet committed.

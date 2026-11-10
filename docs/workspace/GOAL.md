@@ -76,6 +76,9 @@ qualification, history comprehension and disk cleanup are reported separately.
   rebuild checkout, with zero destination conflicts; receipt is external
   `handoff-intake/compatibility-admission.json`. Generated trees and caches
   were excluded, and no existing destination bytes were overwritten.
+- A bounded top-level D: inventory now records 46 immediate entries and
+  50.57 GiB free. It deliberately has no recursive byte totals and no
+  deletion credit; receipt: `D_DRIVE_TOPLEVEL_INVENTORY.json`.
 - `cargo metadata --locked`, `cargo fmt --check` and `cargo test --locked`
   passed with build output outside `D:\Omnia`; this is not final product proof.
 - History inventory: 852 rollout JSONL files, 2,256,736,449 bytes, 528,619

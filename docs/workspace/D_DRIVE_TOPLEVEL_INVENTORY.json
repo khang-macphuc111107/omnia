@@ -1,0 +1,290 @@
+{
+  "utc": "2026-11-10T19:33:23.009886+00:00",
+  "kind": "bounded-top-level-inventory",
+  "root": "D:\\Omnia",
+  "freeBytes": 54299807744,
+  "freeGiB": 50.57,
+  "rows": [
+    {
+      "name": ".agents",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": ".claude",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": ".editorconfig",
+      "kind": "file",
+      "bytes": 446,
+      "reparse": false
+    },
+    {
+      "name": ".env.example",
+      "kind": "file",
+      "bytes": 107,
+      "reparse": false
+    },
+    {
+      "name": ".git",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": ".gitattributes",
+      "kind": "file",
+      "bytes": 888,
+      "reparse": false
+    },
+    {
+      "name": ".gitignore",
+      "kind": "file",
+      "bytes": 745,
+      "reparse": false
+    },
+    {
+      "name": "_cleanup-quarantine-20261013",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "_cleanup-quarantine-20261110",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "_harness-budget-before-20261102",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "AGENTS.md",
+      "kind": "file",
+      "bytes": 3139,
+      "reparse": false
+    },
+    {
+      "name": "archive",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "artifacts",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "backups",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "claude-appasar-extracted",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "CursorApp",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "design",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "docs",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "downloads",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "index.html",
+      "kind": "file",
+      "bytes": 540,
+      "reparse": false
+    },
+    {
+      "name": "LocalAppData",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "logs",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "native",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "output",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "package-lock.json",
+      "kind": "file",
+      "bytes": 173173,
+      "reparse": false
+    },
+    {
+      "name": "package.json",
+      "kind": "file",
+      "bytes": 5835,
+      "reparse": false
+    },
+    {
+      "name": "playwright.visual.config.ts",
+      "kind": "file",
+      "bytes": 3378,
+      "reparse": false
+    },
+    {
+      "name": "projects",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "publish-worktree",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "quarantine",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "README.md",
+      "kind": "file",
+      "bytes": 2154,
+      "reparse": false
+    },
+    {
+      "name": "repos",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "research",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "Roaming",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "scripts",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "src",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "src-tauri",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "tests",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "tmp",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "tools",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "tsconfig.app.json",
+      "kind": "file",
+      "bytes": 853,
+      "reparse": false
+    },
+    {
+      "name": "tsconfig.context-c0.json",
+      "kind": "file",
+      "bytes": 344,
+      "reparse": false
+    },
+    {
+      "name": "tsconfig.json",
+      "kind": "file",
+      "bytes": 128,
+      "reparse": false
+    },
+    {
+      "name": "tsconfig.node.json",
+      "kind": "file",
+      "bytes": 507,
+      "reparse": false
+    },
+    {
+      "name": "upstream_tools",
+      "kind": "dir",
+      "bytes": 0,
+      "reparse": false
+    },
+    {
+      "name": "vite.config.ts",
+      "kind": "file",
+      "bytes": 12829,
+      "reparse": false
+    }
+  ],
+  "limits": [
+    "Immediate entries only; no recursive byte totals",
+    "No deletion performed",
+    "Reparse points are boundaries"
+  ]
+}
