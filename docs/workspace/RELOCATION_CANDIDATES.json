@@ -192,6 +192,10 @@
     {
       "source": "repos\\omnia",
       "reason": "preserve owning source/history or recovery evidence"
+    },
+    {
+      "source": "repo-original-20261001",
+      "reason": "Empty-history recovery snapshot used by cleanup tooling; preserve immutable."
     }
   ]
 }

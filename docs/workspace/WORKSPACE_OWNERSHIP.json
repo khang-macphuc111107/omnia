@@ -441,8 +441,8 @@
     "product": "repos\\\\omnia",
     "linkedWorktree": "publish-worktree",
     "research": "repos\\\\omnia\\\\research;LocalAppData\\\\OmniaResearch;upstream_tools",
-    "independent": "repos\\\\omnia-public;repo-original-20261001",
-    "recovery": "backups;archive;_cleanup-quarantine-20261013;_cleanup-quarantine-20261110;quarantine",
+    "independent": "repos\\\\omnia-public",
+    "recovery": "backups;archive;_cleanup-quarantine-20261013;_cleanup-quarantine-20261110;quarantine;repo-original-20261001",
     "operational": "artifacts;logs;tmp;output;downloads;CursorApp;LocalAppData;Roaming"
   },
   "relocations": [
