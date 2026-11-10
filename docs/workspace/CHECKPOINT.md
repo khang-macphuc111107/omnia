@@ -7,3 +7,6 @@
 - Linked worktree: `publish-worktree` remains linked.
 - Reversible changes: root-level loose files moved earlier with SHA-256 mapping in the research receipts.
 - Next gate: classify and snapshot any nested repo before flattening or metadata removal.
+
+- Repo registry: docs/workspace/REPO_REGISTRY.md; relocation candidates are deferred until reference audit.
+
