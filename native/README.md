@@ -1,103 +1,109 @@
-# Omnia native migration executable
+# Native Windows package
 
-Independent Rust package for a Windows shell without Tauri, WebView, Electron
-or Node in its product dependency graph. This is an early migration executable,
-**not the full Omnia application or its final visual design**.
+`omnia-native` is an independent Rust/Win32 evaluation executable. It shares
+Rust session, provider and harness libraries from `src-tauri/crates` without
+starting the Tauri host, a WebView, Electron or Node. Final UI, provider Send,
+Browser and IDE integration remain open in
+[the project goal](../docs/workspace/GOAL.md).
+
+## Build and run from the repository root
+
+Use Windows, Rust and the MSVC C/C++ build tools. Keep generated targets outside
+the checkout:
 
 ```powershell
+$env:CARGO_TARGET_DIR = 'D:\OmniaData\build\native'
+cargo metadata --manifest-path native/Cargo.toml --locked --no-deps --format-version 1
 cargo test --manifest-path native/Cargo.toml --locked
-cargo build --manifest-path native/Cargo.toml --locked --release
-.\native\target\release\omnia-native.exe
+cargo build --manifest-path native/Cargo.toml --locked
+& (Join-Path $env:CARGO_TARGET_DIR 'debug/omnia-native.exe')
 ```
 
-Three original mode controls default to projectless Chat. A native Unicode
-draft survives mode switches in memory. Browser and IDE describe unavailable
-integrations. No provider, indexing, browser engine or background server starts.
-Drafts are not persisted. The message loop blocks on Windows events.
+Use `--release` when measuring release behavior and run the executable under
+`release` in the same target directory. Tests from an isolated local clone are
+recorded in [the checkpoint](../docs/workspace/CHECKPOINT.md); they use existing
+Cargo caches and do not establish a cold installation or packaged performance.
 
-`qa-smoke.ps1` launches this release executable and records bounded control-message
-interaction, a window-only capture and process observations. `-KeepOpen` leaves
-the tested window visible. This does not certify physical keyboard, IME or UIA.
-The Cycle24 PowerShell observer omitted client-side proxy registration. Cycle25
-`qa-session.ps1` registers those proxies and checks Button/InvokePattern,
-single-line Edit/ValuePattern and multiline Document/TextPattern. Physical
-keyboard, IME, Narrator and the DPI matrix remain open requirements.
+## Current behavior
 
-![Actual native session evaluation](../docs/rebuild/receipts/native-session-cycle25-window.png)
+- Chat, Browser and IDE buttons select shell modes. Browser/IDE explain the
+  pending integrations; they do not start an engine or open a project.
+- A Unicode draft survives mode switches in memory. It is not a persisted
+  transcript and is not delivered to a provider.
+- Without `--session-db`, the shell does not open a personal database. To
+  evaluate session metadata, pass an absolute path to a disposable fixture.
+  Opening may perform recovery writes; the option is not a read-only observer.
+- Shared `HarnessStore` ownership prevents a competing cooperative opener on
+  the tested Windows filesystem. It is not an authorization boundary against
+  hostile path replacement or uncooperative software.
+- The session panel uses keyset pages of at most 50, Previous/Next and Refresh.
+  One read transaction binds the current page, navigation and active metadata.
+  An active session outside the page remains editable. At most 256 previous
+  cursors are retained; Refresh restarts at the first page.
+- Summaries are bounded at 256 KiB each, with 2 MiB raw JSON for a read page,
+  sentinel and active record. Writes between requests can move rows; this is
+  not a frozen multipage export.
+- Unsaved title/model/effort require explicit discard before replacing
+  navigation or closing. Failed storage and selection retain the form.
 
-## Shared session service
+The shared libraries contain provider and run-control logic; this shell has no
+connected provider Send/Cancel workflow. Library integration tests do not prove
+those controls are available in the native window.
 
-Canonical HarnessStore, errors and session navigation now live in
-`src-tauri/crates/omnia-session-store`, with thin Tauri transport adapters.
-The native session panel uses that same schema and CAS through a bounded worker.
-Session rows now use a keyset page of at most 50, with Previous/Next and Refresh.
-Navigation, the current page and active metadata share one SQLite read
-transaction. The active session may be outside the page and stays editable.
-Previous-page history retains at most 256 cursors; Refresh resets to the first
-page. Edits between requests can move rows; this is not a frozen multi-page
-export. Each summary is limited to 256 KiB and the read page (including sentinel
-and active) to 2 MiB raw JSON; oversize returns an explicit error.
-Launch with `--session-db <absolute isolated database path>` to evaluate durable
-metadata; without that flag no database is opened. **Use a disposable database:** opening performs recovery writes. Production
-open now takes an exclusive OS file-identity ownership guard before recovery;
-a competing cooperative instance returns `harness_store_busy`. This does not
-make the shell a read-only observer or a provider execution coordinator.
-Provider execution needs an event-sink/executor boundary before Send is enabled.
+## Native QA entrypoints
 
-The compatibility app remains in `src-tauri/`; this package never depends on it.
-Final dark/light design, transcript persistence, advanced settings, browser/IDE
-integration and comparative packaged performance remain open work.
+The QA scripts can open disposable visible windows. The user requested live
+observation, so `-KeepOpen` deliberately leaves the tested app visible. Each
+script reports only its named scope; UIA/control-message checks are distinct
+from physical keyboard, Vietnamese IME, Narrator and end-to-end provider QA.
 
-## Native paging QA
+| Script | Scope | Inputs |
+|---|---|---|
+| `qa-smoke.ps1` | Mode controls, draft, window capture and one process sample | Release executable |
+| `qa-session.ps1` | Session metadata, settings and reopen through UIA | Release executable; creates isolated fixture |
+| `qa-paging.ps1` | Paging and worker behavior | Release executable and disposable 125-row database |
+| `qa-guard.ps1` | Unsaved-form and failed-selection guards | Debug executable and disposable seeded database |
+| `qa-ownership.ps1` | Competing process ownership and reopen | Debug executable, new database and external output prefix |
 
-`qa-paging.ps1` exercises a disposable 125-session fixture made by the
-`qa_seed` example (which refuses an existing fixture directory). It uses UIA
-to check 50/50/25 rows, Previous/Next states, off-page active metadata,
-Refresh and clean-close/reopen. Root captures the actual app window.
+`qa-paths.ps1` resolves `-Executable`, then absolute `CARGO_TARGET_DIR`, then
+`OMNIA_DATA_ROOT\build\native` (default sibling `OmniaData`). The first four
+scripts reserve a fresh external run directory under `OmniaData\qa\native`,
+or accept a new absolute `-OutputDirectory`. Existing destinations and reparse
+ancestors are refused. Ownership QA retains its explicit fresh `-OutputPrefix`
+contract. Explicit executables and resolved build targets must also be external
+to the repository. Database paths must be absolute and external: paging/guard
+require an existing seeded file; ownership requires a new file with no existing
+SQLite sidecars. These guards establish location and file type, not whether
+an externally supplied database is disposable. Use only fixtures you created
+for the run.
 
-![Native paged session evaluation](../docs/rebuild/receipts/native-paging-cycle26-window.png)
+`qa-capture.ps1` shares the screenshot implementation for smoke, session,
+paging and ownership QA. It verifies the HWND/process owner, uses one
+DPI-unaware geometry/capture context for this evaluation shell, bounds the
+bitmap, refuses an existing image and restores caller DPI after success or
+failure. Receipts include logical bounds, dimensions and process creation time.
+Physical screen coordinates, minimized/hidden windows and complete pixel
+rendering need separate qualification and visual inspection.
 
-## Native metadata safety
+```powershell
+cargo build --manifest-path native/Cargo.toml --locked --release
+pwsh -NoProfile -File native/qa-session.ps1 -KeepOpen
+pwsh -NoProfile -File native/qa-paths.tests.ps1
+pwsh -NoProfile -File native/qa-capture.tests.ps1 -Executable (Join-Path $env:CARGO_TARGET_DIR 'debug/omnia-native.exe') -OutputDirectory D:\OmniaData\qa\capture-helper-new-run
+```
 
-Unsaved title/model/effort require explicit discard before replacing navigation
-or close; the default keeps editing. Failed storage/selection retains the form
-and restores the active selection. Save success resets the rendered baseline.
-`qa-guard.ps1` targets the debug executable and an isolated synthetic database.
-Cycle27 verifies12UIA cases including failed Select, invalid Save, cancellation,
-explicit discard and reopen. Physical keyboard/IME/Narrator, release performance,
-provider streaming and the final native design remain unverified.
+For paging or guard QA, first run the fixture producer with a **new** external
+directory (use a different fixture for each workflow):
 
-The Rust implementation sequence and resource acceptance are documented in
-[`NATIVE_MIGRATION.md`](../docs/rebuild/NATIVE_MIGRATION.md).
+```powershell
+cargo run --manifest-path native/Cargo.toml --locked --example qa_seed -- D:\OmniaData\qa\paging-fixture
+pwsh -NoProfile -File native/qa-paging.ps1 -Executable (Join-Path $env:CARGO_TARGET_DIR 'debug/omnia-native.exe') -Database D:\OmniaData\qa\paging-fixture\sessions.sqlite3
+```
 
-## Native ownership QA
-
-`qa-ownership.ps1` uses a new isolated database and explicit output prefix to
-check two actual native processes, busy status, retained metadata and reopen.
-Its capture is evaluation-shell evidence only. Store integration tests also
-exercise an independently spawned owner and forced termination. Windows local
-file locking is tested; Unix/network-filesystem and hostile path replacement
-are separate unresolved boundaries.
-
-Cycle32 shares the store with `Sessions::from_shared(Arc<HarnessStore>)` and
-retains stale-revision rejection between distinct service views. The desktop
-host now uses the same Rust crate for bounded run reservations with opaque
-owner/generation cleanup tickets. Native Send is still unavailable. The current
-binary passed10native tests and6ownership UIA cases; see
-[`native-runs-cycle32-ui-runtime.json`](../docs/rebuild/receipts/native-runs-cycle32-ui-runtime.json).
-
-Cycle33 adds a native service integration test that shares the admission
-coordinator's store, saves per-session settings, rejects a competing open and
-retains ownership until the last metadata view drops. Native tests now11pass.
-The shared coordinator performs replay-safe eligibility/reservation; the
-evaluation executable still does not expose provider Send/Cancel.
-
-### Cycle34: shared native run controls
-
-The existing ActiveRun and approval-channel implementation now belong to the
-Tauri-free Rust harness and are used directly by the compatibility host. This
-removes another host-specific ownership seam without adding an Agent engine.
-The [native runtime contract](../docs/rebuild/NATIVE_RUNTIME_CONTRACT.md) defines per-subsystem Rust ownership,
-on-demand engine exceptions and resource qualification. Native provider Send,
-final UI and measured performance remain incomplete; see the cycle checks and
-independent review for the exact verified scope.
+The path tests exercise fixture files and guards; they do not launch or qualify
+the product. Screenshots, logs and receipts stay outside this checkout.
+Historical cycle 24–34 reports belong to the preserved rebuild evidence and are
+not included as current release receipts. This root guide links only to current
+project files. Physical input, accessibility, DPI/resize, final design,
+packaging and comparative CPU/RAM/disk/GPU measurements remain open under
+[the definition of done](../docs/workspace/DOD.md).

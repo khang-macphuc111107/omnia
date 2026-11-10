@@ -1,36 +1,32 @@
 param(
     [Parameter(Mandatory)][string]$Database,
     [Parameter(Mandatory)][string]$OutputPrefix,
-    [string]$Executable = (Join-Path $PSScriptRoot 'target/debug/omnia-native.exe')
+    [string]$Executable
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-if (-not [IO.Path]::IsPathFullyQualified($Database) -or
-    -not [IO.Path]::IsPathFullyQualified($OutputPrefix)) {
-    throw 'Database and OutputPrefix must be explicit absolute paths.'
-}
-$Database = [IO.Path]::GetFullPath($Database)
-$OutputPrefix = [IO.Path]::GetFullPath($OutputPrefix)
-if (Test-Path -LiteralPath $Database) { throw 'Database must be a new isolated fixture, not an existing database.' }
-if (-not (Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($Database)) -PathType Container)) {
-    throw 'Create the isolated fixture parent directory before running QA.'
-}
+. (Join-Path $PSScriptRoot 'qa-paths.ps1')
+. (Join-Path $PSScriptRoot 'qa-capture.ps1')
+$repository = Split-Path -Parent $PSScriptRoot
+$OutputPrefix = Resolve-OmniaQaExternalPath $repository $OutputPrefix 'OutputPrefix'
 if (-not (Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($OutputPrefix)) -PathType Container)) {
     throw 'OutputPrefix parent directory must already exist.'
 }
+if (Test-Path -LiteralPath $OutputPrefix) { throw 'OutputPrefix must be a fresh file prefix.' }
 $imagePath = $OutputPrefix + '-window.png'
 $receiptPath = $OutputPrefix + '-runtime.json'
 $failurePath = $OutputPrefix + '-failure.json'
 foreach ($path in @($imagePath, $receiptPath, $failurePath)) {
+    Assert-OmniaQaLiteralBoundary $path
     if (Test-Path -LiteralPath $path) { throw "Refusing to overwrite evidence: $path" }
 }
-$exe = [IO.Path]::GetFullPath($Executable)
-if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Build native debug executable before running QA.' }
+$Database = Resolve-OmniaQaDatabase -RepositoryRoot $repository -Database $Database `
+    -ReservedOutputPaths @($imagePath, $receiptPath, $failurePath)
+$exe = Resolve-OmniaQaExecutable $repository $Executable 'debug'
 $exeHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName UIAutomationClientsideProviders
-Add-Type -AssemblyName System.Drawing
 $null = [Windows.Automation.AutomationElement]::RootElement
 [Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
     [Reflection.AssemblyName]::new('UIAutomationClientsideProviders'))
@@ -38,13 +34,9 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class OmniaOwnershipQa {
- [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
- [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hwnd);
- [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeout(
    IntPtr hwnd,uint msg,IntPtr wp,IntPtr lp,uint flags,uint timeout,out IntPtr result);
- [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
 }
 '@
 $cases = [Collections.Generic.List[object]]::new()
@@ -150,30 +142,7 @@ try {
         throw 'First owner refresh changed persisted title/list.'
     }
     $cases.Add(@{case='first-owner-refresh-remains-responsive';passed=$true})
-    # Match geometry and PrintWindow to the target's DPI-unaware coordinate
-    # space. The first capture used caller-scaled bounds and had black padding.
-    $priorDpi = [OmniaOwnershipQa]::SetThreadDpiAwarenessContext([IntPtr](-1))
-    if ($priorDpi -eq [IntPtr]::Zero) { throw 'Capture DPI context unavailable.' }
-    $rect = [OmniaOwnershipQa+Rect]::new()
-    if (-not [OmniaOwnershipQa]::GetWindowRect($first.hwnd, [ref]$rect)) { throw 'Capture window bounds unavailable.' }
-    $width = $rect.Right - $rect.Left
-    $height = $rect.Bottom - $rect.Top
-    if ($width -le 0 -or $height -le 0 -or $width -gt 8192 -or $height -gt 8192) { throw 'Capture bounds invalid.' }
-    $bitmap = [Drawing.Bitmap]::new($width, $height)
-    try {
-        $graphics = [Drawing.Graphics]::FromImage($bitmap)
-        try {
-            $dc = $graphics.GetHdc()
-            try {
-                if (-not [OmniaOwnershipQa]::PrintWindow($first.hwnd, $dc, 2)) { throw 'PrintWindow failed.' }
-            } finally { $graphics.ReleaseHdc($dc) }
-        } finally { $graphics.Dispose() }
-        $stream = [IO.File]::Open($imagePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-        try { $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png) } finally { $stream.Dispose() }
-    } finally {
-        $bitmap.Dispose()
-        $null = [OmniaOwnershipQa]::SetThreadDpiAwarenessContext($priorDpi)
-    }
+    $capture = Save-OmniaQaWindowCapture -WindowHandle $first.hwnd -Process $first.process -Path $imagePath
     Close-App $second
     Close-App $first
     $cases.Add(@{case='both-instances-clean-close';passed=$true})
@@ -190,7 +159,7 @@ try {
         database=@{path=$Database;initialState='nonexistent isolated fixture';retained=$true};
         executable=@{path=$exe;sha256=$exeHash};
         script=@{path=$PSCommandPath;sha256=(Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash};
-        capture=@{path=$imagePath;sha256=(Get-FileHash -LiteralPath $imagePath -Algorithm SHA256).Hash;width=$width;height=$height};
+        capture=$capture;
         cases=$cases.ToArray();passedCases=$cases.Count;requiredCases=6;windows=(Window-Records);
         limits=@('Metadata/evaluation shell only; no Send/provider/coordinator/effect-fencing claim',
             'UI strings/list/title prove displayed behavior; Rust tests separately establish stored scope and journal invariants',

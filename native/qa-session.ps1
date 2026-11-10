@@ -1,25 +1,23 @@
-param([switch]$KeepOpen)
+param(
+    [switch]$KeepOpen,
+    [string]$Executable,
+    [string]$OutputDirectory
+)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'qa-paths.ps1')
+. (Join-Path $PSScriptRoot 'qa-capture.ps1')
+$qaPaths = Initialize-OmniaQaPaths -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
+    -Executable $Executable -OutputDirectory $OutputDirectory -Profile 'release'
+$out = $qaPaths.OutputDirectory
+$exe = $qaPaths.Executable
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName UIAutomationClientsideProviders
-Add-Type -AssemblyName System.Drawing
 # Initialize the observer's proxy manager before explicit registration.
 $null = [Windows.Automation.AutomationElement]::RootElement
 [Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
     [Reflection.AssemblyName]::new('UIAutomationClientsideProviders'))
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class OmniaSessionQa {
- [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
- [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
- [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
-}
-'@
-$out = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs/rebuild/receipts'
-$exe = Join-Path $PSScriptRoot 'target/release/omnia-native.exe'
-$sandbox = Join-Path ([IO.Path]::GetTempPath()) ("omnia-session-qa-" + [guid]::NewGuid())
+$sandbox = Join-Path $out 'fixture'
 $null = New-Item -ItemType Directory -Path $sandbox
 $db = Join-Path $sandbox 'sessions.sqlite3'
 $cases = [Collections.Generic.List[object]]::new()
@@ -112,23 +110,15 @@ try {
     Invoke-Control 101
     if (-not (Control 110).Current.Name.StartsWith("Chat / No project`n")) { throw 'Chat heading mismatch' }
     $cases.Add(@{case='mode-buttons-uia';passed=$true;method='InvokePattern + heading readback; no keyboard/IME claim'})
-    $rect = [OmniaSessionQa+Rect]::new()
-    if (-not [OmniaSessionQa]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) { throw 'Window bounds failed' }
-    $bitmap = [Drawing.Bitmap]::new($rect.Right-$rect.Left, $rect.Bottom-$rect.Top)
-    $graphics = [Drawing.Graphics]::FromImage($bitmap)
-    $dc = $graphics.GetHdc()
-    try {
-        if (-not [OmniaSessionQa]::PrintWindow($process.MainWindowHandle, $dc, 2)) { throw 'PrintWindow failed' }
-    } finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
     $image = Join-Path $out 'native-session-cycle25-window.png'
-    try { $bitmap.Save($image, [Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+    $capture = Save-OmniaQaWindowCapture -WindowHandle $process.MainWindowHandle -Process $process -Path $image
     $process.Refresh()
     $receipt = @{
         schemaVersion=1;recordedAt=[DateTime]::UtcNow.ToString('o');scope='native session metadata; not provider execution';
         cases=$cases.ToArray();database=$db;
         executable=@{sha256=(Get-FileHash $exe).Hash;bytes=(Get-Item $exe).Length};
         observer=@{scriptSha256=(Get-FileHash $PSCommandPath).Hash;clientSideProvidersRegistered=$true};
-        capture=@{path=$image;sha256=(Get-FileHash $image).Hash};
+        capture=$capture;
         process=@{pid=$process.Id;responding=$process.Responding;workingSetBytes=$process.WorkingSet64};
         limitations=@('UIA is not physical keyboard/IME or Narrator verification','No provider/profile execution','No final theme, browser engine or IDE editor','Isolated synthetic database only','Single sample is not a performance benchmark')
     }

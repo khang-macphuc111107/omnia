@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 3 — explicit follow-up admission and queued continuation, 2026-11-11
+**Revision:** 5 — r7 executable-boundary repair, explicit DoD and queued continuation, 2026-11-11
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -263,18 +263,64 @@ coverage. Complete useful authorized fallback research and retain the gap.
   exit 0, 9,632 files / 12.1 GiB reported. Observed drive free-space increase
   was 11,357,032,448 bytes (about 10.58 GiB); the metrics have different
   definitions and concurrent system activity can affect the latter.
-- Native and compatibility source admissions are committed at root through
-  `98c1a04`; they are not merely staged. GitHub publication remains unverified.
+- The committed root milestone is `8d2ad69fbe5b402c51cd92f285b2cc1ffc8686fe`.
+  Earlier admission milestones remain in Git history. Continuation-r3 records
+  an isolated local `--no-local --no-hardlinks` clone, both locked no-deps
+  manifest checks and native tests with exit 0. Existing Cargo caches were
+  used. It is not a cold installation, GitHub clone or final delivery receipt.
+- Native QA continuation-r7 records fresh exit-0 path-contract (40 cases),
+  capture contract (14), session metadata (5), cooperative ownership (6),
+  paging (9), unsaved-form/selection guard (12) and smoke mode/draft/close (4)
+  checks. Separate paging/guard fixture producers also returned exit 0.
+  All nine QA script hashes are bound in each rerun wrapper. No Rust application
+  rebuild occurred in this batch. The external debug executable SHA-256 is
+  `1CA3C8A98B81F733B5588D283D7EAECA4FA243DE81847CE5014D0E64F862172F`.
+- The r7 negative executable-boundary reproducer failed with exit 1 before
+  repair and is retained separately from the passing rerun. The repaired helper
+  now requires executables, QA output and SQLite fixtures outside the repository,
+  rejects reparse ancestors and refuses existing output destinations.
+  Path-helper SHA-256 is
+  `E78DD779761CB19567A093547138C90537B500FAF36EEF53A6F098891C67B240`;
+  path-test SHA-256 is
+  `87EC7B99464CAFB0FB713C4540959BFE13577A3505618E1E760AA7EC5D2187BA`.
+  Historical r5 evidence remains historical; no QA result completes a parent.
+- The capture helper
+  verifies HWND/PID ownership, restores caller DPI, bounds dimensions and
+  records logical coordinates. The former right/bottom black-padding defect
+  remains repaired in the inspected 1220 × 820 r7 session capture.
+  Visual status-panel text clipping and the
+  smoke receipt's `Missing UIA control: Edit ` remain open under `QUALITY-01`.
+- Continuation-r6 records that old preview process `2272` was stopped during
+  resume. At the r7 baseline no `omnia-native.exe` process was observed.
+  A fresh visible preview and its external receipt are the next batch action;
+  do not describe either an old screenshot or a launch request as a live app.
+- GitHub publication and clean-clone delivery remain unverified.
 - Consecutive independent final audit rounds earned: **0**.
 
 ## Immediate next actions
 
-1. Read this goal and `DOD.md` before each cycle.
-2. Read back the completed documentation/admission repair and independently
-   resolve its findings before consuming queued work.
-3. Commit the reviewed layout/source-summary batch, then repair export
-   completeness and validate an isolated clone.
-4. Continue backup/common-Git ownership and measured cleanup; preserve
-   unreconciled working bytes and distinguish relocation from reclamation.
-5. Freeze/reconcile the history corpus and begin private semantic review.
-6. Re-run affected root status, diff, clone and audit gates after material changes.
+1. Finish the interrupted goal/DoD/checkpoint repair before consuming any
+   additive steer. Preserve all 16 parent tasks, 12 product leaves, research
+   denominators, seven chat-admission gates and their original acceptance.
+2. Review the native QA path/capture batch against the r7 rerun receipts, record
+   current hashes, parse affected scripts, run `git diff --check`, inspect the
+   complete staged diff and commit this logical batch. Re-run checks affected
+   by changed bytes or inputs; do not relabel an old run as a fresh test.
+3. Launch a fresh visible native evaluation preview after the commit, using
+   an external executable and isolated database/output. Record PID and start
+   time, command, executable/capture hashes, observation and teardown state.
+   Keep status clipping and the smoke UIA finding open pending their repair.
+4. Continue source/common-Git ownership preservation and semantic
+   reconciliation, export/clone closure, measured drive cleanup and bounded
+   code refactoring. Snapshot dirty/index/untracked/valuable-ignored work and
+   prove restore ownership before moving or retiring the old owners.
+5. Continue private history acquisition/review/synthesis, research/skill
+   qualification and native product work with the exact remaining task/DoD
+   denominators. Mutations, Git operations and Cargo builds remain serialized.
+6. Recheck affected status, references, source closure and QA after material
+   changes; retain failures. Whole-goal final audit credit remains zero until
+   eligible frozen scope meets the independent audit protocol in DOD.
+7. Review privacy, licenses and destination identity, publish and clean-clone
+   verify before session admission. Create the follow-up chat only after
+   `SESSION_ADMISSION.json` is `READY`; request its detailed goal immediately
+   and record actual activation/readback separately from chat creation.

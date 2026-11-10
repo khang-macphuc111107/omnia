@@ -1,23 +1,24 @@
-param([Parameter(Mandatory)][string]$Database, [switch]$KeepOpen)
+param(
+    [Parameter(Mandatory)][string]$Database,
+    [switch]$KeepOpen,
+    [string]$Executable,
+    [string]$OutputDirectory
+)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'qa-paths.ps1')
+. (Join-Path $PSScriptRoot 'qa-capture.ps1')
+$Database = Resolve-OmniaQaDatabase -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
+    -Database $Database -MustExist
+$qaPaths = Initialize-OmniaQaPaths -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
+    -Executable $Executable -OutputDirectory $OutputDirectory -Profile 'release'
+$out = $qaPaths.OutputDirectory
+$exe = $qaPaths.Executable
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName UIAutomationClientsideProviders
-Add-Type -AssemblyName System.Drawing
 $null = [Windows.Automation.AutomationElement]::RootElement
 [Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
     [Reflection.AssemblyName]::new('UIAutomationClientsideProviders'))
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class OmniaPagingQa {
- [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
- [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
- [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
-}
-'@
-$out = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs/rebuild/receipts'
-$exe = Join-Path $PSScriptRoot 'target/release/omnia-native.exe'
 $cases = [Collections.Generic.List[object]]::new()
 function Open-App {
     # Visible live progress was explicitly requested.
@@ -134,16 +135,8 @@ try {
     if ((Control 123).GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value -ne 'qa/native') { throw 'Saved model lost after worker response' }
     Invoke-Control 101
     $cases.Add(@{case='writer-lock-release';passed=$true;revision=2;modelReadback=$true;inputsRestored=$true})
-    $rect = [OmniaPagingQa+Rect]::new()
-    if (-not [OmniaPagingQa]::GetWindowRect($process.MainWindowHandle,[ref]$rect)) { throw 'Capture bounds failed' }
-    $bitmap = [Drawing.Bitmap]::new($rect.Right-$rect.Left,$rect.Bottom-$rect.Top)
-    $graphics = [Drawing.Graphics]::FromImage($bitmap)
-    $dc = $graphics.GetHdc()
-    try {
-        if (-not [OmniaPagingQa]::PrintWindow($process.MainWindowHandle,$dc,2)) { throw 'Capture failed' }
-    } finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
     $image = Join-Path $out 'native-paging-cycle26-window.png'
-    try { $bitmap.Save($image,[Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+    $capture = Save-OmniaQaWindowCapture -WindowHandle $process.MainWindowHandle -Process $process -Path $image
     $process.Refresh()
     $receipt = @{
         schemaVersion=1;recordedAt=[DateTime]::UtcNow.ToString('o');scope='native metadata paging, synthetic125row fixture';
@@ -151,7 +144,7 @@ try {
         executable=@{sha256=(Get-FileHash $exe).Hash;bytes=(Get-Item $exe).Length};
         script=@{sha256=(Get-FileHash $PSCommandPath).Hash};
         process=@{pid=$process.Id;responding=$process.Responding;workingSetBytes=$process.WorkingSet64};
-        capture=@{path=$image;sha256=(Get-FileHash $image).Hash};
+        capture=$capture;
         limits=@('Per-page snapshot only; writes between requests may move rows','No physical keyboard/IME or Narrator check','Observed wait includes polling/UIA; not input p95 or a performance benchmark','No provider/final visual/IDE/browser claim')
     }
     if ($KeepOpen) { $receipt.teardown='left-visible' } else { Close-App; $receipt.teardown=@{exitCode=$process.ExitCode;verifiedAfterWait=$true} }

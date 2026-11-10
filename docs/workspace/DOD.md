@@ -98,6 +98,33 @@ or contradiction resets the affected row and its consecutive-audit count.
   prompt is not a created chat or an active goal. Failed/stale prerequisites
   reset admission to `DEFERRED`.
 
+## Current native QA batch acceptance
+
+This scoped batch supports `DOD-03`, `DOD-06`, `DOD-07` and `DOD-11`.
+It does not complete these parent gates or claim whole-product QA.
+
+- Bind the five affected QA entrypoints, both helpers, helper tests, native
+  README and owning continuation documents to an explicit source manifest.
+- Retain historical r5 receipts and the r7 failed executable-boundary
+  reproducer separately from its passing rerun. Bind all seven r7 workflows
+  (40/14/5/6/9/12/4 cases) and both fixture producers to their command, exit,
+  output and script/executable hashes. Reuse only matching bytes and declared
+  fixture scope; rerun a check affected by changed inputs.
+- External executable/output, fixture/SQLite-sidecar, fresh-destination and reparse
+  guards must agree with the named path tests. Capture must bind HWND, process
+  creation and dimensions, restore DPI on success/failure and refuse overwrite.
+- Verify exact staged paths, parsing, diff whitespace and document references
+  before the logical commit. Keep logs, builds, databases, screenshots and
+  recovery copies external to the product checkout.
+- Preserve `QUALITY-01` findings: status-panel text clipping in the r7 session
+  capture and smoke `Missing UIA control: Edit `. A capture API success or
+  exit-0 smoke result does not resolve these findings.
+- The fresh visible preview needs a separate post-commit receipt for process
+  identity, command, image and teardown. It cannot establish provider Send,
+  physical input/IME, hidden/minimized capture, final design or performance.
+- Record agent/reviewer identity honestly. A root readback or repeated test is
+  not an independent final audit; the whole-goal streak remains **0**.
+
 ## Final audit rounds
 
 Before completion, run at least three independent end-to-end audits from the

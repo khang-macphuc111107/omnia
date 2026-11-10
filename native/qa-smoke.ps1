@@ -1,15 +1,22 @@
-param([switch]$KeepOpen)
+param(
+    [switch]$KeepOpen,
+    [string]$Executable,
+    [string]$OutputDirectory
+)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'qa-paths.ps1')
+. (Join-Path $PSScriptRoot 'qa-capture.ps1')
+$qaPaths = Initialize-OmniaQaPaths -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
+    -Executable $Executable -OutputDirectory $OutputDirectory -Profile 'release'
+$out = $qaPaths.OutputDirectory
+$exe = $qaPaths.Executable
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class OmniaShellQa {
-  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
   [DllImport("user32.dll")] public static extern IntPtr GetLastActivePopup(IntPtr hwnd);
@@ -18,12 +25,9 @@ public static class OmniaShellQa {
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, UIntPtr wp, StringBuilder lp, uint flags, uint timeout, out UIntPtr result);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessageTimeoutW")] public static extern IntPtr SendText(IntPtr hwnd, uint msg, UIntPtr wp, string lp, uint flags, uint timeout, out UIntPtr result);
-  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
 }
 '@
 $repo = Split-Path -Parent $PSScriptRoot
-$out = Join-Path $repo 'docs/rebuild/receipts'
-$exe = Join-Path $PSScriptRoot 'target/release/omnia-native.exe'
 $timer = [Diagnostics.Stopwatch]::StartNew()
 # Visible window is expressly requested by the user for live progress.
 $process = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Normal
@@ -108,20 +112,9 @@ try {
     $process.Refresh()
     $cpuEnd = $process.TotalProcessorTime.TotalMilliseconds
     $cpuWall = $sampleStart.Elapsed.TotalMilliseconds
-    $rect = New-Object OmniaShellQa+Rect
-    if (-not [OmniaShellQa]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) { throw 'GetWindowRect failed.' }
-    $bitmap = [Drawing.Bitmap]::new($rect.Right-$rect.Left, $rect.Bottom-$rect.Top)
-    $graphics = [Drawing.Graphics]::FromImage($bitmap)
-    $dc = $graphics.GetHdc()
-    try {
-        if (-not [OmniaShellQa]::PrintWindow($process.MainWindowHandle, $dc, 2)) {
-            throw 'PrintWindow failed; screenshot not accepted.'
-        }
-    } finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
     $imageName = if ($KeepOpen) { 'native-shell-cycle24-window.png' } else { 'native-shell-cycle24-clean-close-window.png' }
     $imagePath = Join-Path $out $imageName
-    try { $bitmap.Save($imagePath, [Drawing.Imaging.ImageFormat]::Png) }
-    finally { $bitmap.Dispose() }
+    $capture = Save-OmniaQaWindowCapture -WindowHandle $process.MainWindowHandle -Process $process -Path $imagePath
     $controls = @($root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition) |
         ForEach-Object { @{type=$_.Current.ControlType.ProgrammaticName;name=$_.Current.Name;enabled=$_.Current.IsEnabled} })
     $receipt = @{
@@ -131,7 +124,7 @@ try {
             workingSetBytes=$process.WorkingSet64;peakWorkingSetBytes=$process.PeakWorkingSet64;
             windowDiscoveryMilliseconds=$discoveryMs;cpuMilliseconds=($cpuEnd-$cpuStart);sampleWallMilliseconds=$cpuWall;
             cpuPercentOneCore=(100*($cpuEnd-$cpuStart)/$cpuWall)};
-        cases=$cases.ToArray();controls=$controls;uiaIssue=$uiaIssue;capture=@{path=$imagePath;sha256=(Get-FileHash $imagePath).Hash.ToLower()};
+        cases=$cases.ToArray();controls=$controls;uiaIssue=$uiaIssue;capture=$capture;
         limitations=@('Window discovery is not first-interactive latency','Single warm smoke run, not comparative benchmark',
             'Win32 control messages are not physical keyboard/IME or UIA accessibility validation','No provider, durable sessions, IDE or browser engine',
             'Dark mode, DPI matrix, GPU and input p95 not verified')

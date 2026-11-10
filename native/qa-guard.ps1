@@ -1,5 +1,17 @@
-param([Parameter(Mandatory)][string]$Database, [switch]$KeepOpen)
+param(
+    [Parameter(Mandatory)][string]$Database,
+    [switch]$KeepOpen,
+    [string]$Executable,
+    [string]$OutputDirectory
+)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'qa-paths.ps1')
+$Database = Resolve-OmniaQaDatabase -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
+    -Database $Database -MustExist
+$qaPaths = Initialize-OmniaQaPaths -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
+    -Executable $Executable -OutputDirectory $OutputDirectory -Profile 'debug'
+$out = $qaPaths.OutputDirectory
+$exe = $qaPaths.Executable
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName UIAutomationClientsideProviders
@@ -16,8 +28,6 @@ public static class OmniaGuardQa {
  [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr h,uint m,IntPtr w,IntPtr l,uint flags,uint timeout,out IntPtr result);
 }
 '@
-$exe = Join-Path $PSScriptRoot 'target/debug/omnia-native.exe'
-$out = Join-Path (Split-Path $PSScriptRoot) 'docs/rebuild/receipts'
 $cases = [Collections.Generic.List[object]]::new()
 function Wait-For([scriptblock]$condition, [string]$failure) {
     $end = [DateTime]::UtcNow.AddSeconds(8)

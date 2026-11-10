@@ -1,115 +1,186 @@
-# Omnia checkpoint — 2026-11-11, continuation revision 2
+# Omnia checkpoint — 2026-11-11, continuation revision 4
 
 ## Resume here
 
-- Goal `OMNIA-ROOT-CLEAN-2026-11-11` remains **ACTIVE**. Authoritative contracts:
-  [GOAL.md](GOAL.md); acceptance: [DOD.md](DOD.md). Parent tasks: 16.
-- Persistent tool goal was read as active in this chat. Its API has no active
-  objective-edit operation; the detailed objective is versioned in GOAL.
-- Additive steer is queued. Finish the interrupted deliverable, checkpoint,
-  then consume additions. Current-work corrections apply at a safe boundary;
-  explicit cancellation/replacement supersedes the named work.
-- Final independent whole-goal audit streak: **0**.
-- Last committed documentation milestone: `3058494`. Later changes below are
-  part of the current integration batch until its commit is recorded.
-- Active command sessions: none at this checkpoint. Do not restart completed
-  Tauri tests, supported cleanup or source inventory as if still running.
+- Goal `OMNIA-ROOT-CLEAN-2026-11-11` remains **ACTIVE**. Read [GOAL.md](GOAL.md)
+  for the objective, 16 parent tasks, 12 product leaves and seven chat-admission
+  gates; read [DOD.md](DOD.md) for acceptance and the independent audit rule.
+- Persistent tool goal was read active in this chat. Its API has no active
+  objective-edit operation; GOAL revision 5 owns the detailed objective.
+- Additive steer is queued: finish the interrupted deliverable, checkpoint
+  its next action, then consume additions in order. Corrections affecting
+  current correctness apply at a safe boundary. Explicit cancellation or
+  incompatible replacement supersedes only the named work.
+- Committed baseline: `8d2ad69fbe5b402c51cd92f285b2cc1ffc8686fe`, branch `master`,
+  `refactor: separate external data and complete migration contracts`.
+  The native QA batch and this documentation repair are not yet committed
+  at this checkpoint. Do not confuse them with the committed layout batch.
+- Final independent whole-goal audit streak: **0**. Session admission remains
+  `DEFERRED`; no candidate/reviewer/created-chat/goal-activation receipt exists.
 
-## Source and local checks
+## Current batch and ownership
+
+The r7 intake observed these exact intentional QA changes, all preserved in
+external `continuation-r7/before` before document edits:
+
+| State at intake | Paths |
+|---|---|
+| Modified | `native/README.md`, `native/qa-guard.ps1`, `native/qa-ownership.ps1`, `native/qa-paging.ps1`, `native/qa-session.ps1`, `native/qa-smoke.ps1` |
+| New, untracked | `native/qa-capture.ps1`, `native/qa-capture.tests.ps1`, `native/qa-paths.ps1`, `native/qa-paths.tests.ps1` |
+| Owning documents repaired in r7 | `GOAL.md`, `DOD.md`, this checkpoint |
+
+Root integrator owns this serialized integration. Logs, captures, SQLite
+fixtures, executable targets, contracts and before/after receipts stay outside
+`D:\Omnia`. Git history owns the prior tracked bytes; external baseline copies
+own the pre-existing uncommitted QA bytes. No old checkout metadata is retired.
+
+## Scoped QA evidence
+
+Private receipt root:
+`C:\Users\khang\.codex\research\omnia-restructure\20261111\handoff-intake`.
+`continuation-r7` contains fresh command/exit/stdout/stderr rerun receipts:
+
+| Check | Cases | Result receipt | Scope |
+|---|---:|---|---|
+| QA paths | 40 | `path-contract-rerun.result.json` | Isolated path fixtures; no product execution |
+| Capture helper | 14 | `capture-contract-rerun.result.json` | Actual native window, ownership/DPI/overwrite/bounds/exit negatives |
+| Session | 5 | `session-rerun.result.json` | Synthetic metadata, settings and reopen via UIA |
+| Ownership | 6 | `ownership-rerun.result.json` | Cooperative store exclusion, preserved owner and successor reopen |
+| Paging | 9 | `paging-rerun.result.json` | 125-row synthetic fixture, navigation and pending writer |
+| Unsaved-form/selection guard | 12 | `guard-rerun.result.json` | Unsaved metadata, discard/cancel and failed-selection preservation |
+| Smoke | 4 | `smoke-rerun.result.json` | Mode/draft/unsaved-close via control messages; UIA warning retained |
+
+All seven named rerun receipts record exit 0. Separate paging and guard
+fixture-producer receipts also record exit 0. Each wrapper binds all nine QA
+script hashes and the external executable. The final smoke rerun finished
+`2026-11-10T22:08:06.3266916Z`. No Rust application rebuild occurred.
+Historical r5 receipts stay historical. Native QA entrypoints
+now share `qa-paths.ps1` and `qa-capture.ps1` instead of writing captures and
+fixtures under the source tree. The capture helper uses one DPI-unaware
+geometry/capture space, limits dimensions, refuses overwrite, rechecks owner
+and bounds, and restores caller DPI in `finally`.
+
+Bound external debug executable:
+`C:\Users\khang\.codex\cache\omnia-root-native-target\debug\omnia-native.exe`.
+SHA-256: `1CA3C8A98B81F733B5588D283D7EAECA4FA243DE81847CE5014D0E64F862172F`.
+Capture helper: `486644EFD7C2AD8BCC974AF1F2A815C056D228635D82443668D71EB9B934B228`.
+Repaired path helper:
+`E78DD779761CB19567A093547138C90537B500FAF36EEF53A6F098891C67B240`.
+Path tests:
+`87EC7B99464CAFB0FB713C4540959BFE13577A3505618E1E760AA7EC5D2187BA`.
+The r7 source/evidence manifest binds the final batch and records reuse limits.
+
+### Executable-boundary repair
+
+Root review found that an absolute executable inside the product repository
+was accepted. The new negative case first failed with exit 1, retained as
+`path-contract-r7.result.json` and its stdout/stderr. The helper now routes the
+executable through `Resolve-OmniaQaExternalPath`; the 40-case rerun and every
+affected native QA workflow passed against external fixtures. The failed
+receipt is neither overwritten nor counted as passing. Location guards do
+not establish that an arbitrary external executable or database is trustworthy.
+
+### Open visual/accessibility findings
+
+- The large right/bottom black padding in the earlier r4 capture was repaired.
+  The inspected r7 session image is 1220 × 820; API success, dimensions and hashes
+  alone do not prove complete rendering.
+- The r7 session capture still clips status-panel text near the bottom.
+  Keep this open under `QUALITY-01`; it is not a flawless screenshot.
+- Smoke retains `uiaIssue: "Missing UIA control: Edit "`. Its exit-0 control-
+  message cases are not a passing native accessibility assessment.
+- None of these receipts establishes provider Send/streaming/cancel, final UI,
+  persistent composer/transcript/attachments, browser/IDE, physical keyboard,
+  Vietnamese IME, Narrator, hidden/minimized capture, process-private input,
+  DPI/resize matrix, packaged performance or absolute absence of bugs.
+
+## Preview and active commands
+
+Continuation-r6 `BASELINE.json` records that old preview PID `2272` was stopped
+during resume. The r7 baseline observed no `omnia-native.exe` process. A
+replacement visible preview has **not yet been launched**. This does not waive
+the user's live-observation request. No persistent command session is owned
+by this checkpoint. Launch only after the reviewed logical QA commit, then
+record PID/start time, command, executable/capture hashes and retained/closed
+state in a new external receipt. Never infer liveness from an old screenshot.
+
+## Source closure and reconciliation
 
 Actual product source is tracked at `D:\Omnia`: independent `native/`, shared
-`src-tauri/crates/`, and retained React/Tauri compatibility code. Root source
-admissions are committed through `98c1a04`. Native admission verified 197 files /
-2,588,993 bytes; compatibility admissions preserved existing destination bytes.
-Previous primary/release/rebuild/goal-control checkouts still own unreconciled
-work. Root admission is not a semantic merge.
+`src-tauri/crates/` and retained React/Tauri compatibility source. Native
+admission verified 197 files / 2,588,993 bytes. Root admissions are committed;
+this is still not a semantic merge of primary/release/rebuild/goal-control work.
+Both local manifest/format checks passed. Native tests passed their recorded
+suites. The repaired Tauri root rerun ended `2026-11-10T19:43:52.8602675Z`,
+exit 0: 833 host unit tests, 6 project-file-watch tests and 4 + 17 integration
+tests. The original missing-schema failure remains in the receipt root.
 
-Both manifest metadata/format checks passed locally. Native test log has
-11 + 2 + 2 + 2 + 3 + 4 + 1 passing cases across its recorded suites.
-After the missing `docs/storage-schema.sql` repair, Tauri rerun ended at
-`2026-11-10T19:43:52.8602675Z`, exit 0: 833 host unit tests,
-6 project-file-watch tests and 4 + 17 integration tests. Original failure is
-retained. Targets were external. These are scoped local checks, not packaged
-native/provider/UI/performance or clean-clone completion.
+Continuation-r3 records an isolated local `--no-local --no-hardlinks` clone
+of `8d2ad69`, both locked no-deps metadata checks and native tests with exit 0.
+Existing Cargo registry/build caches were used; this is not a GitHub clone,
+cold installation, packaged behavior or complete compatibility build. Reuse
+only unchanged input scope; current QA helpers are later uncommitted files.
 
-Corrected source inventory at `2026-11-10T20:12:44Z`:
+Corrected private NUL/rename-aware inventory at `2026-11-10T20:12:44Z`:
 
-| Source | Changed tracked | Untracked | Total status entries |
+| Owner | Changed tracked | Untracked | Total status entries |
 |---|---:|---:|---:|
 | Primary | 3,008 | 1,775 | 4,783 |
 | Release | 25 | 108 | 133 |
 | Rebuild | 80 | 1 | 81 |
 | Goal-control | 0 | 0 | 0 |
 
-Complete NUL/rename-aware records, index object IDs and bounded working-file
-fingerprints are private under `continuation-r2/source-state-v2`. Status and
-HEAD stayed stable during each read; this is not an atomic snapshot or backup.
-No renames occurred in this snapshot. HEAD-only union is 42,012; four-way
-intersection 2,020; current focus predicate 276 paths / 138 differing paths.
-Historical 277-focus metrics used a different predicate. Exclusive-source and
-outside-four-way-intersection counts now have distinct definitions.
+`continuation-r2/source-state-v2` contains complete HEAD/index/status records;
+no rename occurred in that read. A stable read is not an atomic backup.
+HEAD-only union is 42,012 paths, four-way intersection 2,020 and current focus
+276 paths / 138 differing paths. Historical 277-focus counts used a different
+predicate. Semantic reconciliation, dirty/index/untracked and valuable-ignored
+preservation, common-Git recovery and restore drills remain open. Revalidate
+current bytes before carrying any disposition.
 
-## Physical layout and capacity
+## Layout and capacity
 
-Ten nonproduct trees were moved intact to `D:\OmniaData`, with **92,460 files**
-and **15,156,174,074 logical bytes** retained. See
-[EXTERNAL_LAYOUT.json](EXTERNAL_LAYOUT.json) for old/current mappings.
-Full relative path/type/file-size/mtime comparisons, nonzero directory
-identities and selected anchor hashes passed. Before-file device/inode fields
-were all zero; file identity is unproved. See the separate
-`RELOCATION_IDENTITY_CORRECTION.json`. No all-file content-hash sweep is
-claimed. REA and old public
-staging Git still work, with original HEADs and clean status.
+Ten classified nonproduct trees moved to `D:\OmniaData`, retaining 92,460 files
+and 15,156,174,074 logical bytes; [EXTERNAL_LAYOUT.json](EXTERNAL_LAYOUT.json)
+owns the mappings. Full path/type/size/mtime, nonzero directory identities and
+selected anchor hashes were checked. Before-file device/inode fields were
+zero, so per-file identity and an all-content-hash backup are not proven.
+Same-volume relocation has **zero reclaimed-capacity credit**.
 
-Same-volume relocation has **zero capacity-reclamation credit**. Backups,
-primary/common Git, linked worktrees, active profiles, downloads/logs/output and
-other operational consumers remain to classify/relocate. Historical paths in
-older receipts resolve using the mapping. Old destructive migration tools are
-retained externally as historical tools, not current supported entrypoints.
-
-Cargo cleaned former `src-tauri\target\native-integration-tests`: **9,632
-files**, **12.1 GiB reported**, exit 0. Observed D: free bytes rose from
-`54,289,879,040` to `65,646,911,488`, a delta of `11,357,032,448` bytes
-(about 10.58 GiB). Other system activity can affect this measurement.
-Earlier drive-cleanup receipts separately record their own Cargo/pnpm actions.
-Do not double count them. The historical D_DRIVE_TOPLEVEL_INVENTORY file
-actually inventories `D:\Omnia`; it is not a full `D:\` size inventory.
+Supported Cargo cleanup of the former native integration target reported
+9,632 files / 12.1 GiB, exit 0. Observed D: free-byte delta was 11,357,032,448
+(about 10.58 GiB); it differs from Cargo logical-byte accounting and can include
+concurrent activity. Earlier Cargo/pnpm cleanup has separate receipts; do not
+double count. The historical D_DRIVE_TOPLEVEL_INVENTORY file inventories
+`D:\Omnia`, not a complete drive-root recursive size survey. Primary/common Git,
+linked worktrees, backups, profiles, downloads/logs/output and other operational
+consumers still require classified ownership before relocation or reclamation.
 
 ## History, research and skills
 
-The earlier structural history watermark has 852 rollout files,
-2,256,736,449 bytes, 528,619 physical records and 14,630 bounded units.
-Semantic review credit remains **0** at that watermark. The source DB includes
-101 raw-rollout gaps; 99 have alternate projected items. Growth, projected
-content and semantic review remain open. See private `handoff-intake/history`.
+The historical structural watermark is 852 rollout files, 2,256,736,449 bytes,
+528,619 physical records and 14,630 bounded units. Semantic review credit at
+that watermark remains **0**. Of 101 source-DB/raw-rollout gaps, 99 have alternate
+projected items; growth, truncation, missing state and review remain open.
+See private `handoff-intake/history`. Neither discovery nor hashing proves
+reading or understanding all chats.
 
-Queued-steer guidance was merged into existing `goal-plan-loop-dod` and
-`deep-steer`, validated and projected at root. Loading/invocation by Omnia is
-unverified. Research source quotas, source reviews and other atomic skill
-families remain in GOAL; do not convert acquisition into review/merge credit.
+Queued-steer guidance already exists in `goal-plan-loop-dod`, `deep-steer`
+and root instructions. Validation/projection is not proof Omnia loaded or
+invoked the skills. Research quotas, atomic source qualification and native
+product requirements remain in GOAL without changing their denominator.
 
-## Evidence and next action
+## Next executable actions
 
-Private receipt root:
-`C:\Users\khang\.codex\research\omnia-restructure\20261111\handoff-intake`.
-This batch uses `continuation-r2/`: documentation before/after, historical
-ledger archive, MOVE_PLAN/MOVE_AFTER, CARGO_CLEAN_BEFORE/AFTER, source-state-v2,
-SKILL_PROJECTION and independent continuation review. Historical observations
-and superseded checkpoint text remain in Git history and archived receipts.
-
-Independent review identified F1 (mixed checkpoint stages) and F2 (unnamed
-session admission gates). This checkpoint replaces mixed stages; GOAL's
-follow-up admission section names the prerequisite states and receipt.
-Recheck the repaired bytes before resolving those findings.
-
-Next executable actions:
-
-1. Finish current compact-summary/reference/export repair batch; verify diff,
-   corrected relocation claims and changed skill/reference files, then commit.
-2. Validate a fresh root clone/export; record missing inputs and private paths.
-3. Preserve and reconcile common Git, dirty/index/untracked source and backup
-   ownership; repair consumers before further physical migration/retirement.
-4. Continue measured drive cleanup, bounded code refactoring, native product,
-   history and research work in GOAL's order. Keep every open gate visible.
-5. Publish only after privacy/license/account/clone gates. Follow-up chat waits
-   for the exact admission protocol; remaining work transfers explicitly.
+1. Finish this documentation readback and the QA source/receipt comparison;
+   record parse/reference/diff checks and any remaining scope gaps externally.
+2. Inspect the full staged diff and commit only the native QA and owning-doc
+   batch. Preserve all known visual/UIA findings and zero final-audit credit.
+3. Open a fresh visible preview with isolated external data and an exact
+   post-commit receipt; then continue the existing queue.
+4. Preserve/reconcile source and common Git, verify restore/clone boundaries,
+   continue measured drive cleanup and bounded refactoring, and carry history,
+   research and native-product requirements forward in GOAL's order.
+5. Publish only after privacy/license/account/clone gates. Create the follow-up
+   chat only under the seven reviewed admission gates and request its detailed
+   persistent goal immediately. Creation and actual activation stay separate.
