@@ -1,0 +1,69 @@
+.rb-session-tabs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 36px;
+  border-bottom: 1px solid var(--rb-line);
+  background: var(--rb-panel);
+  color: var(--rb-text);
+  font-size: 12px;
+}
+
+.rb-session-tabs__bar {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.rb-session-tabs__tablist { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.rb-session-tabs__close-actions { display: flex; align-items: center; flex: 0 0 auto; height: 36px; border-left: 1px solid var(--rb-line); background: var(--rb-panel); }
+
+.rb-session-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 36px;
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--rb-muted);
+  cursor: pointer;
+  text-align: left;
+  min-width: 136px;
+  max-width: 260px;
+  border-right: 1px solid var(--rb-line);
+}
+
+.rb-session-tab:hover,
+.rb-session-tab:focus-visible { background: var(--rb-raised); color: var(--rb-text); }
+.rb-session-tab.is-active { color: var(--rb-text); }
+.rb-session-tab:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: -2px; }
+.rb-session-tab__scope { display: grid; flex: 0 0 auto; place-items: center; width: 16px; height: 16px; border: 1px solid currentColor; border-radius: 4px; font: 10px/1 "Cascadia Code", monospace; }
+.rb-session-tab__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-session-tab__running { color: var(--rb-accent); font-size: 10px; }
+.rb-session-tab__close { display: inline-grid; flex: 0 0 auto; place-items: center; width: 30px; height: 26px; padding: 0; border: 0; background: transparent; border-radius: 4px; color: var(--rb-muted); cursor: pointer; }
+.rb-session-tab__close:disabled { opacity: 0.35; cursor: default; }
+.rb-session-tab__close:hover { background: var(--rb-line); color: var(--rb-text); }
+.rb-session-tab__close:focus-visible { background: var(--rb-line); color: var(--rb-text); outline: 2px solid var(--rb-accent); outline-offset: 1px; }
+.rb-session-tabs__empty { align-self: center; padding: 0 12px; color: var(--rb-muted); }
+.rb-session-tabs__status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; max-width: min(50vw, 520px); padding: 0 10px; overflow-x: auto; color: var(--rb-muted); white-space: nowrap; }
+.rb-session-tabs__phase { flex-shrink: 0; }
+.rb-session-tabs__receipt { max-width: 180px; overflow: hidden; text-overflow: ellipsis; font: 10px/1.3 "Cascadia Code", monospace; }
+.rb-session-tabs__feedback { grid-column: 1 / -1; margin: 0; padding: 8px 12px; border-top: 1px solid var(--rb-line); color: var(--rb-text); font-size: 12px; line-height: 1.5; }
+.rb-session-tabs[data-phase="conflict"] .rb-session-tabs__status,
+.rb-session-tabs[data-phase="error"] .rb-session-tabs__status { color: var(--rb-text); }
+.rb-session-tabs__action { min-height: 26px; padding: 2px 7px; border: 1px solid var(--rb-line); border-radius: 5px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.rb-session-tabs__action:hover, .rb-session-tabs__action:focus-visible { border-color: var(--rb-accent); color: var(--rb-text); outline: 2px solid var(--rb-accent); outline-offset: 1px; }
+
+@media (max-width: 800px) {
+  .rb-session-tabs { grid-template-columns: minmax(0, 1fr); }
+  .rb-session-tabs__status { justify-content: flex-start; min-height: 30px; max-width: none; overflow-x: auto; border-top: 1px solid var(--rb-line); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rb-session-tabs *, .rb-session-tabs *::before, .rb-session-tabs *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}

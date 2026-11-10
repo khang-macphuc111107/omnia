@@ -1,0 +1,500 @@
+.sovereign-browser-workbench {
+  --browser-chrome: #181818;
+  --browser-canvas: #1e1e1e;
+  --browser-input: #141414;
+  --browser-elevated: #252526;
+  --browser-tab-active: #292a2d;
+  --browser-border: #2b2b2b;
+  --browser-text: #d4d4d4;
+  --browser-muted: #adadad;
+  --surface: var(--browser-canvas);
+  --surface-subtle: var(--browser-chrome);
+  --surface-elevated: var(--browser-elevated);
+  --surface-hover: var(--browser-tab-active);
+  --text: var(--browser-text);
+  --text-secondary: var(--browser-muted);
+  --text-tertiary: var(--browser-muted);
+  --border: var(--browser-border);
+  --border-strong: var(--browser-border);
+  --brand: #c4c4c4;
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0 !important;
+  max-width: 100%;
+  font: 12px/1.4 Inter, "Segoe UI", system-ui, sans-serif;
+  background: var(--browser-canvas) !important;
+  color: var(--browser-text) !important;
+  isolation: isolate;
+}
+
+.sovereign-browser-workbench button,
+.sovereign-browser-workbench input,
+.sovereign-browser-workbench select,
+.sovereign-browser-workbench textarea,
+.sovereign-browser-workbench summary {
+  color: var(--browser-text) !important;
+  border-color: var(--browser-border) !important;
+  box-shadow: none !important;
+  font-family: inherit;
+  font-size: 12px !important;
+}
+
+.sovereign-browser-workbench button {
+  background: var(--browser-elevated) !important;
+  border-radius: 3px !important;
+  font-weight: 400 !important;
+}
+
+.sovereign-browser-workbench button:hover:not(:disabled) {
+  background: var(--browser-tab-active) !important;
+}
+
+.sovereign-browser-workbench button:disabled {
+  cursor: default;
+  opacity: .4;
+}
+
+.sovereign-browser-workbench :is(button, input, select, textarea, summary):focus-visible {
+  outline: 1px solid #c4c4c4 !important;
+  outline-offset: -2px;
+}
+
+.sovereign-browser-workbench svg {
+  flex-shrink: 0;
+  stroke-width: 1.75;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__tabs {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  flex: 0 0 36px;
+  min-width: 0;
+  padding: 4px 6px 0;
+  border-bottom: 1px solid var(--browser-border);
+  background: var(--browser-chrome);
+}
+
+.sovereign-browser-chrome__tabs .workspace-mode-switcher {
+  flex: 0 0 auto;
+  height: 28px;
+  margin-right: 4px;
+  background: transparent;
+  border-right: 1px solid var(--browser-border);
+  padding-right: 7px;
+}
+
+.sovereign-browser-chrome__tabs .workspace-mode-switcher button {
+  min-height: 26px;
+  height: 26px;
+  padding: 2px 6px;
+  border: 0;
+  background: transparent !important;
+}
+
+.sovereign-browser-chrome__tabs .workspace-mode-switcher button[aria-pressed="true"] {
+  background: var(--browser-elevated) !important;
+  box-shadow: inset 0 -1px #adadad !important;
+}
+
+.sovereign-browser-chrome__tabstrip {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+  overflow: auto hidden;
+  scrollbar-width: none;
+  scroll-padding-inline: 4px;
+}
+
+.sovereign-browser-chrome__tab {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 0 1 212px;
+  min-width: 100px;
+  max-width: 240px;
+  height: 28px;
+  background: var(--browser-chrome);
+  border-radius: 5px 5px 0 0;
+}
+
+.sovereign-browser-chrome__tab.is-active {
+  background: var(--browser-tab-active);
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__tab [role="tab"]:focus-visible {
+  outline: 2px solid var(--browser-text) !important;
+  outline-offset: -3px;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__tab button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-height: 28px;
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
+  background: transparent !important;
+}
+
+.sovereign-browser-chrome__tab button > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__tab .sovereign-browser-chrome__tab-close {
+  flex: 0 0 24px;
+  min-width: 24px;
+  width: 24px;
+  min-height: 24px;
+  height: 24px;
+  padding: 3px;
+  margin-right: 3px;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 40px;
+  flex: 0 0 40px;
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--browser-border);
+  background: var(--browser-chrome);
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 3px;
+  min-width: 28px;
+  min-height: 28px;
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: 0;
+  background: transparent !important;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__icon[aria-pressed="true"] {
+  background: var(--browser-elevated) !important;
+  box-shadow: inset 0 -1px #adadad !important;
+}
+
+.sovereign-browser-chrome__icon > span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__downloads {
+  width: 28px;
+  min-width: 28px;
+}
+
+.sovereign-browser-chrome__omnibox {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  height: 28px;
+  min-width: 70px;
+  margin-inline: 5px;
+  padding-left: 10px;
+  border: 1px solid var(--browser-border);
+  border-radius: 999px;
+  background: var(--browser-input);
+}
+
+.sovereign-browser-chrome__omnibox:focus-within {
+  border-color: var(--browser-text);
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__omnibox input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent !important;
+  outline-offset: 0;
+  border-radius: 0;
+  font: 12px/26px Inter, "Segoe UI", system-ui, sans-serif;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__omnibox button {
+  min-height: 24px;
+  height: 24px;
+  padding: 0 10px;
+  margin-right: 2px;
+  background: transparent !important;
+  border: 0;
+  border-radius: 999px !important;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__profile {
+  width: 138px;
+  flex: 0 1 138px;
+  height: 28px;
+  padding: 2px 5px;
+  margin-left: 3px;
+  background: var(--browser-chrome);
+  border: 1px solid var(--browser-border);
+  border-radius: 3px;
+}
+
+.sovereign-browser-chrome__workspace {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sovereign-browser-workbench .sovereign-browser-chrome__viewport {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--browser-canvas) !important;
+}
+
+.sovereign-browser-chrome__viewport > div:has(> iframe) {
+  flex: 1;
+  min-height: 0 !important;
+  overflow: hidden;
+}
+
+.sovereign-browser-chrome__page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  flex-direction: column;
+  background: var(--browser-canvas);
+}
+
+.sovereign-browser-chrome__viewport iframe {
+  flex: 1;
+  display: block;
+  min-height: 0 !important;
+  height: 100% !important;
+  width: 100%;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+/* Closed: fully removed from layout (a 1px clipped box let its summary spill).
+   It is opened from the DevTools device button or Ctrl+Shift+M. */
+.sovereign-browser-workbench [data-testid="device-emulation-bar"]:not([open]) {
+  display: none !important;
+}
+
+.sovereign-browser-workbench [data-testid="sovereign-shield-config-drawer"] {
+  position: absolute;
+  z-index: 30;
+  top: 76px;
+  right: 7px;
+  width: min(680px, calc(100% - 14px));
+  max-height: calc(100% - 86px);
+  overflow: auto;
+  padding: 8px !important;
+  background: var(--browser-chrome) !important;
+  border: 1px solid var(--browser-border) !important;
+  border-radius: 3px !important;
+}
+
+.sovereign-browser-workbench [data-testid="sovereign-shield-config-drawer"]:not([open]) {
+  display: none;
+}
+
+.sovereign-browser-chrome__settings-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--browser-border);
+}
+
+.sovereign-browser-chrome__settings-actions label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sovereign-browser-workbench [data-testid="sniffed-media-drawer"] {
+  position: absolute;
+  z-index: 100;
+  right: 12px;
+  top: 76px;
+  min-width: min(340px, calc(100% - 24px));
+  max-width: min(520px, calc(100% - 24px));
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px !important;
+  background: #141417 !important;
+  border: 1px solid #27272a !important;
+  border-radius: 10px !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.48) !important;
+}
+
+.sovereign-browser-workbench [data-testid="idm-enqueue-receipt"] {
+  flex: 0 0 auto;
+  background: var(--browser-elevated) !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--browser-border) !important;
+  border-radius: 0 !important;
+  color: var(--browser-text) !important;
+  overflow: hidden;
+  max-height: 36px;
+}
+
+.sovereign-browser-workbench [data-testid="sovereign-f12-devtools-dock"] {
+  min-height: 0 !important;
+  max-height: 55%;
+  overflow: auto;
+  border: 0 !important;
+  border-top: 1px solid var(--browser-border) !important;
+  border-radius: 0 !important;
+  background: var(--browser-canvas) !important;
+}
+
+.sovereign-browser-workbench [data-testid="sovereign-f12-devtools-dock"][data-dock-position="right"] {
+  max-height: none;
+}
+
+.sovereign-browser-chrome__tab-menu {
+  position: absolute;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  right: 35px;
+  top: 34px;
+  min-width: 160px;
+  padding: 5px;
+  background: var(--browser-chrome);
+  border: 1px solid var(--browser-border);
+  border-radius: 3px;
+}
+
+@media (max-width: 850px) {
+  .sovereign-browser-workbench .sovereign-browser-chrome__profile {
+    width: 92px;
+    flex-basis: 92px;
+  }
+}
+
+@media (max-width: 620px) {
+  .sovereign-browser-workbench .sovereign-browser-chrome__profile {
+    width: 68px;
+    flex-basis: 68px;
+  }
+
+  .sovereign-browser-chrome__tabs .workspace-mode-switcher button {
+    gap: 3px;
+    padding-inline: 3px;
+  }
+
+  .sovereign-browser-workbench .sovereign-browser-chrome__toolbar {
+    gap: 1px;
+    padding-inline: 3px;
+  }
+
+  .sovereign-browser-workbench .sovereign-browser-chrome__icon {
+    min-width: 24px;
+    width: 24px;
+    padding: 3px;
+  }
+
+  .sovereign-browser-chrome__omnibox {
+    margin-inline: 1px;
+    gap: 3px;
+    padding-left: 6px;
+  }
+
+  .sovereign-browser-workbench .sovereign-browser-chrome__omnibox button {
+    padding-inline: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sovereign-browser-workbench * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Review Images 0-2: a single quiet address field, utility controls on demand. */
+.sovereign-browser-workbench .sovereign-browser-chrome__omnibox button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 4px;
+  margin-right: 1px;
+  border-radius: 50% !important;
+}
+.sovereign-browser-workbench .sovereign-browser-chrome__omnibox button[aria-pressed="true"] { color: #e0e0e0 !important; }
+.sovereign-browser-workbench .sovereign-browser-chrome__omnibox > svg { color: var(--browser-muted); }
+
+.browser-panel-resizer--vertical { position: relative; flex: 0 0 10px; width: 10px; margin-inline: -5px; z-index: 30; cursor: col-resize; touch-action: none; user-select: none; }
+.browser-panel-resizer--vertical::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; background: transparent; transition: background 120ms ease; }
+.browser-panel-resizer--vertical:hover::after, .browser-panel-resizer--vertical:focus-visible::after, .sovereign-browser-workbench[data-resizing="true"] .browser-panel-resizer--vertical::after { background: #a1a1aa; }
+.browser-panel-resizer--vertical[tabindex]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.browser-panel-resizer--horizontal { position: relative; flex: 0 0 10px; height: 10px; margin-block: -5px; z-index: 30; cursor: row-resize; touch-action: none; user-select: none; }
+.browser-panel-resizer--horizontal::after { content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 2px; background: transparent; transition: background 120ms ease; }
+.browser-panel-resizer--horizontal:hover::after, .browser-panel-resizer--horizontal:focus-visible::after, .sovereign-browser-workbench[data-resizing="true"] .browser-panel-resizer--horizontal::after { background: #a1a1aa; }
+
+.sovereign-browser-workbench[data-resizing="true"], .sovereign-browser-workbench[data-resizing="true"] * { user-select: none !important; }
+.sovereign-browser-workbench[data-resizing="true"] iframe { pointer-events: none !important; }
+
+.native-browser-surface {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  color: var(--browser-text);
+  background: var(--browser-canvas);
+}
+.native-browser-surface__access { display: flex; justify-content: flex-end; padding: 2px 6px; }
+.native-browser-surface__access button,
+.native-browser-surface__status button {
+  min-height: 28px;
+  padding: 3px 9px;
+  border: 1px solid var(--browser-border);
+  border-radius: 4px;
+  background: var(--browser-elevated);
+  color: var(--browser-text);
+  font: inherit;
+  cursor: pointer;
+}
+.native-browser-surface button:disabled { opacity: .6; cursor: default; }
+.native-browser-surface button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.native-browser-surface__viewport { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.native-browser-surface__status { display: flex; flex: 1; flex-direction: column; justify-content: center; align-items: center; gap: 12px; padding: 24px; text-align: center; }
+.native-browser-surface__status h2 { margin: 0; font-size: 18px; font-weight: 500; }
+.native-browser-surface__status p { max-width: 65ch; color: var(--browser-muted); overflow-wrap: anywhere; }
+.native-browser-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; border-bottom: 1px solid var(--browser-border); background: var(--browser-elevated); }
+.native-browser-notice button { display: inline-flex; align-items: center; justify-content: center; width: 28px; min-width: 28px; height: 28px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.native-browser-capabilities { padding: 0 12px; color: var(--browser-muted); }
+
+/* Editor-first guard: the AI side panel never squeezes the page below 320px. */
+.sovereign-browser-workbench .sovereign-browser-chrome__workspace > .browser-agent { max-width: calc(100% - 320px); }

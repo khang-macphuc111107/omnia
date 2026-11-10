@@ -1,0 +1,228 @@
+.ag-artifacts {
+  display: flex;
+  flex: 0 0 min(520px, 45%);
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 300px;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 0 var(--space-3) var(--space-3);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.ag-artifacts__head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 48px;
+}
+
+.ag-artifacts__head .ag-subtitle {
+  margin: 0;
+}
+
+.ag-artifacts__note {
+  margin: 0;
+}
+
+.ag-artifacts__list {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 140px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ag-artifacts__entry {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ag-artifacts__entry:hover,
+.ag-artifacts__entry[aria-current="true"] {
+  background: var(--surface-hover);
+}
+
+.ag-artifacts__list > li {
+  min-width: 0;
+}
+
+.ag-artifacts__entry > .ag-muted {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ag-artifacts__entry-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-artifacts__bar,
+.ag-artifacts__actions {
+  min-width: 0;
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ag-artifacts__version {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ag-artifacts__version .ag-input {
+  width: auto;
+  max-width: 100%;
+}
+
+.ag-artifacts__tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.ag-artifacts__tabs .ag-btn[aria-selected="true"] {
+  background: var(--surface-hover);
+  border-color: var(--brand);
+}
+
+.ag-artifacts__view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+
+.ag-artifacts__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border: 0;
+  background: #fff;
+}
+
+.ag-artifacts__doc,
+.ag-artifacts__source {
+  margin: 0;
+  padding: var(--space-3);
+}
+
+.ag-artifacts__doc {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.ag-artifacts__doc img,
+.ag-artifacts__doc video {
+  max-width: 100%;
+  height: auto;
+}
+
+.ag-artifacts__source {
+  max-height: none;
+}
+
+.ag-artifacts__table-wrap {
+  overflow: auto;
+}
+
+.ag-artifacts__table {
+  border-collapse: collapse;
+  font-size: var(--font-caption);
+}
+
+.ag-artifacts__table th,
+.ag-artifacts__table td {
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ag-artifacts__table th {
+  background: var(--surface-hover);
+}
+
+.ag-artifact-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 2px 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-elevated);
+}
+
+.ag-artifact-card__text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ag-artifact-card > .ag-btn {
+  flex-shrink: 0;
+}
+
+.ag-artifact-card .ag-btn {
+  flex-shrink: 0;
+}
+
+.ag-artifact-card__title {
+  overflow: hidden;
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  /* Narrow window: the panel overlays the transcript instead of squeezing it. */
+  .ag-app:has(> .ag-artifacts) {
+    position: relative;
+  }
+
+  .ag-artifacts {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    flex-basis: auto;
+    width: min(520px, 100%);
+    min-width: 0;
+  }
+}

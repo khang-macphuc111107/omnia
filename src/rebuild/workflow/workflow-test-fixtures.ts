@@ -1,0 +1,7 @@
+import type { GoalSnapshot } from "@/lib/desktop";
+
+/** Test-only native wire fixture. This is not a product preview or runtime. */
+export function goalSnapshot(id = "goal_one", projectId: string | null = null): GoalSnapshot {
+  const payload = { schemaVersion: 1, title: "Ship evidence", description: "A real goal", acceptanceCriteria: [{ id: "criterion_one", text: "Handles failures", threshold: "0 unresolved failures", evidenceType: "test receipt", status: "planned", evidence: [] }], roadmap: { overview: "Verify then report", foreign: { preserve: true } }, metadata: { foreign: { preserve: true } }, status: "active", stateRevisionId: null };
+  return { goal: { id, profileId: "profile_default", projectId, conversationId: null, branchId: null, currentRevisionId: "goal_revision_one", stateRevisionId: null, status: "active", title: payload.title, description: payload.description, acceptanceCriteriaJson: JSON.stringify(payload.acceptanceCriteria), roadmapJson: JSON.stringify(payload.roadmap), metadataJson: JSON.stringify(payload.metadata), canonicalPayloadSha256: "a".repeat(64), createdAtMs: 100, updatedAtMs: 101, deletedAtMs: null }, currentRevision: { revisionId: "goal_revision_one", goalId: id, revisionNo: 1, payloadJson: JSON.stringify(payload), contentSha256: "a".repeat(64), stateRevisionId: null, createdAtMs: 100 }, executionDisposition: "preview-only", integrity: "valid", replayed: false };
+}

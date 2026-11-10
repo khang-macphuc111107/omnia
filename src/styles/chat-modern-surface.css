@@ -1,0 +1,235 @@
+/* Modern surface pass ----------------------------------------------------
+   Keep the advanced Chat workbench discoverable without making every
+   capability look equally important. The strip uses one visual hierarchy:
+   header -> quick focus -> segmented tabs -> one compact panel.  The rules
+   are renderer-only styling and intentionally do not change feature state. */
+
+.chat-workbench-strip {
+  gap: 6px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  border-color: var(--border-subtle);
+  background: var(--surface);
+}
+
+.chat-workbench-strip__header {
+  min-height: 31px;
+}
+
+.chat-workbench-strip__heading {
+  gap: 7px;
+}
+
+.chat-workbench-strip__heading strong {
+  letter-spacing: -0.01em;
+}
+
+.chat-workbench-strip__mark {
+  width: 27px;
+  height: 27px;
+  border: 1px solid var(--border);
+  background: var(--surface-interactive);
+}
+
+.chat-workbench-strip__inspector-button {
+  min-height: 30px;
+  padding-inline: 9px;
+  border-radius: 8px;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
+}
+
+.chat-workbench-strip__inspector-button:hover:not(:disabled),
+.chat-workbench-strip__inspector-button:focus-visible {
+  transform: translateY(-1px);
+}
+
+.chat-workbench-strip__quick-actions {
+  gap: 5px;
+  min-height: 34px;
+  padding: 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 92%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.chat-workbench-strip__quick-action {
+  min-height: 28px;
+  padding-inline: 9px;
+  border-radius: 8px;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
+}
+
+.chat-workbench-strip__quick-action:hover:not(:disabled),
+.chat-workbench-strip__quick-action:focus-visible {
+  transform: translateY(-1px);
+}
+
+.chat-workbench-strip__tabs {
+  gap: 2px;
+  min-height: 36px;
+  padding: 3px;
+  border-color: color-mix(in srgb, var(--border-subtle) 96%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-subtle) 76%, transparent);
+}
+
+.chat-workbench-strip__tabs button {
+  position: relative;
+  min-height: 30px;
+  border-radius: 7px;
+  transition: background var(--duration-fast), color var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+.chat-workbench-strip__tabs button.is-active {
+  background: var(--surface-interactive);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.chat-workbench-strip__tabs button.is-active::after {
+  position: absolute;
+  right: 14px;
+  bottom: 2px;
+  left: 14px;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--text);
+  content: "";
+}
+
+.chat-workbench-strip__panel {
+  padding-top: 1px;
+}
+
+.chat-workbench-strip__metrics {
+  gap: 7px;
+}
+
+.chat-workbench-strip__metric {
+  min-height: 52px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  transition: background var(--duration-fast), border-color var(--duration-fast), box-shadow var(--duration-fast), transform var(--duration-fast);
+}
+
+button.chat-workbench-strip__metric:hover,
+button.chat-workbench-strip__metric:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--brand) 9%, transparent);
+}
+
+.chat-workbench-strip__metric-icon {
+  width: 26px;
+  height: 26px;
+  border: 1px solid color-mix(in srgb, var(--brand) 18%, var(--border-subtle));
+  border-radius: 8px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--brand) 12%, var(--surface-interactive)), var(--surface-interactive));
+}
+
+.chat-workbench-strip__detail-grid {
+  gap: 7px;
+}
+
+.chat-workbench-strip__hero-card,
+.chat-workbench-strip__facts {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+}
+
+.chat-workbench-strip__hero-card {
+  padding: 9px;
+}
+
+.chat-workbench-strip__detail-actions .button {
+  min-height: 32px;
+}
+
+.chat-workbench-strip__footer {
+  min-width: 0;
+  gap: 6px;
+  padding-top: 1px;
+  font-size: 10px;
+}
+
+.chat-workbench-strip__footer > span:first-of-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The formatting rail keeps the full capability set, but presents it as a
+   compact command bar. Every icon remains a real keyboard/focus target. */
+.conversation-pane--chat-first .composer-format-strip {
+  min-height: 36px;
+  gap: 3px;
+  padding-inline: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 65%, transparent);
+  background: color-mix(in srgb, var(--surface-subtle) 34%, transparent);
+}
+
+.conversation-pane--chat-first .composer-format-button {
+  min-width: var(--target-inline);
+  min-height: var(--target-inline);
+  border-radius: 8px;
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
+}
+
+.conversation-pane--chat-first .composer-format-button:hover:not(:disabled),
+.conversation-pane--chat-first .composer-format-button:focus-visible {
+  transform: translateY(-1px);
+}
+
+.conversation-pane--chat-first .composer-format-divider {
+  margin-inline: 3px;
+  opacity: .72;
+}
+
+.conversation-pane--chat-first .composer-editor-tabs button {
+  min-height: var(--target-inline);
+}
+
+@media (max-width: 760px) {
+  .chat-workbench-strip__quick-actions {
+    margin-inline: -1px;
+  }
+
+  .chat-workbench-strip__tabs button {
+    min-width: 84px;
+  }
+
+  .chat-workbench-strip__footer > span:first-of-type {
+    max-width: 56vw;
+  }
+}
+
+@media (max-width: 560px) {
+  .chat-workbench-strip__header {
+    align-items: flex-start;
+  }
+
+  .chat-workbench-strip__quick-actions {
+    padding-inline: 3px;
+  }
+
+  .chat-workbench-strip__quick-action {
+    min-height: 30px;
+  }
+
+  .chat-workbench-strip__footer > span:first-of-type {
+    display: none;
+  }
+
+  .chat-workbench-strip__footer-check {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-workbench-strip__inspector-button,
+  .chat-workbench-strip__quick-action,
+  .chat-workbench-strip__metric,
+  .conversation-pane--chat-first .composer-format-button {
+    transition: none;
+  }
+}

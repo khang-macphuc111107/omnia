@@ -1,0 +1,66 @@
+/* Keep the manager shrinkable inside both settings columns and session panels. */
+.ag-rules {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.ag-rules .ag-field,
+.ag-rules .ag-rules__list,
+.ag-rules .ag-rules__edit {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ag-rules .ag-input {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ag-rules .ag-rules__item {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: var(--space-2, 8px);
+  align-items: center;
+}
+
+.ag-rules .ag-rules__rule {
+  flex: 1 1 14rem;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ag-rules__controls {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: var(--space-1, 4px);
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+
+.ag-rules__controls .ag-icon-btn {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 32px;
+}
+
+.ag-rules .ag-rules__edit > .ag-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  width: 0;
+}
+
+.ag-rules .ag-btn {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ag-rules :is(button, input, select):focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 2px;
+}

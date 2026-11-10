@@ -1,0 +1,94 @@
+[workspace]
+members = [".", "crates/omnia-harness", "crates/omnia-download", "crates/omnia-browser", "crates/omnia-computer", "crates/omnia-session-store", "crates/omnia-provider-services"]
+resolver = "2"
+
+[package]
+name = "omnia-desktop"
+version = "0.1.0"
+description = "Omnia desktop AI workspace"
+authors = ["Omnia Contributors"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "omnia_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+test = false
+
+[[test]]
+name = "omnia_native"
+path = "src/native_test_harness.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+omnia-session-store = { path = "crates/omnia-session-store" }
+omnia-provider-services = { path = "crates/omnia-provider-services" }
+omnia-harness = { path = "crates/omnia-harness" }
+omnia-download = { path = "crates/omnia-download" }
+omnia-browser = { path = "crates/omnia-browser" }
+omnia-computer = { path = "crates/omnia-computer" }
+aes-gcm = { version = "0.11", features = ["zeroize"] }
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+dunce = "1"
+futures-util = "0.3"
+ignore = "0.4"
+getrandom = "0.4"
+infer = "0.19"
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+ring = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = ["protocol-asset", "unstable"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-os = "2"
+tauri-plugin-store = "2"
+tauri-plugin-window-state = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61"
+features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Media_SpeechRecognition",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[target.'cfg(windows)'.dependencies.webview2-com]
+version = "=0.38.2"
+
+[dev-dependencies]
+omnia-session-store = { path = "crates/omnia-session-store", features = ["test-support"] }
+tauri = { version = "2", features = ["protocol-asset", "unstable", "test"] }
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

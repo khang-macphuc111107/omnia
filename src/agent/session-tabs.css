@@ -1,0 +1,15 @@
+.ag-session-tabs { display:flex; align-items:stretch; gap:4px; min-width:0; padding:0 10px; border-bottom:1px solid var(--ag-border, #2b2f38); background:var(--ag-surface, #17191f); }
+.ag-session-tabs__list { display:flex; min-width:0; overflow:auto hidden; scrollbar-width:thin; }
+.ag-session-tab { display:flex; align-items:center; min-width:132px; max-width:236px; border-right:1px solid transparent; color:var(--ag-muted, #9da5b4); }
+.ag-session-tab--active { color:var(--ag-text, #eef1f6); background:color-mix(in srgb, var(--ag-accent, #7dd3fc) 9%, transparent); border-right-color:var(--ag-border, #2b2f38); }
+.ag-session-tab > [role="tab"] { display:flex; align-items:center; gap:6px; flex:1; min-width:0; padding:7px 4px 7px 9px; border:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.ag-session-tab > [role="tab"]:focus-visible, .ag-session-tab__close:focus-visible, .ag-session-tabs__new:focus-visible { outline:2px solid var(--ag-focus, #7dd3fc); outline-offset:-2px; }
+.ag-session-tab__status { width:6px; height:6px; flex:0 0 6px; border-radius:50%; background:#687080; }
+.ag-session-tab__status[data-running="true"] { background:#5eead4; box-shadow:0 0 0 3px color-mix(in srgb, #5eead4 16%, transparent); }
+.ag-session-tab__label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:600; }
+.ag-session-tab__folder { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; opacity:.62; }
+.ag-session-tab__close { display:grid; place-items:center; width:26px; height:26px; margin-right:3px; border:0; border-radius:5px; background:transparent; color:inherit; cursor:pointer; opacity:.65; }
+.ag-session-tab__close:hover { opacity:1; background:color-mix(in srgb, currentColor 12%, transparent); }
+.ag-session-tabs__new { display:grid; place-items:center; flex:0 0 28px; align-self:center; height:28px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--ag-muted, #9da5b4); cursor:pointer; }
+.ag-session-tabs__new:hover { color:var(--ag-text, #eef1f6); background:color-mix(in srgb, currentColor 9%, transparent); }
+@media (max-width: 720px) { .ag-session-tab { min-width:112px; max-width:180px; } .ag-session-tab__folder { display:none; } }

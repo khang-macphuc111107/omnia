@@ -1,0 +1,11 @@
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '../../upstream_extractions');
+const electron = fs.readdirSync(path.join(root, 'harnesses/opencode/node_modules/.bun')).find(x => x.startsWith('electron@'));
+const exe = path.join(root, 'harnesses/opencode/node_modules/.bun', electron, 'node_modules/.bin/electron.exe');
+const app = path.join(root, 'desktop-apps/cherry-studio');
+const out = path.resolve(__dirname, '../../artifacts/upstream-ui/cherry-electron-smoke.log');
+const child = spawn(exe, [app, '--no-sandbox', '--disable-gpu'], { cwd: app, windowsHide: true });
+const stream = fs.createWriteStream(out); child.stdout.pipe(stream); child.stderr.pipe(stream);
+setTimeout(() => { const alive = child.exitCode === null; if (alive) child.kill(); setTimeout(() => { console.log(JSON.stringify({ electron: exe, app, pid: child.pid, aliveAfter8s: alive, exitCode: child.exitCode, logBytes: fs.statSync(out).size })); }, 250); }, 8000);

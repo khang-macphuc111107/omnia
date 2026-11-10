@@ -1,0 +1,181 @@
+/* Compare is a modal workflow, so keep its controls compact while allowing
+   provider/model labels and bounded outputs to wrap on narrow windows. */
+.ag-compare-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, calc(100vw - 32px));
+  max-width: 100%;
+  max-height: min(760px, calc(100dvh - 32px));
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ag-compare-dialog form {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.ag-compare-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.ag-compare-dialog__header .ag-dialog__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ag-compare-dialog__prompt {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.ag-compare-dialog__routes {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-surface);
+}
+
+.ag-compare-dialog__route-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2);
+  max-height: 180px;
+  margin-top: var(--space-2);
+  overflow: auto;
+}
+
+.ag-compare-dialog__route {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.ag-compare-dialog__route:hover,
+.ag-compare-dialog__route.is-selected {
+  border-color: var(--border-strong);
+  background: var(--surface-selected);
+}
+
+.ag-compare-dialog__route > span {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ag-compare-dialog__route strong,
+.ag-compare-dialog__route small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-compare-dialog__route small {
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.ag-compare-dialog__results {
+  display: grid;
+  min-width: 0;
+  max-height: 300px;
+  gap: var(--space-2);
+  overflow: auto;
+}
+
+.ag-compare-dialog__results h3 {
+  margin: 0;
+  font-size: var(--font-control);
+}
+
+.ag-compare-dialog__attempt {
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+
+.ag-compare-dialog__attempt > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ag-compare-dialog__attempt > header label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ag-compare-dialog__attempt > header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-compare-dialog__attempt-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--font-caption);
+}
+
+.ag-compare-dialog__attempt-status.is-completed { color: var(--success, #5eead4); }
+.ag-compare-dialog__attempt-status.is-failed { color: var(--danger); }
+
+.ag-compare-dialog__attempt pre {
+  max-height: 140px;
+  margin: var(--space-2) 0 0;
+  overflow: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font: var(--font-caption) / 1.45 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ag-compare-dialog__spin {
+  animation: ag-compare-spin 1s linear infinite;
+}
+
+@keyframes ag-compare-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-compare-dialog__spin { animation: none; }
+}
+
+@media (max-width: 600px) {
+  .ag-compare-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .ag-compare-dialog__route-list { grid-template-columns: 1fr; }
+  .ag-compare-dialog__results { max-height: 240px; }
+}

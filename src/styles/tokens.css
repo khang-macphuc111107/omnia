@@ -1,0 +1,93 @@
+:root {
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  /* Compatibility tokens stay authored here until their call sites migrate to
+     the executable semantic token set in tokens.generated.css. */
+  --mono: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+  --radius-xs: 5px;
+  --radius-md: var(--radius-control);
+  --radius-lg: var(--radius-surface);
+  --text-primary: var(--text);
+  --text-muted: var(--text-secondary);
+  --surface-raised: var(--surface-elevated);
+  --surface-sunken: var(--canvas);
+  --surface-inset: var(--canvas);
+  --surface-muted: var(--surface-subtle);
+  --surface-1: var(--surface);
+  --surface-2: var(--surface-subtle);
+  --surface-3: var(--surface-elevated);
+  --surface-card: var(--surface-1);
+  --surface-overlay: var(--surface-elevated);
+  --bg-surface: var(--surface);
+  --bg-secondary: var(--surface-2);
+  --bg-elevated: var(--surface-elevated);
+  --border: var(--border-subtle);
+  --border-default: var(--border);
+  --focus-ring: var(--focus);
+  --font-mono: var(--mono);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.28);
+  --accent: var(--brand);
+  --accent-primary: var(--accent);
+  --accent-teal: var(--brand);
+  --accent-amber: var(--warning);
+  --accent-blue: var(--info);
+  --accent-red: var(--danger);
+  scrollbar-width: thin;
+  scrollbar-color: #27272a transparent;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #27272a transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --shadow-popover: var(--shadow-popover-base), 0 2px 10px rgba(0, 0, 0, 0.28);
+  --shadow-dialog: var(--shadow-dialog-base), 0 4px 18px rgba(0, 0, 0, 0.4);
+  --shadow-composer: var(--shadow-composer-base), 0 2px 8px rgba(0, 0, 0, 0.16);
+  --noise-opacity: 0.018;
+}
+
+:root[data-theme="light"] {
+  --shadow-popover: var(--shadow-popover-base), 0 2px 10px rgba(22, 22, 32, 0.08);
+  --shadow-dialog: var(--shadow-dialog-base), 0 4px 18px rgba(22, 22, 32, 0.1);
+  --shadow-composer: var(--shadow-composer-base), 0 2px 8px rgba(22, 22, 32, 0.05);
+  --noise-opacity: 0.012;
+}
+
+:root[data-density="compact"] {
+  --toolbar-height: 52px;
+  --sidebar-width: 256px;
+  --inspector-width: 330px;
+}
+
+:root[data-density="touch"] {
+  --toolbar-height: 66px;
+  --sidebar-width: 286px;
+  --inspector-width: 370px;
+}

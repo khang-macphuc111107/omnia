@@ -1,0 +1,46 @@
+.settings-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; min-width: 0; min-height: 0; padding: 24px; background: rgb(2 7 12 / .68); backdrop-filter: blur(10px); color: var(--rb-text, #e7eef5); isolation: isolate; }
+.settings-panel { width: min(100%, 920px); height: min(780px, calc(100vh - 48px)); max-height: min(780px, calc(100vh - 48px)); min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(36px, auto) minmax(0, 1fr) auto; border: 1px solid var(--rb-line, #2b3a47); border-radius: 12px; background: var(--rb-panel, #101923); box-shadow: 0 24px 80px rgb(0 0 0 / .48); }
+.settings-header { display: flex; align-items: center; gap: 16px; min-width: 0; padding: 18px 22px 14px; border-bottom: 1px solid var(--rb-line, #2b3a47); }
+.settings-title { margin: 0; font: 650 18px/1.2 "Segoe UI Variable", "Segoe UI", sans-serif; letter-spacing: .01em; }
+.settings-subtitle { margin: 4px 0 0; color: var(--rb-muted, #91a1b1); font-size: 12px; }
+.settings-close { margin-left: auto; width: 34px; height: 34px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.settings-close:hover, .settings-close:focus-visible { border-color: var(--rb-line, #2b3a47); background: rgb(255 255 255 / .05); outline: none; }
+.settings-toolbar { display: flex; gap: 10px; align-items: center; min-width: 0; padding: 12px 22px; border-bottom: 1px solid var(--rb-line, #2b3a47); }
+.settings-search { flex: 1; min-width: 150px; border: 1px solid var(--rb-line, #2b3a47); border-radius: 7px; background: var(--settings-input-bg, var(--rb-bg, var(--rb-canvas, #0a1118))); color: inherit; padding: 9px 11px; font: inherit; }
+.settings-search:focus-visible, .settings-control:focus-visible, .settings-select:focus-visible, .settings-number:focus-visible { border-color: var(--rb-accent, #63d8be); outline: 2px solid color-mix(in srgb, var(--rb-accent, #63d8be) 30%, transparent); outline-offset: 1px; }
+.settings-tabs { position: relative; z-index: 2; display: flex; flex: none; gap: 5px; min-width: 0; min-height: 36px; overflow-x: auto; padding: 0 22px; border-bottom: 1px solid var(--rb-line, #2b3a47); background: var(--rb-panel, #101923); }
+.settings-tab { position: relative; z-index: 1; flex: 0 0 auto; padding: 11px 12px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--rb-muted, #91a1b1); cursor: pointer; font-size: 12px; white-space: nowrap; }
+.settings-tab[aria-selected="true"] { color: var(--rb-text, #e7eef5); border-bottom-color: var(--rb-accent, #63d8be); }
+.settings-body { position: relative; z-index: 0; min-width: 0; min-height: 0; overflow: auto; padding: 20px 22px; }
+.settings-section { display: grid; gap: 13px; max-width: 760px; }
+.settings-section + .settings-section { margin-top: 24px; }
+.settings-section h3 { margin: 0; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--rb-muted, #91a1b1); }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
+.settings-field { display: grid; gap: 6px; min-width: 0; }
+.settings-field > span { color: var(--rb-text, #e7eef5); font-size: 12px; }
+.settings-help { color: var(--rb-muted, #91a1b1); font-size: 11px; line-height: 1.4; }
+.settings-control, .settings-select, .settings-number { width: 100%; box-sizing: border-box; border: 1px solid var(--rb-line, #2b3a47); border-radius: 6px; padding: 8px 9px; background: var(--settings-input-bg, var(--rb-bg, var(--rb-canvas, #0a1118))); color: inherit; font: 12px "Cascadia Code", Consolas, monospace; }
+.settings-number { appearance: textfield; }
+.settings-toggle { display: flex; align-items: center; gap: 9px; min-height: 34px; color: var(--rb-text, #e7eef5); font-size: 12px; }
+.settings-toggle input { width: 15px; height: 15px; accent-color: var(--rb-accent, #63d8be); }
+.settings-actions { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 14px 22px; border-top: 1px solid var(--rb-line, #2b3a47); }
+.settings-button { border: 1px solid var(--rb-line, #2b3a47); border-radius: 6px; padding: 8px 11px; background: transparent; color: inherit; cursor: pointer; font-size: 12px; }
+.settings-button:hover, .settings-button:focus-visible { border-color: var(--rb-accent, #63d8be); outline: none; }
+.settings-button--primary { border-color: color-mix(in srgb, var(--rb-accent, #63d8be) 60%, var(--rb-line, #2b3a47)); background: color-mix(in srgb, var(--rb-accent, #63d8be) 13%, transparent); }
+.settings-status { margin-left: auto; color: var(--rb-muted, #91a1b1); font-size: 11px; }
+.settings-discovery { padding-bottom: 20px; border-bottom: 1px solid var(--rb-line, #2b3a47); }
+.settings-discovery-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-discovery .settings-help { margin: 0; overflow-wrap: anywhere; }
+.settings-discovery-actions { display: flex; align-items: flex-start; align-content: start; flex-wrap: wrap; gap: 8px; padding-top: 22px; }
+.settings-discovery .settings-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.settings-discovery .settings-button:disabled { cursor: not-allowed; opacity: .55; }
+.settings-discovery-status { padding: 10px 12px; border: 1px solid var(--rb-line, #2b3a47); border-radius: 6px; color: var(--rb-muted, #91a1b1); font-size: 12px; overflow-wrap: anywhere; }
+.settings-discovery-status[role="alert"] { color: var(--rb-warning, #f5be63); }
+.settings-discovery-provenance { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--rb-muted, #91a1b1); font: 11px/1.5 "Cascadia Code", Consolas, monospace; }
+@media (max-width: 680px) { .settings-backdrop { padding: 10px; } .settings-panel { height: calc(100vh - 20px); max-height: calc(100vh - 20px); } .settings-header, .settings-toolbar, .settings-body, .settings-actions { padding-left: 14px; padding-right: 14px; } .settings-tabs { padding: 0 14px; } .settings-grid { grid-template-columns: 1fr; } }
+
+/* Keep the input surface readable when the host has no --rb-bg alias yet. */
+.settings-panel { --settings-input-bg: var(--rb-bg, var(--rb-canvas, #0a1118)); }
+html[data-rebuild-theme="light"] .settings-panel { --settings-input-bg: var(--rb-bg, var(--rb-canvas, #f6f8fa)); }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

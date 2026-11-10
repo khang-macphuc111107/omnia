@@ -1,0 +1,66 @@
+.role-routing-preview { display: grid; gap: 10px; padding: 11px; border: 1px solid var(--border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--surface) 82%, var(--brand) 3%); }
+.role-routing-preview__header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 9px; }
+.role-routing-preview__icon { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 9px; background: var(--brand-muted); color: var(--brand-bright); }
+.role-routing-preview__header > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
+.role-routing-preview h3 { margin: 0; font-size: 14px; }
+.role-routing-preview__header p { max-width: 660px; color: var(--text-tertiary); font-size: var(--font-caption); line-height: 1.4; }
+.role-routing-preview__badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--warning); font-size: var(--font-micro); white-space: nowrap; }
+.role-routing-preview__precedence { display: grid; gap: 7px; padding: 8px 9px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface); }
+.role-routing-preview__precedence > span { display: grid; gap: 2px; }
+.role-routing-preview__precedence strong { color: var(--text-secondary); font-size: var(--font-caption); }
+.role-routing-preview__precedence small { color: var(--text-tertiary); font-size: var(--font-micro); }
+.role-routing-preview__precedence ol { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; counter-reset: precedence; }
+.role-routing-preview__precedence li { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid var(--border-subtle); border-radius: var(--radius-pill); color: var(--text-tertiary); font-family: var(--font-mono); font-size: 10px; }
+.role-routing-preview__precedence li::before { counter-increment: precedence; content: counter(precedence); color: var(--brand-bright); font-weight: 700; }
+.role-routing-preview__history { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.role-routing-preview__history > span:first-child { display: grid; min-width: 0; gap: 2px; }
+.role-routing-preview__history strong { color: var(--text-secondary); font-size: var(--font-caption); }
+.role-routing-preview__history small { overflow: hidden; color: var(--text-tertiary); font-size: var(--font-micro); text-overflow: ellipsis; white-space: nowrap; }
+.role-routing-preview__history-count { padding: 3px 6px; border-radius: var(--radius-pill); background: var(--surface-elevated); color: var(--text-tertiary); font-size: var(--font-micro); white-space: nowrap; }
+.role-routing-preview__history-actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.role-routing-preview__history-actions .button { min-height: 28px; padding: 4px 7px; font-size: var(--font-micro); }
+.role-routing-preview__roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 7px; }
+.role-routing-preview__role { display: grid; min-width: 0; gap: 8px; padding: 9px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface); }
+.role-routing-preview__role--blocked, .role-routing-preview__role--needs-candidates { border-color: color-mix(in srgb, var(--warning) 36%, var(--border)); }
+.role-routing-preview__role-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.role-routing-preview__role-heading > div { display: grid; min-width: 0; gap: 2px; }
+.role-routing-preview__role-heading strong { color: var(--text-secondary); font-size: var(--font-caption); }
+.role-routing-preview__role-heading small { color: var(--text-tertiary); font-size: var(--font-micro); line-height: 1.35; }
+.role-routing-preview__readiness { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--text-tertiary); font-size: 10px; text-align: right; }
+.role-routing-preview__readiness-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+.role-routing-preview__role--blocked .role-routing-preview__readiness-dot, .role-routing-preview__role--needs-candidates .role-routing-preview__readiness-dot { background: var(--warning); }
+.role-routing-preview__role-controls { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(140px, 1fr); align-items: end; gap: 7px; }
+.role-routing-preview__role-controls > label { display: grid; min-width: 0; gap: 4px; }
+.role-routing-preview__role-controls > label > span, .role-routing-preview__role-controls legend { color: var(--text-tertiary); font-size: 10px; font-weight: 600; }
+.role-routing-preview__role-controls select { min-height: 30px; width: 100%; }
+.role-routing-preview__role-controls fieldset { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 7px; min-width: 0; margin: 0; padding: 6px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+.role-routing-preview__role-controls fieldset legend { padding: 0 3px; }
+.role-routing-preview__role-controls fieldset label { display: flex; min-width: 0; align-items: center; gap: 4px; color: var(--text-secondary); font-size: 10px; }
+.role-routing-preview__role-controls fieldset label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-routing-preview__inherited { display: flex; min-height: 30px; grid-column: 1 / -1; align-items: center; gap: 4px; padding: 5px 7px; border: 1px dashed var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-tertiary); font-size: 10px; }
+.role-routing-preview__role-controls > label:last-child { grid-column: 1 / -1; }
+.role-routing-preview__export { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface); }
+.role-routing-preview__export > span { display: grid; min-width: 0; gap: 2px; }
+.role-routing-preview__export strong { color: var(--text-secondary); font-size: var(--font-caption); }
+.role-routing-preview__export small, .role-routing-preview__boundary, .role-routing-preview__availability { color: var(--text-tertiary); font-size: var(--font-micro); line-height: 1.4; }
+.role-routing-preview__boundary, .role-routing-preview__availability { display: flex; align-items: flex-start; gap: 5px; margin: 0; }
+.role-routing-preview__boundary svg, .role-routing-preview__availability svg { flex: 0 0 auto; margin-top: 1px; }
+.role-routing-preview__boundary svg { color: var(--warning); }
+.role-routing-preview__availability svg { color: var(--success); }
+
+@media (max-width: 680px) {
+  .role-routing-preview__header { grid-template-columns: auto minmax(0, 1fr); }
+  .role-routing-preview__badge { grid-column: 2; justify-self: start; }
+  .role-routing-preview__history { grid-template-columns: minmax(0, 1fr) auto; }
+  .role-routing-preview__history-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .role-routing-preview__role-controls { grid-template-columns: 1fr; }
+  .role-routing-preview__role-controls > label:last-child, .role-routing-preview__role-controls fieldset, .role-routing-preview__inherited { grid-column: auto; }
+  .role-routing-preview__export { align-items: stretch; flex-direction: column; }
+  .role-routing-preview__export .button { justify-content: center; }
+}
+
+@media (max-width: 430px) {
+  .role-routing-preview__precedence ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .role-routing-preview__precedence li { min-width: 0; }
+  .role-routing-preview__role-controls fieldset { grid-template-columns: 1fr; }
+}

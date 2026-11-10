@@ -1,0 +1,336 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  min-width: 800px;
+  min-height: 600px;
+  background: var(--canvas);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Application chrome behaves like a native shell, while authored and sourced
+   content must remain selectable for study, citation, and code workflows. */
+.message-markdown,
+.user-message-surface,
+.code-block,
+.source-excerpt,
+.artifact-preview,
+.library-detail {
+  user-select: text;
+}
+
+button,
+input,
+textarea,
+select {
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+button:not(:disabled),
+select:not(:disabled),
+input[type="checkbox"]:not(:disabled),
+input[type="radio"]:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+  opacity: 0.58;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+/* Keep semantic helper text available to assistive technology without
+   participating in flex/grid sizing.  A missing global utility here makes
+   labels such as Settings' search hint consume their full text width, which
+   can push compact controls outside a narrow rail. */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+::selection {
+  background: var(--selection);
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: var(--stroke-focus) solid var(--focus);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text-tertiary) 42%, transparent);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-secondary) 60%, transparent);
+  background-clip: padding-box;
+}
+
+h1,
+h2,
+h3,
+p,
+figure {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+strong {
+  font-weight: 600;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-bottom-color: var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface-subtle);
+  color: var(--text-tertiary);
+  font-family: var(--font-ui);
+  font-size: var(--font-micro);
+  line-height: 1;
+}
+
+.eyebrow {
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  font-weight: 600;
+  letter-spacing: 0.105em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast);
+}
+
+.icon-button:hover:not(:disabled),
+.icon-button--active {
+  border-color: var(--border-subtle);
+  background: var(--surface-interactive);
+  color: var(--text);
+}
+
+.icon-button--small {
+  width: var(--target-min);
+  height: var(--target-min);
+}
+
+.icon-button--tiny {
+  width: var(--target-min);
+  height: var(--target-min);
+}
+
+/* Compact glyphs stay visually small while these semantic controls expose the
+   density contract as their actual pointer/touch target. */
+.hit-target-control {
+  min-width: var(--target-min);
+  min-height: var(--target-min);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height);
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  font-size: var(--font-control);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transition: transform var(--duration-instant), background var(--duration-fast), border-color var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+.button:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.button--primary {
+  border-color: color-mix(in srgb, var(--brand) 80%, var(--border));
+  background: var(--brand);
+  color: var(--on-brand);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--brand) 24%, transparent);
+}
+
+.button--primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+
+.button--primary kbd {
+  border-color: currentColor;
+  background: transparent;
+  color: var(--on-brand);
+}
+
+.button--secondary {
+  border-color: var(--border);
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+
+.button--secondary:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.button--ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.button--ghost:hover:not(:disabled) {
+  background: var(--surface-interactive);
+  color: var(--text);
+}
+
+.button--small {
+  min-height: var(--target-min);
+  padding-inline: 11px;
+  font-size: 12px;
+}
+
+.button--full {
+  width: 100%;
+}
+
+.model-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-muted);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.status-dot--warning {
+  background: var(--warning);
+}
+
+.success-icon {
+  color: var(--success);
+}
+
+.omnia-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+}
+
+.omnia-logo svg {
+  display: block;
+}
+
+.omnia-logo__aperture {
+  fill: var(--brand);
+}
+
+.omnia-logo--command-ring .omnia-logo__aperture,
+.omnia-logo--command-ring .omnia-logo__command {
+  fill: none;
+  stroke: var(--brand);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.25;
+}
+
+.omnia-logo--command-ring .omnia-logo__command {
+  stroke-width: 1.85;
+}
+
+.omnia-logo--current-color .omnia-logo__aperture,
+.omnia-logo--current-color .omnia-logo__command {
+  stroke: currentColor;
+}
+
+.omnia-logo--hex-core.omnia-logo--current-color .omnia-logo__aperture {
+  fill: currentColor;
+}
+
+.omnia-logo--command-ring.omnia-logo--current-color .omnia-logo__aperture,
+.omnia-logo--command-ring.omnia-logo--current-color .omnia-logo__command {
+  fill: none;
+}
+
+.omnia-logo__core {
+  color: var(--surface);
+}
+
+.omnia-logo--compact {
+  flex: 0 0 auto;
+}

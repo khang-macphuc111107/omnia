@@ -1,0 +1,786 @@
+/* Citation graph preview -------------------------------------------------- */
+
+.citation-graph-preview {
+  display: grid;
+  gap: 13px;
+  margin: 0 0 18px;
+  padding: 15px;
+  border: 1px solid color-mix(in srgb, var(--brand) 27%, var(--border));
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--success-muted) 30%, transparent), transparent 35%),
+    linear-gradient(145deg, color-mix(in srgb, var(--surface-elevated) 92%, transparent), color-mix(in srgb, var(--surface-subtle) 88%, transparent));
+  box-shadow: 0 9px 30px rgba(0, 0, 0, 0.06);
+}
+
+.citation-graph__header,
+.citation-graph__header-actions,
+.citation-graph__controls,
+.citation-graph__metrics,
+.citation-graph__detail-heading,
+.citation-graph__section-heading,
+.citation-graph__export header,
+.citation-graph__export header > div:last-child {
+  display: flex;
+  align-items: center;
+}
+
+.citation-graph__header {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.citation-graph__title-block {
+  min-width: 0;
+}
+
+.citation-graph__title-block .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--success);
+}
+
+.citation-graph__title-block h2 {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 18px;
+  letter-spacing: -0.03em;
+}
+
+.citation-graph__title-block p {
+  max-width: 680px;
+  margin-top: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--font-caption);
+}
+
+.citation-graph__header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.citation-graph__boundary-badge,
+.citation-graph__status,
+.citation-graph__tags span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-micro);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.citation-graph__boundary-badge {
+  min-height: 27px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border));
+  background: color-mix(in srgb, var(--success-muted) 58%, transparent);
+  color: var(--success);
+}
+
+.citation-graph__boundary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--success) 34%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--success-muted) 35%, transparent);
+  color: var(--text-tertiary);
+  font-size: var(--font-small);
+  line-height: 1.45;
+}
+
+.citation-graph__boundary svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--success);
+}
+
+.citation-graph__boundary strong {
+  color: var(--text-secondary);
+}
+
+.citation-graph__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.citation-graph__metrics article {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.citation-graph__metrics article > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  grid-row: 1 / -1;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--success-muted);
+  color: var(--success);
+}
+
+.citation-graph__metrics small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.citation-graph__metrics strong {
+  color: var(--text);
+  font-size: 17px;
+}
+
+.citation-graph__controls {
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--surface) 67%, transparent);
+}
+
+.citation-graph__controls label:not(.citation-graph__search) {
+  display: grid;
+  min-width: 122px;
+  gap: 3px;
+}
+
+.citation-graph__controls label > span,
+.citation-graph__export label > span {
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.citation-graph__controls select,
+.citation-graph__export select {
+  min-height: 31px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: 0;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-small);
+}
+
+.citation-graph__controls select:focus,
+.citation-graph__export select:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 12%, transparent);
+}
+
+.citation-graph__search {
+  display: flex;
+  min-width: min(310px, 100%);
+  min-height: 31px;
+  flex: 1 1 260px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  color: var(--text-tertiary);
+}
+
+.citation-graph__search:focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 12%, transparent);
+}
+
+.citation-graph__search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-small);
+}
+
+.citation-graph__search button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--surface-interactive);
+  color: var(--text-tertiary);
+}
+
+.citation-graph__workspace {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1.65fr) minmax(270px, 0.75fr);
+  gap: 10px;
+}
+
+.citation-graph__board {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--success-muted) 9%, transparent) 1px, transparent 1px),
+    linear-gradient(color-mix(in srgb, var(--success-muted) 9%, transparent) 1px, transparent 1px),
+    color-mix(in srgb, var(--surface) 80%, transparent);
+  background-size: 22px 22px;
+}
+
+.citation-graph__lane {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
+}
+
+.citation-graph__lane > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  color: var(--text-secondary);
+}
+
+.citation-graph__lane > header > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: var(--font-caption);
+}
+
+.citation-graph__lane > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.citation-graph__lane > header svg {
+  flex: 0 0 auto;
+  color: var(--success);
+}
+
+.citation-graph__lane > header small {
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: var(--surface-interactive);
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+}
+
+.citation-graph__lane-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.citation-graph__node,
+.citation-graph__relation {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  color: inherit;
+  text-align: left;
+}
+
+.citation-graph__node {
+  padding: 8px;
+}
+
+.citation-graph__node:hover,
+.citation-graph__node:focus-visible,
+.citation-graph__relation:hover,
+.citation-graph__relation:focus-visible {
+  border-color: color-mix(in srgb, var(--success) 44%, var(--border));
+}
+
+.citation-graph__node--selected {
+  border-color: color-mix(in srgb, var(--success) 66%, var(--border));
+  background: color-mix(in srgb, var(--success-muted) 30%, var(--surface-elevated));
+  box-shadow: inset 3px 0 var(--success);
+}
+
+.citation-graph__node-icon,
+.citation-graph__relation-kind,
+.citation-graph__detail-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 7px;
+}
+
+.citation-graph__node-icon {
+  width: 27px;
+  height: 27px;
+  background: var(--surface-interactive);
+  color: var(--success);
+}
+
+.citation-graph__node-body {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.citation-graph__node-body strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-small);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.citation-graph__node-body small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.citation-graph__status {
+  width: fit-content;
+  padding: 2px 5px;
+  font-size: var(--font-micro);
+}
+
+.citation-graph__status--supported,
+.citation-graph__detail-status--supported { background: var(--success-muted); color: var(--success); }
+.citation-graph__status--review,
+.citation-graph__detail-status--review { background: var(--warning-muted); color: var(--warning); }
+.citation-graph__status--planned,
+.citation-graph__detail-status--planned { background: var(--surface-interactive); color: var(--text-tertiary); }
+.citation-graph__status--inferred,
+.citation-graph__detail-status--inferred { background: var(--info-muted); color: var(--info); }
+
+.citation-graph__empty {
+  padding: 13px 6px;
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  line-height: 1.4;
+  text-align: center;
+}
+
+.citation-graph__detail {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 8px;
+  padding: 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-elevated) 84%, transparent);
+}
+
+.citation-graph__detail-heading {
+  min-width: 0;
+  gap: 8px;
+}
+
+.citation-graph__detail-heading > div:last-child {
+  min-width: 0;
+}
+
+.citation-graph__detail-heading h3 {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.citation-graph__detail-icon {
+  width: 32px;
+  height: 32px;
+  background: var(--success-muted);
+  color: var(--success);
+}
+
+.citation-graph__detail-subtitle {
+  color: var(--text-tertiary);
+  font-size: var(--font-small);
+}
+
+.citation-graph__detail-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-size: var(--font-small);
+}
+
+.citation-graph__detail-status span {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.citation-graph__detail blockquote {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 1px 0;
+  padding: 9px;
+  border-left: 2px solid var(--success);
+  background: color-mix(in srgb, var(--success-muted) 30%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--font-caption);
+  line-height: 1.45;
+}
+
+.citation-graph__detail blockquote svg {
+  flex: 0 0 auto;
+  color: var(--success);
+}
+
+.citation-graph__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.citation-graph__tags span {
+  padding: 2px 6px;
+  background: var(--surface-interactive);
+  color: var(--text-tertiary);
+}
+
+.citation-graph__section-heading {
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.citation-graph__section-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: var(--font-caption);
+}
+
+.citation-graph__section-heading svg {
+  color: var(--success);
+}
+
+.citation-graph__section-heading small {
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+}
+
+.citation-graph__relations {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.citation-graph__relation {
+  padding: 7px;
+}
+
+.citation-graph__relation-kind {
+  width: 25px;
+  height: 25px;
+  background: var(--surface-interactive);
+  color: var(--info);
+}
+
+.citation-graph__relation > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.citation-graph__relation strong {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--font-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.citation-graph__relation small {
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  line-height: 1.35;
+}
+
+.citation-graph__muted {
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  line-height: 1.45;
+}
+
+.citation-graph__empty--detail {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 35px 10px;
+}
+
+.citation-graph__empty--detail svg {
+  color: var(--text-tertiary);
+}
+
+.citation-graph__empty--detail strong {
+  color: var(--text-secondary);
+}
+
+.citation-graph__export {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid color-mix(in srgb, var(--success) 30%, var(--border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--success-muted) 30%, var(--surface));
+}
+
+.citation-graph__export header {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.citation-graph__export header h3 {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.citation-graph__export header p {
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+}
+
+.citation-graph__export header > div:last-child {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.citation-graph__export header label {
+  display: grid;
+  gap: 3px;
+}
+
+.citation-graph__export pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 87%, #000 13%);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-micro);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.citation-graph__status-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 18px;
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+}
+
+.citation-graph__status-line svg {
+  color: var(--success);
+}
+
+.citation-graph__lens-panel {
+  display: grid;
+  gap: 7px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--info) 28%, var(--border-subtle));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--info-muted) 20%, var(--surface));
+}
+
+.citation-graph__lens-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.citation-graph__lens-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: var(--font-caption);
+}
+
+.citation-graph__lens-heading svg {
+  color: var(--info);
+}
+
+.citation-graph__lens-heading small,
+.citation-graph__lens-panel > small {
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+}
+
+.citation-graph__lens-panel > p {
+  color: var(--text);
+  font-size: var(--font-small);
+  font-weight: 650;
+}
+
+.citation-graph__lens-panel > p span {
+  padding: 0 6px;
+  color: var(--info);
+}
+
+.citation-graph__cluster-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 7px;
+}
+
+.citation-graph__cluster-card {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-elevated) 74%, transparent);
+  color: inherit;
+  text-align: left;
+}
+
+.citation-graph__cluster-card:hover,
+.citation-graph__cluster-card:focus-visible {
+  border-color: color-mix(in srgb, var(--info) 52%, var(--border));
+}
+
+.citation-graph__cluster-card--selected {
+  border-color: color-mix(in srgb, var(--info) 66%, var(--border));
+  background: color-mix(in srgb, var(--info-muted) 35%, var(--surface-elevated));
+  box-shadow: inset 3px 0 var(--info);
+}
+
+.citation-graph__cluster-card strong {
+  color: var(--text-secondary);
+  font-size: var(--font-small);
+}
+
+.citation-graph__cluster-card span {
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+}
+
+@media (max-width: 980px) {
+  .citation-graph__workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .citation-graph__board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .citation-graph__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .citation-graph__header-actions {
+    justify-content: flex-start;
+  }
+
+  .citation-graph__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .citation-graph__export header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .citation-graph__export header > div:last-child {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
+  .citation-graph-preview {
+    padding: 11px;
+  }
+
+  .citation-graph__board {
+    grid-template-columns: 1fr;
+  }
+
+  .citation-graph__metrics {
+    gap: 6px;
+  }
+
+  .citation-graph__metrics article {
+    padding: 8px;
+  }
+
+  .citation-graph__controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .citation-graph__controls label:not(.citation-graph__search),
+  .citation-graph__search {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .citation-graph__controls > .button {
+    justify-content: center;
+  }
+}

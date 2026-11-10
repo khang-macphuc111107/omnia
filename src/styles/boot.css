@@ -1,0 +1,213 @@
+.boot-screen {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  overflow: hidden;
+  place-items: center;
+  padding: var(--space-8);
+  background: var(--canvas);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.boot-screen::before,
+.boot-screen::after {
+  position: absolute;
+  z-index: -1;
+  content: "";
+  pointer-events: none;
+}
+
+.boot-screen::before {
+  inset: 0;
+  background: var(--border-subtle);
+  clip-path: polygon(
+    0 49.9%,
+    100% 49.9%,
+    100% 50.1%,
+    0 50.1%,
+    49.9% 50.1%,
+    49.9% 0,
+    50.1% 0,
+    50.1% 100%,
+    49.9% 100%,
+    49.9% 50.1%
+  );
+  opacity: 0.38;
+}
+
+.boot-screen::after {
+  top: 50%;
+  left: 50%;
+  width: min(480px, 70vw);
+  height: min(480px, 70vw);
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.26;
+}
+
+.boot-screen__identity {
+  display: grid;
+  width: min(420px, calc(100vw - (2 * var(--space-8))));
+  justify-items: center;
+  text-align: center;
+}
+
+.boot-screen__mark {
+  display: grid;
+  width: 88px;
+  height: 88px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-dialog);
+  background: var(--surface-elevated);
+  box-shadow: 0 14px 42px color-mix(in srgb, var(--canvas) 66%, transparent);
+}
+
+.boot-screen__wordmark {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-5);
+}
+
+.boot-screen__wordmark h1 {
+  font-size: var(--font-display);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -0.035em;
+  line-height: var(--line-height-compact);
+}
+
+.boot-screen__wordmark p {
+  color: var(--text-secondary);
+  font-size: var(--font-control);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.04em;
+}
+
+.boot-screen__progress,
+.boot-screen__notice {
+  width: 100%;
+  margin-top: var(--space-10);
+}
+
+.boot-screen__progress {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.boot-screen__progress-track {
+  display: block;
+  height: 2px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-interactive-strong);
+}
+
+.boot-screen__progress-track > span {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  animation: boot-progress 1.35s var(--ease-standard) infinite;
+}
+
+.boot-screen__status-copy {
+  display: grid;
+  min-height: 36px;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-size: var(--font-caption);
+}
+
+.boot-screen__status-copy small,
+.boot-screen__notice small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--font-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.boot-screen__notice {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--danger) 36%, var(--border));
+  border-radius: var(--radius-surface);
+  background: color-mix(in srgb, var(--danger-muted) 54%, var(--surface-elevated));
+  text-align: left;
+}
+
+.boot-screen__notice strong {
+  color: var(--danger);
+  font-size: var(--font-control);
+}
+
+.boot-screen__notice span {
+  color: var(--text-secondary);
+  font-size: var(--font-caption);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+@keyframes boot-progress {
+  from {
+    transform: translateX(-105%);
+  }
+
+  to {
+    transform: translateX(265%);
+  }
+}
+
+@media (max-width: 799px) {
+  .boot-screen {
+    padding: var(--space-5);
+  }
+
+  .boot-screen__identity {
+    width: min(420px, calc(100vw - (2 * var(--space-5))));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-screen__progress-track > span {
+    width: 52%;
+    animation: none;
+  }
+}
+
+:root[data-motion="reduced"] .boot-screen__progress-track > span {
+  width: 52%;
+  animation: none;
+}
+
+@media (forced-colors: active) {
+  .boot-screen::before,
+  .boot-screen::after {
+    display: none;
+  }
+
+  .boot-screen__mark,
+  .boot-screen__notice {
+    border-color: CanvasText;
+    background: Canvas;
+    box-shadow: none;
+  }
+
+  .boot-screen__progress-track {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+
+  .boot-screen__progress-track > span {
+    background: Highlight;
+  }
+}

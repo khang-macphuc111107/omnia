@@ -1,0 +1,50 @@
+/* Project Overview action center ------------------------------------------
+ * Renderer-local action staging. Keep this separate from native task/run
+ * surfaces so a click can never look like durable execution.
+ */
+.project-overview-action-center { display: grid; gap: 9px; margin: 0 17px 15px; padding: 11px; border: 1px solid color-mix(in srgb, var(--brand) 25%, var(--border-subtle)); border-radius: 11px; background: linear-gradient(145deg, color-mix(in srgb, var(--surface-raised) 94%, transparent), color-mix(in srgb, var(--surface) 89%, var(--brand) 3%)); }
+.project-overview-action-center__header { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.project-overview-action-center__header > div { display: grid; min-width: 0; gap: 3px; }
+.project-overview-action-center__header .eyebrow { display: inline-flex; align-items: center; gap: 4px; color: var(--info); }
+.project-overview-action-center__header h4 { margin: 0; color: var(--text-primary); font-size: 13px; }
+.project-overview-action-center__header p { max-width: 760px; margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.project-overview-action-center__boundary { display: inline-flex; flex: 0 0 auto; align-items: center; padding: 4px 7px; border-radius: var(--radius-pill); background: var(--success-muted); color: var(--success); font-size: 10px; white-space: nowrap; }
+.project-overview-action-center__toolbar { display: flex; min-width: 0; align-items: end; flex-wrap: wrap; gap: 7px; padding: 7px 8px; border: 1px solid var(--border-subtle); border-radius: 9px; background: color-mix(in srgb, var(--surface-raised) 76%, transparent); }
+.project-overview-action-center__toolbar label { display: grid; min-width: 145px; gap: 3px; }
+.project-overview-action-center__toolbar label > span { color: var(--text-tertiary); font-size: 10px; font-weight: 650; }
+.project-overview-action-center__toolbar select { min-height: 29px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-secondary); font-size: 10px; }
+.project-overview-action-center__count { margin-right: auto; padding: 5px 7px; border-radius: var(--radius-pill); background: var(--surface-interactive); color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
+.project-overview-action-center__status { min-width: 180px; color: var(--text-secondary); font-size: 10px; line-height: 1.35; }
+.project-overview-action-center__list { display: grid; gap: 6px; }
+.project-overview-action-center__row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; min-width: 0; padding: 9px; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--surface); transition: border-color .15s ease, background .15s ease, opacity .15s ease; }
+.project-overview-action-center__row:hover, .project-overview-action-center__row.is-staged { border-color: color-mix(in srgb, var(--brand) 52%, var(--border)); background: color-mix(in srgb, var(--brand-muted) 15%, var(--surface)); }
+.project-overview-action-center__row.is-staged { opacity: .8; }
+.project-overview-action-center__icon { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; background: var(--info-muted); color: var(--info); }
+.project-overview-action-center__row--attention .project-overview-action-center__icon { background: var(--warning-muted); color: var(--warning); }
+.project-overview-action-center__row--planned .project-overview-action-center__icon { background: var(--surface-interactive); color: var(--text-tertiary); }
+.project-overview-action-center__copy { display: grid; min-width: 0; gap: 3px; }
+.project-overview-action-center__title { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.project-overview-action-center__title strong { min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.project-overview-action-center__title span { flex: 0 0 auto; padding: 2px 5px; border-radius: var(--radius-pill); background: var(--info-muted); color: var(--info); font-size: 10px; white-space: nowrap; }
+.project-overview-action-center__row--attention .project-overview-action-center__title span { background: var(--warning-muted); color: var(--warning); }
+.project-overview-action-center__row--planned .project-overview-action-center__title span { background: var(--surface-interactive); color: var(--text-tertiary); }
+.project-overview-action-center__copy p { margin: 0; color: var(--text-tertiary); font-size: 10px; line-height: 1.35; }
+.project-overview-action-center__copy small { overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.project-overview-action-center__actions { display: inline-flex; align-items: center; gap: 4px; }
+.project-overview-action-center__actions .button { min-height: 28px; padding: 4px 7px; font-size: 10px; }
+.project-overview-action-center__empty { display: grid; min-height: 76px; place-items: center; align-content: center; gap: 4px; padding: 12px; border: 1px dashed var(--border); border-radius: 9px; color: var(--text-tertiary); text-align: center; }
+.project-overview-action-center__empty svg { color: var(--info); }
+.project-overview-action-center__empty strong { color: var(--text-secondary); font-size: 11px; }
+.project-overview-action-center__empty small, .project-overview-action-center__boundary-note { font-size: 10px; }
+.project-overview-action-center__boundary-note { display: flex; align-items: flex-start; gap: 5px; margin: 0; color: var(--text-tertiary); line-height: 1.4; }
+.project-overview-action-center__boundary-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--success); }
+.project-overview-action-center button:focus-visible, .project-overview-action-center select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+@media (max-width: 640px) {
+  .project-overview-action-center__header { flex-direction: column; }
+  .project-overview-action-center__boundary { justify-self: start; }
+  .project-overview-action-center__row { grid-template-columns: auto minmax(0, 1fr); }
+  .project-overview-action-center__actions { grid-column: 2; justify-self: start; }
+  .project-overview-action-center__title { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .project-overview-action-center__title strong { white-space: normal; }
+  .project-overview-action-center__status { min-width: 0; flex: 1 1 100%; }
+}

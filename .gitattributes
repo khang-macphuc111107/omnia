@@ -1,0 +1,22 @@
+# Canonical source hashes must survive a fresh Windows or Linux checkout.
+* text=auto eol=lf
+
+# Evidence artifacts bind exact bytes. Keep those paths byte-stable across
+# Windows/Linux checkouts; regular source, workflow and manifest files remain
+# normal text so Git can normalize CRLF/LF and diff checks stay meaningful.
+docs/rebuild/receipts/** -text
+docs/rebuild/audit/** -text
+docs/rebuild/research/snapshots/** -text
+# This manifest is hash-bound by its immutable snapshot bindings.
+docs/rebuild/research/KEYWORD_OSS_CYCLE30_20261110.json -text
+docs/rebuild/research/KEYWORD_OSS_CYCLE31_20261110.json -text
+docs/rebuild/research/KEYWORD_OSS_CYCLE32_20261110.json -text
+docs/rebuild/research/KEYWORD_OSS_CYCLE33_20261110.json -text
+docs/rebuild/research/KEYWORD_OSS_CYCLE34_20261110.json -text
+artifacts/** -text
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.woff2 binary

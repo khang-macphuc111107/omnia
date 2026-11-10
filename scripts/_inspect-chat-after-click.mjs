@@ -1,0 +1,16 @@
+import { chromium } from "@playwright/test";
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+const page = await context.newPage();
+await page.goto("http://127.0.0.1:1420/", { waitUntil: "domcontentloaded" });
+await page.locator(".app-shell").waitFor({ timeout: 30000 });
+await page.waitForTimeout(500);
+console.log("before", await page.locator(".conversation-pane").count(), await page.locator('[aria-label="Message Omnia"]').count());
+const chats = page.locator('.activity-rail button[aria-label="Chats"]').first();
+console.log("chats visible", await chats.isVisible().catch(() => false));
+await chats.click().catch((e) => console.log("click error", e.message));
+await page.waitForTimeout(350);
+console.log("after", await page.locator(".conversation-pane").count(), await page.locator('[aria-label="Message Omnia"]').count());
+console.log("classes", await page.locator("[class*=conversation-pane]").evaluateAll((es) => es.map((e) => e.className)));
+console.log("body has", (await page.locator("body").innerText()).includes("Message Omnia"));
+await browser.close();

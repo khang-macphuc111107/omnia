@@ -1,0 +1,178 @@
+/* Project runtime posture ---------------------------------------------------
+ * Renderer evidence summary. Keep this visually distinct from controls that
+ * can initiate native work: the cards only navigate to existing workbenches.
+ */
+.project-runtime-posture {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--brand) 25%, var(--border-subtle));
+  border-radius: 12px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--brand-muted) 18%, var(--surface)), color-mix(in srgb, var(--surface-raised) 92%, transparent));
+}
+
+.project-runtime-posture__header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-runtime-posture__header > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.project-runtime-posture__header .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--info);
+}
+
+.project-runtime-posture__header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.project-runtime-posture__header p {
+  max-width: 680px;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-micro);
+  line-height: 1.45;
+}
+
+.project-runtime-posture__badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, var(--success) 30%, var(--border-subtle));
+  border-radius: var(--radius-pill);
+  background: var(--success-muted);
+  color: var(--success);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.project-runtime-posture__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.project-runtime-posture__card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-raised) 80%, transparent);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, transform .15s ease;
+}
+
+.project-runtime-posture__card:hover {
+  border-color: color-mix(in srgb, var(--brand) 48%, var(--border));
+  background: color-mix(in srgb, var(--brand-muted) 25%, var(--surface));
+  transform: translateY(-1px);
+}
+
+.project-runtime-posture__card:focus-visible {
+  border-color: var(--brand-bright);
+  outline: 2px solid color-mix(in srgb, var(--brand-bright) 45%, transparent);
+  outline-offset: 2px;
+}
+
+.project-runtime-posture__card > svg {
+  align-self: center;
+  color: var(--text-tertiary);
+}
+
+.project-runtime-posture__icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface-interactive);
+  color: var(--info);
+}
+
+.project-runtime-posture__copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.project-runtime-posture__copy > span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.project-runtime-posture__copy strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-runtime-posture__copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.project-runtime-posture__card--success .project-runtime-posture__icon { background: var(--success-muted); color: var(--success); }
+.project-runtime-posture__card--info .project-runtime-posture__icon { background: var(--info-muted); color: var(--info); }
+.project-runtime-posture__card--warning .project-runtime-posture__icon { background: var(--warning-muted); color: var(--warning); }
+.project-runtime-posture__card--danger .project-runtime-posture__icon { background: var(--warning-muted); color: var(--warning); }
+.project-runtime-posture__card--neutral .project-runtime-posture__icon { background: var(--surface-interactive); color: var(--text-tertiary); }
+
+.project-runtime-posture__boundary {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.project-runtime-posture__boundary svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--success);
+}
+
+@media (max-width: 760px) {
+  .project-runtime-posture__grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 520px) {
+  .project-runtime-posture__header { flex-direction: column; }
+  .project-runtime-posture__badge { justify-self: start; }
+  .project-runtime-posture__card { padding: 8px; }
+}

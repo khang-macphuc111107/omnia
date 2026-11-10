@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Omnia logo + palette exploration</title>
+    <style>
+      :root { color-scheme: dark; font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; background: #0d1117; color: #e8eef2; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 32px; background: #0d1117; }
+      main { max-width: 1280px; margin: 0 auto; }
+      h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.02em; }
+      h2 { margin: 36px 0 14px; font-size: 18px; color: #cbd7de; }
+      p { margin: 0; color: #92a1ab; line-height: 1.55; }
+      .intro { display: flex; gap: 24px; justify-content: space-between; align-items: end; padding: 22px; border: 1px solid #26313a; border-radius: 16px; background: #121920; }
+      .intro code { color: #7cc4e8; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+      .card { min-height: 220px; padding: 18px; border: 1px solid #26313a; border-radius: 14px; background: #121920; }
+      .mark { display: grid; place-items: center; height: 142px; border-radius: 10px; background: #0a0f14; border: 1px solid #1e2a33; }
+      .mark img { width: 104px; height: 104px; }
+      .label { display: flex; justify-content: space-between; gap: 12px; margin-top: 14px; }
+      .label strong { font-size: 14px; }
+      .label span { font: 12px "Cascadia Code", Consolas, monospace; color: #7c8d98; }
+      .palette { min-height: 160px; }
+      .swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 16px 0 12px; }
+      .swatch { min-height: 52px; border-radius: 8px; border: 1px solid #ffffff1c; }
+      .palette-meta { display: flex; justify-content: space-between; gap: 8px; color: #8fa0aa; font: 11px "Cascadia Code", Consolas, monospace; }
+      footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid #26313a; color: #72828d; font-size: 12px; }
+      @media (max-width: 760px) { body { padding: 16px; } .intro { display: block; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="intro">
+        <div>
+          <h1>Omnia logo + palette exploration</h1>
+          <p>12 geometric marks × 8 coder-friendly palettes. No default AI-purple direction.</p>
+        </div>
+        <p><code>15 Sep 2026</code> · pick one L## + one P##</p>
+      </section>
+
+      <h2>Logo concepts</h2>
+      <section class="grid">
+        <article class="card"><div class="mark"><img src="logo-01-command-ring.svg" alt="L01 Command ring" /></div><div class="label"><strong>L01 · Command ring</strong><span>O + &gt;</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-02-terminal-aperture.svg" alt="L02 Terminal aperture" /></div><div class="label"><strong>L02 · Terminal aperture</strong><span>prompt</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-03-branch-node.svg" alt="L03 Branch node" /></div><div class="label"><strong>L03 · Branch node</strong><span>DAG</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-04-layered-window.svg" alt="L04 Layered window" /></div><div class="label"><strong>L04 · Layered window</strong><span>desktop</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-05-hex-core.svg" alt="L05 Hex core" /></div><div class="label"><strong>L05 · Hex core</strong><span>infra</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-06-stack-cursor.svg" alt="L06 Stack cursor" /></div><div class="label"><strong>L06 · Stack cursor</strong><span>context</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-07-orbit-grid.svg" alt="L07 Orbit grid" /></div><div class="label"><strong>L07 · Orbit grid</strong><span>providers</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-08-chevron-loop.svg" alt="L08 Chevron loop" /></div><div class="label"><strong>L08 · Chevron loop</strong><span>flow</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-09-prompt-diamond.svg" alt="L09 Prompt diamond" /></div><div class="label"><strong>L09 · Prompt diamond</strong><span>CLI</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-10-compile-spark.svg" alt="L10 Compile spark" /></div><div class="label"><strong>L10 · Compile spark</strong><span>build</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-11-nodal-arc.svg" alt="L11 Nodal arc" /></div><div class="label"><strong>L11 · Nodal arc</strong><span>network</span></div></article>
+        <article class="card"><div class="mark"><img src="logo-12-monogram-o.svg" alt="L12 Monogram O" /></div><div class="label"><strong>L12 · Monogram O</strong><span>minimal</span></div></article>
+      </section>
+
+      <h2>Palette concepts</h2>
+      <section class="grid">
+        <article class="card palette"><strong>P01 · Signal Blue</strong><div class="swatches"><i class="swatch" style="background:#0f141a"></i><i class="swatch" style="background:#171e26"></i><i class="swatch" style="background:#4fa3d1"></i><i class="swatch" style="background:#7cc4e8"></i><i class="swatch" style="background:#edf4f7"></i></div><div class="palette-meta"><span>#4FA3D1</span><span>professional</span></div></article>
+        <article class="card palette"><strong>P02 · Terminal Green</strong><div class="swatches"><i class="swatch" style="background:#0e1715"></i><i class="swatch" style="background:#18241f"></i><i class="swatch" style="background:#2fcb88"></i><i class="swatch" style="background:#76e3af"></i><i class="swatch" style="background:#edf8f2"></i></div><div class="palette-meta"><span>#2FCB88</span><span>automation</span></div></article>
+        <article class="card palette"><strong>P03 · Build Amber</strong><div class="swatches"><i class="swatch" style="background:#17130d"></i><i class="swatch" style="background:#282016"></i><i class="swatch" style="background:#e7a23c"></i><i class="swatch" style="background:#ffd07a"></i><i class="swatch" style="background:#fff8ea"></i></div><div class="palette-meta"><span>#E7A23C</span><span>build energy</span></div></article>
+        <article class="card palette"><strong>P04 · Focus Cyan</strong><div class="swatches"><i class="swatch" style="background:#0c1619"></i><i class="swatch" style="background:#15262a"></i><i class="swatch" style="background:#17b6c8"></i><i class="swatch" style="background:#77e7f0"></i><i class="swatch" style="background:#ecfcfd"></i></div><div class="palette-meta"><span>#17B6C8</span><span>clean focus</span></div></article>
+        <article class="card palette"><strong>P05 · Ship Coral</strong><div class="swatches"><i class="swatch" style="background:#191110"></i><i class="swatch" style="background:#2b1b1a"></i><i class="swatch" style="background:#f07462"></i><i class="swatch" style="background:#ffaba0"></i><i class="swatch" style="background:#fff1ee"></i></div><div class="palette-meta"><span>#F07462</span><span>human warmth</span></div></article>
+        <article class="card palette"><strong>P06 · Steel Teal</strong><div class="swatches"><i class="swatch" style="background:#0f1717"></i><i class="swatch" style="background:#172525"></i><i class="swatch" style="background:#3ab7a3"></i><i class="swatch" style="background:#8be0d0"></i><i class="swatch" style="background:#ebfbf8"></i></div><div class="palette-meta"><span>#3AB7A3</span><span>low fatigue</span></div></article>
+        <article class="card palette"><strong>P07 · Paper Cobalt</strong><div class="swatches"><i class="swatch" style="background:#f5f7f9"></i><i class="swatch" style="background:#e6ebf0"></i><i class="swatch" style="background:#2d6cdf"></i><i class="swatch" style="background:#5e9be6"></i><i class="swatch" style="background:#0e1720"></i></div><div class="palette-meta"><span>#2D6CDF</span><span>light-first</span></div></article>
+        <article class="card palette"><strong>P08 · Carbon Mint</strong><div class="swatches"><i class="swatch" style="background:#0d1515"></i><i class="swatch" style="background:#172422"></i><i class="swatch" style="background:#72d4c3"></i><i class="swatch" style="background:#b0eee3"></i><i class="swatch" style="background:#edfffb"></i></div><div class="palette-meta"><span>#72D4C3</span><span>fresh geometry</span></div></article>
+      </section>
+
+      <footer>Open <code>README.md</code> for rationale and shortlist. The app theme is intentionally unchanged until a logo + palette pair is selected.</footer>
+    </main>
+  </body>
+</html>

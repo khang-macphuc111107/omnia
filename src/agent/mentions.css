@@ -1,0 +1,12 @@
+.ag-mention-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ag-mention__path {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

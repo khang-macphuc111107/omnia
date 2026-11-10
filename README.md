@@ -5,6 +5,9 @@ Windows-first native Rust AI workspace under active development.
 ## Start here
 
 - Product code: [`native/`](native/) and [`src-tauri/crates/`](src-tauri/crates/).
+- Compatibility projection: [`src/`](src/), [`src-tauri/`](src-tauri/) and
+  the checked-in scripts/package manifests. The compatibility lane is not
+  evidence that the target native runtime is complete.
 - Specs, tasks, DoD and migration gates: [`docs/workspace/ACTIVE_SCOPE.md`](docs/workspace/ACTIVE_SCOPE.md).
 - Prompt editor and attachments: [`docs/workspace/COMPOSER_REQUIREMENTS.md`](docs/workspace/COMPOSER_REQUIREMENTS.md).
 - Recovery and topology records: [`docs/workspace/`](docs/workspace/).
@@ -21,7 +24,9 @@ cargo run --manifest-path native/Cargo.toml --locked
 
 The native package is an independent workspace. Shared path dependencies are
 included under `src-tauri/crates`; the directory name reflects compatibility
-origin and does not require a Tauri shell for the native package.
+origin and does not require a Tauri shell for the native package. The
+React/Tauri files are retained as a compatibility projection while native
+replacement is measured and verified.
 See [`native/README.md`](native/README.md) for evaluation-shell limits.
 
 ## Delivery status

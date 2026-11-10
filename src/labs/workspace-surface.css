@@ -1,0 +1,78 @@
+/* Hosts a former Labs workspace screen inside the agent shell's main area. */
+.ws-surface {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  background: var(--surface-canvas, var(--bg, transparent));
+  color: var(--text-primary, inherit);
+}
+
+.ws-surface > :first-child {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ws-surface--full-bleed {
+  overflow: hidden;
+}
+
+/* Library hosts Memory and Skills as tabs. */
+.ws-library {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ws-library__panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.ws-library__panel > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ws-library-tabs {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-subtle, var(--border, rgba(127, 127, 127, 0.25)));
+}
+
+.ws-library-tabs__tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-secondary, inherit);
+  cursor: pointer;
+}
+
+.ws-library-tabs__tab:hover {
+  color: var(--text-primary, inherit);
+}
+
+.ws-library-tabs__tab[aria-selected="true"] {
+  color: var(--text-primary, inherit);
+  border-bottom-color: var(--accent, currentColor);
+}
+
+.ws-library-tabs__tab:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: -2px;
+}

@@ -1,0 +1,91 @@
+/* Always-visible status bar: one muted 24px line; lower-priority segments hide when narrow. */
+.ag-sb {
+  container-type: inline-size;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1, 3px);
+  box-sizing: border-box;
+  height: 24px;
+  min-width: 0;
+  padding: 0 var(--space-2, 6px);
+  overflow: hidden;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--chrome, var(--surface));
+  color: var(--text-tertiary);
+  font-size: var(--font-micro, 11px);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ag-sb__seg {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.ag-sb__seg .ag-popover {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.ag-sb__btn {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  min-width: 0;
+  padding: 0 var(--space-2, 6px);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ag-sb__btn:hover,
+.ag-sb__btn[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+}
+
+.ag-sb__btn:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+.ag-sb__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-sb__btn--active { color: var(--text-secondary); }
+.ag-sb__btn--warn { color: var(--warning); }
+.ag-sb__btn--danger { color: var(--danger); }
+
+.ag-sb__details {
+  display: grid;
+  gap: var(--space-1, 3px);
+  margin: 0;
+  font-size: var(--font-caption, 12px);
+}
+
+.ag-sb__row {
+  display: grid;
+  grid-template-columns: minmax(7em, auto) 1fr;
+  gap: var(--space-3, 9px);
+}
+
+.ag-sb__row dt { color: var(--text-tertiary); }
+.ag-sb__row dd { margin: 0; color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+
+@container (max-width: 640px) {
+  .ag-sb__seg--p3 { display: none; }
+}
+
+@container (max-width: 420px) {
+  .ag-sb__seg--p2 { display: none; }
+}

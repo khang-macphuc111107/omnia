@@ -72,6 +72,10 @@ qualification, history comprehension and disk cleanup are reported separately.
 ## Current proof and limits
 
 - Native admission: 197 files / 2,588,993 bytes, SHA-256 checked before/after.
+- Compatibility admission: 1,630 files copied or already identical from the
+  rebuild checkout, with zero destination conflicts; receipt is external
+  `handoff-intake/compatibility-admission.json`. Generated trees and caches
+  were excluded, and no existing destination bytes were overwritten.
 - `cargo metadata --locked`, `cargo fmt --check` and `cargo test --locked`
   passed with build output outside `D:\Omnia`; this is not final product proof.
 - History inventory: 852 rollout JSONL files, 2,256,736,449 bytes, 528,619
