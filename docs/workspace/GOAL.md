@@ -78,6 +78,9 @@ qualification, history comprehension and disk cleanup are reported separately.
   records and 14,630 bounded units; semantic review credit is zero.
 - D: scan was started read-only and stopped before completion because it was
   too broad; no D: deletion has been performed.
+- Current source ledger records primary `4,783`, release `133`, rebuild `81`
+  and goal-control `0` porcelain entries. The ledger is bounded and does not
+  decide whether a path is source, generated output or recoverable work.
 
 ## Immediate next actions
 

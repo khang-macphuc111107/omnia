@@ -19,6 +19,10 @@
   `handoff-intake/history/REPORT.md`.
 - D: inventory is running as a read-only logical-size scan. No deletion has
   been performed in this checkpoint.
+- Source divergence ledger: primary `4,783` status entries, release `133`,
+  rebuild `81`, goal-control `0`; HEAD tree counts are recorded in
+  `docs/workspace/source-divergence-ledger.json`. These counts are inventory
+  evidence only, not a semantic merge or deletion decision.
 
 - Root: `D:\Omnia`
 - Root Git: initialized; product source admission is staged but not yet committed.
