@@ -1,0 +1,448 @@
+{
+  "schema": "omnia.workspace-ownership.v1",
+  "generatedUtc": "2026-11-10T18:34:03.0133430Z",
+  "root": "D:\\Omnia",
+  "policy": {
+    "rootGitPurpose": "workspace-control-plane",
+    "nestedGitMutation": "forbidden-until-source-preserving-snapshot-and-restore-check",
+    "cleanStatusMeaning": "root-index-clean-does-not-claim-child-repos-clean"
+  },
+  "topLevel": [
+    {
+      "name": "_cleanup-quarantine-20261013",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "_cleanup-quarantine-20261110",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "_harness-budget-before-20261102",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": ".agents",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": ".claude",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "archive",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "artifacts",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "backups",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "claude-appasar-extracted",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "CursorApp",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "docs",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "downloads",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "LocalAppData",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "logs",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "migration-tools",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "output",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "publish-worktree",
+      "type": "directory",
+      "length": null,
+      "hasGit": true
+    },
+    {
+      "name": "quarantine",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "repo-original-20261001",
+      "type": "directory",
+      "length": null,
+      "hasGit": true
+    },
+    {
+      "name": "repos",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "Roaming",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "scripts",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "src-tauri",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "tmp",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "tools",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "upstream_tools",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "PROJECT.md",
+      "type": "file",
+      "length": 6149,
+      "hasGit": false
+    }
+  ],
+  "nestedGit": [
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\00\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\00",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\00",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\01\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\01",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\01",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\02\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\02",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\02",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\03\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\03",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-latest\\03",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\00\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\00",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\00",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\01\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\01",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\01",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\02\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\02",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\02",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\03\\.git",
+      "ownerPath": "D:\\Omnia\\backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\03",
+      "ownerRelative": "backups\\omnia-dirty-trees-Qo2K58\\restore-rFQ20n\\03",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\LocalAppData\\OmniaGitResearch\\.git",
+      "ownerPath": "D:\\Omnia\\LocalAppData\\OmniaGitResearch",
+      "ownerRelative": "LocalAppData\\OmniaGitResearch",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\LocalAppData\\OmniaResearch\\aider\\.git",
+      "ownerPath": "D:\\Omnia\\LocalAppData\\OmniaResearch\\aider",
+      "ownerRelative": "LocalAppData\\OmniaResearch\\aider",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\LocalAppData\\OmniaResearch\\continue\\.git",
+      "ownerPath": "D:\\Omnia\\LocalAppData\\OmniaResearch\\continue",
+      "ownerRelative": "LocalAppData\\OmniaResearch\\continue",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\LocalAppData\\OmniaResearch\\opencode\\.git",
+      "ownerPath": "D:\\Omnia\\LocalAppData\\OmniaResearch\\opencode",
+      "ownerRelative": "LocalAppData\\OmniaResearch\\opencode",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repo-original-20261001\\.git",
+      "ownerPath": "D:\\Omnia\\repo-original-20261001",
+      "ownerRelative": "repo-original-20261001",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia",
+      "ownerRelative": "repos\\omnia",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\.skills\\leanrea\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\.skills\\leanrea",
+      "ownerRelative": "repos\\omnia\\.skills\\leanrea",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\.skills\\rea\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\.skills\\rea",
+      "ownerRelative": "repos\\omnia\\.skills\\rea",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\.skills\\replica-skill\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\.skills\\replica-skill",
+      "ownerRelative": "repos\\omnia\\.skills\\replica-skill",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\.toolchains\\proxy-third-party-20261105\\grok2api\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\.toolchains\\proxy-third-party-20261105\\grok2api",
+      "ownerRelative": "repos\\omnia\\.toolchains\\proxy-third-party-20261105\\grok2api",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\anthropic-claude-code\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\anthropic-claude-code",
+      "ownerRelative": "repos\\omnia\\research\\upstreams\\anthropic-claude-code",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\claude-code\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\claude-code",
+      "ownerRelative": "repos\\omnia\\research\\upstreams\\claude-code",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\claude-code-official\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\claude-code-official",
+      "ownerRelative": "repos\\omnia\\research\\upstreams\\claude-code-official",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\deepseek-harness\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\deepseek-harness",
+      "ownerRelative": "repos\\omnia\\research\\upstreams\\deepseek-harness",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\openai-codex\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\research\\upstreams\\openai-codex",
+      "ownerRelative": "repos\\omnia\\research\\upstreams\\openai-codex",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\cli\\kimi-cli\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\cli\\kimi-cli",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\cli\\kimi-cli",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\desktop-apps\\cherry-studio\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\desktop-apps\\cherry-studio",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\desktop-apps\\cherry-studio",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\downloaders\\gdrive-downloader\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\downloaders\\gdrive-downloader",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\downloaders\\gdrive-downloader",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\herdr-core\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\herdr-core",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\herdr-core",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\hermes-agent\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\hermes-agent",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\hermes-agent",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\kimi-code\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\kimi-code",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\kimi-code",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\opencode\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\opencode",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\opencode",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\openhands\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\openhands",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\openhands",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\openhands-agent-sdk\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\openhands-agent-sdk",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\openhands-agent-sdk",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\openhands-automation\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\openhands-automation",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\openhands-automation",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\notebooks\\gemini-notebook\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\notebooks\\gemini-notebook",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\notebooks\\gemini-notebook",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia-public\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia-public",
+      "ownerRelative": "repos\\omnia-public",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\upstream_tools\\rea\\.git",
+      "ownerPath": "D:\\Omnia\\upstream_tools\\rea",
+      "ownerRelative": "upstream_tools\\rea",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\deepseek-harness\\.git",
+      "ownerPath": "D:\\Omnia\\_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\deepseek-harness",
+      "ownerRelative": "_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\deepseek-harness",
+      "kind": "directory"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\openai-codex\\.git",
+      "ownerPath": "D:\\Omnia\\_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\openai-codex",
+      "ownerRelative": "_cleanup-quarantine-20261013\\repos\\omnia-research\\harnesses\\openai-codex",
+      "kind": "directory"
+    }
+  ],
+  "gitFiles": [
+    {
+      "metadataPath": "D:\\Omnia\\publish-worktree\\.git",
+      "ownerPath": "D:\\Omnia\\publish-worktree",
+      "ownerRelative": "publish-worktree",
+      "kind": "file",
+      "content": "gitdir: D:/Omnia/repos/omnia/.git/worktrees/publish-worktree\n"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\.toolchains\\openhands-uv-cache\\sdists-v10\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\.toolchains\\openhands-uv-cache\\sdists-v10",
+      "ownerRelative": "repos\\omnia\\.toolchains\\openhands-uv-cache\\sdists-v10",
+      "kind": "file",
+      "content": null
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app\\vendor\\ghostty\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app\\vendor\\ghostty",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app\\vendor\\ghostty",
+      "kind": "file",
+      "content": "gitdir: ../../.git/modules/vendor/ghostty\n"
+    },
+    {
+      "metadataPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\herdr-core\\vendor\\ghostty\\.git",
+      "ownerPath": "D:\\Omnia\\repos\\omnia\\upstream_extractions\\harnesses\\herdr-core\\vendor\\ghostty",
+      "ownerRelative": "repos\\omnia\\upstream_extractions\\harnesses\\herdr-core\\vendor\\ghostty",
+      "kind": "file",
+      "content": "gitdir: ../../.git/modules/vendor/ghostty\n"
+    }
+  ],
+  "classifications": {
+    "product": "repos\\\\omnia",
+    "linkedWorktree": "publish-worktree",
+    "research": "repos\\\\omnia\\\\research;LocalAppData\\\\OmniaResearch;upstream_tools",
+    "independent": "repos\\\\omnia-public;repo-original-20261001",
+    "recovery": "backups;archive;_cleanup-quarantine-20261013;_cleanup-quarantine-20261110;quarantine",
+    "operational": "artifacts;logs;tmp;output;downloads;CursorApp;LocalAppData;Roaming"
+  }
+}

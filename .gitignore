@@ -1,0 +1,48 @@
+# Workspace control-plane ignores
+# Child repositories and large operational trees retain their own ownership.
+repos/
+publish-worktree/
+repo-original-20261001/
+upstream_tools/
+LocalAppData/
+Roaming/
+CursorApp/
+claude-appasar-extracted/
+src-tauri/
+archive/
+backups/
+quarantine/
+_cleanup-quarantine-*/
+_harness-budget-before-*/
+artifacts/
+logs/
+tmp/
+output/
+downloads/
+
+# Local app/tool state
+.agents/
+.claude/
+node_modules/
+target/
+dist/
+.cache/
+.vite/
+coverage/
+playwright-report/
+test-results/
+*.db
+*.db-shm
+*.db-wal
+*.log
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Keep explicit workspace governance files visible even under ignored trees only when force-added.
