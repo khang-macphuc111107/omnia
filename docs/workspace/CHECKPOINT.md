@@ -17,17 +17,17 @@
   528,619 physical records and 14,630 bounded review units; semantic review
   credit remains zero. Exact report is external under
   `handoff-intake/history/REPORT.md`.
-- D: inventory is running as a read-only logical-size scan. No deletion has
-  been performed in this checkpoint.
-- Source divergence ledger: primary `4,783` status entries, release `133`,
-  rebuild `81`, goal-control `0`; HEAD tree counts are recorded in
-  `docs/workspace/source-divergence-ledger.json`. These counts are inventory
-  evidence only, not a semantic merge or deletion decision.
+- The broad inventory scans were stopped, not left running. A separate
+  drive-cleanup lane previously reclaimed build/store data; current cleanup
+  actions must cite fresh receipts rather than claim no deletion ever occurred.
+- The historical source ledger's `4,783 / 133 / 81 / 0` are raw NUL-field
+  counts from a rename-unaware parser, with stored listings truncated at
+  2,000 fields. They must not be repeated as status-entry counts.
 - HEAD reconciliation: 42,012-path union, 2,020-path four-way intersection;
   138 of 277 common focus paths differ by bytes. Receipt:
   `docs/workspace/head-path-reconciliation.json` and
   `docs/workspace/shared-path-differences.json`.
-- Bounded D: top-level inventory: 46 immediate entries, no observed reparse
+- Bounded **D:\Omnia** top-level inventory: 46 immediate entries, no observed reparse
   points at that level, and 50.57 GiB free. Recursive ownership/size
   classification remains open; receipt:
   `docs/workspace/D_DRIVE_TOPLEVEL_INVENTORY.json`.
@@ -35,9 +35,14 @@
   admitted with zero conflicts; Tauri metadata and formatting now pass.
   Receipts are external `handoff-intake/compatibility-host-admission.json`,
   `tauri-root-metadata.json` and `tauri-root-format.txt`.
+- Missing compile-time schema repair is committed at `98c1a04`.
+  The Tauri rerun finished at `2026-11-10T19:43:52.8602675Z`, exit 0:
+  833 host unit tests, 6 project-file-watch tests and 4 + 17 integration tests.
+  Evidence: external `tauri-root-tests-rerun.txt` and `.result.json`.
+  The initial failure remains preserved; this is local regression evidence.
 
 - Root: `D:\Omnia`
-- Root Git: initialized; product source admission is staged but not yet committed.
+- Root Git: native and compatibility admissions are committed through `98c1a04`.
 - Nested Git metadata: preserved; see `WORKSPACE_OWNERSHIP.json`.
 - Product source: native source is now present at root; legacy/rebuild checkouts
   remain independently owned until source reconciliation.
@@ -59,4 +64,17 @@
 
 - Moved recovery snapshot `repo-original-20261001` into `backups\recovery\`; 1,379-file hash verification passed and cleanup tooling was updated.
 
-- Created and verified a complete Git bundle for `projects\omnia-public`; nested `.git` removal is recoverable but remains pending a separately isolated safe-delete step.
+- A bundle for `projects\omnia-public` passed history verification. It does
+  not preserve index, unstaged, untracked or ignored data, nor prove a restore
+  drill. Nested Git retirement remains pending those specific gates.
+
+## Current continuation
+
+- Goal remains `ACTIVE`; GOAL revision 2 expands all 16 parent task contracts,
+  product leaves, research backlog, execution order and acceptance details.
+- Additive steer is queued by the user's explicit preference. Finish
+  interrupted work, checkpoint it, then consume queued additions. A correctness
+  correction applies at a safe boundary without discarding remaining tasks.
+- Final independent audit streak remains **0**.
+- Next: repair root AGENTS/navigation, correct complete source-state records,
+  then perform classified external relocation and supported cache cleanup.

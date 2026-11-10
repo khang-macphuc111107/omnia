@@ -13,7 +13,12 @@ Original goal remains active. Root governance-only Git is an intermediate state 
 
 8. Clean the whole D: drive through measured ownership/classification and regeneration or recovery paths. Record actual space reclaimed separately from same-volume relocation. Preserve unrelated projects and unknown user data.
 
-## Task ledger
+## Canonical task ledger
+
+The authoritative task contracts, states, execution order and retained backlog
+are now in [GOAL.md](GOAL.md); acceptance details are in [DOD.md](DOD.md).
+Read those files for task changes. The table below is a historical intake
+summary, not a second state store.
 
 | Task | Status | Acceptance / next evidence |
 |---|---|---|
@@ -30,6 +35,14 @@ Original goal remains active. Root governance-only Git is an intermediate state 
 | SESSION-01: follow-up chat and set goal | Deferred | Launch after migration/handoff admission; prompt requires immediate persistent goal |
 
 Statuses record task progress, not product completion. A failing check reopens its dependent claims. Independent consecutive audit rounds have not yet been earned.
+
+## Continuation correction — 2026-11-11
+
+The user uses steer to submit additions quickly. Queue additive requests;
+complete the interrupted current deliverable first, then continue the queue.
+Do not treat receipt of a new prompt as cancellation or evidence that earlier
+work is complete. Explicit correction/cancellation still takes effect at the
+appropriate safe boundary.
 
 ## Gates still open
 Source snapshot selection and divergence; snapshot/rollback; source migration; path repair; Git admission/private data review; build/runtime validation; history acquisition/semantic review; research/skill merging; clean clone handoff verification; exact remote/account authentication; new Omnia session creation.

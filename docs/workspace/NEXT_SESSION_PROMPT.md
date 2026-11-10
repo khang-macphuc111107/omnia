@@ -2,4 +2,85 @@
 
 Launch only after source-at-root migration and handoff admission gates. This file is a prepared prompt, not evidence that a chat has been created or a goal activated.
 
-Set a persistent goal immediately: finish evidence-backed Omnia handoff and product completion from the source rooted at D:\Omnia. Read README, docs/workspace/GOAL.md and docs/workspace/DOD.md first. Build concrete specs, atomic tasks, plan, DoD, state, checkpoint, decisions and memory; retain unfinished requirements. Update those files after every material finding and report evidence-state transitions explicitly. Inventory active, archived and child Codex sessions, record exact accessible denominator and snapshot boundaries, then perform hierarchical per-session/per-record review including user prompts, assistant/tool outputs, goal/plan state and referenced artifacts. Keep raw transcripts private; publish only reviewed/redacted handoff material. Track acquisition, semantic reading, synthesis, independent audit and runtime verification separately. Do not claim 100% comprehension from hashes or enumeration, or silently omit inaccessible/deleted/truncated records. Produce compact navigable specs and evidence, native Rust performance targets, and rich-composer/attachments requirements. Audit current source before importing code from related projects and respect licenses, credentials, personal data and ownership. Continue the remaining original skills/research requirements using the backlog. Reopen claims on contradiction; record what is proven, unproven and missing. Do not overwrite dirty work or publish private transcripts. Report goal tool activation explicitly; if unavailable, record goal/plan in files and state that limitation.
+## Initial assignment
+
+Immediately inspect the persistent goal state and set a detailed active goal
+for this new chat: complete the evidence-backed Omnia history handoff and
+remaining product work from the actual repository root `D:\Omnia`.
+Use the goal tool when available and report its returned state. If the tool
+cannot create/edit an active objective, keep its valid state and put the full
+versioned objective in the canonical project files; describe that limitation
+instead of claiming the tool applied a change.
+
+Read root `README.md` and `AGENTS.md`, then `docs/workspace/GOAL.md`, `DOD.md`
+and `CHECKPOINT.md`. Preserve unfinished task IDs, original user requirements,
+source/Git recovery ownership, known failures and next executable actions.
+Create/update concrete specs, atomic tasks, plan, acceptance checks/DoD, state,
+checkpoint, decisions and provenance-backed lessons in the existing structure.
+Use one authoritative location per fact and concise navigable indexes.
+
+## History work
+
+Inventory active, archived, project, projectless and child Codex chats from
+accessible app/raw/projected sources. Freeze a named watermark and report
+session/record/byte denominators, growth, gaps and inaccessible/deleted/truncated
+records. Start from existing receipts rather than duplicating acquisition.
+Read the content and state, not merely titles or summaries.
+
+Use one session owner with bounded child reviewers and an independent auditor
+when useful. Give user prompts a separate idea/requirement extraction pass.
+For every reviewed unit preserve role, original order, exact ranges, source
+hash, prompts, assistant/tool outputs, tool arguments, goal/plan/task state,
+referenced artifacts/code and missing evidence. Reconcile relevant related
+projects such as proxy/provider, notebook, downloader and other reusable work
+through inspected source and licenses. Do not import an entire unrelated
+codebase merely because a feature is useful.
+
+Produce private local Markdown history exports and reviewed/redacted shared
+specs, tasks, DoD, requirements, lessons, achievements, gaps, conflicts and
+decisions with source locators. Raw private history, credentials, cookies,
+personal records and access-bearing URLs stay outside published Git.
+Acquisition, reading, synthesis, independent review, source admission and
+runtime verification have separate states. Never turn hashes or enumeration
+into a claim of absolute understanding.
+
+## Product and research
+
+Keep all `PRODUCT-*` leaves and earlier research/skills in GOAL's queue.
+Prioritize native Rust and measured CPU/RAM/disk/GPU budgets; document any
+compatibility exception. Follow `COMPOSER_REQUIREMENTS.md` for live
+Markdown/LaTeX, rich formatting, visual equations and inline/tray attachments
+at caret with correct provider order. Qualify goal CRUD/queue/steer/continue,
+general graphs, memory/RAG, provider execution, browser/computer/media use and
+workspace features with actual runtime evidence.
+
+Use useful bounded research, source review and atomic skill improvements for
+both Codex and Omnia. Record queries, unused sources, novel repository
+identities, revisions, licenses, inspected ranges and merge/defer/reject
+decisions. Keep download, README review, implementation qualification and
+runtime loading distinct. Preserve unfulfilled source quotas honestly.
+
+## Execution and completion
+
+Additive steer is queued; it does not cancel unfinished work. Finish the
+current interrupted deliverable, checkpoint and continue requests in order.
+Apply relevant corrections at safe boundaries. Keep leases, scope, receipts
+and state revisions for delegated/active work; a text message alone is not
+proof a runtime applied control.
+
+Clean and organize each cycle through classified lifecycle decisions. Keep
+bulk research/recovery and logs/builds outside the product tree. Use checked
+literal paths, supported cleanup and verified restore/regeneration routes.
+Record actual space reclaimed separately from relocation. Preserve legitimate
+dirty source until reconciled. Do not create adjacent backup copies.
+
+Run requirement-based code, security, native, UI, accessibility, performance
+and recovery checks. Reobserve dynamic UI throughout workflows, log cases and
+link addressable screenshots/video/frame/timestamp evidence. Reopen claims
+on failure or drift. Before whole-goal completion require all mandatory DoD
+gates and at least three independent clean main-scope audits on one frozen
+snapshot; reset the affected streak after any finding or material change.
+
+Report verified, partial, unresolved, blocked, next and exact practical limits.
+Do not equate a clean Git status, green subset, successful projection or created
+chat with product completion.
