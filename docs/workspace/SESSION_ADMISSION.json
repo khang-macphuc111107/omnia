@@ -1,0 +1,96 @@
+{
+  "schema": "omnia.session-admission.v1",
+  "goalId": "OMNIA-ROOT-CLEAN-2026-11-11",
+  "decision": "DEFERRED",
+  "owner": "root-integrator",
+  "policy": "GOAL.md#follow-up-chat-admission--session-01",
+  "candidateCommit": null,
+  "candidateTree": null,
+  "reviewer": null,
+  "reviewedAt": null,
+  "gates": [
+    {
+      "id": "SESSION-G01",
+      "tasks": ["ROOT-01", "ROOT-05"],
+      "dod": ["DOD-01", "DOD-02", "DOD-03", "DOD-06"],
+      "required": "PASS_SCOPED",
+      "state": "PARTIAL",
+      "receipts": [],
+      "next": "Validate committed root source and required inputs from an isolated clone/export."
+    },
+    {
+      "id": "SESSION-G02",
+      "tasks": ["ROOT-02", "ROOT-03"],
+      "dod": ["DOD-04", "DOD-05"],
+      "required": "PASS_PRESERVATION",
+      "state": "OPEN",
+      "receipts": [],
+      "next": "Preserve complete divergent source/Git ownership and verify isolated restores before retirement."
+    },
+    {
+      "id": "SESSION-G03",
+      "tasks": ["DRIVE-01", "DRIVE-02"],
+      "dod": ["DOD-08"],
+      "required": "PASS_SCOPED",
+      "state": "PARTIAL",
+      "receipts": [],
+      "next": "Bind actual drive-root scope and all completed cleanup/relocation receipts; transfer unknowns."
+    },
+    {
+      "id": "SESSION-G04",
+      "tasks": ["HISTORY-01"],
+      "dod": ["DOD-09"],
+      "required": "PASS_SCOPED",
+      "state": "PARTIAL",
+      "receipts": [],
+      "next": "Freeze privately retrievable source prefixes and preserve watermark, gaps and growing tails."
+    },
+    {
+      "id": "SESSION-G05",
+      "tasks": ["HANDOFF-01"],
+      "dod": ["DOD-11"],
+      "required": "PASS_SCOPED",
+      "state": "IN_PROGRESS",
+      "receipts": [],
+      "next": "Resolve current handoff findings and review final source-bound documents and references."
+    },
+    {
+      "id": "SESSION-G06",
+      "tasks": ["DELIVERY-01"],
+      "dod": ["DOD-15"],
+      "required": "PASS_SCOPED",
+      "state": "OPEN",
+      "receipts": [],
+      "next": "Verify destination identity, privacy/licenses, pushed tree and independent clean clone."
+    },
+    {
+      "id": "SESSION-G07",
+      "tasks": ["SESSION-01"],
+      "dod": ["DOD-16"],
+      "required": "PASS_TRANSFER",
+      "state": "PARTIAL",
+      "receipts": [],
+      "next": "Refresh the transfer list from every unfinished parent and product leaf at admission."
+    }
+  ],
+  "openTransfer": [
+    {"task": "ROOT-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "GOAL.md", "next": "Bind source admission to fresh clone checks.", "acceptance": ["DOD-01", "DOD-02", "DOD-03"]},
+    {"task": "ROOT-02", "state": "OPEN", "owner": "root-integrator", "source": "SOURCE_DISPOSITION_LEDGER.json", "next": "Review HEAD/index/dirty/untracked differences and disposition each relevant change.", "acceptance": ["DOD-04"]},
+    {"task": "ROOT-03", "state": "OPEN", "owner": "root-integrator", "source": "WORKSPACE_OWNERSHIP.json", "next": "Snapshot common Git and linked worktrees, restore and repair consumers.", "acceptance": ["DOD-05"]},
+    {"task": "ROOT-04", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Refactor reviewed components with behavioral oracles.", "acceptance": ["DOD-07"]},
+    {"task": "ROOT-05", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Repair export completeness and verify isolated closure.", "acceptance": ["DOD-02", "DOD-06", "DOD-15"]},
+    {"task": "DRIVE-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "EXTERNAL_LAYOUT.json", "next": "Complete bounded drive-root ownership classification and record omissions.", "acceptance": ["DOD-08"]},
+    {"task": "DRIVE-02", "state": "PARTIAL", "owner": "root-integrator", "source": "CHECKPOINT.md", "next": "Retain completed cleanup receipts; classify remaining candidates before reclaiming.", "acceptance": ["DOD-08"]},
+    {"task": "HISTORY-01", "state": "IN_PROGRESS", "owner": "history-owner", "source": "CHECKPOINT.md", "next": "Freeze/retrieve prefixes, reconcile projected gaps and later growth.", "acceptance": ["DOD-09"]},
+    {"task": "HISTORY-02", "state": "OPEN", "owner": "history-owner", "source": "GOAL.md", "next": "Assign bounded semantic review units and independent prompt extraction.", "acceptance": ["DOD-10"]},
+    {"task": "HISTORY-03", "state": "OPEN", "owner": "history-owner", "source": "GOAL.md", "next": "Create private exports and audited redacted synthesis with exact locators.", "acceptance": ["DOD-10", "DOD-11"]},
+    {"task": "HANDOFF-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "CHECKPOINT.md", "next": "Maintain one current checkpoint and reconcile facts after every material batch.", "acceptance": ["DOD-11"]},
+    {"task": "RESEARCH-01", "state": "OPEN", "owner": "research-owner", "source": "GOAL.md", "next": "Continue recorded source quotas and qualify atomic improvements for both harnesses.", "acceptance": ["DOD-12"]},
+    {"task": "PRODUCT-01", "state": "OPEN", "owner": "product-owner", "source": "GOAL.md#product-breakdown-retained-in-the-queue", "leaves": ["PRODUCT-NATIVE", "PRODUCT-COMPOSER", "PRODUCT-ATTACHMENTS", "PRODUCT-CHAT", "PRODUCT-CONTROL", "PRODUCT-GRAPH", "PRODUCT-MEMORY", "PRODUCT-USE", "PRODUCT-MEDIA", "PRODUCT-WORKSPACE", "PRODUCT-SECURITY", "PRODUCT-KNOWLEDGE"], "next": "Implement each required leaf and bind real runtime/resource evidence.", "acceptance": ["DOD-13"]},
+    {"task": "QUALITY-01", "state": "OPEN", "owner": "quality-owner", "source": "DOD.md", "next": "Execute feature-specific QA and independent final audits only on eligible frozen scope.", "acceptance": ["DOD-14"]},
+    {"task": "DELIVERY-01", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Complete publication/clone checks and maintain delivery evidence on subsequent changes.", "acceptance": ["DOD-15"]},
+    {"task": "SESSION-01", "state": "DEFERRED", "owner": "root-integrator", "source": "NEXT_SESSION_PROMPT.md", "next": "Launch only after all seven admission gates pass; record prompt hash, chat ID and goal activation.", "acceptance": ["DOD-16"]}
+  ],
+  "launch": {"threadId": null, "promptSha256": null, "goalActivation": "NOT_REQUESTED", "checkpoint": null},
+  "limits": "This deferred transfer plan grants no completion, publication, runtime or final-audit credit. Refresh current states and evidence before admission."
+}

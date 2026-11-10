@@ -1,6 +1,9 @@
 # Deferred Omnia session launch prompt
 
-Launch only after source-at-root migration and handoff admission gates. This file is a prepared prompt, not evidence that a chat has been created or a goal activated.
+Launch only when `SESSION-G01` through `SESSION-G07` in GOAL have their required
+reviewed receipts and `SESSION_ADMISSION.json` is `READY` for the same commit
+and external inputs. This file is a prepared prompt, not evidence that a chat
+has been created or a goal activated.
 
 ## Initial assignment
 
@@ -18,6 +21,14 @@ source/Git recovery ownership, known failures and next executable actions.
 Create/update concrete specs, atomic tasks, plan, acceptance checks/DoD, state,
 checkpoint, decisions and provenance-backed lessons in the existing structure.
 Use one authoritative location per fact and concise navigable indexes.
+
+Read `SESSION_ADMISSION.json` and its complete `openTransfer` list before
+starting. Accept the still-open source reconciliation/refactor, drive
+classification, history growth/review/synthesis, research/skills, native
+product leaves, quality work, handoff maintenance and delivery follow-through
+without dropping their original task/DoD IDs. Scoped admission passes do not
+complete their broader parents. Reopen stale claims using current source.
+Record the first checkpoint and actual persistent-goal activation outcome.
 
 ## History work
 

@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 2 — continuation and acceptance detail, 2026-11-11
+**Revision:** 3 — explicit follow-up admission and queued continuation, 2026-11-11
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -43,7 +43,7 @@ work was hidden or deleted.
 | `ROOT-04` | Refactor and organize code without behavior loss | `OPEN` | Scoped diff, review, tests and explainable status |
 | `ROOT-05` | Make root build and clean clone self-contained | `OPEN` | Fresh clone metadata/build/test and private-path scan |
 | `DRIVE-01` | Inventory D: ownership and disk consumers | `IN_PROGRESS` | Bounded top-level inventory and reparse classification |
-| `DRIVE-02` | Reclaim only proven disposable caches/duplicates | `BLOCKED_BY_DRIVE-01` | Candidate manifest, retention decision and free-space delta |
+| `DRIVE-02` | Reclaim only proven disposable caches/duplicates | `PARTIAL` | Candidate manifest, retention decision and free-space delta |
 | `HISTORY-01` | Freeze and inventory accessible Codex history | `IN_PROGRESS` | Watermark, denominator and missing/truncated ledger |
 | `HISTORY-02` | Perform hierarchical semantic review | `OPEN` | Session owner, bounded reviewers and independent audit |
 | `HISTORY-03` | Extract prompts, requirements, goals, plans and tool evidence | `OPEN` | Redacted Markdown and traceability matrix |
@@ -127,6 +127,46 @@ approval.
 | `DELIVERY-01` | Publish a self-explanatory repository to the verified requested destination | Authenticated account/repository identity, visibility/privacy review, pushed SHA and independent clean clone |
 | `SESSION-01` | After admission gates create an Omnia chat using `NEXT_SESSION_PROMPT.md` | Real thread ID; immediate persistent goal request; activation readback or explicit limitation; no premature completion claim |
 
+## Follow-up chat admission — `SESSION-01`
+
+The next chat continues unfinished work. Admission does not require the whole
+product, every history review unit or every research source to be complete.
+It requires a safe, reproducible root and an explicit transfer of the remaining
+requirements. None of the following scoped prerequisites completes a broader
+parent task or waives its DoD.
+
+The decision artifact is [SESSION_ADMISSION.json](SESSION_ADMISSION.json).
+Root integrator owns it. Its initial decision is `DEFERRED`; advance it to
+`READY` only after a reviewer checks all seven prerequisites against the same
+candidate commit/tree and the named external inputs. Record evidence identity,
+inspection time, reviewer and limitations. A failed or stale prerequisite
+returns the decision to `DEFERRED`. A missing receipt never counts as a pass.
+
+| Gate | Parent task / DoD | Required state and receipt |
+|---|---|---|
+| `SESSION-G01` | `ROOT-01`, `ROOT-05`; `DOD-01`, `DOD-02`, `DOD-03`, `DOD-06` | `PASS_SCOPED`: actual root source, required native/retained compatibility inputs and documented commands resolve in an isolated clone/export; native tests and manifest closure checks pass with external build output. Name every check and its source tree. This does not establish packaged provider/UI parity. |
+| `SESSION-G02` | `ROOT-02`, `ROOT-03`; `DOD-04`, `DOD-05` | `PASS_PRESERVATION`: every unreconciled source has complete HEAD/ref/index/dirty/untracked/valuable-ignored ownership, a recoverable snapshot and an isolated restore receipt; linked/common Git owners and consumers remain valid. The semantic reconciliation parent may stay `IN_PROGRESS` only with per-change pending rows, owner and next action. No unproved metadata retirement. |
+| `SESSION-G03` | `DRIVE-01`, `DRIVE-02`; `DOD-08` | `PASS_SCOPED`: an actual drive-root inventory records scope and omissions; every action already taken has containment, ownership, retention, relocation/restore or regeneration evidence and a measured space delta. Unclassified/active data is preserved and transferred. This is not whole-drive cleanup completion. |
+| `SESSION-G04` | `HISTORY-01`; `DOD-09` | `PASS_SCOPED`: privately owned frozen prefixes or snapshots have a watermark, retrieval instructions, denominators, missing/projected/growing-tail records and integrity checks. Enumeration alone does not satisfy this acquisition/preservation gate or semantic review. |
+| `SESSION-G05` | `HANDOFF-01`; `DOD-11` | `PASS_SCOPED`: README, instructions, specs/tasks/DoD, state/checkpoint/decisions and the launch prompt agree on current scope, queue order, evidence and next actions; references resolve and independent review has no unresolved handoff error. |
+| `SESSION-G06` | `DELIVERY-01`; `DOD-15` | `PASS_SCOPED`: authenticated destination is the requested Omnia repository under `khang-macphuc11107`; visibility, licenses and privacy are reviewed, exact tree is pushed, and an independent clean clone follows the documented entrypoints. Record repository identity, pushed commit/tree and clone receipt. |
+| `SESSION-G07` | All unfinished parent tasks and `PRODUCT-*` leaves | `PASS_TRANSFER`: the decision artifact names each open item, current state, owner, source/receipt locator, next action and acceptance gate. The new prompt preserves this denominator and immediately requests its own detailed persistent goal. |
+
+In `SESSION-G07`, explicitly transfer `ROOT-02`/`ROOT-03` semantic work,
+`ROOT-04`, remaining `ROOT-05` delivery work, unclassified `DRIVE-*` items,
+`HISTORY-01` growth/gaps, `HISTORY-02`, `HISTORY-03`, `RESEARCH-01`,
+`PRODUCT-01` and every product leaf, `QUALITY-01`, ongoing `HANDOFF-01`
+maintenance and any still-open delivery requirement. Closed items retain their
+receipts and are reopened on relevant drift. This list is a minimum; reconcile
+it against the current task table at admission.
+
+Only after `READY` create the requested chat with the reviewed
+`NEXT_SESSION_PROMPT.md`. Record the returned chat ID, exact prompt hash and
+immediate goal activation/readback outcome; then set admission to `LAUNCHED`.
+A creation response alone does not prove activation. A tool limitation stays
+explicit, with the detailed file-backed goal available. Do not mark this chat's
+whole objective complete merely because responsibility was transferred.
+
 ## Product breakdown retained in the queue
 
 These are required work families under `PRODUCT-01`, not implemented features:
@@ -199,18 +239,30 @@ coverage. Complete useful authorized fallback research and retain the gap.
 - Earlier broad scans were stopped; they are not running. The drive-cleanup
   lane separately recorded prior Cargo/pnpm cleanup, so this checkpoint must
   not claim that no D: deletion ever occurred. Fresh actions need fresh receipts.
-- Historical source ledger fields `4,783 / 133 / 81 / 0` are nonempty NUL
-  field counts from a parser that did not handle rename source records.
-  They are **not trustworthy status-entry counts**. Listings were truncated
-  at 2,000 fields; replace with complete correctly parsed external records.
+- Corrected full NUL/rename-aware source inventory records
+  `4,783 / 133 / 81 / 0` total status entries for primary/release/rebuild/
+  goal-control. Changed tracked/untracked counts are `3,008/1,775`,
+  `25/108`, `80/1`, `0/0`. No rename records occurred in this snapshot.
+  Complete private index/HEAD/status records replace the earlier truncated,
+  rename-unaware listing; stable status/HEAD during a read is not a backup.
 - HEAD path reconciliation found `42,012` paths in the union and only `2,020`
-  in the intersection of all four trees. Among 277 common focus paths
-  (`src-tauri`, manifests, CI and README), 138 have different bytes. This
-  proves reconciliation is required; it is not a merge decision.
-- The historical `uniqueBySource` field means source paths outside the
-  four-way intersection, not paths exclusive to one source. HEAD comparisons
-  omit dirty/index/untracked changes. Root admission copied working bytes, so
-  HEAD comparisons alone do not bind its exact source lineage.
+  in the intersection of all four trees. Current focus predicate includes
+  276 paths (`src-tauri`, manifests, CI and README); 138 differ. Historical
+  277-focus metrics used a different predicate. Exclusive-source counts are
+  `37,609 / 0 / 1,357 / 0`; outside-four-way-intersection counts are separate.
+  HEAD comparisons omit dirty/index/untracked changes and do not bind root
+  admission lineage. Semantic reconciliation remains open.
+- Ten classified trees moved to `D:\OmniaData`: 92,460 files /
+  15,156,174,074 logical bytes, with full relative-path/type/size/mtime checks,
+  nonzero directory identities and selected anchor hashes. Before-file
+  device/inode fields were zero, so per-file identity is unproved. All-file
+  content hashing and recoverable backup completion are not claimed.
+  Same-volume relocation earns
+  zero capacity-reclamation credit. See `EXTERNAL_LAYOUT.json`.
+- Supported Cargo cleanup removed the former native integration target:
+  exit 0, 9,632 files / 12.1 GiB reported. Observed drive free-space increase
+  was 11,357,032,448 bytes (about 10.58 GiB); the metrics have different
+  definitions and concurrent system activity can affect the latter.
 - Native and compatibility source admissions are committed at root through
   `98c1a04`; they are not merely staged. GitHub publication remains unverified.
 - Consecutive independent final audit rounds earned: **0**.
@@ -218,9 +270,11 @@ coverage. Complete useful authorized fallback research and retain the gap.
 ## Immediate next actions
 
 1. Read this goal and `DOD.md` before each cycle.
-2. Finish the interrupted documentation and read it back before the next task.
-3. Repair root instructions, reconciliation records and export completeness.
-4. Perform a checked physical layout/cleanup batch; record relocation and
-   actual reclaimed bytes separately.
+2. Read back the completed documentation/admission repair and independently
+   resolve its findings before consuming queued work.
+3. Commit the reviewed layout/source-summary batch, then repair export
+   completeness and validate an isolated clone.
+4. Continue backup/common-Git ownership and measured cleanup; preserve
+   unreconciled working bytes and distinguish relocation from reclamation.
 5. Freeze/reconcile the history corpus and begin private semantic review.
 6. Re-run affected root status, diff, clone and audit gates after material changes.

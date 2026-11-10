@@ -1,0 +1,74 @@
+{
+  "schema": "omnia.external-layout.v1",
+  "utc": "2026-11-10T20:10:55.446152+00:00",
+  "movedRoots": 10,
+  "files": 92460,
+  "logicalBytes": 15156174074,
+  "relativePathTypeSizeMtimeChecks": "pass",
+  "directoryIdentityChecks": "pass",
+  "fileIdentityChecks": "unproven; all before-file device/inode fields were zero",
+  "anchorHashChecks": "pass",
+  "fullContentHashSweep": false,
+  "capacityReclamationCredit": 0,
+  "mappings": [
+    {
+      "from": "archive",
+      "to": "D:\\OmniaData\\archive",
+      "files": 20002
+    },
+    {
+      "from": "quarantine",
+      "to": "D:\\OmniaData\\quarantine\\manual",
+      "files": 46
+    },
+    {
+      "from": "_cleanup-quarantine-20261013",
+      "to": "D:\\OmniaData\\quarantine\\cleanup-20261013",
+      "files": 18320
+    },
+    {
+      "from": "_cleanup-quarantine-20261110",
+      "to": "D:\\OmniaData\\quarantine\\cleanup-20261110",
+      "files": 5
+    },
+    {
+      "from": "_harness-budget-before-20261102",
+      "to": "D:\\OmniaData\\recovery\\harness-budget-before-20261102",
+      "files": 1727
+    },
+    {
+      "from": "research",
+      "to": "D:\\OmniaData\\research",
+      "files": 34866
+    },
+    {
+      "from": "projects",
+      "to": "D:\\OmniaData\\projects",
+      "files": 17446
+    },
+    {
+      "from": "tools/legacy",
+      "to": "D:\\OmniaData\\tools\\legacy",
+      "files": 21
+    },
+    {
+      "from": "tools/migration",
+      "to": "D:\\OmniaData\\tools\\migration",
+      "files": 7
+    },
+    {
+      "from": "tools/7zip",
+      "to": "D:\\OmniaData\\tools\\7zip",
+      "files": 20
+    }
+  ],
+  "recovery": "original trees retained; reverse Move-Item when former path is absent",
+  "detailedReceipt": "private migration continuation-r2/MOVE_AFTER.json",
+  "identityCorrection": "private migration continuation-r2/RELOCATION_IDENTITY_CORRECTION.json",
+  "remaining": [
+    "primary common Git and linked worktrees",
+    "backups pending complete reference/identity review",
+    "active app profiles/operational paths",
+    "logs/downloads/outputs/artifacts retention and consumers"
+  ]
+}

@@ -1,6 +1,6 @@
-# Omnia nested repository registry
+# Historical Omnia nested repository registry
 
-Generated from `REPO_REGISTRY.json` on 2026-11-11. This is an inventory and classification receipt; it is not proof that a repository is safe to flatten.
+Captured from the private `REPO_REGISTRY.json` on 2026-11-11. All sizes, dirty counts and paths below are historical acquisition values. Current product source is at the root; use `CHECKPOINT.md` and `source-divergence-ledger.json` for later source observations, and `RELOCATION_LOG.md` plus `EXTERNAL_LAYOUT.json` for moved paths. This inventory does not prove a repository is safe to flatten.
 
 | Path | Class | GiB | Dirty entries | Branch | Metadata |
 |---|---|---:|---:|---|---|
@@ -52,8 +52,4 @@ Generated from `REPO_REGISTRY.json` on 2026-11-11. This is an inventory and clas
 - `primary-product`, `linked-worktree`, and `recovery-immutable` entries are not flattening candidates.
 - `research-upstream` and `upstream-extraction` entries may be relocated only after path-reference audit and a source-preserving manifest.
 - A root Git clean status does not imply a child repository is clean.
-- The 283.58 GiB primary product tree has 3,158 dirty entries and remains the owning source.
-
-
-
-
+- The earlier 283.58 GiB / 3,158-entry observation is historical and is superseded for source counts by the later NUL-aware inventory. It is not a current recursive size or status claim.

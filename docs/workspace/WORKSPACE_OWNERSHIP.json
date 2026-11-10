@@ -1,31 +1,13 @@
 {
-  "schema": "omnia.workspace-ownership.v1",
-  "generatedUtc": "2026-11-10T18:34:03.013343Z",
+  "schema": "omnia.workspace-ownership.v2",
+  "generatedUtc": "2026-11-10T20:10:55.445809+00:00",
   "root": "D:\\Omnia",
   "policy": {
-    "rootGitPurpose": "workspace-control-plane",
+    "rootGitPurpose": "actual-product-source-and-compact-handoff",
     "nestedGitMutation": "forbidden-until-source-preserving-snapshot-and-restore-check",
-    "cleanStatusMeaning": "root-index-clean-does-not-claim-child-repos-clean"
+    "cleanStatusMeaning": "product root status is separate from physical cleanup and retained source reconciliation"
   },
   "topLevel": [
-    {
-      "name": "_cleanup-quarantine-20261013",
-      "type": "directory",
-      "length": null,
-      "hasGit": false
-    },
-    {
-      "name": "_cleanup-quarantine-20261110",
-      "type": "directory",
-      "length": null,
-      "hasGit": false
-    },
-    {
-      "name": "_harness-budget-before-20261102",
-      "type": "directory",
-      "length": null,
-      "hasGit": false
-    },
     {
       "name": ".agents",
       "type": "directory",
@@ -39,9 +21,39 @@
       "hasGit": false
     },
     {
-      "name": "archive",
+      "name": ".editorconfig",
+      "type": "file",
+      "length": 446,
+      "hasGit": false
+    },
+    {
+      "name": ".env.example",
+      "type": "file",
+      "length": 107,
+      "hasGit": false
+    },
+    {
+      "name": ".git",
       "type": "directory",
       "length": null,
+      "hasGit": false
+    },
+    {
+      "name": ".gitattributes",
+      "type": "file",
+      "length": 888,
+      "hasGit": false
+    },
+    {
+      "name": ".gitignore",
+      "type": "file",
+      "length": 745,
+      "hasGit": false
+    },
+    {
+      "name": "AGENTS.md",
+      "type": "file",
+      "length": 4695,
       "hasGit": false
     },
     {
@@ -69,6 +81,12 @@
       "hasGit": false
     },
     {
+      "name": "design",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
       "name": "docs",
       "type": "directory",
       "length": null,
@@ -78,6 +96,12 @@
       "name": "downloads",
       "type": "directory",
       "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "index.html",
+      "type": "file",
+      "length": 540,
       "hasGit": false
     },
     {
@@ -93,7 +117,7 @@
       "hasGit": false
     },
     {
-      "name": "migration-tools",
+      "name": "native",
       "type": "directory",
       "length": null,
       "hasGit": false
@@ -105,22 +129,34 @@
       "hasGit": false
     },
     {
+      "name": "package-lock.json",
+      "type": "file",
+      "length": 173173,
+      "hasGit": false
+    },
+    {
+      "name": "package.json",
+      "type": "file",
+      "length": 5835,
+      "hasGit": false
+    },
+    {
+      "name": "playwright.visual.config.ts",
+      "type": "file",
+      "length": 3378,
+      "hasGit": false
+    },
+    {
       "name": "publish-worktree",
       "type": "directory",
       "length": null,
       "hasGit": true
     },
     {
-      "name": "quarantine",
-      "type": "directory",
-      "length": null,
+      "name": "README.md",
+      "type": "file",
+      "length": 2154,
       "hasGit": false
-    },
-    {
-      "name": "repo-original-20261001",
-      "type": "directory",
-      "length": null,
-      "hasGit": true
     },
     {
       "name": "repos",
@@ -141,7 +177,19 @@
       "hasGit": false
     },
     {
+      "name": "src",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
       "name": "src-tauri",
+      "type": "directory",
+      "length": null,
+      "hasGit": false
+    },
+    {
+      "name": "tests",
       "type": "directory",
       "length": null,
       "hasGit": false
@@ -159,15 +207,39 @@
       "hasGit": false
     },
     {
+      "name": "tsconfig.app.json",
+      "type": "file",
+      "length": 853,
+      "hasGit": false
+    },
+    {
+      "name": "tsconfig.context-c0.json",
+      "type": "file",
+      "length": 344,
+      "hasGit": false
+    },
+    {
+      "name": "tsconfig.json",
+      "type": "file",
+      "length": 128,
+      "hasGit": false
+    },
+    {
+      "name": "tsconfig.node.json",
+      "type": "file",
+      "length": 507,
+      "hasGit": false
+    },
+    {
       "name": "upstream_tools",
       "type": "directory",
       "length": null,
       "hasGit": false
     },
     {
-      "name": "PROJECT.md",
+      "name": "vite.config.ts",
       "type": "file",
-      "length": 6149,
+      "length": 12829,
       "hasGit": false
     }
   ],
@@ -438,11 +510,21 @@
     }
   ],
   "classifications": {
-    "product": "repos\\\\omnia",
-    "linkedWorktree": "publish-worktree",
-    "research": "repos\\\\omnia\\\\research;LocalAppData\\\\OmniaResearch;upstream_tools",
-    "independent": "projects\\\\omnia-public",
-    "recovery": "backups;archive;_cleanup-quarantine-20261013;_cleanup-quarantine-20261110;quarantine;backups\\recovery\\repo-original-20261001",
+    "product": [
+      "native",
+      "src-tauri/crates"
+    ],
+    "compatibility": [
+      "src",
+      "src-tauri"
+    ],
+    "unreconciledSource": [
+      "repos/omnia",
+      "publish-worktree"
+    ],
+    "independent": "D:/OmniaData/projects/omnia-public",
+    "research": "D:/OmniaData/research; retained LocalAppData/research and nested sources pending review",
+    "recovery": "D:/OmniaData/archive;D:/OmniaData/quarantine;D:/OmniaData/recovery;backups",
     "operational": "artifacts;logs;tmp;output;downloads;CursorApp;LocalAppData;Roaming"
   },
   "relocations": [
@@ -462,5 +544,56 @@
       "fileCount": 17446,
       "bytes": 582041675
     }
-  ]
+  ],
+  "externalData": {
+    "root": "D:\\OmniaData",
+    "mappings": [
+      {
+        "old": "D:\\Omnia\\archive",
+        "current": "D:\\OmniaData\\archive"
+      },
+      {
+        "old": "D:\\Omnia\\quarantine",
+        "current": "D:\\OmniaData\\quarantine\\manual"
+      },
+      {
+        "old": "D:\\Omnia\\_cleanup-quarantine-20261013",
+        "current": "D:\\OmniaData\\quarantine\\cleanup-20261013"
+      },
+      {
+        "old": "D:\\Omnia\\_cleanup-quarantine-20261110",
+        "current": "D:\\OmniaData\\quarantine\\cleanup-20261110"
+      },
+      {
+        "old": "D:\\Omnia\\_harness-budget-before-20261102",
+        "current": "D:\\OmniaData\\recovery\\harness-budget-before-20261102"
+      },
+      {
+        "old": "D:\\Omnia\\research",
+        "current": "D:\\OmniaData\\research"
+      },
+      {
+        "old": "D:\\Omnia\\projects",
+        "current": "D:\\OmniaData\\projects"
+      },
+      {
+        "old": "D:\\Omnia\\tools\\legacy",
+        "current": "D:\\OmniaData\\tools\\legacy"
+      },
+      {
+        "old": "D:\\Omnia\\tools\\migration",
+        "current": "D:\\OmniaData\\tools\\migration"
+      },
+      {
+        "old": "D:\\Omnia\\tools\\7zip",
+        "current": "D:\\OmniaData\\tools\\7zip"
+      }
+    ],
+    "evidence": "continuation-r2/MOVE_AFTER.json",
+    "method": "same-volume Move-Item; full path/type/size/mtime comparison, directory identities and selected anchor hashes; per-file identity unproved",
+    "capacityReclamationCredit": 0,
+    "identityCorrection": "continuation-r2/RELOCATION_IDENTITY_CORRECTION.json"
+  },
+  "nestedInventoryState": "Historical acquisition topology only. Resolve relocation chain in RELOCATION_LOG.md and EXTERNAL_LAYOUT.json; primary/linked-worktree registrations are separately current in source-state-v2. Do not treat these historical owner paths as live assertions.",
+  "topLevelState": "Bounded acquisition snapshot at generatedUtc; listed sizes are not current after edits."
 }

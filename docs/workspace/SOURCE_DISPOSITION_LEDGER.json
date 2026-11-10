@@ -1,1804 +1,15 @@
 {
-  "schemaVersion": 1,
-  "kind": "source-disposition-ledger",
-  "generatedFrom": "D:\\Omnia\\docs\\workspace\\shared-path-differences.json",
-  "status": "open",
-  "rows": [
-    {
-      "path": ".github/workflows/ci.yml",
-      "hashes": {
-        "primary": "b7a98ae779c55de2e85c087b4257f39f5f3051018246cf73562e4bf87af81428",
-        "release": "9838b0534862932c1f9b0dae357650886992b326bb0cd1139cefabb9a5dfb988",
-        "rebuild": "88f86860c5b5f53b3bd500a2f0439440f40db0e5a12b5832ba7c65b7541a609f",
-        "goal_control": "9838b0534862932c1f9b0dae357650886992b326bb0cd1139cefabb9a5dfb988"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": ".github/workflows/fast-feedback.yml",
-      "hashes": {
-        "primary": "79fd912f4f3f83060f3408ea5a54516bf5e8c69e114e576e33fa538848cae1c2",
-        "release": "79fd912f4f3f83060f3408ea5a54516bf5e8c69e114e576e33fa538848cae1c2",
-        "rebuild": "bdd31578efc0145fa3bd970173bbb86f8c924677a71aa81f38edbaa06a944736",
-        "goal_control": "79fd912f4f3f83060f3408ea5a54516bf5e8c69e114e576e33fa538848cae1c2"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": ".github/workflows/release.yml",
-      "hashes": {
-        "primary": "dd00cb8c8f6c5d16049cf117d233cc51fd275b67aa1848957bb95868386cedce",
-        "release": "b0574935a23225818c7ec0f14894e0e441f922dba2f44b7a94cf2627b6ef3e95",
-        "rebuild": "a22e984b18885e9ebbc2fe141457a4683a70c92f336546d1f71d80737c53eb00",
-        "goal_control": "b0574935a23225818c7ec0f14894e0e441f922dba2f44b7a94cf2627b6ef3e95"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "README.md",
-      "hashes": {
-        "primary": "a1208083ae3ee12de0943f2fedef72e499616031290c0a1a8aec8c3846734e02",
-        "release": "3414fbb374f82825c8f8c6ff1c1ecf36e3f0050af4db716272b0f9136cf72cde",
-        "rebuild": "c467914ca56fe32e417803740681b9d9ab92b3d6e00cd1e8028833b884a60683",
-        "goal_control": "9da652b7751a8adb60f814f0997b218d36d27abdcf9bfeed8d8b5423d3a240ef"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "package.json",
-      "hashes": {
-        "primary": "59eeeef2cc5d1c55f35fdd510b57226370d1a5af5f857ac4d135c34838af3943",
-        "release": "2c637b61ecee7d3084f7fc1e0c05cca3c899b9bf17f573b5c366f3228753533c",
-        "rebuild": "27d7dee76c0c6c4f284dfe6430d587507c286b2e859afd522426ab13a0b801fb",
-        "goal_control": "e4ae5f6451c6ae0f48fe3e1572cc4f5fa9af9b51047568bfac33061956097d23"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/Cargo.lock",
-      "hashes": {
-        "primary": "3643216218a37752b4892673245e57fd75749d7a8e323ad3c7a01d2f7e2d9e63",
-        "release": "3643216218a37752b4892673245e57fd75749d7a8e323ad3c7a01d2f7e2d9e63",
-        "rebuild": "f0912f6fea4f34ed9b50de47f16345fde20123c08300bdaf998a03f2d89856f6",
-        "goal_control": "3643216218a37752b4892673245e57fd75749d7a8e323ad3c7a01d2f7e2d9e63"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/Cargo.toml",
-      "hashes": {
-        "primary": "61b631ae7d853c54d1964e0fe4e7c22e19cecb95c3336c17d57aaaef1c5877b7",
-        "release": "505bca3f6c00af864ad2b4e56d7c4fc737718d9ec9ae6854bbaf70a354483481",
-        "rebuild": "e7b3569dd1e02198563a4335319b2ce5d6f8686b46cac5f8ac6d6b4314bf11f9",
-        "goal_control": "505bca3f6c00af864ad2b4e56d7c4fc737718d9ec9ae6854bbaf70a354483481"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/browser.rs",
-      "hashes": {
-        "primary": "d54efcb6f550a7f06007b0ce9bea24d51f839bf2b7103437979c5e7f2f67a0cb",
-        "release": "d54efcb6f550a7f06007b0ce9bea24d51f839bf2b7103437979c5e7f2f67a0cb",
-        "rebuild": "1f46c34aeab5b4bfec4375b226a04f7439844049ee84022cb049b18c001b4189",
-        "goal_control": "d54efcb6f550a7f06007b0ce9bea24d51f839bf2b7103437979c5e7f2f67a0cb"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/capture.rs",
-      "hashes": {
-        "primary": "6876ca46b67c517aea66abf4e61a717f58dfbfab95ca80f4adf4e9f1cf7fb8c8",
-        "release": "6876ca46b67c517aea66abf4e61a717f58dfbfab95ca80f4adf4e9f1cf7fb8c8",
-        "rebuild": "acbc855d42f9174ae179c2635c60b264ba14f80b3e5f206af750ca7be0cae498",
-        "goal_control": "6876ca46b67c517aea66abf4e61a717f58dfbfab95ca80f4adf4e9f1cf7fb8c8"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/cdp.rs",
-      "hashes": {
-        "primary": "ab986677334a26fdea86b91a85514edfe1995c1a07bec23933dac8b058d83352",
-        "release": "ab986677334a26fdea86b91a85514edfe1995c1a07bec23933dac8b058d83352",
-        "rebuild": "ffb7ef6f5fa89a327d0ecb4ade604f31f0cfe4082d871697d6dca7e6596eca43",
-        "goal_control": "ab986677334a26fdea86b91a85514edfe1995c1a07bec23933dac8b058d83352"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/emulate.rs",
-      "hashes": {
-        "primary": "dd0bb1f70ea4e54f80a82b7940bbd7a88e6fc484a28cde5dad37e5dc6a7c026f",
-        "release": "dd0bb1f70ea4e54f80a82b7940bbd7a88e6fc484a28cde5dad37e5dc6a7c026f",
-        "rebuild": "1e1dae7574246f22e30abb732f46f2d7542ed90f4f2f872b747b1d04cdc3c610",
-        "goal_control": "dd0bb1f70ea4e54f80a82b7940bbd7a88e6fc484a28cde5dad37e5dc6a7c026f"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/input.rs",
-      "hashes": {
-        "primary": "6fd027bbff6b709b081d7fde5bda11b342498bc7da11df49af6b671ab6afe45d",
-        "release": "6fd027bbff6b709b081d7fde5bda11b342498bc7da11df49af6b671ab6afe45d",
-        "rebuild": "6552d06cef4a7a9b4097c21cc287e55f337cac2d3aa092aa25f20845b603045c",
-        "goal_control": "6fd027bbff6b709b081d7fde5bda11b342498bc7da11df49af6b671ab6afe45d"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/keys.rs",
-      "hashes": {
-        "primary": "d4230b0cc97730563ccdf45491928c13872c4ec1c97877ffa79c05f3a2317252",
-        "release": "d4230b0cc97730563ccdf45491928c13872c4ec1c97877ffa79c05f3a2317252",
-        "rebuild": "24458a5ee16c77b73aef4ebaf17a7de4dc99a512a87579afa5d6cd72a0484c8b",
-        "goal_control": "d4230b0cc97730563ccdf45491928c13872c4ec1c97877ffa79c05f3a2317252"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/launch.rs",
-      "hashes": {
-        "primary": "b15e14a5d0ac788069c58aeb8cdf206d0de5934dff2619d83c402cda9631cb71",
-        "release": "b15e14a5d0ac788069c58aeb8cdf206d0de5934dff2619d83c402cda9631cb71",
-        "rebuild": "7387eca4e0a780b50664372895955abaa57005379a7d7e30e7359569c29bc33b",
-        "goal_control": "b15e14a5d0ac788069c58aeb8cdf206d0de5934dff2619d83c402cda9631cb71"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/lib.rs",
-      "hashes": {
-        "primary": "21ad97cd10ff5d212d822f40f767752b1d8022a0ba1e66878a3d7efd804258c6",
-        "release": "21ad97cd10ff5d212d822f40f767752b1d8022a0ba1e66878a3d7efd804258c6",
-        "rebuild": "616e47cdc4d5c73873e817640185e592fcfcaf728311d1be41403aefc8aca8b3",
-        "goal_control": "21ad97cd10ff5d212d822f40f767752b1d8022a0ba1e66878a3d7efd804258c6"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/network.rs",
-      "hashes": {
-        "primary": "dfc753c5366461429068e88b54b79125cbf2b4d0e5a8cba4b13200d0e0061fd9",
-        "release": "dfc753c5366461429068e88b54b79125cbf2b4d0e5a8cba4b13200d0e0061fd9",
-        "rebuild": "b7767181bd997507a9905c01bb93bb58921e17367eaf51923c4faecd174ea45e",
-        "goal_control": "dfc753c5366461429068e88b54b79125cbf2b4d0e5a8cba4b13200d0e0061fd9"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/record/codegen.rs",
-      "hashes": {
-        "primary": "9b62d60c84ec53b25d0b7c97a29a8c45ca7daa917a15dea8b10996748c2ea736",
-        "release": "9b62d60c84ec53b25d0b7c97a29a8c45ca7daa917a15dea8b10996748c2ea736",
-        "rebuild": "57acde8a66c3f525c8d620620a643ffc2467661eb64bbc3af81a6f588e4549b4",
-        "goal_control": "9b62d60c84ec53b25d0b7c97a29a8c45ca7daa917a15dea8b10996748c2ea736"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/record/gif.rs",
-      "hashes": {
-        "primary": "2d1d4739b98c65fc9f10035131e5f137cd66ea2a0ba4b525fb65f60dcbbfabb4",
-        "release": "2d1d4739b98c65fc9f10035131e5f137cd66ea2a0ba4b525fb65f60dcbbfabb4",
-        "rebuild": "5c81e195427d183730c1e642ebde65e83be571b6cd97329d25bf5948fecdbf5d",
-        "goal_control": "2d1d4739b98c65fc9f10035131e5f137cd66ea2a0ba4b525fb65f60dcbbfabb4"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/record/mod.rs",
-      "hashes": {
-        "primary": "d311c9f6d6772d2e7bdc61ad1f5c194a21a8f950e22fbffe06002e11ec905fb9",
-        "release": "d311c9f6d6772d2e7bdc61ad1f5c194a21a8f950e22fbffe06002e11ec905fb9",
-        "rebuild": "d351696c8e9f2ba6b36966eeb1993d2686c8b47f1a0611d1b9ed0f79143779b3",
-        "goal_control": "d311c9f6d6772d2e7bdc61ad1f5c194a21a8f950e22fbffe06002e11ec905fb9"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/safety.rs",
-      "hashes": {
-        "primary": "e37d4ff7d3b25e29ec9fdc8f042244c5d920abd37c360d3f60b40ad33cc092f4",
-        "release": "e37d4ff7d3b25e29ec9fdc8f042244c5d920abd37c360d3f60b40ad33cc092f4",
-        "rebuild": "b4e6e1ccb70ac98fa9d92d5dc5496850f4459d43c551e483b9d22a9d745b937f",
-        "goal_control": "e37d4ff7d3b25e29ec9fdc8f042244c5d920abd37c360d3f60b40ad33cc092f4"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/snapshot.rs",
-      "hashes": {
-        "primary": "c6a2451bd182ac7a20a056d3a57823eb9ac90c536fb2e6f870c64e6b5e51e8fb",
-        "release": "4c1de5d657296acbbc9f7047ad011981b1c60b0191f0139be6716b3582e562f3",
-        "rebuild": "ed6b6021d5368640f9fac06e98687c0e48ef4e1878cc4fc536dcba06c299f4a2",
-        "goal_control": "4c1de5d657296acbbc9f7047ad011981b1c60b0191f0139be6716b3582e562f3"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/tab.rs",
-      "hashes": {
-        "primary": "a2c7bfcdcf16f6ecdbb4eea18edcef832eab247ee5364b3c53c82563c90413dd",
-        "release": "a2c7bfcdcf16f6ecdbb4eea18edcef832eab247ee5364b3c53c82563c90413dd",
-        "rebuild": "4cd6a1f74f384c6c45fc5fb141a1946597226fefa15866773ab2b8c6b25cb265",
-        "goal_control": "a2c7bfcdcf16f6ecdbb4eea18edcef832eab247ee5364b3c53c82563c90413dd"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/tools/exec.rs",
-      "hashes": {
-        "primary": "1a30aaa6fa4ac6b50350fd6fd52f2b195ebdaf56a21d348684a7033ab0fcc0a6",
-        "release": "1a30aaa6fa4ac6b50350fd6fd52f2b195ebdaf56a21d348684a7033ab0fcc0a6",
-        "rebuild": "07beca37b314c7c1a64b26d97f7e1d34ac96555fde8f9c0984e1dbf98bf62060",
-        "goal_control": "1a30aaa6fa4ac6b50350fd6fd52f2b195ebdaf56a21d348684a7033ab0fcc0a6"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/tools/mod.rs",
-      "hashes": {
-        "primary": "0c4353f6d77b2646444ea7aa230a217b1a7839bd0a21c8f9b709614fbf739525",
-        "release": "0c4353f6d77b2646444ea7aa230a217b1a7839bd0a21c8f9b709614fbf739525",
-        "rebuild": "f63edb964ac4a0fd2c46d153ce14910f2080e03d950b5a1dd9d578b0dc5dfffc",
-        "goal_control": "0c4353f6d77b2646444ea7aa230a217b1a7839bd0a21c8f9b709614fbf739525"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-browser/src/tools/schema.rs",
-      "hashes": {
-        "primary": "fb031af8017b8491199d2ebea1f396067dda0e7d96141e4edc2f563a617665c6",
-        "release": "fb031af8017b8491199d2ebea1f396067dda0e7d96141e4edc2f563a617665c6",
-        "rebuild": "cffb7d278d31f803d63b44a11f255b715694a01a1026af9890852292ba3d8506",
-        "goal_control": "fb031af8017b8491199d2ebea1f396067dda0e7d96141e4edc2f563a617665c6"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/backend.rs",
-      "hashes": {
-        "primary": "b11d4a71f91288a5b566a4292a7e8f4a4f35522655037641b4f816c663c586ab",
-        "release": "b11d4a71f91288a5b566a4292a7e8f4a4f35522655037641b4f816c663c586ab",
-        "rebuild": "058b591174ad70e4aacd3a780b890aa483dca931df4e46e0b3b265ad859e3bd8",
-        "goal_control": "b11d4a71f91288a5b566a4292a7e8f4a4f35522655037641b4f816c663c586ab"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/bg.rs",
-      "hashes": {
-        "primary": "1ed24201c5ea1ba8b450264215d516565ca5eb2172c896c098301a5ede2b7a7a",
-        "release": "1ed24201c5ea1ba8b450264215d516565ca5eb2172c896c098301a5ede2b7a7a",
-        "rebuild": "bf8173c740cd8f05927905374bd7ce3426060a9535241b7168d5b6d1ade579f2",
-        "goal_control": "1ed24201c5ea1ba8b450264215d516565ca5eb2172c896c098301a5ede2b7a7a"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/bgwin.rs",
-      "hashes": {
-        "primary": "d9f780f559727edd83ef40eb44a1871467edcbf1c6a1592c6ea5431df3539201",
-        "release": "d9f780f559727edd83ef40eb44a1871467edcbf1c6a1592c6ea5431df3539201",
-        "rebuild": "af1db4f67f7529d4ada0396c71f2a75e97d2d988071ff25cae764ce900564da4",
-        "goal_control": "d9f780f559727edd83ef40eb44a1871467edcbf1c6a1592c6ea5431df3539201"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/bgwin/tests.rs",
-      "hashes": {
-        "primary": "414cf9ccd351fc38adf79357bb9e66ee24c80231ce5e852c9357914fc43c3074",
-        "release": "414cf9ccd351fc38adf79357bb9e66ee24c80231ce5e852c9357914fc43c3074",
-        "rebuild": "ffbe2053819d9d81ca609fc7d5a0f8942a47c9867936c3539dd1fe6893e8b458",
-        "goal_control": "414cf9ccd351fc38adf79357bb9e66ee24c80231ce5e852c9357914fc43c3074"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/computer.rs",
-      "hashes": {
-        "primary": "44ae6e42b4a824f204915978c2cbd9b5165cfc3703eb015f9c8834ed7bac371c",
-        "release": "44ae6e42b4a824f204915978c2cbd9b5165cfc3703eb015f9c8834ed7bac371c",
-        "rebuild": "92a5d59842c9e370e98c244d4bfe2c1fdc82dc95808273b62e74383f6f25113c",
-        "goal_control": "44ae6e42b4a824f204915978c2cbd9b5165cfc3703eb015f9c8834ed7bac371c"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/computer_bg.rs",
-      "hashes": {
-        "primary": "19d1cbaddfbf08d1897126543fd24d61b2c2cb9b7e000e2bf3d8ec41014f43fa",
-        "release": "19d1cbaddfbf08d1897126543fd24d61b2c2cb9b7e000e2bf3d8ec41014f43fa",
-        "rebuild": "5123e36f41d44ab4395d289aad22379778c201c4c31aad0dccc6d68c326111db",
-        "goal_control": "19d1cbaddfbf08d1897126543fd24d61b2c2cb9b7e000e2bf3d8ec41014f43fa"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/encode.rs",
-      "hashes": {
-        "primary": "7ceadee6b77d5c6008c6d6b68bd75d1f6713c38b39822fcbb3d13549316fe5b3",
-        "release": "7ceadee6b77d5c6008c6d6b68bd75d1f6713c38b39822fcbb3d13549316fe5b3",
-        "rebuild": "081dd3007f53c018a1c191b46ac9ff428fdc3877c77b998b471fee73625fe7d1",
-        "goal_control": "7ceadee6b77d5c6008c6d6b68bd75d1f6713c38b39822fcbb3d13549316fe5b3"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/format.rs",
-      "hashes": {
-        "primary": "d9dd143ff2e0c3a3131012a81cf079f43c6f9dbe6f7457d4efff7d916504ed18",
-        "release": "d9dd143ff2e0c3a3131012a81cf079f43c6f9dbe6f7457d4efff7d916504ed18",
-        "rebuild": "91824a05c707db42851e0ad98aefebdeb8463f919814c8e5de026d1cd8257955",
-        "goal_control": "d9dd143ff2e0c3a3131012a81cf079f43c6f9dbe6f7457d4efff7d916504ed18"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/geometry.rs",
-      "hashes": {
-        "primary": "88383c6ab03cef6615df83ee20d8d13d4dead2a7b7dcba042f2287767e886941",
-        "release": "88383c6ab03cef6615df83ee20d8d13d4dead2a7b7dcba042f2287767e886941",
-        "rebuild": "93647ee2716cd1a4192fe28cd275e32532a0675bfd085945b377044e778261d3",
-        "goal_control": "88383c6ab03cef6615df83ee20d8d13d4dead2a7b7dcba042f2287767e886941"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/input.rs",
-      "hashes": {
-        "primary": "4890bf8d18c61a0ee3b0c624ab6a00fe68a514f3e39cbfda7d49dea7b35af6f3",
-        "release": "4890bf8d18c61a0ee3b0c624ab6a00fe68a514f3e39cbfda7d49dea7b35af6f3",
-        "rebuild": "56be2194c88696df47bb7cc058b6e20aa6cd0d91dd5130541aca32392c6bfb66",
-        "goal_control": "4890bf8d18c61a0ee3b0c624ab6a00fe68a514f3e39cbfda7d49dea7b35af6f3"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/keys.rs",
-      "hashes": {
-        "primary": "8e0d7e0d2d6a5b526d7d0344454b851811e5bfb3b4c3af24be65a46ce490efac",
-        "release": "8e0d7e0d2d6a5b526d7d0344454b851811e5bfb3b4c3af24be65a46ce490efac",
-        "rebuild": "d4e1e410760f096fcecaa95027eaf68259f7f1a365b636408070e91efd99602d",
-        "goal_control": "8e0d7e0d2d6a5b526d7d0344454b851811e5bfb3b4c3af24be65a46ce490efac"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/launch.rs",
-      "hashes": {
-        "primary": "775c373d238a9c91257d6e891b1d97abae189fc7d4a1d9ff5443c0615238bb97",
-        "release": "775c373d238a9c91257d6e891b1d97abae189fc7d4a1d9ff5443c0615238bb97",
-        "rebuild": "02989c458c480e705a3860c18a67940b1d18d55d9280482bfd1f06c1bc3dd72f",
-        "goal_control": "775c373d238a9c91257d6e891b1d97abae189fc7d4a1d9ff5443c0615238bb97"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/lib.rs",
-      "hashes": {
-        "primary": "297b3c7cc6f85a8e4d5069b086c6d6783237f48af252916519aeb08c7bcbbeaf",
-        "release": "297b3c7cc6f85a8e4d5069b086c6d6783237f48af252916519aeb08c7bcbbeaf",
-        "rebuild": "defc550a7a552c9532d7bda9e3bb00856a847942cd608ba65e30dc806a8ed644",
-        "goal_control": "297b3c7cc6f85a8e4d5069b086c6d6783237f48af252916519aeb08c7bcbbeaf"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/ocr.rs",
-      "hashes": {
-        "primary": "68467e52e140717895b51a83ed31fb2a20851e1377547baaf1f43dd634b6fbd3",
-        "release": "68467e52e140717895b51a83ed31fb2a20851e1377547baaf1f43dd634b6fbd3",
-        "rebuild": "bc9d812826f96f5100a8505cb030fc7e3aec4a7bbd0c2e86ef593815710e57d1",
-        "goal_control": "68467e52e140717895b51a83ed31fb2a20851e1377547baaf1f43dd634b6fbd3"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/ocr_win.rs",
-      "hashes": {
-        "primary": "6e112c2b23522f9ee8847ffadf33de23c5d738c065d59670a5ff08fc0d4351b1",
-        "release": "6e112c2b23522f9ee8847ffadf33de23c5d738c065d59670a5ff08fc0d4351b1",
-        "rebuild": "41a61267b0344afbde5e206b0d26ab7a73b3d9a813853c7321b5ac86e3717434",
-        "goal_control": "6e112c2b23522f9ee8847ffadf33de23c5d738c065d59670a5ff08fc0d4351b1"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/safety.rs",
-      "hashes": {
-        "primary": "068efc397180f6285179fe80cdf3636313ea51de910ddf51170a860b66335edb",
-        "release": "068efc397180f6285179fe80cdf3636313ea51de910ddf51170a860b66335edb",
-        "rebuild": "269a16795760d0987ec369ce6847e7a23202f851ef43abbc03a14d24416b48f6",
-        "goal_control": "068efc397180f6285179fe80cdf3636313ea51de910ddf51170a860b66335edb"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/screen.rs",
-      "hashes": {
-        "primary": "ae62103e9e5c324d234bdda7f3cc235398847ecc12654b49f3a065fdd8205ae5",
-        "release": "ae62103e9e5c324d234bdda7f3cc235398847ecc12654b49f3a065fdd8205ae5",
-        "rebuild": "3a1b9bcae15b5605cfac942470710e0051015aab9f991b96a53dc5b157b105b3",
-        "goal_control": "ae62103e9e5c324d234bdda7f3cc235398847ecc12654b49f3a065fdd8205ae5"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/tools.rs",
-      "hashes": {
-        "primary": "490d35156b4ed2145fb18d094f1833432a1ba9496760d7c4de5749de43f7817f",
-        "release": "490d35156b4ed2145fb18d094f1833432a1ba9496760d7c4de5749de43f7817f",
-        "rebuild": "e4d8a9c0d432d0282d3ea9b77c00c13e0c6f68c60b8e42edfa28ea07c53d05b3",
-        "goal_control": "490d35156b4ed2145fb18d094f1833432a1ba9496760d7c4de5749de43f7817f"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/types.rs",
-      "hashes": {
-        "primary": "568731897532082f61256a0c25235ba33e17fabd40e02d0699f18a9bca0aa7a4",
-        "release": "568731897532082f61256a0c25235ba33e17fabd40e02d0699f18a9bca0aa7a4",
-        "rebuild": "92d47ba2551680220b044e5eaaf57d5651da0e9f1c8b9f02b452e70a32a96863",
-        "goal_control": "568731897532082f61256a0c25235ba33e17fabd40e02d0699f18a9bca0aa7a4"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/uia.rs",
-      "hashes": {
-        "primary": "cdd3eb39c424e01cf35f942974c48e7adac28a6dc21504485fa73c1073c3c6b4",
-        "release": "cdd3eb39c424e01cf35f942974c48e7adac28a6dc21504485fa73c1073c3c6b4",
-        "rebuild": "f3afb8e79c31385b6efac810dd3da43fece3d583dda442b5ff7c3e422d72dceb",
-        "goal_control": "cdd3eb39c424e01cf35f942974c48e7adac28a6dc21504485fa73c1073c3c6b4"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-computer/src/winapi.rs",
-      "hashes": {
-        "primary": "b6e11bf7b8f6387708768d28d5bfa213d4adde345633daa257b9991d8a2548ca",
-        "release": "b6e11bf7b8f6387708768d28d5bfa213d4adde345633daa257b9991d8a2548ca",
-        "rebuild": "afbabaf2aeb1b59ee6569afa18bb40ad4240ab2256083c181e1874b7f67a9f82",
-        "goal_control": "b6e11bf7b8f6387708768d28d5bfa213d4adde345633daa257b9991d8a2548ca"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/blob.rs",
-      "hashes": {
-        "primary": "99f5b6e93d9e4792563ecf8ebb639f09e08a19821d99bd39273812c4d8375381",
-        "release": "99f5b6e93d9e4792563ecf8ebb639f09e08a19821d99bd39273812c4d8375381",
-        "rebuild": "971142e872184c3738bcb4381552cd0919fcfd573737f66a38b3c27851bd8dad",
-        "goal_control": "99f5b6e93d9e4792563ecf8ebb639f09e08a19821d99bd39273812c4d8375381"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/dash.rs",
-      "hashes": {
-        "primary": "53e873c6bf080c9af3608cb8c5544acc53abf2ccf44486af2723223653d85fc7",
-        "release": "53e873c6bf080c9af3608cb8c5544acc53abf2ccf44486af2723223653d85fc7",
-        "rebuild": "b69623d7b87d4b68416f45728d24f64519cd8760f354eb4f40290d9d3684a5fa",
-        "goal_control": "53e873c6bf080c9af3608cb8c5544acc53abf2ccf44486af2723223653d85fc7"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/dash_download.rs",
-      "hashes": {
-        "primary": "3a6e202e6ee9576949ab37db9d0947b514b5d6598183f51be1a8703b2171988b",
-        "release": "3a6e202e6ee9576949ab37db9d0947b514b5d6598183f51be1a8703b2171988b",
-        "rebuild": "99fec526ae4afe9ef732f156857d81237326888b71a286dbc17d831951f27705",
-        "goal_control": "3a6e202e6ee9576949ab37db9d0947b514b5d6598183f51be1a8703b2171988b"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/detect.rs",
-      "hashes": {
-        "primary": "fa0c0206c13ce82f6ce2c57be2c0f8b5ee6e1e64f43719e5555215d38f7a68d4",
-        "release": "fa0c0206c13ce82f6ce2c57be2c0f8b5ee6e1e64f43719e5555215d38f7a68d4",
-        "rebuild": "094f410647e64988992f22992fa0e94cb4c9cea1bc5b507b9c4e2eea298d4d15",
-        "goal_control": "fa0c0206c13ce82f6ce2c57be2c0f8b5ee6e1e64f43719e5555215d38f7a68d4"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/engine.rs",
-      "hashes": {
-        "primary": "0afb59f0916b98a127f22548a40b5d66223f73a941be1ef0530320589ac2bc9e",
-        "release": "0afb59f0916b98a127f22548a40b5d66223f73a941be1ef0530320589ac2bc9e",
-        "rebuild": "6d869ba2c9283c7cfbbbb5ec2151263d8d49b395de7aad3a671abfda38502052",
-        "goal_control": "0afb59f0916b98a127f22548a40b5d66223f73a941be1ef0530320589ac2bc9e"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/fsutil.rs",
-      "hashes": {
-        "primary": "6bd66248c18f8858dc62aa243c54843c45b67e49bd6cd86972a4fbfbf5c59046",
-        "release": "6bd66248c18f8858dc62aa243c54843c45b67e49bd6cd86972a4fbfbf5c59046",
-        "rebuild": "62a9845883a69096011f04773348cf1287e0d81b76008589b8a52da9e7c9d504",
-        "goal_control": "6bd66248c18f8858dc62aa243c54843c45b67e49bd6cd86972a4fbfbf5c59046"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/hls.rs",
-      "hashes": {
-        "primary": "caf8e6a02d569115aa821d71a109d98a0ebcadba1e3b72558466d5e17668af29",
-        "release": "caf8e6a02d569115aa821d71a109d98a0ebcadba1e3b72558466d5e17668af29",
-        "rebuild": "3a0b6b49b8cd51d153ff56dd932d7a302d719e23d50fc108b3354c33a7163376",
-        "goal_control": "caf8e6a02d569115aa821d71a109d98a0ebcadba1e3b72558466d5e17668af29"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/hls_download.rs",
-      "hashes": {
-        "primary": "030bc7a2f7f77eddaf7ee75572e6c95970c95786674cab8bab577557dfd6e2fa",
-        "release": "030bc7a2f7f77eddaf7ee75572e6c95970c95786674cab8bab577557dfd6e2fa",
-        "rebuild": "64d7acad7abf8fb5d0f60cd25f05314266c91a4977a2632918cfee846b563df4",
-        "goal_control": "030bc7a2f7f77eddaf7ee75572e6c95970c95786674cab8bab577557dfd6e2fa"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/http.rs",
-      "hashes": {
-        "primary": "3614bf10aa74c352d9989bbb2eb294c1dc92d7e761376ab1f9afc65ad63ad091",
-        "release": "3614bf10aa74c352d9989bbb2eb294c1dc92d7e761376ab1f9afc65ad63ad091",
-        "rebuild": "bee914b8c70106e0860a20bb8c4b86f95accefbb84b710faef52b6b6369625cb",
-        "goal_control": "3614bf10aa74c352d9989bbb2eb294c1dc92d7e761376ab1f9afc65ad63ad091"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/lib.rs",
-      "hashes": {
-        "primary": "9066bd23a419ee6ad10b79cfb8dbcee4023427577d9e53a02000bd247c3573f2",
-        "release": "9066bd23a419ee6ad10b79cfb8dbcee4023427577d9e53a02000bd247c3573f2",
-        "rebuild": "e1770628e67e39fbcb495b7e1b887dd54961bb22889094be57ea4c900e2ca947",
-        "goal_control": "9066bd23a419ee6ad10b79cfb8dbcee4023427577d9e53a02000bd247c3573f2"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/mux.rs",
-      "hashes": {
-        "primary": "9fba6d35de7c46999a245bfd1c1c5016c80b005330aebe80b084996e1b7c8c13",
-        "release": "9fba6d35de7c46999a245bfd1c1c5016c80b005330aebe80b084996e1b7c8c13",
-        "rebuild": "7992b354d7002562ca169d0472a548394839462f0f7323c0497b3f7ef98861cc",
-        "goal_control": "9fba6d35de7c46999a245bfd1c1c5016c80b005330aebe80b084996e1b7c8c13"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/probe.rs",
-      "hashes": {
-        "primary": "a400a342d28d1ea00629aa465eafb5f9ea96a2a0b15cff9d21034cac09ad6254",
-        "release": "a400a342d28d1ea00629aa465eafb5f9ea96a2a0b15cff9d21034cac09ad6254",
-        "rebuild": "db47d7c80b995a348f6d2ad18dd2a7a75aaaadc30fad18ac981f89e283133f67",
-        "goal_control": "a400a342d28d1ea00629aa465eafb5f9ea96a2a0b15cff9d21034cac09ad6254"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/progress.rs",
-      "hashes": {
-        "primary": "41691b9bd8b25b1f14161628d95ef3647664cd30cc2a8450d8f233f0eb69ca35",
-        "release": "41691b9bd8b25b1f14161628d95ef3647664cd30cc2a8450d8f233f0eb69ca35",
-        "rebuild": "adacd33db42c8d78b41beb46eb9235975ecefd4f023d5b843b2b45227483d4ca",
-        "goal_control": "41691b9bd8b25b1f14161628d95ef3647664cd30cc2a8450d8f233f0eb69ca35"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/ratelimit.rs",
-      "hashes": {
-        "primary": "18cdb7357ec97968cea16ab6f11b95ab746317bdf5007f21313b99aa63c7c1d9",
-        "release": "18cdb7357ec97968cea16ab6f11b95ab746317bdf5007f21313b99aa63c7c1d9",
-        "rebuild": "0e50499439c2c16cf87dbecf973814180b6722c73ba8dd74e05149415831ef66",
-        "goal_control": "18cdb7357ec97968cea16ab6f11b95ab746317bdf5007f21313b99aa63c7c1d9"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/request.rs",
-      "hashes": {
-        "primary": "21dfa60f338f6e7016d5b7c6d2b76187ecfd156d8bb09f69b4f3ad07c40cb9dd",
-        "release": "21dfa60f338f6e7016d5b7c6d2b76187ecfd156d8bb09f69b4f3ad07c40cb9dd",
-        "rebuild": "c619cee4227b5d8a3b074ce18b3f895511882ee2a3e2b45ec04382bcc923642c",
-        "goal_control": "21dfa60f338f6e7016d5b7c6d2b76187ecfd156d8bb09f69b4f3ad07c40cb9dd"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-download/src/types.rs",
-      "hashes": {
-        "primary": "4edda808ee436779a64371a8861f640bbc2e054399c7b8c1082852b661467042",
-        "release": "4edda808ee436779a64371a8861f640bbc2e054399c7b8c1082852b661467042",
-        "rebuild": "ef9a28f1b8779b8281ad6a5bc22e0b34f9b861f0302dcf9bf53ebd6fcae66860",
-        "goal_control": "4edda808ee436779a64371a8861f640bbc2e054399c7b8c1082852b661467042"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/Cargo.toml",
-      "hashes": {
-        "primary": "5b505864cf271095129531de9d1070f23aa3d34be02bbaf1dc2d13fbaf271f33",
-        "release": "5b505864cf271095129531de9d1070f23aa3d34be02bbaf1dc2d13fbaf271f33",
-        "rebuild": "633f3c3ad5b33f2cf8f6a8f0e7be6aabc610c554b3c0b14fe32d59aea02ee966",
-        "goal_control": "5b505864cf271095129531de9d1070f23aa3d34be02bbaf1dc2d13fbaf271f33"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/agent.rs",
-      "hashes": {
-        "primary": "558e7318a064bdae477372e67d8b79696dce6cd684bf3844d9d9381b93e6e627",
-        "release": "558e7318a064bdae477372e67d8b79696dce6cd684bf3844d9d9381b93e6e627",
-        "rebuild": "a523ca92ffa0e52790df56f2d6a054f8cb0f1f272f45553a4982bb26fb306230",
-        "goal_control": "558e7318a064bdae477372e67d8b79696dce6cd684bf3844d9d9381b93e6e627"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/budget.rs",
-      "hashes": {
-        "primary": "7e489f6016124e25a7fe33023919ad0698540de0943dd37700a4e93f9da12ce9",
-        "release": "7e489f6016124e25a7fe33023919ad0698540de0943dd37700a4e93f9da12ce9",
-        "rebuild": "d5ad366914129287199fe4d674987abb48ff58c0cf538dc604cb3f44b8ae9e35",
-        "goal_control": "7e489f6016124e25a7fe33023919ad0698540de0943dd37700a4e93f9da12ce9"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/commands.rs",
-      "hashes": {
-        "primary": "fdf428e8e7bca6684913682f7a5b8b61a079d8a2a12b64e34d826487f3831a38",
-        "release": "fdf428e8e7bca6684913682f7a5b8b61a079d8a2a12b64e34d826487f3831a38",
-        "rebuild": "bb5554c239ebfd1595a85c112c61b2372b3428ebf76180353dddd077cc76191e",
-        "goal_control": "fdf428e8e7bca6684913682f7a5b8b61a079d8a2a12b64e34d826487f3831a38"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/eval/check.rs",
-      "hashes": {
-        "primary": "84932c5d268b0f29e8b4cd0326b16efd587cee61d5991f15acfbb9e2ab92d75c",
-        "release": "84932c5d268b0f29e8b4cd0326b16efd587cee61d5991f15acfbb9e2ab92d75c",
-        "rebuild": "72d8bff1fbf360babb8482f4ed9efc7bd75eb30d88e1d16c154223c53a226bcb",
-        "goal_control": "84932c5d268b0f29e8b4cd0326b16efd587cee61d5991f15acfbb9e2ab92d75c"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/eval/mod.rs",
-      "hashes": {
-        "primary": "a4c8b830352baed65723401b09b88df47a40465bf03be2d405c4f05c1df17f11",
-        "release": "a4c8b830352baed65723401b09b88df47a40465bf03be2d405c4f05c1df17f11",
-        "rebuild": "ac22ded36247ff38c40fe9a4db10194912b1e0abf00cec71fe2d9189d0d1f42b",
-        "goal_control": "a4c8b830352baed65723401b09b88df47a40465bf03be2d405c4f05c1df17f11"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/eval/script.rs",
-      "hashes": {
-        "primary": "cdbbdbb19e81b7a0832c155aeeb4ea51a95de2de4d4d8d5e4d59ea096cd25c5e",
-        "release": "cdbbdbb19e81b7a0832c155aeeb4ea51a95de2de4d4d8d5e4d59ea096cd25c5e",
-        "rebuild": "bf75e340c02de5ce8ff4f46bfc4ab4f77f92e0b981015e298c0383979846ab1d",
-        "goal_control": "cdbbdbb19e81b7a0832c155aeeb4ea51a95de2de4d4d8d5e4d59ea096cd25c5e"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/hooks.rs",
-      "hashes": {
-        "primary": "5b320a5133a58605e642ca8780dc74515f3be7b27dca6a43e7c81ce9986aee72",
-        "release": "5b320a5133a58605e642ca8780dc74515f3be7b27dca6a43e7c81ce9986aee72",
-        "rebuild": "0daf7635c196e06941e122a7e7b5780ae4fb235670adacadffc7da6aeb4856e5",
-        "goal_control": "5b320a5133a58605e642ca8780dc74515f3be7b27dca6a43e7c81ce9986aee72"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/lib.rs",
-      "hashes": {
-        "primary": "1522bde7737f278a18a5a348aaafe06164fef66b1cb3733b56e11bc9cee909e9",
-        "release": "1522bde7737f278a18a5a348aaafe06164fef66b1cb3733b56e11bc9cee909e9",
-        "rebuild": "ded600be9e314719b19649836197529b32d5d9f9d1dccb76bc685cb7711ca7c1",
-        "goal_control": "729121c52bba6f417cd115c97b1be9b8a23e13ee8b7288a908b6b7b302bc514e"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/lsp/client.rs",
-      "hashes": {
-        "primary": "c402d747147659347c9dab706f87bb67e48d58907afe3b4ffbbc768080a5adda",
-        "release": "c402d747147659347c9dab706f87bb67e48d58907afe3b4ffbbc768080a5adda",
-        "rebuild": "30ad6da5cd5606660dd1c1718d47ea2e38b127eb5278a606ad992c10a0f5c245",
-        "goal_control": "c402d747147659347c9dab706f87bb67e48d58907afe3b4ffbbc768080a5adda"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/lsp/config.rs",
-      "hashes": {
-        "primary": "c95fa68ae659412ca8caf2a8891351a3b9588d03f1a142b6fe27ab28f77293f7",
-        "release": "0c1549c05b6bedb5f34e1e9817b44375c2285d9f8898e2c7d39efb6f596cad7e",
-        "rebuild": "32b16b1be4c63a20560d928c92eb2f6c4e463e7edf6c0d03b9444feac0535216",
-        "goal_control": "0c1549c05b6bedb5f34e1e9817b44375c2285d9f8898e2c7d39efb6f596cad7e"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/lsp/framing.rs",
-      "hashes": {
-        "primary": "bb0e4404bbefde17a9cbb6e6edbfe023dfab3bb3efe06800749f45a67873944a",
-        "release": "bb0e4404bbefde17a9cbb6e6edbfe023dfab3bb3efe06800749f45a67873944a",
-        "rebuild": "4bc6ecfda6a2e94f5f85c58e9bc52396bddc22f5ea8908b503a4af879b4b6b40",
-        "goal_control": "bb0e4404bbefde17a9cbb6e6edbfe023dfab3bb3efe06800749f45a67873944a"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/lsp/mod.rs",
-      "hashes": {
-        "primary": "be60afd0b86cd24cd83bd7bed27a13ef72f5534b487685fe10788b3250920b72",
-        "release": "d350b4f3a9d76c893a543ad5a39062e6e5b8aae21f771ca31b8c193cbdad25ec",
-        "rebuild": "3f9f6e8f55cbc0f8f6b96e1327da3742fdc62b794b3bc161d9b07537f15c44b9",
-        "goal_control": "d350b4f3a9d76c893a543ad5a39062e6e5b8aae21f771ca31b8c193cbdad25ec"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/lsp/tests.rs",
-      "hashes": {
-        "primary": "c1e30750bed18337b3af3f0e8ab486eb9eb4bc06ae96585874e43c7d5b2e4251",
-        "release": "6c25ba6163dff2d437440109fa9043e1a09f8d506596bc6c2daf75ea484fe937",
-        "rebuild": "375e7f06e1bc297aeb7c812f52bdbe27d110c8e6bebf6e08a098f37a22c349a4",
-        "goal_control": "6c25ba6163dff2d437440109fa9043e1a09f8d506596bc6c2daf75ea484fe937"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/lsp/text.rs",
-      "hashes": {
-        "primary": "4ae7077f95926d2fa1de0469bfee3462bdfb4ea62e70d871b2910db494a6ef03",
-        "release": "4ae7077f95926d2fa1de0469bfee3462bdfb4ea62e70d871b2910db494a6ef03",
-        "rebuild": "28b5c0e1b6bf6cba1d18b8013e98b5f82e8d3cf04d1a50c3d93753f959b69cc3",
-        "goal_control": "4ae7077f95926d2fa1de0469bfee3462bdfb4ea62e70d871b2910db494a6ef03"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/mcp/http.rs",
-      "hashes": {
-        "primary": "8a6ada9b550ea7751dc347c852a5a6cb2592d9396aecf169febcb61430f42c32",
-        "release": "8a6ada9b550ea7751dc347c852a5a6cb2592d9396aecf169febcb61430f42c32",
-        "rebuild": "df72b4513d425644a5a8692ac1d2a098466f39e1b1b67de1c1a64ebc30f9dbb8",
-        "goal_control": "8a6ada9b550ea7751dc347c852a5a6cb2592d9396aecf169febcb61430f42c32"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/memory.rs",
-      "hashes": {
-        "primary": "9dae29d468fc7053f10aa9cd2402a63c0276c3a9a6c0dc9c26f7c0658c25d71b",
-        "release": "9dae29d468fc7053f10aa9cd2402a63c0276c3a9a6c0dc9c26f7c0658c25d71b",
-        "rebuild": "7eec623ab29b5673c9975cf601e816530642d2528725a6585d5d3e747412d615",
-        "goal_control": "9dae29d468fc7053f10aa9cd2402a63c0276c3a9a6c0dc9c26f7c0658c25d71b"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/permission.rs",
-      "hashes": {
-        "primary": "2e32d22e6ce6d77bf10abb00883ffc0fdbb5c097ab2dccb2ccb701c6976a93d5",
-        "release": "2e32d22e6ce6d77bf10abb00883ffc0fdbb5c097ab2dccb2ccb701c6976a93d5",
-        "rebuild": "fb8f918e0fea333fdcd9ff356e5afd0c36a6f3588630208f4f03f919c085864b",
-        "goal_control": "2e32d22e6ce6d77bf10abb00883ffc0fdbb5c097ab2dccb2ccb701c6976a93d5"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/plan.rs",
-      "hashes": {
-        "primary": "2841ac02f8801b581cbfdf677fbe80f3a50ddd078fba8f2bdb0d568d6be19905",
-        "release": "2841ac02f8801b581cbfdf677fbe80f3a50ddd078fba8f2bdb0d568d6be19905",
-        "rebuild": "4b5944f7dba5d9ce2c5cf2a5f4c4ab8c2db412948fe8479e9d13c965287e1030",
-        "goal_control": "2841ac02f8801b581cbfdf677fbe80f3a50ddd078fba8f2bdb0d568d6be19905"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/plugins.rs",
-      "hashes": {
-        "primary": "cbfd71202dd49243907ef6799bac25e665d63ba5a4b00bbf513e2d91467f1144",
-        "release": "cbfd71202dd49243907ef6799bac25e665d63ba5a4b00bbf513e2d91467f1144",
-        "rebuild": "18664bb65ae3b608685cdbcc11167a37c51d795e7f6608fb85563f410c99d69d",
-        "goal_control": "cbfd71202dd49243907ef6799bac25e665d63ba5a4b00bbf513e2d91467f1144"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/prompt.rs",
-      "hashes": {
-        "primary": "4c650b7bd718294fa639f4f0aea0eee2d711f6f2c868cc452241fdcbdbe22cc5",
-        "release": "4c650b7bd718294fa639f4f0aea0eee2d711f6f2c868cc452241fdcbdbe22cc5",
-        "rebuild": "4d138eb6f47ce59d4a780877954e98dc70c94f788a9d0c7adca0e10ca6585007",
-        "goal_control": "4c650b7bd718294fa639f4f0aea0eee2d711f6f2c868cc452241fdcbdbe22cc5"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/provider/anthropic.rs",
-      "hashes": {
-        "primary": "b05196d7939c599c324180721d5f8958029920c45c224dbec1b91afd878398ed",
-        "release": "b05196d7939c599c324180721d5f8958029920c45c224dbec1b91afd878398ed",
-        "rebuild": "d1b9b561f98bba21c84126766113259ccd59f78d516d67e8a2606399f98a7225",
-        "goal_control": "b05196d7939c599c324180721d5f8958029920c45c224dbec1b91afd878398ed"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/provider/mod.rs",
-      "hashes": {
-        "primary": "c4e904c559cf43749ee498d25bcc74eeddff987be998d973ae649739d1c6a09d",
-        "release": "c4e904c559cf43749ee498d25bcc74eeddff987be998d973ae649739d1c6a09d",
-        "rebuild": "dfe239b276ff673c2ce767a4e9b25cf9b56c4fcb74a3346b74d6874e8e24bddc",
-        "goal_control": "c4e904c559cf43749ee498d25bcc74eeddff987be998d973ae649739d1c6a09d"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/provider/openai_chat.rs",
-      "hashes": {
-        "primary": "acccb4defe2dde13c39c4d701cf27cc4a83e28c5a9cdf25bd79cfd2361fa9a6d",
-        "release": "acccb4defe2dde13c39c4d701cf27cc4a83e28c5a9cdf25bd79cfd2361fa9a6d",
-        "rebuild": "446afce845f555bede7c0182681f2bb517ca1da9b3e06e8a234b19d09172d8a3",
-        "goal_control": "acccb4defe2dde13c39c4d701cf27cc4a83e28c5a9cdf25bd79cfd2361fa9a6d"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/provider/openai_responses.rs",
-      "hashes": {
-        "primary": "824ca59f76dd9d04f74c9484c9eea2220f5758904126722cb9447bbe195fabf3",
-        "release": "824ca59f76dd9d04f74c9484c9eea2220f5758904126722cb9447bbe195fabf3",
-        "rebuild": "13a6073f6fd839a7fcdd8ba52d06222b088b9d890213c8cb33eb57591b6e9900",
-        "goal_control": "824ca59f76dd9d04f74c9484c9eea2220f5758904126722cb9447bbe195fabf3"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/provider/record.rs",
-      "hashes": {
-        "primary": "27c0171f677a9633363394578fc899ae2eba14aa77ddeee68ac9e14bf9c43ef5",
-        "release": "27c0171f677a9633363394578fc899ae2eba14aa77ddeee68ac9e14bf9c43ef5",
-        "rebuild": "3d65172aa8e292abdedc2be983830b3d736b253ef44391b3a879fc05f986397a",
-        "goal_control": "27c0171f677a9633363394578fc899ae2eba14aa77ddeee68ac9e14bf9c43ef5"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/provider/sse.rs",
-      "hashes": {
-        "primary": "ad62b54d8dd919526a0b37a9c52e3b37acf03d777925f091270894d9eef378e8",
-        "release": "ad62b54d8dd919526a0b37a9c52e3b37acf03d777925f091270894d9eef378e8",
-        "rebuild": "32967cc59818f5d6685e6ce1db80e29667203aa8df0459cbde0ad2eb9e7ef858",
-        "goal_control": "ad62b54d8dd919526a0b37a9c52e3b37acf03d777925f091270894d9eef378e8"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/skills.rs",
-      "hashes": {
-        "primary": "efa713257b8a5fdee4d3a1120fec948b551db0ba7714a4f78219632400f67f42",
-        "release": "efa713257b8a5fdee4d3a1120fec948b551db0ba7714a4f78219632400f67f42",
-        "rebuild": "c50478791ec4047650a6574fe938a2368625000f423dd57bce88e1fabd9d14e6",
-        "goal_control": "efa713257b8a5fdee4d3a1120fec948b551db0ba7714a4f78219632400f67f42"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/subagent.rs",
-      "hashes": {
-        "primary": "fbb355943db1062fb60c683f7bfc7e494e61cf04f71d712df6276e5646b3ab0a",
-        "release": "fbb355943db1062fb60c683f7bfc7e494e61cf04f71d712df6276e5646b3ab0a",
-        "rebuild": "6992cca0f72ea8bda0959ded4a526736e1cba763b54f3bf5260e05ff543b84b3",
-        "goal_control": "fbb355943db1062fb60c683f7bfc7e494e61cf04f71d712df6276e5646b3ab0a"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/artifact.rs",
-      "hashes": {
-        "primary": "0218d036ab3326bb124f16253311c529a1c527f1e697145d5f113a83b2e81e07",
-        "release": "0218d036ab3326bb124f16253311c529a1c527f1e697145d5f113a83b2e81e07",
-        "rebuild": "1bfda2b04254e3246d05e0bef933dc9dc22521dacf8fb54dbff44b9f5e9f377d",
-        "goal_control": "0218d036ab3326bb124f16253311c529a1c527f1e697145d5f113a83b2e81e07"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/git.rs",
-      "hashes": {
-        "primary": "e5b96d6563d8fddbb726cf99b1e66e5488e923415f2b3139f1b47198cc689f9d",
-        "release": "e5b96d6563d8fddbb726cf99b1e66e5488e923415f2b3139f1b47198cc689f9d",
-        "rebuild": "453ca8cdd77549688d0bad8b517be18c3b911b91873cfd4d27fff5e64c74e716",
-        "goal_control": "e5b96d6563d8fddbb726cf99b1e66e5488e923415f2b3139f1b47198cc689f9d"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/http.rs",
-      "hashes": {
-        "primary": "4870530934606b3536e15824ea0ddd0ef393c47be60c2834a6fabc7ffe5d6836",
-        "release": "4870530934606b3536e15824ea0ddd0ef393c47be60c2834a6fabc7ffe5d6836",
-        "rebuild": "25c14149d46d16c61ed7eb9965bb046dd98ecdf396b59ea0510b6ee2aaaae4dd",
-        "goal_control": "4870530934606b3536e15824ea0ddd0ef393c47be60c2834a6fabc7ffe5d6836"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/mod.rs",
-      "hashes": {
-        "primary": "8c283dcc8aefcc8a6ff0bf1ae9ccd737f1d6042d9de2c230ad8688b3917195ac",
-        "release": "8c283dcc8aefcc8a6ff0bf1ae9ccd737f1d6042d9de2c230ad8688b3917195ac",
-        "rebuild": "f126ff44a4b1d6e8960230916c2c94ff41558c338e72cb02858f298f73a6c04c",
-        "goal_control": "8c283dcc8aefcc8a6ff0bf1ae9ccd737f1d6042d9de2c230ad8688b3917195ac"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/office.rs",
-      "hashes": {
-        "primary": "af2cfa7579b9825712dc6fdbbcc84d6a9cfe8c2fb4e0cd1cfc7a79b037f97c22",
-        "release": "af2cfa7579b9825712dc6fdbbcc84d6a9cfe8c2fb4e0cd1cfc7a79b037f97c22",
-        "rebuild": "8eefd0de5030f4b19b56de123a3dd3c05d765e4100a63c816d84a1a6a7a6b0a5",
-        "goal_control": "af2cfa7579b9825712dc6fdbbcc84d6a9cfe8c2fb4e0cd1cfc7a79b037f97c22"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/session_ipc.rs",
-      "hashes": {
-        "primary": "8a27d39233b2aa8d7be2fd1ecb8d1e3c8f569aa28687c08909429602ad61592c",
-        "release": "8a27d39233b2aa8d7be2fd1ecb8d1e3c8f569aa28687c08909429602ad61592c",
-        "rebuild": "98b00a1d39747ffd2f254d9159c8765f7fb1317ebdf01857b76c43dd60aa4699",
-        "goal_control": "8a27d39233b2aa8d7be2fd1ecb8d1e3c8f569aa28687c08909429602ad61592c"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/shell.rs",
-      "hashes": {
-        "primary": "ce5ce26205f145a9e3c9d7e9328c90dd350f1036caa299991d4baa9efe75cb5e",
-        "release": "ce5ce26205f145a9e3c9d7e9328c90dd350f1036caa299991d4baa9efe75cb5e",
-        "rebuild": "18ecd77386bc6f284e1b74eaf5ee6bf26271d78a4f865b7971deaf82a1dd1ab6",
-        "goal_control": "ce5ce26205f145a9e3c9d7e9328c90dd350f1036caa299991d4baa9efe75cb5e"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/shell_session.rs",
-      "hashes": {
-        "primary": "792d56c32d628713dac045e6a2601ab1f3bd47669fa32eb7725765aa38a12db0",
-        "release": "792d56c32d628713dac045e6a2601ab1f3bd47669fa32eb7725765aa38a12db0",
-        "rebuild": "b7797075dffae9b78d6d877293fe09e5bd23a5fd463f3c207dc7b0d9adef72b6",
-        "goal_control": "792d56c32d628713dac045e6a2601ab1f3bd47669fa32eb7725765aa38a12db0"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/sqlite.rs",
-      "hashes": {
-        "primary": "36b24ba7a2f9caabea72575ec7bdf295a587e11dde42181c9dfc4bcd5c9f23cd",
-        "release": "36b24ba7a2f9caabea72575ec7bdf295a587e11dde42181c9dfc4bcd5c9f23cd",
-        "rebuild": "1ed4de459837a5c659b746d37e7dd4ca7e691763ea4686d05107ad24ceb6913d",
-        "goal_control": "36b24ba7a2f9caabea72575ec7bdf295a587e11dde42181c9dfc4bcd5c9f23cd"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/src/tools/web.rs",
-      "hashes": {
-        "primary": "30f02e9ec94f01504201abd250413bdbc821a48b1b3f0fb3208c66f17ad1913f",
-        "release": "30f02e9ec94f01504201abd250413bdbc821a48b1b3f0fb3208c66f17ad1913f",
-        "rebuild": "89516b86c79267392358313fd672dc153c8041942c0668d0473fee481123db4e",
-        "goal_control": "30f02e9ec94f01504201abd250413bdbc821a48b1b3f0fb3208c66f17ad1913f"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/crates/omnia-harness/tests/eval_suite.rs",
-      "hashes": {
-        "primary": "713ce37643d458636a245631875be13d8996cc1b5d830274efe9043facf4c311",
-        "release": "713ce37643d458636a245631875be13d8996cc1b5d830274efe9043facf4c311",
-        "rebuild": "b60099426e8516991be269ab99e4d8ce22cf36ea3d5577998cb02beeba78000f",
-        "goal_control": "713ce37643d458636a245631875be13d8996cc1b5d830274efe9043facf4c311"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/agent_services.rs",
-      "hashes": {
-        "primary": "fa7d5093cde627b3791255d990f4f4a2098575041a88fc70f1f734d3b54c1020",
-        "release": "03234f6691a3a8186b6377bcfe1a8f4d57bf2e660a11f4d9fd9a28b33fc2dbdc",
-        "rebuild": "03234f6691a3a8186b6377bcfe1a8f4d57bf2e660a11f4d9fd9a28b33fc2dbdc",
-        "goal_control": "03234f6691a3a8186b6377bcfe1a8f4d57bf2e660a11f4d9fd9a28b33fc2dbdc"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/app_state_persistence.rs",
-      "hashes": {
-        "primary": "9c709d22e9141fbdfba438df4474dad0905d33d5c9cf8ee70e0d80d608b6d63b",
-        "release": "48950284ed312383a433b889b819d6aabfd9fc1d3eeeb2c06a1138b69e3634ec",
-        "rebuild": "48950284ed312383a433b889b819d6aabfd9fc1d3eeeb2c06a1138b69e3634ec",
-        "goal_control": "48950284ed312383a433b889b819d6aabfd9fc1d3eeeb2c06a1138b69e3634ec"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/artifact_commands.rs",
-      "hashes": {
-        "primary": "44af9e2abe11dbec4229c61a82f2d4a53826a693018a9f6922fc74a7385211a6",
-        "release": "bdc4588efd3e1221a458f8bb5e970016b31c5d8a8fbea868f888332be63184b5",
-        "rebuild": "bdc4588efd3e1221a458f8bb5e970016b31c5d8a8fbea868f888332be63184b5",
-        "goal_control": "bdc4588efd3e1221a458f8bb5e970016b31c5d8a8fbea868f888332be63184b5"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/attachment_commands.rs",
-      "hashes": {
-        "primary": "7cb6d26f9412f200ddd562ae857ab131fc5a74baed802fedcedc436a77206f17",
-        "release": "43654229ae3468ccce3603d566bdeae3ae683268d6acaa3aeb7bb310df444b13",
-        "rebuild": "43654229ae3468ccce3603d566bdeae3ae683268d6acaa3aeb7bb310df444b13",
-        "goal_control": "43654229ae3468ccce3603d566bdeae3ae683268d6acaa3aeb7bb310df444b13"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/attachment_repository.rs",
-      "hashes": {
-        "primary": "7e6e14b6a3df6d42d7102e62e29bcc87cf4dad3d386e36e9399dde4869f1c66e",
-        "release": "4fa1d4963e3a130182a76f4c2cd235e1e942a3234b2513356df8a8084accc67c",
-        "rebuild": "85bd1d1ec8a643e5eba87bdc337058862bbbf44168b3670f02c6a550d48943b6",
-        "goal_control": "4fa1d4963e3a130182a76f4c2cd235e1e942a3234b2513356df8a8084accc67c"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/browser_profile.rs",
-      "hashes": {
-        "primary": "a6a686b881a603d57b99fedaf917203431027b5806b0f0abb84555bd50f64685",
-        "release": "0ece2e51c9fedf1a1819cf603c401c379f8150cb60a1fa7a2b187e14c8a01556",
-        "rebuild": "0ece2e51c9fedf1a1819cf603c401c379f8150cb60a1fa7a2b187e14c8a01556",
-        "goal_control": "0ece2e51c9fedf1a1819cf603c401c379f8150cb60a1fa7a2b187e14c8a01556"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/browser_surface.rs",
-      "hashes": {
-        "primary": "1661046dc5ec726e4db44c6ffc2d2b6e5e3ea49da480ab1db6e483d6e88a5cef",
-        "release": "f3de668ea62eb70df56188066d6cc616a8f58f3e3ef3e20afce2be8aaeef9ce7",
-        "rebuild": "f3de668ea62eb70df56188066d6cc616a8f58f3e3ef3e20afce2be8aaeef9ce7",
-        "goal_control": "f3de668ea62eb70df56188066d6cc616a8f58f3e3ef3e20afce2be8aaeef9ce7"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/content_store.rs",
-      "hashes": {
-        "primary": "bad8859f33617cafab4321617bc50b43246729f59fe1508a01def8a431e46526",
-        "release": "15575a9fb9702213033291e98ae6aa3f76e238da433b8365221d65839a7ff74d",
-        "rebuild": "15575a9fb9702213033291e98ae6aa3f76e238da433b8365221d65839a7ff74d",
-        "goal_control": "15575a9fb9702213033291e98ae6aa3f76e238da433b8365221d65839a7ff74d"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/data_portability.rs",
-      "hashes": {
-        "primary": "40ae3139136a0ac15e51af97add3b1c006b449549f34993572b8e11ba892996e",
-        "release": "300bb091af2356dfa2ae16aaed5c61bfc54b2230758cedab736880013b6b10e8",
-        "rebuild": "babee79a7ed2cd8fa2cb5459e347f629cfa45ec7c4b97e1b1394d1ec35ecce4e",
-        "goal_control": "300bb091af2356dfa2ae16aaed5c61bfc54b2230758cedab736880013b6b10e8"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/download_manager.rs",
-      "hashes": {
-        "primary": "39f1b1d2586d9aa3aa7d664a99ebaffbd8d9bf1152e380ccae19cc12ac21b48f",
-        "release": "81b258aaacd97242f1b6953c6e354c533d5d30298d5326c154a7911eea3dc2e0",
-        "rebuild": "81b258aaacd97242f1b6953c6e354c533d5d30298d5326c154a7911eea3dc2e0",
-        "goal_control": "81b258aaacd97242f1b6953c6e354c533d5d30298d5326c154a7911eea3dc2e0"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/editor_server.rs",
-      "hashes": {
-        "primary": "536bacd43a172fccf92fd61247981bacb1f94f8b1e5420e81d201fad742ad70a",
-        "release": "536bacd43a172fccf92fd61247981bacb1f94f8b1e5420e81d201fad742ad70a",
-        "rebuild": "7704bc373cb69c3b26e480755a79f90a57e10cb16a44ad624de1a28112ad2ec3",
-        "goal_control": "536bacd43a172fccf92fd61247981bacb1f94f8b1e5420e81d201fad742ad70a"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/error.rs",
-      "hashes": {
-        "primary": "a826be8ed71bc74562e186b393c12dd21b7460583e7f9e450f2317d42f3d6d1a",
-        "release": "a826be8ed71bc74562e186b393c12dd21b7460583e7f9e450f2317d42f3d6d1a",
-        "rebuild": "9e3efee0133771d2df0d6d5d93eb06a62b24b6b706505c57d66e1bd584b5c574",
-        "goal_control": "a826be8ed71bc74562e186b393c12dd21b7460583e7f9e450f2317d42f3d6d1a"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/harness_bridge.rs",
-      "hashes": {
-        "primary": "c974f80da02259e397be5e45d9ddd99c79b15d06512f6a4ceb4ccb3e2ef4c42f",
-        "release": "e5c1dc3506aa99fc99a991a230569e0072e22bd845c78ca7b0e25a1e74d9b938",
-        "rebuild": "adbc002ea6d76d84e723bab51d7565959dc7a0c37dab3a06ca037d8a2372fcc7",
-        "goal_control": "b45432d77badca1a90cbd6553c13309ddb0c6c7f16820b0afbbcf48505534133"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/harness_store.rs",
-      "hashes": {
-        "primary": "a2ed28b7bb2aa398ec53a2ab4480aeea100efbfa7537e34fdc0246e00e1a51a2",
-        "release": "e0a09a65f4aa03874fdea5409740d703287688ba2289459bf05f01529eb3ebe5",
-        "rebuild": "4c2da50c3f823abc4f4f3c5d7cce1b6c9ca180de7d80dd3f183e6001a4722aef",
-        "goal_control": "e0a09a65f4aa03874fdea5409740d703287688ba2289459bf05f01529eb3ebe5"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/harness_trust.rs",
-      "hashes": {
-        "primary": "5cd67a1dbfcb5a2f61b714cd30c698ca22cb27b296bf8a43a360782c7f6401e7",
-        "release": "3c911877ca9d8d775166a5dae9ba82d3c09f844febd44862705fd352235b7087",
-        "rebuild": "3c911877ca9d8d775166a5dae9ba82d3c09f844febd44862705fd352235b7087",
-        "goal_control": "3c911877ca9d8d775166a5dae9ba82d3c09f844febd44862705fd352235b7087"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/inspector.rs",
-      "hashes": {
-        "primary": "0c02116fe8ece9f17c5162c013e07e0ee8dc20bfe29f21d7fb889d4d44dc95ea",
-        "release": "3ead3ca2b53bd2b8cb76f5f2d13e8ff06ca698dbec971045eeca0945ea6df910",
-        "rebuild": "3ead3ca2b53bd2b8cb76f5f2d13e8ff06ca698dbec971045eeca0945ea6df910",
-        "goal_control": "3ead3ca2b53bd2b8cb76f5f2d13e8ff06ca698dbec971045eeca0945ea6df910"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/lib.rs",
-      "hashes": {
-        "primary": "abc8d05c6ade66dfce2045bf598de703e09a2114f1724e8d2ba5f45c19a1ddcc",
-        "release": "875b9a30e78e394b84899069c6cafc5e5b669fe48e59c7a4f13a3facebaf6e09",
-        "rebuild": "37dcd160fabaaf6c482780627cde8aed5e6455c2965539e21bb0e299c15c483c",
-        "goal_control": "1eeb119157b0aae0cea2692c232f02ccd1d16b965fe1f1971ab3d9c0e87a5b5f"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/mcp_server.rs",
-      "hashes": {
-        "primary": "b76393debbfb24bd5843fb692a07c5625a0936366030c4a4521e7058c152a640",
-        "release": "08e6219d5b591c7bcbd2564582c8882525bcac78a32e5074b7d984d6b781a616",
-        "rebuild": "5ab55940a4c23caa2525008e4230f16f7571e3c782ea0fce6f5b8b1ecce23054",
-        "goal_control": "08e6219d5b591c7bcbd2564582c8882525bcac78a32e5074b7d984d6b781a616"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/native_commands.rs",
-      "hashes": {
-        "primary": "f31cc3fb2d55d34bdcbb85fdca1639cd097f2d296bd2c869b6ef82d90f833d30",
-        "release": "84fd16d0bc845ae34c94f6d16fce73fde38020f676a6048219d08203a75d16e2",
-        "rebuild": "8c9ef8520039fde6853f4c1b151b70b615e4cb2e5078dbc0285611fa51c92233",
-        "goal_control": "84fd16d0bc845ae34c94f6d16fce73fde38020f676a6048219d08203a75d16e2"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/phase2_commands.rs",
-      "hashes": {
-        "primary": "3648d4b1a37161d24f905608a19126a8560a44ca578ff0468c3db746572dbcb0",
-        "release": "fa9ee9405de0037308497732a332f613f92bee6eb87dc99947ad2372051ca7f9",
-        "rebuild": "fa9ee9405de0037308497732a332f613f92bee6eb87dc99947ad2372051ca7f9",
-        "goal_control": "fa9ee9405de0037308497732a332f613f92bee6eb87dc99947ad2372051ca7f9"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/plugin_bridge.rs",
-      "hashes": {
-        "primary": "d214b2fb074cf7f3988bf7fd048f4d83e898704b5978bd2ad733e795d676983a",
-        "release": "38babd21150761fa410c09eeeacb861d3be584ae24d0a0e0486528029645fcbf",
-        "rebuild": "38babd21150761fa410c09eeeacb861d3be584ae24d0a0e0486528029645fcbf",
-        "goal_control": "38babd21150761fa410c09eeeacb861d3be584ae24d0a0e0486528029645fcbf"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/prompt_presets.rs",
-      "hashes": {
-        "primary": "2f5479ee28a1b37a858878d2e59aca9df4c5184abe04e2cc5c121d0db317c51f",
-        "release": "be0932d5531ed44c61b370ddc7d801c4bfd996c34a101cce6bb2a1f0e71cac2a",
-        "rebuild": "be0932d5531ed44c61b370ddc7d801c4bfd996c34a101cce6bb2a1f0e71cac2a",
-        "goal_control": "be0932d5531ed44c61b370ddc7d801c4bfd996c34a101cce6bb2a1f0e71cac2a"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/provider_attempt_lineage.rs",
-      "hashes": {
-        "primary": "ae9cea873c3e8fecfc3efeb0cd5edfad8485aed53e994ef1f74b656d0be74af4",
-        "release": "5bad650f462ae5775e9b84ae18d05f24367233c5986c95066761bdae6275901c",
-        "rebuild": "5bad650f462ae5775e9b84ae18d05f24367233c5986c95066761bdae6275901c",
-        "goal_control": "5bad650f462ae5775e9b84ae18d05f24367233c5986c95066761bdae6275901c"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/provider_gateway.rs",
-      "hashes": {
-        "primary": "d11524cc00726acd6bb3c0e74770cde415842940619886e8e6620a52480f719b",
-        "release": "0ec9e65ad2943511f29c32f506f7d111f87aec28b17462082293f3c17ab2957b",
-        "rebuild": "51e6ef59648368cd450ba02fddf5782c9ce9c88fa872bb16eeb387a54c0d7f99",
-        "goal_control": "49f386bc312ed0a6bd263f74f10e38df5cbbf2d7439a0bc150935b4a51bf8067"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/review.rs",
-      "hashes": {
-        "primary": "7d02f9a22df5b14dfbffc3133fc39e879cff9ef8165f40e9f6e7bc4dd1349146",
-        "release": "ebed647c2e7ea8a287fd861c904a0529fa4911b3a058937a4a448ed1b8b56bfd",
-        "rebuild": "ebed647c2e7ea8a287fd861c904a0529fa4911b3a058937a4a448ed1b8b56bfd",
-        "goal_control": "ebed647c2e7ea8a287fd861c904a0529fa4911b3a058937a4a448ed1b8b56bfd"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/run_journal.rs",
-      "hashes": {
-        "primary": "c949a2d0e3837f9a4dac97f57b9b3d806979cf58084d6987e79abaae7484575a",
-        "release": "4d311faf47d6102aadbe91cf3f64d312d80857f199a29652a951b73c87f79f6b",
-        "rebuild": "4d311faf47d6102aadbe91cf3f64d312d80857f199a29652a951b73c87f79f6b",
-        "goal_control": "4d311faf47d6102aadbe91cf3f64d312d80857f199a29652a951b73c87f79f6b"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/scheduler.rs",
-      "hashes": {
-        "primary": "b58bf96594c0d0eaa00518b93f108a1acb3da4457ba632bf9d4010ba73115c32",
-        "release": "586ab5464e1e468bcabfdfed807d2aeb391fde91d58ffac8e21297696f5f8b07",
-        "rebuild": "586ab5464e1e468bcabfdfed807d2aeb391fde91d58ffac8e21297696f5f8b07",
-        "goal_control": "586ab5464e1e468bcabfdfed807d2aeb391fde91d58ffac8e21297696f5f8b07"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/secret_store.rs",
-      "hashes": {
-        "primary": "918d3f7fdbd70d7e4e046e18325ca6048e4a588ba85a24fd416d40b987ac5547",
-        "release": "918d3f7fdbd70d7e4e046e18325ca6048e4a588ba85a24fd416d40b987ac5547",
-        "rebuild": "ff61f9eb56baa0e75619bc9bbde991a0717f1eb31f8a3c6ebbf9bf9048c27358",
-        "goal_control": "918d3f7fdbd70d7e4e046e18325ca6048e4a588ba85a24fd416d40b987ac5547"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/state.rs",
-      "hashes": {
-        "primary": "71a0f54e8ce30a685f184b146024036e154a53a9a7dd5e9fef6cb50fa801440e",
-        "release": "4637fc7094556836fadccea158aa790a2464fd401edd8b1666e46ff7e3d73271",
-        "rebuild": "4637fc7094556836fadccea158aa790a2464fd401edd8b1666e46ff7e3d73271",
-        "goal_control": "4637fc7094556836fadccea158aa790a2464fd401edd8b1666e46ff7e3d73271"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/storage.rs",
-      "hashes": {
-        "primary": "9cda6c250afc9cc407f4511df72a9815442ed79a88db9765384a67f45bae0ab7",
-        "release": "647c8818afad8cfe6b05a0d71953702f21664015aa82663924adfd49db01a79a",
-        "rebuild": "84409d78320cd557f3d64d005880be6fb16681c033bc4f236fedb9335385e2cd",
-        "goal_control": "868313f67a177d536c77e99dcc3485a613a2730658fadbb3e5b6aec239e695f7"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/telemetry.rs",
-      "hashes": {
-        "primary": "010764225da048ca414ffd4675082dfa945b585144dda2048069bc719f5b5cc4",
-        "release": "127d5c44ed58368368fe0ef7b60c3b917c3be5cbf90f522a3004121976208cea",
-        "rebuild": "127d5c44ed58368368fe0ef7b60c3b917c3be5cbf90f522a3004121976208cea",
-        "goal_control": "127d5c44ed58368368fe0ef7b60c3b917c3be5cbf90f522a3004121976208cea"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/update_checker.rs",
-      "hashes": {
-        "primary": "febb4418363f6851cf42ebd7ccd3a9a24b4ab86a9197ad0f750e9583375d5716",
-        "release": "c564fd4994b81ad99c9cc82db7972a8338e7f17e5716eb3e67a1c10eba087239",
-        "rebuild": "c564fd4994b81ad99c9cc82db7972a8338e7f17e5716eb3e67a1c10eba087239",
-        "goal_control": "c564fd4994b81ad99c9cc82db7972a8338e7f17e5716eb3e67a1c10eba087239"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/voice.rs",
-      "hashes": {
-        "primary": "75ccedba72c65d985f570d0510eda0bcd37cfafef8a15c2faf64d8c011884f6d",
-        "release": "3faa1826a14b2ffba74a50464dd0e99053860f3ab803fc2ad0f4e880177325be",
-        "rebuild": "3faa1826a14b2ffba74a50464dd0e99053860f3ab803fc2ad0f4e880177325be",
-        "goal_control": "3faa1826a14b2ffba74a50464dd0e99053860f3ab803fc2ad0f4e880177325be"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/src/workspace_indexer.rs",
-      "hashes": {
-        "primary": "2a5b75ee56608eca2ae59e896fcb6c8da073dcd80c7c5271562811e1e8ed9ead",
-        "release": "32b0b716b53aa244693ed11a81f55c6c1c8276dc9d7c2b4acbb635b5b7df92f4",
-        "rebuild": "32b0b716b53aa244693ed11a81f55c6c1c8276dc9d7c2b4acbb635b5b7df92f4",
-        "goal_control": "32b0b716b53aa244693ed11a81f55c6c1c8276dc9d7c2b4acbb635b5b7df92f4"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/tests/native_harness_tests.rs",
-      "hashes": {
-        "primary": "cef040848b290773c2d586a16db57e41f3d342ffaaa393c3afd7e188a683c0e8",
-        "release": "6be2460f4b3122e814efacd3c53bfd2c7444a5ae0f661aa38392eab13fc6d903",
-        "rebuild": "6be2460f4b3122e814efacd3c53bfd2c7444a5ae0f661aa38392eab13fc6d903",
-        "goal_control": "6be2460f4b3122e814efacd3c53bfd2c7444a5ae0f661aa38392eab13fc6d903"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    },
-    {
-      "path": "src-tauri/tests/native_subsystem_tests.rs",
-      "hashes": {
-        "primary": "011c6c54096d08fb54445f9be97ed6750ac7c108e3085d67a5eab6c6daf99b4b",
-        "release": "959040269895f0396cba662ad9198ebd7717d25e41f983d65935148ffd4f1661",
-        "rebuild": "959040269895f0396cba662ad9198ebd7717d25e41f983d65935148ffd4f1661",
-        "goal_control": "959040269895f0396cba662ad9198ebd7717d25e41f983d65935148ffd4f1661"
-      },
-      "disposition": "unreviewed",
-      "owner": "root-integrator",
-      "requiredReview": "semantic source review + dirty worktree comparison",
-      "notes": ""
-    }
-  ],
+  "schema": "omnia.source-disposition.v2",
+  "state": "OPEN",
+  "owner": "root-integrator",
+  "scope": "138 differing HEAD focus paths; does not cover all unique or dirty/untracked work",
+  "generatedFrom": "shared-path-differences.json",
+  "historicalEvidence": {
+    "privateArtifact": "continuation-r2/historical-ledgers/SOURCE_DISPOSITION_LEDGER.json",
+    "sha256": "7d61f265a6461bc0c72252de54229cef44a6aa315eec6f3fca1b350fd263f316",
+    "bytes": 87340
+  },
+  "acquisitionEvidence": "source-divergence-ledger.json",
   "allowedDispositions": [
     "incorporated",
     "retained-recovery",
@@ -1806,9 +17,564 @@
     "compatibility-only",
     "unresolved"
   ],
+  "next": "Inspect current owning HEAD/index/working bytes and source requirement; bind per-change decision and reviewer. Extend beyond focus paths to all relevant unique changes.",
+  "rows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": ".github/workflows/fast-feedback.yml",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "README.md",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "package.json",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/Cargo.lock",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/Cargo.toml",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/browser.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/capture.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/cdp.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/emulate.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/input.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/keys.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/launch.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/lib.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/network.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/record/codegen.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/record/gif.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/record/mod.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/safety.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/snapshot.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/tab.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/tools/exec.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/tools/mod.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-browser/src/tools/schema.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/backend.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/bg.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/bgwin.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/bgwin/tests.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/computer.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/computer_bg.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/encode.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/format.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/geometry.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/input.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/keys.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/launch.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/lib.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/ocr.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/ocr_win.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/safety.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/screen.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/tools.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/types.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/uia.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-computer/src/winapi.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/blob.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/dash.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/dash_download.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/detect.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/engine.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/fsutil.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/hls.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/hls_download.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/http.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/lib.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/mux.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/probe.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/progress.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/ratelimit.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/request.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-download/src/types.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/Cargo.toml",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/agent.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/budget.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/commands.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/eval/check.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/eval/mod.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/eval/script.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/hooks.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/lib.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/lsp/client.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/lsp/config.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/lsp/framing.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/lsp/mod.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/lsp/tests.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/lsp/text.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/mcp/http.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/memory.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/permission.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/plan.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/plugins.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/prompt.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/provider/anthropic.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/provider/mod.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/provider/openai_chat.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/provider/openai_responses.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/provider/record.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/provider/sse.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/skills.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/subagent.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/artifact.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/git.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/http.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/mod.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/office.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/session_ipc.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/shell.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/shell_session.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/sqlite.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/src/tools/web.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/crates/omnia-harness/tests/eval_suite.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/agent_services.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/app_state_persistence.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/artifact_commands.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/attachment_commands.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/attachment_repository.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/browser_profile.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/browser_surface.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/content_store.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/data_portability.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/download_manager.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/editor_server.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/error.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/harness_bridge.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/harness_store.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/harness_trust.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/inspector.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/lib.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/mcp_server.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/native_commands.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/phase2_commands.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/plugin_bridge.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/prompt_presets.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/provider_attempt_lineage.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/provider_gateway.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/review.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/run_journal.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/scheduler.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/secret_store.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/state.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/storage.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/telemetry.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/update_checker.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/voice.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/src/workspace_indexer.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/tests/native_harness_tests.rs",
+      "disposition": "unreviewed"
+    },
+    {
+      "path": "src-tauri/tests/native_subsystem_tests.rs",
+      "disposition": "unreviewed"
+    }
+  ],
   "limits": [
-    "No row is admitted by hash alone",
-    "Working-tree and untracked data are separate from HEAD comparison",
-    "Do not delete or overwrite while disposition is unreviewed"
+    "All rows remain unreviewed.",
+    "Historical full source hashes/rows retained privately with SHA-256; compacting grants no semantic review credit.",
+    "Revalidate source drift before carrying any later disposition."
   ]
 }

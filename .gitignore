@@ -19,8 +19,15 @@ tmp/
 output/
 downloads/
 
-# Local app/tool state
+# Project-owned reusable skills are tracked; live local agent state is not.
 .agents/
+!.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/goal-plan-loop-dod/
+!.agents/skills/deep-steer/
+!.agents/skills/deep-clean/
 .claude/
 node_modules/
 target/
@@ -46,9 +53,6 @@ test-results/
 Thumbs.db
 .DS_Store
 
-# Keep explicit workspace governance files visible even under ignored trees only when force-added.
-
+# Transitional retired paths. New research/recovery/output belongs outside root.
 research/
-
 projects/
-

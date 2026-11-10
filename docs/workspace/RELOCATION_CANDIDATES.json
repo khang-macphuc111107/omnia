@@ -5,151 +5,151 @@
   "candidates": [
     {
       "source": "LocalAppData\\OmniaGitResearch",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "LocalAppData\\OmniaResearch\\aider",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "LocalAppData\\OmniaResearch\\continue",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "LocalAppData\\OmniaResearch\\opencode",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\research\\upstreams\\anthropic-claude-code",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\research\\upstreams\\claude-code",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\research\\upstreams\\claude-code-official",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\research\\upstreams\\deepseek-harness",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\research\\upstreams\\openai-codex",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\cli\\kimi-cli",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\desktop-apps\\cherry-studio",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\desktop-apps\\herdr-app\\vendor\\ghostty",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\downloaders\\gdrive-downloader",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\herdr-core",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\herdr-core\\vendor\\ghostty",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\hermes-agent",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\kimi-code",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\opencode",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\openhands",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\openhands-agent-sdk",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\harnesses\\openhands-automation",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "repos\\omnia\\upstream_extractions\\notebooks\\gemini-notebook",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "defer-until-reference-audit",
       "reason": "nested provenance or upstream extraction; moving now could break source pointers"
     },
     {
       "source": "research\\repos\\rea",
-      "proposedRoot": "research/repos",
+      "proposedRoot": "D:/OmniaData/research/repos",
       "action": "completed-hash-verified-relocation",
       "reason": "Relocated after zero-hit text triage and full before/after hash manifest."
     },
     {
       "source": "projects\\omnia-public",
-      "proposedRoot": "projects",
+      "proposedRoot": "D:/OmniaData/projects",
       "action": "completed-hash-verified-relocation",
       "reason": "Clean public staging repository; updated release staging script to explicit workspace paths."
     }
@@ -203,5 +203,7 @@
       "source": "backups\\recovery\\repo-original-20261001",
       "reason": "Recovery snapshot moved into backups/recovery; cleanup tooling path updated and hashes verified."
     }
-  ]
+  ],
+  "state": "historical-candidates-with-current-destination-guidance; no mutation approval by this ledger",
+  "currentMappings": "EXTERNAL_LAYOUT.json"
 }

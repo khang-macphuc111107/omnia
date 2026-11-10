@@ -1,80 +1,115 @@
-# Omnia workspace checkpoint — 2026-11-11
+# Omnia checkpoint — 2026-11-11, continuation revision 2
 
-## Current migration checkpoint
+## Resume here
 
-- Native admission: **byte-copy verified**, 197 files / 2,588,993 bytes from
-  the rebuild checkout into `D:\Omnia\native` and `D:\Omnia\src-tauri\crates`.
-  Receipt: external `handoff-intake/NATIVE_ADMISSION.json`.
-- Root checks: `cargo metadata --locked` passed, `cargo fmt --check` passed,
-  and root native tests passed with output target outside `D:\Omnia`
-  (`4 + 1` direct native tests plus shared integration suites; see external
-  `native-root-tests.stdout.txt`). This is source/build evidence, not final
-  product or live-provider evidence.
-- Root README and ignore policy now describe the actual source-bearing root.
-- The previous primary/release/rebuild/goal-control trees remain preserved.
-  Reconciliation and Git retirement are still open.
-- History inventory: 852 rollout JSONL files, 2,256,736,449 bytes,
-  528,619 physical records and 14,630 bounded review units; semantic review
-  credit remains zero. Exact report is external under
-  `handoff-intake/history/REPORT.md`.
-- The broad inventory scans were stopped, not left running. A separate
-  drive-cleanup lane previously reclaimed build/store data; current cleanup
-  actions must cite fresh receipts rather than claim no deletion ever occurred.
-- The historical source ledger's `4,783 / 133 / 81 / 0` are raw NUL-field
-  counts from a rename-unaware parser, with stored listings truncated at
-  2,000 fields. They must not be repeated as status-entry counts.
-- HEAD reconciliation: 42,012-path union, 2,020-path four-way intersection;
-  138 of 277 common focus paths differ by bytes. Receipt:
-  `docs/workspace/head-path-reconciliation.json` and
-  `docs/workspace/shared-path-differences.json`.
-- Bounded **D:\Omnia** top-level inventory: 46 immediate entries, no observed reparse
-  points at that level, and 50.57 GiB free. Recursive ownership/size
-  classification remains open; receipt:
-  `docs/workspace/D_DRIVE_TOPLEVEL_INVENTORY.json`.
-- Compatibility host repair: 132 missing `src-tauri` source/resource files
-  admitted with zero conflicts; Tauri metadata and formatting now pass.
-  Receipts are external `handoff-intake/compatibility-host-admission.json`,
-  `tauri-root-metadata.json` and `tauri-root-format.txt`.
-- Missing compile-time schema repair is committed at `98c1a04`.
-  The Tauri rerun finished at `2026-11-10T19:43:52.8602675Z`, exit 0:
-  833 host unit tests, 6 project-file-watch tests and 4 + 17 integration tests.
-  Evidence: external `tauri-root-tests-rerun.txt` and `.result.json`.
-  The initial failure remains preserved; this is local regression evidence.
+- Goal `OMNIA-ROOT-CLEAN-2026-11-11` remains **ACTIVE**. Authoritative contracts:
+  [GOAL.md](GOAL.md); acceptance: [DOD.md](DOD.md). Parent tasks: 16.
+- Persistent tool goal was read as active in this chat. Its API has no active
+  objective-edit operation; the detailed objective is versioned in GOAL.
+- Additive steer is queued. Finish the interrupted deliverable, checkpoint,
+  then consume additions. Current-work corrections apply at a safe boundary;
+  explicit cancellation/replacement supersedes the named work.
+- Final independent whole-goal audit streak: **0**.
+- Last committed documentation milestone: `3058494`. Later changes below are
+  part of the current integration batch until its commit is recorded.
+- Active command sessions: none at this checkpoint. Do not restart completed
+  Tauri tests, supported cleanup or source inventory as if still running.
 
-- Root: `D:\Omnia`
-- Root Git: native and compatibility admissions are committed through `98c1a04`.
-- Nested Git metadata: preserved; see `WORKSPACE_OWNERSHIP.json`.
-- Product source: native source is now present at root; legacy/rebuild checkouts
-  remain independently owned until source reconciliation.
-- Linked worktree: `publish-worktree` remains linked.
-- Reversible changes: root-level loose files moved earlier with SHA-256 mapping in the research receipts.
-- Next gate: classify and snapshot any nested repo before flattening or metadata removal.
+## Source and local checks
 
-- Repo registry: docs/workspace/REPO_REGISTRY.md; relocation candidates are deferred until reference audit.
+Actual product source is tracked at `D:\Omnia`: independent `native/`, shared
+`src-tauri/crates/`, and retained React/Tauri compatibility code. Root source
+admissions are committed through `98c1a04`. Native admission verified 197 files /
+2,588,993 bytes; compatibility admissions preserved existing destination bytes.
+Previous primary/release/rebuild/goal-control checkouts still own unreconciled
+work. Root admission is not a semantic merge.
 
+Both manifest metadata/format checks passed locally. Native test log has
+11 + 2 + 2 + 2 + 3 + 4 + 1 passing cases across its recorded suites.
+After the missing `docs/storage-schema.sql` repair, Tauri rerun ended at
+`2026-11-10T19:43:52.8602675Z`, exit 0: 833 host unit tests,
+6 project-file-watch tests and 4 + 17 integration tests. Original failure is
+retained. Targets were external. These are scoped local checks, not packaged
+native/provider/UI/performance or clean-clone completion.
 
-- Reference triage: docs/workspace/REFERENCE_AUDIT.md; no candidate moved because text hits require semantic review.
+Corrected source inventory at `2026-11-10T20:12:44Z`:
 
+| Source | Changed tracked | Untracked | Total status entries |
+|---|---:|---:|---:|
+| Primary | 3,008 | 1,775 | 4,783 |
+| Release | 25 | 108 | 133 |
+| Rebuild | 80 | 1 | 81 |
+| Goal-control | 0 | 0 | 0 |
 
-- Relocated `upstream_tools\rea` to `research\repos\rea`; 34,866-file hash verification passed. Receipt is external under the restructure research folder.
+Complete NUL/rename-aware records, index object IDs and bounded working-file
+fingerprints are private under `continuation-r2/source-state-v2`. Status and
+HEAD stayed stable during each read; this is not an atomic snapshot or backup.
+No renames occurred in this snapshot. HEAD-only union is 42,012; four-way
+intersection 2,020; current focus predicate 276 paths / 138 differing paths.
+Historical 277-focus metrics used a different predicate. Exclusive-source and
+outside-four-way-intersection counts now have distinct definitions.
 
-- Reclassified `repo-original-20261001` as recovery-immutable after finding an empty Git history and active cleanup-script references; it was not moved.
+## Physical layout and capacity
 
-- Relocated clean public staging repo `repos\omnia-public` to `projects\omnia-public`; 17,446-file hash verification passed and release script paths were updated.
+Ten nonproduct trees were moved intact to `D:\OmniaData`, with **92,460 files**
+and **15,156,174,074 logical bytes** retained. See
+[EXTERNAL_LAYOUT.json](EXTERNAL_LAYOUT.json) for old/current mappings.
+Full relative path/type/file-size/mtime comparisons, nonzero directory
+identities and selected anchor hashes passed. Before-file device/inode fields
+were all zero; file identity is unproved. See the separate
+`RELOCATION_IDENTITY_CORRECTION.json`. No all-file content-hash sweep is
+claimed. REA and old public
+staging Git still work, with original HEADs and clean status.
 
-- Moved recovery snapshot `repo-original-20261001` into `backups\recovery\`; 1,379-file hash verification passed and cleanup tooling was updated.
+Same-volume relocation has **zero capacity-reclamation credit**. Backups,
+primary/common Git, linked worktrees, active profiles, downloads/logs/output and
+other operational consumers remain to classify/relocate. Historical paths in
+older receipts resolve using the mapping. Old destructive migration tools are
+retained externally as historical tools, not current supported entrypoints.
 
-- A bundle for `projects\omnia-public` passed history verification. It does
-  not preserve index, unstaged, untracked or ignored data, nor prove a restore
-  drill. Nested Git retirement remains pending those specific gates.
+Cargo cleaned former `src-tauri\target\native-integration-tests`: **9,632
+files**, **12.1 GiB reported**, exit 0. Observed D: free bytes rose from
+`54,289,879,040` to `65,646,911,488`, a delta of `11,357,032,448` bytes
+(about 10.58 GiB). Other system activity can affect this measurement.
+Earlier drive-cleanup receipts separately record their own Cargo/pnpm actions.
+Do not double count them. The historical D_DRIVE_TOPLEVEL_INVENTORY file
+actually inventories `D:\Omnia`; it is not a full `D:\` size inventory.
 
-## Current continuation
+## History, research and skills
 
-- Goal remains `ACTIVE`; GOAL revision 2 expands all 16 parent task contracts,
-  product leaves, research backlog, execution order and acceptance details.
-- Additive steer is queued by the user's explicit preference. Finish
-  interrupted work, checkpoint it, then consume queued additions. A correctness
-  correction applies at a safe boundary without discarding remaining tasks.
-- Final independent audit streak remains **0**.
-- Next: repair root AGENTS/navigation, correct complete source-state records,
-  then perform classified external relocation and supported cache cleanup.
+The earlier structural history watermark has 852 rollout files,
+2,256,736,449 bytes, 528,619 physical records and 14,630 bounded units.
+Semantic review credit remains **0** at that watermark. The source DB includes
+101 raw-rollout gaps; 99 have alternate projected items. Growth, projected
+content and semantic review remain open. See private `handoff-intake/history`.
+
+Queued-steer guidance was merged into existing `goal-plan-loop-dod` and
+`deep-steer`, validated and projected at root. Loading/invocation by Omnia is
+unverified. Research source quotas, source reviews and other atomic skill
+families remain in GOAL; do not convert acquisition into review/merge credit.
+
+## Evidence and next action
+
+Private receipt root:
+`C:\Users\khang\.codex\research\omnia-restructure\20261111\handoff-intake`.
+This batch uses `continuation-r2/`: documentation before/after, historical
+ledger archive, MOVE_PLAN/MOVE_AFTER, CARGO_CLEAN_BEFORE/AFTER, source-state-v2,
+SKILL_PROJECTION and independent continuation review. Historical observations
+and superseded checkpoint text remain in Git history and archived receipts.
+
+Independent review identified F1 (mixed checkpoint stages) and F2 (unnamed
+session admission gates). This checkpoint replaces mixed stages; GOAL's
+follow-up admission section names the prerequisite states and receipt.
+Recheck the repaired bytes before resolving those findings.
+
+Next executable actions:
+
+1. Finish current compact-summary/reference/export repair batch; verify diff,
+   corrected relocation claims and changed skill/reference files, then commit.
+2. Validate a fresh root clone/export; record missing inputs and private paths.
+3. Preserve and reconcile common Git, dirty/index/untracked source and backup
+   ownership; repair consumers before further physical migration/retirement.
+4. Continue measured drive cleanup, bounded code refactoring, native product,
+   history and research work in GOAL's order. Keep every open gate visible.
+5. Publish only after privacy/license/account/clone gates. Follow-up chat waits
+   for the exact admission protocol; remaining work transfers explicitly.

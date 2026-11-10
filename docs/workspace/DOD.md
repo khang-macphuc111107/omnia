@@ -85,11 +85,18 @@ or contradiction resets the affected row and its consecutive-audit count.
 - **DOD-15:** Verify GitHub account, exact target, visibility and license
   obligations. Review/redact secrets/private material before publication.
   Compare the remote SHA and test documented steps from a clean clone.
-- **DOD-16:** Wait for root migration/handoff admission, then create the
-  requested Omnia chat. Its prompt must request an immediate detailed
+- **DOD-16:** Apply `SESSION-G01` through `SESSION-G07` in GOAL and record the
+  source-bound decision in `SESSION_ADMISSION.json`. All seven must pass their
+  named scoped/preservation/transfer conditions before `READY`; whole-product
+  completion is not a chat admission prerequisite. Record each task/DoD
+  prerequisite, snapshot, receipt, reviewer, limitations and every open task
+  being transferred. Then create the requested Omnia chat. Its prompt must
+  request an immediate detailed
   persistent goal with tasks/plan/specs/DoD and exact evidence status.
-  Record the returned thread and activation outcome; a prepared prompt is not
-  a created chat or an active goal.
+  Record the returned thread, exact prompt hash and activation/readback outcome.
+  Creation, activation and whole-goal completion remain separate. A prepared
+  prompt is not a created chat or an active goal. Failed/stale prerequisites
+  reset admission to `DEFERRED`.
 
 ## Final audit rounds
 
