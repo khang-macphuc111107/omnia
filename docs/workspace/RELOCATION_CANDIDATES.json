@@ -200,8 +200,8 @@
       "reason": "preserve owning source/history or recovery evidence"
     },
     {
-      "source": "repo-original-20261001",
-      "reason": "Empty-history recovery snapshot used by cleanup tooling; preserve immutable."
+      "source": "backups\\recovery\\repo-original-20261001",
+      "reason": "Recovery snapshot moved into backups/recovery; cleanup tooling path updated and hashes verified."
     }
   ]
 }

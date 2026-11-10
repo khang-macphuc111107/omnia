@@ -16,3 +16,11 @@
 - Destination: `D:\Omnia\projects\omnia-public`
 - Verification: 17,446 files; 582,041,675 bytes before and after; SHA-256/path manifest matched with zero mismatches or missing files.
 - Nested `.git` was preserved. `tools/maintained-scripts/stage-public-release.mjs` now uses explicit `OMNIA_WORKSPACE_ROOT`/`OMNIA_SOURCE_ROOT` paths and stages to `projects/omnia-public`.
+
+## 2026-11-11 — `repo-original-20261001`
+
+- Source: `D:\Omnia\repo-original-20261001`
+- Destination: `D:\Omnia\backups\recovery\repo-original-20261001`
+- Reason: empty-history recovery snapshot, now placed under the recovery tree.
+- Verification: 1,379 files; 16,836,960 bytes before and after; SHA-256/path manifest matched with zero mismatches or missing files.
+- Cleanup script `tools/migration/cleanup-verified-leftovers-20261012.ps1` was updated to the new path.

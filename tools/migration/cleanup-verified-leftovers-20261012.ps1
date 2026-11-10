@@ -4,7 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $omniaBase = 'D:\Omnia'
 $activeRoot = 'D:\Omnia\repos\omnia'
-$backupRoot = 'D:\Omnia\repo-original-20261001'
+$backupRoot = 'D:\Omnia\backups\recovery\repo-original-20261001'
 $cleanupEntries = [Collections.Generic.List[object]]::new()
 
 function Get-SafeTree([string]$Path) {
@@ -107,7 +107,7 @@ $generatedDirectories = @(
     'D:\Omnia\repos\omnia\docs\__pycache__',
     'D:\Omnia\repos\omnia\scripts\__pycache__',
     'D:\Omnia\repos\omnia\tests\__pycache__',
-    'D:\Omnia\repo-original-20261001\docs\__pycache__',
+    'D:\Omnia\backups\recovery\repo-original-20261001\docs\__pycache__',
     'D:\Omnia\logs\repo-root-2026-10-01',
     'D:\Omnia\logs\temp-2026-10-01'
 )
@@ -163,3 +163,4 @@ $after = [int64](Get-PSDrive -Name D).Free
     RemovedLogicalBytes = [int64]($deleted | Measure-Object LogicalBytes -Sum).Sum
     Entries = @($cleanupEntries)
 } | ConvertTo-Json -Depth 5
+

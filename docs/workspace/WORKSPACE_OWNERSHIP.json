@@ -442,7 +442,7 @@
     "linkedWorktree": "publish-worktree",
     "research": "repos\\\\omnia\\\\research;LocalAppData\\\\OmniaResearch;upstream_tools",
     "independent": "projects\\\\omnia-public",
-    "recovery": "backups;archive;_cleanup-quarantine-20261013;_cleanup-quarantine-20261110;quarantine;repo-original-20261001",
+    "recovery": "backups;archive;_cleanup-quarantine-20261013;_cleanup-quarantine-20261110;quarantine;backups\\recovery\\repo-original-20261001",
     "operational": "artifacts;logs;tmp;output;downloads;CursorApp;LocalAppData;Roaming"
   },
   "relocations": [

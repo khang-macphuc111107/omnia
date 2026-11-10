@@ -19,3 +19,5 @@
 - Reclassified `repo-original-20261001` as recovery-immutable after finding an empty Git history and active cleanup-script references; it was not moved.
 
 - Relocated clean public staging repo `repos\omnia-public` to `projects\omnia-public`; 17,446-file hash verification passed and release script paths were updated.
+
+- Moved recovery snapshot `repo-original-20261001` into `backups\recovery\`; 1,379-file hash verification passed and cleanup tooling was updated.

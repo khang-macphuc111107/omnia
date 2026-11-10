@@ -4,7 +4,7 @@ Generated from `REPO_REGISTRY.json` on 2026-11-11. This is an inventory and clas
 
 | Path | Class | GiB | Dirty entries | Branch | Metadata |
 |---|---|---:|---:|---|---|
-| `repo-original-20261001` | recovery-immutable | 0.016 | 2 | `master` | directory |
+| `backups\recovery\repo-original-20261001` | recovery-immutable | 0.016 | 2 | `master` | directory |
 | `projects\omnia-public` | independent-product | 0.542 | 0 | `main` | directory |
 | `repos\omnia\.skills\leanrea` | other | 0 | 0 | `main` | directory |
 | `repos\omnia\.skills\rea` | other | 0.219 | 0 | `main` | directory |
@@ -53,6 +53,7 @@ Generated from `REPO_REGISTRY.json` on 2026-11-11. This is an inventory and clas
 - `research-upstream` and `upstream-extraction` entries may be relocated only after path-reference audit and a source-preserving manifest.
 - A root Git clean status does not imply a child repository is clean.
 - The 283.58 GiB primary product tree has 3,158 dirty entries and remains the owning source.
+
 
 
 
