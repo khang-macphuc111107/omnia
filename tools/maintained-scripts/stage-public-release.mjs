@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const workspaceRoot = process.env.OMNIA_WORKSPACE_ROOT || "D:\\Omnia";`r`nconst source = process.env.OMNIA_SOURCE_ROOT || path.join(workspaceRoot, "repos", "omnia");
+const workspaceRoot = process.env.OMNIA_WORKSPACE_ROOT || "D:\\Omnia";
+const source = process.env.OMNIA_SOURCE_ROOT || path.join(workspaceRoot, "repos", "omnia");
 const destination = path.join(workspaceRoot, "projects", "omnia-public");
 const files = [
   ".editorconfig", ".env.example", ".gitignore", "index.html", "package.json", "package-lock.json",
@@ -26,6 +27,7 @@ for (const directory of directories) {
   });
 }
 console.log(`Staged public release at ${destination}`);
+
 
 
 
