@@ -13,3 +13,5 @@
 
 - Reference triage: docs/workspace/REFERENCE_AUDIT.md; no candidate moved because text hits require semantic review.
 
+
+- Relocated `upstream_tools\rea` to `research\repos\rea`; 34,866-file hash verification passed. Receipt is external under the restructure research folder.
