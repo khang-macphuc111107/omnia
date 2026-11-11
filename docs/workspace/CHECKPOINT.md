@@ -127,7 +127,9 @@ continuation-r8 launched and retained a replacement evaluation shell:
   `$PID` occurred after launch; recovery identified the existing process and
   recorded it without launching a duplicate.
 - r8 observed visible/responding/not minimized/not foreground. Capture:
-  `D:\OmniaData\qa\native\continuation-r8\native-preview-r8-window.png`,
+  `D:\OmniaData\qa
+ative\continuation-r8
+ative-preview-r8-window.png`,
   1220 × 820, SHA-256
   `460541807FA61BD2BCDE78E2A8468A675826BDCE05B445B6A8EB96178E37199F`.
 - r9/PREVIEW-REOBSERVATION.json, recorded
@@ -301,6 +303,42 @@ and root instructions. Validation/projection is not proof Omnia loaded or
 invoked the skills. Research quotas, atomic source qualification and native
 product requirements remain in GOAL without changing their denominator.
 
+## Queued additive requirements — UI direction and dynamic routing
+
+The latest queued request adds two bounded contracts without changing the
+16-parent, 12-product-leaf, 16-DoD or seven-admission denominators:
+
+- `PRODUCT-CHAT` now has the atomic
+  [DYNAMIC_ROUTING_REQUIREMENTS.md](DYNAMIC_ROUTING_REQUIREMENTS.md) contract.
+  It is specification-only at this checkpoint. Existing provider profiles,
+  models, token/cost fields, generations, attempts and run journals must be
+  inspected before introducing storage. Quota reservation, post-run
+  reconciliation, stale/unknown usage, health, rate limits, privacy boundaries,
+  fallback and route/outcome receipts need runtime evidence before status can
+  advance.
+- `PRODUCT-WORKSPACE` now requires preview-first visual direction. The local
+  `deep-ui-direction` skill was created and passed the skill creator validator.
+  It owns reference provenance, three-candidate style exploration, weighted
+  direction decisions, direction briefs, measurable token seeds, addressable
+  previews, independent critique, anti-slop review and user-review status.
+  `modern-tech-ui-design`, `deep-ui-quantitative` and `deep-ui-qa`
+  retain token implementation, measurement and behavior QA respectively.
+  No Omnia preview, user approval or live UI credit exists yet.
+- The bounded UI-style receipt is now stored outside the product tree at
+  `C:\Users\khang\.codex\research\omnia-ui-direction\20261111\UI_STYLE_RESEARCH_RECEIPT.json`.
+  It records ten GitHub queries, 68 unique first-seen repository identities,
+  eight fetched official design/accessibility pages and eleven selected README
+  retrievals, plus a content-extract receipt. It admits only process-level
+  lessons; no source code, assets, fonts or visual identity were copied. The
+  supplied social/video material and related terms remain unreviewed. The
+  receipt is not exhaustive source review or Omnia runtime proof.
+These additions are open requirements. They do not alter the preservation,
+history, publication, admission or final-audit states.
+
+## Bounded UI-style research receipt
+
+A receipt is stored outside the product tree at C:\Users\khang\.codex\research\omnia-ui-direction\20261111\UI_STYLE_RESEARCH_RECEIPT.json. It records 10 GitHub queries, 68 unique first-seen repository identities, 8 fetched official design/accessibility pages, 11 selected README retrievals and a separate content-extract receipt. It admits process-level lessons only: reference provenance, layered tokens, accessible primitives, state coverage, preview/QA separation and measurable contrast/focus checks. No source code, assets, fonts or visual identity were copied. Social/video links remain unreviewed and the receipt is not exhaustive source or runtime proof.
+
 ## Next executable actions
 
 1. Finish this primary-materialization checkpoint before consuming queued additions.
@@ -317,7 +355,13 @@ product requirements remain in GOAL without changing their denominator.
    inspect consumers and reacquire source state for drift. Keep retirement
    ineligible. Continue ROOT-02 semantic reconciliation, safe externalization,
    measured drive cleanup, isolated closure and bounded refactoring afterward.
-4. Carry complete history/research/product/quality requirements in GOAL's queue.
-   Preserve the retained preview and known visual/UIA findings. Publish only
-   after privacy/license/account/clone gates; launch the requested follow-up chat
-   under all seven reviewed admission gates with detailed goal activation.
+4. Inspect and plan the dynamic routing contract against the existing native
+   provider/storage source; do not duplicate ledgers before a schema/ownership
+   map exists.
+5. For each UI surface, make the direction record and preview before full
+   implementation, then collect independent critique and user-review status.
+   Preserve the retained preview and known visual/UIA findings.
+6. Carry complete history/research/product/quality requirements in GOAL's queue.
+   Publish only after privacy/license/account/clone gates; launch the requested
+   follow-up chat under all seven reviewed admission gates with detailed goal
+   activation.

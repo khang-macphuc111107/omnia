@@ -74,18 +74,36 @@ or contradiction resets the affected row and its consecutive-audit count.
   Finish interrupted text before moving to queued additions.
 - **DOD-12:** Bind each adopted skill improvement to actual reviewed sources,
   revisions/licenses and a supported use case. Check duplicates and references;
-  validate changed skills and project to both requested environments.
+  validate changed skills and project to both requested environments. The
+  `deep-ui-direction` skill is admitted only as an atomic art-direction and
+  preview workflow; it must not duplicate token measurement, UI behavior QA or
+  generic design guidance. Its anti-template mode requires three materially
+  different candidates, a weighted comparison, rejected-direction reasons and a
+  concrete template-detection pass. Unavailable web/social/video sources remain
+  explicit gaps.
   Installation/projection is distinct from discovery, loading and invocation.
 - **DOD-13:** Cover all `PRODUCT-*` leaves in GOAL. Native Rust is preferred;
   exceptions require a recorded resource-backed reason. Complete composer and
-  attachment ordering/persistence/provider contracts. Do not claim universal
+  attachment ordering/persistence/provider contracts. The provider route must
+  bind capability, quota, cost, latency, privacy, authorization, reservation,
+  reconciliation, retry/fallback and decision/outcome receipts under
+  `DYNAMIC_ROUTING_REQUIREMENTS.md`; static model lists, mocks and successful
+  HTTP calls do not qualify runtime behavior. Do not claim universal
   hidden-window capture, process-private input or encrypted-content access.
 - **DOD-14:** Cover actual navigation and nested/dynamic UI, all interactive
   controls, resize/DPI/zoom/scroll/drag/drop, input-length tiers, Vietnamese IME,
-  accessibility, animation and backend effects. Combine code checks with
-  repeated UI observations and addressable image/video evidence. Include
-  negative, boundary, property/fuzz, race, recovery and resource tests where
-  applicable; mark unsupported scenarios rather than passing them.
+  accessibility, animation and backend effects. Before full implementation,
+  direction records must contain reference provenance, alternatives, a
+  measurable token seed, previews for major surfaces/states, independent
+  critique, adversarial anti-slop findings, explicit user-review status and a
+  record of candidate directions/rejected alternatives. A subjective “good
+  taste” claim needs observable hierarchy, density, typography, contrast,
+  alignment, state or interaction evidence.
+  Combine code checks with repeated UI observations and addressable image/video
+  evidence. Include negative, boundary, property/fuzz, race, recovery and
+  resource tests where applicable; mark unsupported scenarios rather than
+  passing them. Visual resemblance or a polished screenshot is not functional,
+  accessibility or performance evidence.
 - **DOD-15:** Verify GitHub account, exact target, visibility and license
   obligations. Review/redact secrets/private material before publication.
   Compare the remote SHA and test documented steps from a clean clone.

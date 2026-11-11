@@ -15,6 +15,19 @@ cannot create/edit an active objective, keep its valid state and put the full
 versioned objective in the canonical project files; describe that limitation
 instead of claiming the tool applied a change.
 
+## SESSION-G07 transfer contract
+
+This prompt explicitly carries `SESSION-G07`. Before doing product work, read
+the complete `openTransfer` denominator in `SESSION_ADMISSION.json`: all
+unfinished parent tasks (`ROOT-01` through `DELIVERY-01` as currently marked),
+`PRODUCT-01` and every `PRODUCT-*` leaf, `QUALITY-01`, `HANDOFF-01`,
+`RESEARCH-01`, history work and any open drive/recovery item. For each item,
+preserve its current state, owner, source or receipt locator, next action and
+acceptance gate. A newly created chat must immediately request and read back its
+own detailed persistent goal with plan, specs, tasks, DoD, checkpoint and
+decision state. This marker is a transfer contract, not proof that admission is
+ready or that the goal tool has applied anything.
+
 Read root `README.md` and `AGENTS.md`, then `docs/workspace/GOAL.md`, `DOD.md`
 and `CHECKPOINT.md`. Preserve unfinished task IDs, original user requirements,
 source/Git recovery ownership, known failures and next executable actions.
@@ -77,6 +90,24 @@ Markdown/LaTeX, rich formatting, visual equations and inline/tray attachments
 at caret with correct provider order. Qualify goal CRUD/queue/steer/continue,
 general graphs, memory/RAG, provider execution, browser/computer/media use and
 workspace features with actual runtime evidence.
+
+Treat dynamic provider/model routing as an open `PRODUCT-CHAT` contract:
+inspect existing provider profiles, models, token/cost fields, generations,
+attempts and run journals before designing new ledgers. Require deterministic
+route decision receipts, concurrent quota reservation, post-run reconciliation,
+health/rate-limit/circuit-breaker state, privacy-safe fallback and explicit
+unknown/stale usage handling. Do not treat a configured model list, mock or
+successful HTTP response as qualification.
+
+For every new or materially restyled surface, invoke `deep-ui-direction` before
+implementation. Research public references when a callable source is available,
+record inaccessible/unused sources, generate three materially different style
+candidates, score them with stated weights, reject generic/template directions
+with reasons, write a concrete direction brief and measurable token seed, preview
+major surfaces/states, obtain independent anti-slop critique and record the
+user.s review status. Then hand off to `modern-tech-ui-design`,
+`deep-ui-quantitative` and `deep-ui-qa`. Keep visual, functional, accessibility,
+performance and user-approval gates separate.
 
 Use useful bounded research, source review and atomic skill improvements for
 both Codex and Omnia. Record queries, unused sources, novel repository

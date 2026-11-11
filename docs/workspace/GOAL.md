@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 8 — primary byte restore verified; preservation boundaries remain open, 2026-11-11
+**Revision:** 10 — bounded UI-style research receipt and anti-template exploration added; preservation boundaries remain open, 2026-11-11
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -190,6 +190,33 @@ These are required work families under `PRODUCT-01`, not implemented features:
 | `PRODUCT-SECURITY` | Defensive security, authorization, state transitions and configuration/OS audits | Authorized test scope, caller/scope checks, secret handling, audit receipts and bounded rollback |
 | `PRODUCT-KNOWLEDGE` | Study, tutoring, scientific research, curricula, subject/problem solving and document artifacts | Source-derived coverage, appropriate domain checks, citations, runnable/reproducible artifacts and uncertainty |
 
+### `PRODUCT-CHAT` dynamic routing contract
+
+Provider selection is a product capability, not a configured list of model
+names. Before implementation, use
+[DYNAMIC_ROUTING_REQUIREMENTS.md](DYNAMIC_ROUTING_REQUIREMENTS.md) as the
+atomic specification. It covers provider/model capabilities, quota and cost
+ledgers, token estimates and actual usage, reservation/reconciliation,
+concurrent admission, latency/error/rate-limit health, circuit breaking,
+privacy and authorization boundaries, fallback policy, emergency reserve,
+decision receipts and outcome receipts. Missing remote usage, stale quota,
+unknown outcomes and partial streams remain explicit states. A successful
+HTTP response, wrapper, mock or static configuration earns no runtime credit.
+
+### `PRODUCT-WORKSPACE` UI direction contract
+
+Every new or materially restyled surface uses the atomic
+`deep-ui-direction` workflow before implementation: research and record
+references, generate three materially different candidate directions, compare
+them with a weighted decision matrix, run template and anti-slop checks, write a
+concrete direction brief and measurable token seed, preview each major
+surface/state, obtain independent critique, expose the preview for user review,
+then hand off to `modern-tech-ui-design`, `deep-ui-quantitative` and
+`deep-ui-qa`. Visual quality, functional behavior, accessibility, performance
+and user approval are separate gates. A screenshot or polished mock is not
+proof that the UI works. Store direction records and captures in the external
+evidence lane; keep only the reviewed, navigable contract in this repository.
+
 Background capture/control is a capability to establish per API and target;
 ordinary desktop input is not automatically process-private. Hidden/protected
 surfaces, exclusive input and encrypted contents require real support and
@@ -217,6 +244,9 @@ sources. Downloading, README reading, implementation review, licensing admission
 and runtime qualification have different credits. Do not claim a top-50-per-
 keyword quota from one mixed batch of 50, or bypass access controls to fabricate
 coverage. Complete useful authorized fallback research and retain the gap.
+The supplied social/video links and the terms `rtk`, `rtoken`, `caveman`,
+`ponytail` and “Impeccable” remain uncredited until a callable public retrieval
+path records what was actually inspected.
 
 ## Current proof and limits
 
@@ -346,6 +376,12 @@ coverage. Complete useful authorized fallback research and retain the gap.
   remaining release/rebuild boundaries/consumers remain open. See CHECKPOINT's
   source-preservation section and SOURCE_DISPOSITION_LEDGER's evidence locators.
 - GitHub publication and clean-clone delivery remain unverified.
+- Dynamic quota/cost/latency/model routing has a canonical specification but no
+  implementation or runtime qualification yet.
+- UI direction has a local validated skill and a repository contract, but no
+  Omnia preview, independent critique, user review or live UI credit yet. The
+  external UI-style receipt records bounded discovery/content extraction only;
+  it does not admit copied implementation or visual identity.
 - Consecutive independent final audit rounds earned: **0**.
 
 ## Immediate next actions
@@ -355,24 +391,35 @@ coverage. Complete useful authorized fallback research and retain the gap.
    16 DoD gates and seven admission gates. Validate references, IDs, transfer
    states, evidence hashes, JSON and `git diff --check`; inspect exact staged
    paths and commit only this logical update. Save its commit receipt externally.
-2. Compare primary HEAD/refs/raw index/index-stage/flags/status in the existing
+2. Treat `DYNAMIC_ROUTING_REQUIREMENTS.md` as a product specification: inspect
+   existing provider/profile/token/cost/run-journal storage, map reusable
+   foundations, and write an implementation/verification plan before adding
+   tables or duplicate ledgers. Keep the feature `OPEN` until reservation,
+   reconciliation, health, fallback and receipt behavior run in the named
+   environment.
+3. For each new or materially restyled UI surface, create a direction record
+   and preview before full implementation. Record references, alternatives,
+   measurable tokens, independent critique, anti-slop findings, user review
+   status and unresolved questions; then run quantitative and behavioral QA.
+   Research and preview evidence stays outside the product tree.
+4. Compare primary HEAD/refs/raw index/index-stage/flags/status in the existing
    isolated restore under recorded source semantics, with a separate content
    reevaluation. Reuse the verified materialization; do not create another full
    copy or rerun the erroneous sparse-checkout diagnostic on source.
-3. Classify and preserve each remaining nested/Gitlink/reparse/generated owner,
+5. Classify and preserve each remaining nested/Gitlink/reparse/generated owner,
    repair consumer paths and reacquire source state to detect drift. Keep
    `retirementEligible=false` until every required boundary and restore gate is
    satisfied. Then continue semantic ROOT-02 reconciliation; 403 byte-delta
    candidates and the 138 unreviewed focus rows are inputs, not reviewed merges.
-4. Externalize classified nonproduct owners, reclaim only proven disposable
+6. Externalize classified nonproduct owners, reclaim only proven disposable
    output and measure free-space change. Continue isolated source closure and
    bounded refactoring with real behavioral checks. Preserve the retained
    preview and the status-clipping/UIA findings; historical QA stays historical.
-5. Continue private history acquisition/review/synthesis, research/skill
+7. Continue private history acquisition/review/synthesis, research/skill
    qualification and native product work with their complete denominators.
    Project supported reusable corrections to Codex and Omnia; projection is not
    harness loading or invocation. Serialize shared mutations and Cargo builds.
-6. Recheck affected claims on drift or failure. Whole-goal audit streak stays
+8. Recheck affected claims on drift or failure. Whole-goal audit streak stays
    zero until eligible frozen scope passes DOD's independent protocol. Review
    privacy/licenses/destination, publish and clean-clone verify before admission;
    create the requested chat only when SESSION_ADMISSION is READY and record

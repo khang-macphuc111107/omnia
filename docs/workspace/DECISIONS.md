@@ -79,3 +79,33 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 - Limits: inherited EOL/stat-cache differences remain findings. Primary Git-state
   comparison and excluded-owner/consumer preservation are pending; retirement
   remains false.
+
+## 2026-11-11 — Atomic UI direction and routing contracts
+
+- Decision: add one focused `deep-ui-direction` skill under
+  `C:\Users\khang\.codex\skills` and route its outputs through the existing
+  quantitative UI, technical design and behavioral QA skills.
+- Rationale: the user's “good taste / anti-AI-slop / preview first” request is a
+  distinct decision workflow, while token selection, measurement and functional
+  QA already have owning skills. Synonym-only deep skills would make routing
+  noisier and increase false confidence.
+- Evidence: the skill passed
+  `C:\\Users\\khang\\\.codex\\skills\\\.system\\skill-creator\\scripts\\quick_validate\.py`.
+  A bounded external receipt outside the product tree records 10 GitHub queries,
+  68 unique repository identities, 8 official pages and 11 selected README
+  retrievals. The receipt is discovery/content-extract evidence, not exhaustive
+  source review or runtime proof; social/video links remain unreviewed.
+- Decision: add `DYNAMIC_ROUTING_REQUIREMENTS.md` as the product specification
+  for quota/cost/latency/model/provider routing before implementation. Reuse
+  existing provider/profile/token/cost/run-journal foundations only after a
+  schema and ownership review; do not create duplicate ledgers by assumption.
+- Limits: neither contract has Omnia runtime, preview, user-review, provider
+  delivery or performance credit yet. Research, implementation, loading and
+  invocation remain separate states.
+
+
+## 2026-11-11 — Bounded UI-style research receipt
+
+- Evidence: external receipt C:\Users\khang\.codex\research\omnia-ui-direction\20261111\UI_STYLE_RESEARCH_RECEIPT.json records 10 GitHub queries, 68 unique repository identities, 8 official pages fetched and 11 selected README retrievals. A content-extract receipt records the actual inspected text ranges and access limitations.
+- Admission: retain only general workflow lessons—explicit reference provenance, layered tokens, accessible primitives, state coverage, preview before implementation and separate visual/behavioral gates. Do not vendor repository code, assets, fonts or copied visual identity.
+- Limits: GitHub search results are discovery evidence; selected README inspection is high-level and official pages are not exhaustive. Social/video sources and named terms remain unreviewed. No Omnia runtime, UI preview, user approval or performance credit is earned.
