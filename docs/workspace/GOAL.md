@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 6 — committed QA and retained preview reconciled; interrupted documentation first, 2026-11-11
+**Revision:** 7 — scoped source restore reconciled; preservation boundaries remain open, 2026-11-11
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -38,8 +38,8 @@ work was hidden or deleted.
 | ID | Task | State | Exit evidence |
 |---|---|---|---|
 | `ROOT-01` | Admit native Rust and complete shared-crate closure at root | `IN_PROGRESS` | Byte receipt, metadata, format, tests and review |
-| `ROOT-02` | Reconcile primary/release/rebuild/goal-control differences | `OPEN` | Per-change incorporated/retained/superseded/unresolved ledger |
-| `ROOT-03` | Repair or retire nested Git/worktree ownership | `OPEN` | Snapshot, path repair and restore drill |
+| `ROOT-02` | Reconcile primary/release/rebuild/goal-control differences | `IN_PROGRESS` | Per-change incorporated/retained/superseded/unresolved ledger |
+| `ROOT-03` | Repair or retire nested Git/worktree ownership | `IN_PROGRESS` | Snapshot, path repair and restore drill |
 | `ROOT-04` | Refactor and organize code without behavior loss | `OPEN` | Scoped diff, review, tests and explainable status |
 | `ROOT-05` | Make root build and clean clone self-contained | `OPEN` | Fresh clone metadata/build/test and private-path scan |
 | `DRIVE-01` | Inventory D: ownership and disk consumers | `IN_PROGRESS` | Bounded top-level inventory and reparse classification |
@@ -83,9 +83,10 @@ overwriting the plan.
 
 Current sequence:
 
-1. Finish, check and commit the interrupted goal, task, DoD and checkpoint
-   reconciliation. The QA source batch is already committed; the r8 preview
-   is already launched and retained. Do not repeat those effects.
+1. Finish, check and commit the interrupted source-preservation checkpoint.
+   The r9 documentation correction is committed as `828c9e8`; r10 now has a
+   scoped isolated restore receipt requiring the correction below. Preserve
+   the completed QA commit and retained preview without repeating either effect.
 2. Repair any remaining root-instruction or evidence contradictions against
    the current owning bytes before carrying their claims.
 3. Correct source reconciliation and preserve working-tree/index ownership.
@@ -312,32 +313,62 @@ coverage. Complete useful authorized fallback research and retain the gap.
   visibility or pixels. Keep the preview for the user; recheck identity before
   operating it. It is an evaluation shell with provider/storage disconnected,
   not completed native chat, final UI or measured performance.
+- Continuation-r10 privately preserved a scoped snapshot of 184,169 regular
+  files / 8,342,167,917 logical bytes across common Git and four worktrees.
+  A separate supplement preserves 23 trailing-space-path PNG files /
+  5,273,303 bytes. Generated, nested-owner and reparse boundaries are excluded
+  contents, with pending ownership; this is not an atomic volume snapshot.
+- Restore reconciliation R2 records 20/20 matching HEAD/ref/index-stage/
+  index-flag/status comparisons across goal-control, release, rebuild and the
+  nested Pydantic owner. All 10,076 included regular files from the three linked
+  worktrees were reread and SHA-256 matched; the separately acquired nested
+  owner has 28 physical files / 287,343 bytes, with absent/empty index and many
+  tracked deletions. Physical file count is not its Git tree denominator.
+- The missing-index diagnosis is superseded: all three linked indexes were
+  already in the snapshot, and all 24 linked admin-file hashes matched live
+  and restored copies. Status equality depends on captured mtimes, source
+  `core.autocrlf=true` semantics and isolated `core.trustctime=false`.
+  Content reevaluation exposes 130 rebuild status records versus the source's
+  81: 49 inherited EOL/stat-cache differences remain findings. Byte matching
+  does not resolve those differences or establish semantic cleanliness.
+- One r10 diagnostic accidentally invoked `git sparse-checkout reapply` on
+  source goal-control/release/rebuild without retaining its return/output.
+  The correction receipt verifies the four owners' HEAD/refs/index/flags/status
+  and raw index hashes still match acquisition. Do not claim this continuation
+  was entirely read-only. No metadata retirement or source relocation is credited.
+- R10 retirement eligibility remains **false**. Primary materialization,
+  11 primary Gitlink owners, 57 reparse records, 961 generated boundaries and
+  remaining release/rebuild boundaries/consumers remain open. See CHECKPOINT's
+  source-preservation section and SOURCE_DISPOSITION_LEDGER's evidence locators.
 - GitHub publication and clean-clone delivery remain unverified.
 - Consecutive independent final audit rounds earned: **0**.
 
 ## Immediate next actions
 
-1. Finish the interrupted goal/DoD/checkpoint repair before consuming any
-   additive steer. Preserve all 16 parent tasks, 12 product leaves, research
-   denominators, 16 DoD gates, seven chat-admission gates and their original
-   acceptance. Check cross-file references, task/transfer consistency, JSON
-   and `git diff --check`; inspect and commit only this documentation correction.
-   Record the returned commit externally instead of creating a self-hash loop.
-2. The QA commit and preview launch above are completed scoped actions.
-   Preserve r7/r8 receipts, failures and the retained preview. Reuse tests only
-   for their unchanged inputs and scope; do not relabel them as rerun here.
-   Keep status clipping and the smoke UIA finding open pending their repair.
-3. Continue source/common-Git ownership preservation and semantic
-   reconciliation, export/clone closure, measured drive cleanup and bounded
-   code refactoring. Snapshot dirty/index/untracked/valuable-ignored work and
-   prove restore ownership before moving or retiring the old owners.
-4. Continue private history acquisition/review/synthesis, research/skill
-   qualification and native product work with the exact remaining task/DoD
-   denominators. Mutations, Git operations and Cargo builds remain serialized.
-5. Recheck affected status, references, source closure and QA after material
-   changes; retain failures. Whole-goal final audit credit remains zero until
-   eligible frozen scope meets the independent audit protocol in DOD.
-6. Review privacy, licenses and destination identity, publish and clean-clone
-   verify before session admission. Create the follow-up chat only after
-   `SESSION_ADMISSION.json` is `READY`; request its detailed goal immediately
-   and record actual activation/readback separately from chat creation.
+1. Finish this interrupted preservation checkpoint before consuming additive
+   steer. Preserve all 16 parent tasks, 12 product leaves, research denominators,
+   16 DoD gates and seven admission gates. Validate references, IDs, transfer
+   states, evidence hashes, JSON and `git diff --check`; inspect exact staged
+   paths and commit only this logical update. Save its commit receipt externally.
+2. Materialize primary's included regular bytes and the trailing-space supplement
+   into the isolated restore; compare HEAD/refs/raw index/index-stage/flags/status
+   under recorded source semantics and retain a separate content reevaluation.
+   Do not rerun the erroneous sparse-checkout diagnostic on source.
+3. Classify and preserve each remaining nested/Gitlink/reparse/generated owner,
+   repair consumer paths and reacquire source state to detect drift. Keep
+   `retirementEligible=false` until every required boundary and restore gate is
+   satisfied. Then continue semantic ROOT-02 reconciliation; 403 byte-delta
+   candidates and the 138 unreviewed focus rows are inputs, not reviewed merges.
+4. Externalize classified nonproduct owners, reclaim only proven disposable
+   output and measure free-space change. Continue isolated source closure and
+   bounded refactoring with real behavioral checks. Preserve the retained
+   preview and the status-clipping/UIA findings; historical QA stays historical.
+5. Continue private history acquisition/review/synthesis, research/skill
+   qualification and native product work with their complete denominators.
+   Project supported reusable corrections to Codex and Omnia; projection is not
+   harness loading or invocation. Serialize shared mutations and Cargo builds.
+6. Recheck affected claims on drift or failure. Whole-goal audit streak stays
+   zero until eligible frozen scope passes DOD's independent protocol. Review
+   privacy/licenses/destination, publish and clean-clone verify before admission;
+   create the requested chat only when SESSION_ADMISSION is READY and record
+   actual goal activation separately from creation.

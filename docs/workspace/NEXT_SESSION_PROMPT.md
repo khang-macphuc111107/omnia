@@ -30,6 +30,17 @@ without dropping their original task/DoD IDs. Scoped admission passes do not
 complete their broader parents. Reopen stale claims using current source.
 Record the first checkpoint and actual persistent-goal activation outcome.
 
+## Preservation continuation
+
+Read CHECKPOINT's r10 preservation section and the disposition ledger before
+source cleanup. All three linked indexes were captured; do not repeat the
+superseded missing-index diagnosis. R2 status equality is conditional on source
+EOL semantics, captured mtimes and isolated stat options. Preserve the separate
+49-difference rebuild content reevaluation and the source-command correction.
+Primary materialization, the trailing-space supplement, excluded owners and
+consumer repair remain open. Retirement eligibility is false. Reacquire current
+source state before carrying these historical receipts or retiring metadata.
+
 ## History work
 
 Inventory active, archived, project, projectless and child Codex chats from

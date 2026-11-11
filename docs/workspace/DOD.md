@@ -10,7 +10,7 @@ required evidence.
 | `DOD-02` | Native dependency closure resolves | Locked metadata, path audit and clone metadata | `PARTIAL` |
 | `DOD-03` | Scoped native behavior passes | Command logs, exit codes and environment | `PARTIAL` |
 | `DOD-04` | Divergent work is reconciled | Per-path ledger, owner, disposition and review | `OPEN` |
-| `DOD-05` | Nested Git/worktrees are safe | Snapshot, index/untracked/ignored capture and restore | `OPEN` |
+| `DOD-05` | Nested Git/worktrees are safe | Snapshot, index/untracked/ignored capture and restore | `PARTIAL` |
 | `DOD-06` | Generated output does not dirty source | Ignore policy, external target and status receipt | `PARTIAL` |
 | `DOD-07` | Code is clean and maintainable | Format/lint/static review and ownership map | `OPEN` |
 | `DOD-08` | D: cleanup is measured/reversible | Ownership, allocated bytes, candidate ledger and delta | `OPEN` |
@@ -47,7 +47,11 @@ or contradiction resets the affected row and its consecutive-audit count.
 - **DOD-05:** Before retiring a common Git store, preserve refs/objects,
   staged index, dirty/untracked/valuable ignored bytes and all linked-worktree
   registrations. A bundle covers reachable history, not that whole state.
-  Restore to an isolated destination and compare the relevant state.
+  Restore to an isolated destination and compare the relevant state. Preserve
+  raw indexes/admin files and effective EOL/filter/sparse semantics; compare
+  restored bytes separately from cached status. If mtime/stat options reproduce
+  source status, retain an additional content-reevaluation result. Do not hide
+  inherited differences by overwriting the source index or normalizing bytes.
 - **DOD-06:** Builds/logs/exports use external owned directories. Source-aware
   ignores, cleanup retention, reparse boundaries and explainable Git status
   remain correct after build, test and export.
@@ -105,13 +109,14 @@ It does not complete these parent gates or claim whole-product QA.
 
 The QA/documentation batch is committed as
 `952c211c219cb22fb851113139b66342d369c924` (r7/COMMIT.json). The post-commit
-preview was launched and retained in r8. The current documentation correction
-reconciles those completed actions; it does not rerun the historical QA suites.
+preview was launched and retained in r8. The r9 documentation correction is
+committed as `828c9e8`; r10 now records scoped preservation/restore findings.
+Neither documentation correction reruns the historical QA suites.
 Before committing the correction, preserve before-bytes/hashes externally,
 verify all 16 parent task and DoD IDs, 12 product leaves, seven admission gates,
 transfer states, local references and JSON, and inspect the complete staged
 diff. Session admission remains `DEFERRED`; parent gate states above stay
-unchanged. ROOT-02/ROOT-03 preservation and reconciliation are next.
+unchanged except the scoped DOD-05 progress recorded below. ROOT-02/ROOT-03 remain active.
 
 - Bind the five affected QA entrypoints, both helpers, helper tests, native
   README and owning continuation documents to an explicit source manifest.
@@ -137,6 +142,23 @@ unchanged. ROOT-02/ROOT-03 preservation and reconciliation are next.
   physical input/IME, hidden/minimized capture, final design or performance.
 - Record agent/reviewer identity honestly. A root readback or repeated test is
   not an independent final audit; the whole-goal streak remains **0**.
+
+## Scoped preservation acceptance — r10
+
+DOD-05 advances only to `PARTIAL`: the base snapshot and trailing-space
+supplement are privately retained; R2 matches 20/20 Git-state comparisons for
+three linked owners and nested Pydantic, and rereads 10,076 linked-owner regular
+files. All three indexes were already captured; the missing-index diagnosis is
+superseded. CHECKPOINT owns the exact evidence locators and counts.
+
+Require primary materialization, every excluded nested/Gitlink/reparse/generated
+owner, consumer repair, source drift reobservation and independent scoped review
+before retirement or SESSION-G02 PASS_PRESERVATION. Keep the 49 inherited rebuild
+EOL/stat-cache findings and the accidental source sparse-checkout command
+correction visible. Conditional status equality is not a clean-content verdict.
+Semantic reconciliation, session admission and whole-goal audit streak remain
+open/deferred/zero respectively. No historical test or fsck is relabeled as a
+fresh run by this checkpoint.
 
 ## Final audit rounds
 

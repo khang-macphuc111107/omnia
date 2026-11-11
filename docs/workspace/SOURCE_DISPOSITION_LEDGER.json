@@ -575,6 +575,19 @@
   "limits": [
     "All rows remain unreviewed.",
     "Historical full source hashes/rows retained privately with SHA-256; compacting grants no semantic review credit.",
-    "Revalidate source drift before carrying any later disposition."
-  ]
+    "Revalidate source drift before carrying any later disposition.",
+    "Scoped preservation/restore and conditional cached-status equality grant no semantic disposition or retirement credit. CHECKPOINT retains content-reevaluation and source-command findings."
+  ],
+  "preservation": {
+    "state": "SCOPED_RESTORE_PARTIAL",
+    "owner": "root-integrator",
+    "authority": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10",
+    "privateEvidenceLane": "continuation-r10-source-preservation",
+    "snapshot": "omnia-root-r10-20261111/SNAPSHOT.json",
+    "supplement": "omnia-root-r10-20261111/SUPPLEMENT.json",
+    "restoreReceipt": "restore-reconciliation-r2/RESTORE-R2.json",
+    "restoreReceiptSha256": "102b1fc8217faa3796517a5dcdec30f68ae21cf79d9c2bddd45a243b11e43786",
+    "retirementEligible": false,
+    "next": "Materialize primary including supplement; preserve remaining boundaries and consumers; reacquire current state before semantic disposition."
+  }
 }

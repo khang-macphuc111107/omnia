@@ -23,9 +23,9 @@
       "tasks": ["ROOT-02", "ROOT-03"],
       "dod": ["DOD-04", "DOD-05"],
       "required": "PASS_PRESERVATION",
-      "state": "OPEN",
-      "receipts": [],
-      "next": "Preserve complete divergent source/Git ownership and verify isolated restores before retirement."
+      "state": "PARTIAL",
+      "receipts": ["CHECKPOINT.md#source-preservation-and-isolated-restore--r10", "SOURCE_DISPOSITION_LEDGER.json#preservation"],
+      "next": "Materialize primary plus trailing-space supplement, preserve excluded owners/consumers and review fresh state. Scoped R2 restore is conditional; retirement remains ineligible."
     },
     {
       "id": "SESSION-G03",
@@ -75,8 +75,8 @@
   ],
   "openTransfer": [
     {"task": "ROOT-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "GOAL.md", "next": "Bind source admission to fresh clone checks.", "acceptance": ["DOD-01", "DOD-02", "DOD-03"]},
-    {"task": "ROOT-02", "state": "OPEN", "owner": "root-integrator", "source": "SOURCE_DISPOSITION_LEDGER.json", "next": "Review HEAD/index/dirty/untracked differences and disposition each relevant change.", "acceptance": ["DOD-04"]},
-    {"task": "ROOT-03", "state": "OPEN", "owner": "root-integrator", "source": "WORKSPACE_OWNERSHIP.json", "next": "Snapshot common Git and linked worktrees, restore and repair consumers.", "acceptance": ["DOD-05"]},
+    {"task": "ROOT-02", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "SOURCE_DISPOSITION_LEDGER.json", "next": "Review HEAD/index/dirty/untracked differences and disposition each relevant change.", "acceptance": ["DOD-04"]},
+    {"task": "ROOT-03", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10", "next": "Continue primary/supplement restore and excluded-owner/consumer preservation; retain EOL findings and reacquire source drift before retirement.", "acceptance": ["DOD-05"]},
     {"task": "ROOT-04", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Refactor reviewed components with behavioral oracles.", "acceptance": ["DOD-07"]},
     {"task": "ROOT-05", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Repair export completeness and verify isolated closure.", "acceptance": ["DOD-02", "DOD-06", "DOD-15"]},
     {"task": "DRIVE-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "EXTERNAL_LAYOUT.json", "next": "Complete bounded drive-root ownership classification and record omissions.", "acceptance": ["DOD-08"]},
@@ -92,5 +92,5 @@
     {"task": "SESSION-01", "state": "DEFERRED", "owner": "root-integrator", "source": "NEXT_SESSION_PROMPT.md", "next": "Launch only after all seven admission gates pass; record prompt hash, chat ID and goal activation.", "acceptance": ["DOD-16"]}
   ],
   "launch": {"threadId": null, "promptSha256": null, "goalActivation": "NOT_REQUESTED", "checkpoint": null},
-  "limits": "This deferred transfer plan grants no completion, publication, runtime or final-audit credit. Refresh current states and evidence before admission."
+  "limits": "Deferred transfer; r10 scoped restore does not complete preservation, semantic reconciliation, publication, runtime or final audit. Refresh current states and evidence before admission."
 }

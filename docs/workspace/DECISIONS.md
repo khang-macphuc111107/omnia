@@ -62,3 +62,16 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
   on the old native integration target.
 - Limits: moving data earns no reclaimed-capacity credit. Cargo's reported
   logical bytes and measured drive free-space delta are separate.
+
+## 2026-11-11 — Preserve bytes and Git state as separate restore claims
+
+- Decision: keep raw common/linked Git metadata and source bytes; qualify
+  restored status under recorded source semantics and separately retain content
+  reevaluation. Do not normalize source/index to make a restore appear clean.
+- Evidence: CHECKPOINT's r10 preservation section routes to the private base
+  snapshot, trailing-space supplement, 20-comparison R2 receipt and correction.
+- Correction: all three linked indexes were already captured. Source-side
+  sparse-checkout reapply was accidentally invoked by one diagnostic; the
+  recorded postconditions do not justify calling the continuation read-only.
+- Limits: inherited EOL/stat-cache differences remain findings. Primary and
+  excluded-owner/consumer preservation are pending; retirement remains false.

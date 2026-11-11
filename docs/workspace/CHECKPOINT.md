@@ -1,4 +1,4 @@
-# Omnia checkpoint — 2026-11-11, continuation revision 5
+# Omnia checkpoint — 2026-11-11, continuation revision 6
 
 ## Resume here
 
@@ -6,18 +6,18 @@
   for the objective, 16 parent tasks, 12 product leaves and seven chat-admission
   gates; read [DOD.md](DOD.md) for acceptance and the independent audit rule.
 - Persistent tool goal was read active in this chat. Its API has no active
-  objective-edit operation; GOAL revision 6 owns the detailed objective.
+  objective-edit operation; GOAL revision 7 owns the detailed objective.
 - Additive steer is queued: finish the interrupted deliverable, checkpoint
   its next action, then consume additions in order. Corrections affecting
   current correctness apply at a safe boundary. Explicit cancellation or
   incompatible replacement supersedes only the named work.
-- Inspected committed baseline: `952c211c219cb22fb851113139b66342d369c924`,
-  tree `2a0c592ed8c39b43ec411716a7546cecd0def230`, branch `master`,
-  `fix: isolate native QA outputs and reconcile continuation evidence`.
-  The QA batch is committed. The r9 documentation baseline reobserved clean
-  status before this correction; `8d2ad69` remains the earlier layout milestone.
-  The commit receipt for this correction belongs in the external r9 directory,
-  avoiding another commit solely to embed its own commit hash.
+- Inspected committed baseline: `828c9e81e7b9632ef4ae05cf6ab0d0147e2e43f9`,
+  branch `master`, `docs: reconcile committed QA and retained preview checkpoint`.
+  R10 checkpoint-r3 freshly observed clean root status and no staged paths.
+  The r7 QA and r9 documentation are committed; `8d2ad69` remains the earlier
+  layout milestone. The receipt for this logical preservation checkpoint belongs
+  in external `continuation-r10-source-preservation/checkpoint-r3`, avoiding a
+  self-hash update. No product implementation is changed by this document batch.
 - Final independent whole-goal audit streak: **0**. Session admission remains
   `DEFERRED`; no candidate/reviewer/created-chat/goal-activation receipt exists.
 
@@ -34,11 +34,12 @@ external `continuation-r7/before` before document edits:
 
 All of that logical batch is in commit `952c211`; r7/COMMIT.json records its
 successful commit and clean status. These paths are historical intake states,
-not a claim that they are currently dirty. The current bounded deliverable is
-the three-document goal/DoD/checkpoint correction in
-`continuation-r9-doc-reconciliation`. It preserves the complete task, product,
-DoD, research and session-admission denominators. Its before-bytes/hashes,
-corrected baseline, process reobservation, checks and commit receipt are external.
+not a claim that they are currently dirty. The r9 three-document correction is
+committed as `828c9e8`. The current bounded deliverable is the r10 preservation
+checkpoint and its existing goal/DoD/disposition/admission/prompt/decision
+consumers. It preserves the complete task, product, DoD, research and admission
+denominators. Before-bytes, hashes, baseline, checks and the commit receipt are
+external under `continuation-r10-source-preservation/checkpoint-r3`.
 The first baseline's unquoted `HEAD^{tree}` failed PowerShell argument parsing;
 `BASELINE-CORRECTED.json` uses the quoted argument and records the actual tree.
 The failed partial baseline is retained and supplies no tree evidence.
@@ -166,9 +167,88 @@ Corrected private NUL/rename-aware inventory at `2026-11-10T20:12:44Z`:
 no rename occurred in that read. A stable read is not an atomic backup.
 HEAD-only union is 42,012 paths, four-way intersection 2,020 and current focus
 276 paths / 138 differing paths. Historical 277-focus counts used a different
-predicate. Semantic reconciliation, dirty/index/untracked and valuable-ignored
-preservation, common-Git recovery and restore drills remain open. Revalidate
-current bytes before carrying any disposition.
+predicate. Semantic reconciliation remains open. R10 advanced scoped
+preservation and isolated restore as recorded below; excluded owners and
+consumer boundaries still prevent metadata retirement. Revalidate current
+bytes before carrying any disposition.
+
+## Source preservation and isolated restore — r10
+
+Private evidence root (LANE):
+`C:\Users\khang\.codex\research\omnia-restructure\20261111\handoff-intake\continuation-r10-source-preservation`.
+Snapshot root (SNAP):
+`C:\Users\khang\.codex\recovery\omnia-root-r10-20261111`.
+Isolated restore (RESTORE):
+`C:\Users\khang\.codex\recovery\omnia-root-r10-restore-20261111`.
+These private inputs remain outside published Git.
+
+### Acquired and restored scope
+
+- `SNAP/SNAPSHOT.json`: 184,169 regular files / 8,342,167,917 logical bytes
+  across common Git, primary, release, rebuild and goal-control. The method
+  checks per-file stability with pinned ancestors; it is not volume-atomic.
+- `SNAP/SUPPLEMENT.json`: 23 PNG files / 5,273,303 bytes whose parent directory
+  has a trailing space. Extended Windows path semantics preserve that name;
+  do not normalize it onto a different directory. The supplement is separate
+  from the base snapshot denominator and must be consumed during primary restore.
+- `LANE/restore-reconciliation-r2/RESTORE-R2.json`, SHA-256
+  `102b1fc8217faa3796517a5dcdec30f68ae21cf79d9c2bddd45a243b11e43786`,
+  finished `2026-11-10T23:47:18.236997Z`: 20/20 comparisons match HEAD, refs,
+  index stage records, index flags and status for goal-control, release, rebuild
+  and the nested Pydantic owner. `WORKING-BYTE-READBACK.json` separately verifies
+  all 10,076 included regular files from the three linked worktrees.
+- Nested Pydantic was separately acquired and restored: 28 physical files /
+  287,343 bytes; HEAD `0f7648a1b0685389ea368ea4f7b754b393cea8c7`.
+  Its absent/empty index and many tracked deletions are preserved; 28 physical
+  files does not mean 28 entries in the Git tree. Use `SNAP/manifests/
+  rebuild_pydantic.jsonl` and `LANE/restore-reconciliation-r2/NESTED-OWNER.json`.
+
+### Corrected diagnosis and conditional status equality
+
+The earlier missing-linked-index diagnosis is **superseded**. The snapshot
+already includes all three indexes and 24 linked-worktree admin files;
+`LANE/ADMIN-AND-STAT-CACHE-PROBE.json` records every admin hash matching live
+and restored copies. Initial restore mismatches involved `core.autocrlf=false`
+versus source semantics, new stat metadata and the absent nested owner.
+
+R2 preserves raw indexes, restores captured mtimes only in the isolated
+working directories and uses explicit isolated Git/work-tree paths with
+`core.autocrlf=true`, `core.longpaths=true`, `core.ignorecase=true` and
+`core.trustctime=false`. Its status equality is conditional on those inputs.
+
+Separate `CONTENT-REEVALUATION.json` with `core.trustctime=true` still matches
+goal-control and release; rebuild has 130 records versus the source's 81,
+exposing 49 inherited EOL/stat-cache differences. Keep this finding alongside
+the matching byte receipt. Neither matching cached status nor matching bytes
+proves semantic cleanliness. Historical `RESTORE/RESTORE.json` and the exit-0
+common-Git fsck receipt remain historical; R2 did not rerun fsck.
+
+### Source-side diagnostic correction
+
+`probe_restore_cause2.py` accidentally invoked `git sparse-checkout reapply`
+on source goal-control, release and rebuild. Return codes/stdout/stderr for
+those calls were not retained. Do not describe all r10 source operations as
+read-only. `LANE/SOURCE-POST-PROBE-CORRECTION.json` records that all four owners'
+HEAD/refs/index stage/index flags/status and raw index hashes still matched
+acquisition afterward; the later admin probe matched all 24 admin files.
+The R2 implementation now allowlists source query commands. Do not rerun the
+erroneous diagnostic. These checks support only their named postconditions.
+
+### Remaining preservation gates
+
+`retirementEligible=false`; `ROOT-02` and `ROOT-03` are `IN_PROGRESS`, `DOD-05`
+is `PARTIAL`, `SESSION-G02` is `PARTIAL`, session decision is `DEFERRED`, and
+whole-goal independent audit streak remains **0**. No metadata retirement,
+source relocation or deletion is credited to this batch.
+
+Primary included-byte materialization is still pending. Its 11 Gitlink owners,
+57 reparse records and 961 generated boundaries, plus remaining release/rebuild
+boundaries and actual consumers, need separate ownership/disposition. The
+supplement also lists further nested owners. Preserve these boundaries and
+reacquire current source state before retiring anything. The 403 byte-delta
+candidates and the disposition ledger's 138 unreviewed HEAD focus rows do not
+have semantic review or merge credit. Repeated root readback is not an
+independent audit, and tool-dispatch failures provide no agent-review credit.
 
 ## Layout and capacity
 
@@ -204,18 +284,21 @@ product requirements remain in GOAL without changing their denominator.
 
 ## Next executable actions
 
-1. Finish the interrupted three-document reconciliation, check links, exact
-   task/DoD/product/admission IDs and transfer states, parse admission JSON,
-   run `git diff --check` and inspect the complete intended diff. Record the
-   result externally. Preserve all known findings and zero final-audit credit.
-2. Commit only this logical documentation correction. Save the returned
-   commit/tree/status externally; the QA commit and preview launch are already
-   completed and must not be repeated.
-3. Preserve/reconcile source and common Git, verify restore/clone boundaries,
-   continue measured drive cleanup and bounded refactoring, and carry history,
-   research and native-product requirements forward in GOAL's order. Begin
-   ROOT-02/ROOT-03 with fresh common-store topology and source state; do not
-   retire an owner from a status-only snapshot.
-4. Publish only after privacy/license/account/clone gates. Create the follow-up
-   chat only under the seven reviewed admission gates and request its detailed
-   persistent goal immediately. Creation and actual activation stay separate.
+1. Finish this preservation checkpoint before consuming queued additions.
+   Verify exact task/DoD/product/admission IDs and transfer states, evidence
+   hashes, local references, JSON and `git diff --check`; inspect the complete
+   staged diff and commit only the intended documentation update. Record the
+   returned commit/tree/status under LANE/checkpoint-r3; do not rewrite this
+   checkpoint merely to embed its own hash.
+2. Materialize primary's included snapshot bytes and trailing-space supplement
+   into RESTORE/primary with checked literal paths, no reparse traversal and
+   no source writes. Compare restored bytes and Git state, retaining conditional
+   status and independent content reevaluation as separate results.
+3. Preserve/classify all remaining nested/Gitlink/reparse/generated boundaries,
+   inspect consumers and reacquire source state for drift. Keep retirement
+   ineligible. Continue ROOT-02 semantic reconciliation, safe externalization,
+   measured drive cleanup, isolated closure and bounded refactoring afterward.
+4. Carry complete history/research/product/quality requirements in GOAL's queue.
+   Preserve the retained preview and known visual/UIA findings. Publish only
+   after privacy/license/account/clone gates; launch the requested follow-up chat
+   under all seven reviewed admission gates with detailed goal activation.
