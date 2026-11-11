@@ -37,9 +37,11 @@ source cleanup. All three linked indexes were captured; do not repeat the
 superseded missing-index diagnosis. R2 status equality is conditional on source
 EOL semantics, captured mtimes and isolated stat options. Preserve the separate
 49-difference rebuild content reevaluation and the source-command correction.
-Primary materialization, the trailing-space supplement, excluded owners and
-consumer repair remain open. Retirement eligibility is false. Reacquire current
-source state before carrying these historical receipts or retiring metadata.
+Primary regular bytes and the trailing-space supplement have verified isolated
+size/SHA-256 readback. Reuse that restore; primary Git-state comparison, excluded
+owners and consumer repair remain open. Retirement eligibility is false.
+Reacquire current source state before carrying historical receipts or retiring
+metadata. Do not create another full copy just to repeat materialization.
 
 ## History work
 

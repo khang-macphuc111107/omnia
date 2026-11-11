@@ -587,7 +587,14 @@
     "supplement": "omnia-root-r10-20261111/SUPPLEMENT.json",
     "restoreReceipt": "restore-reconciliation-r2/RESTORE-R2.json",
     "restoreReceiptSha256": "102b1fc8217faa3796517a5dcdec30f68ae21cf79d9c2bddd45a243b11e43786",
+    "primaryMaterializationReceipt": "restore-reconciliation-r2/PRIMARY-MATERIALIZATION.json",
+    "primaryMaterializationSha256": "5345bb971b723af654e19fddb4e70dce2df8b64518a236985fbb8b8ca76ab5a7",
+    "primaryRestoredOrdinaryFiles": 172415,
+    "primaryRestoredOrdinaryBytes": 6795557609,
+    "primaryRestoredSupplementFiles": 23,
+    "primaryRestoredSupplementBytes": 5273303,
+    "primaryUnmaterializedBoundaries": 1029,
     "retirementEligible": false,
-    "next": "Materialize primary including supplement; preserve remaining boundaries and consumers; reacquire current state before semantic disposition."
+    "next": "Reuse verified primary/supplement bytes; compare primary Git state, preserve remaining boundaries/consumers and reacquire current state before semantic disposition."
   }
 }

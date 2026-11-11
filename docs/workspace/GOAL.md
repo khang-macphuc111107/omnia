@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 7 — scoped source restore reconciled; preservation boundaries remain open, 2026-11-11
+**Revision:** 8 — primary byte restore verified; preservation boundaries remain open, 2026-11-11
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -83,10 +83,10 @@ overwriting the plan.
 
 Current sequence:
 
-1. Finish, check and commit the interrupted source-preservation checkpoint.
-   The r9 documentation correction is committed as `828c9e8`; r10 now has a
-   scoped isolated restore receipt requiring the correction below. Preserve
-   the completed QA commit and retained preview without repeating either effect.
+1. Finish, check and commit the primary-materialization checkpoint.
+   The prior scoped preservation checkpoint is committed as `177bfbd`; primary
+   regular bytes and the trailing-space supplement now have a readback receipt.
+   Preserve completed QA and the retained preview without repeating either effect.
 2. Repair any remaining root-instruction or evidence contradictions against
    the current owning bytes before carrying their claims.
 3. Correct source reconciliation and preserve working-tree/index ownership.
@@ -336,7 +336,12 @@ coverage. Complete useful authorized fallback research and retain the gap.
   The correction receipt verifies the four owners' HEAD/refs/index/flags/status
   and raw index hashes still match acquisition. Do not claim this continuation
   was entirely read-only. No metadata retirement or source relocation is credited.
-- R10 retirement eligibility remains **false**. Primary materialization,
+- Primary materialization finished `2026-11-11T13:52:58.621312Z`: all 172,415
+  ordinary files / 6,795,557,609 bytes and 23 supplement PNG files / 5,273,303
+  bytes were restored with size/SHA-256 readback and no recorded errors.
+  `PRIMARY-MATERIALIZATION.json` is bound in CHECKPOINT and the disposition
+  ledger. This is scoped byte recovery, not a primary Git-state comparison.
+- R10 retirement eligibility remains **false**.
   11 primary Gitlink owners, 57 reparse records, 961 generated boundaries and
   remaining release/rebuild boundaries/consumers remain open. See CHECKPOINT's
   source-preservation section and SOURCE_DISPOSITION_LEDGER's evidence locators.
@@ -345,15 +350,15 @@ coverage. Complete useful authorized fallback research and retain the gap.
 
 ## Immediate next actions
 
-1. Finish this interrupted preservation checkpoint before consuming additive
+1. Finish this primary-materialization checkpoint before consuming additive
    steer. Preserve all 16 parent tasks, 12 product leaves, research denominators,
    16 DoD gates and seven admission gates. Validate references, IDs, transfer
    states, evidence hashes, JSON and `git diff --check`; inspect exact staged
    paths and commit only this logical update. Save its commit receipt externally.
-2. Materialize primary's included regular bytes and the trailing-space supplement
-   into the isolated restore; compare HEAD/refs/raw index/index-stage/flags/status
-   under recorded source semantics and retain a separate content reevaluation.
-   Do not rerun the erroneous sparse-checkout diagnostic on source.
+2. Compare primary HEAD/refs/raw index/index-stage/flags/status in the existing
+   isolated restore under recorded source semantics, with a separate content
+   reevaluation. Reuse the verified materialization; do not create another full
+   copy or rerun the erroneous sparse-checkout diagnostic on source.
 3. Classify and preserve each remaining nested/Gitlink/reparse/generated owner,
    repair consumer paths and reacquire source state to detect drift. Keep
    `retirementEligible=false` until every required boundary and restore gate is

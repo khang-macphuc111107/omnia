@@ -25,7 +25,7 @@
       "required": "PASS_PRESERVATION",
       "state": "PARTIAL",
       "receipts": ["CHECKPOINT.md#source-preservation-and-isolated-restore--r10", "SOURCE_DISPOSITION_LEDGER.json#preservation"],
-      "next": "Materialize primary plus trailing-space supplement, preserve excluded owners/consumers and review fresh state. Scoped R2 restore is conditional; retirement remains ineligible."
+      "next": "Primary bytes/supplement are verified; compare primary Git state, preserve excluded owners/consumers and review fresh state. Scoped R2 status remains conditional; retirement remains ineligible."
     },
     {
       "id": "SESSION-G03",
@@ -76,7 +76,7 @@
   "openTransfer": [
     {"task": "ROOT-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "GOAL.md", "next": "Bind source admission to fresh clone checks.", "acceptance": ["DOD-01", "DOD-02", "DOD-03"]},
     {"task": "ROOT-02", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "SOURCE_DISPOSITION_LEDGER.json", "next": "Review HEAD/index/dirty/untracked differences and disposition each relevant change.", "acceptance": ["DOD-04"]},
-    {"task": "ROOT-03", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10", "next": "Continue primary/supplement restore and excluded-owner/consumer preservation; retain EOL findings and reacquire source drift before retirement.", "acceptance": ["DOD-05"]},
+    {"task": "ROOT-03", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10", "next": "Reuse verified primary/supplement bytes; compare primary Git state and preserve excluded owners/consumers; retain EOL findings and reacquire source drift before retirement.", "acceptance": ["DOD-05"]},
     {"task": "ROOT-04", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Refactor reviewed components with behavioral oracles.", "acceptance": ["DOD-07"]},
     {"task": "ROOT-05", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Repair export completeness and verify isolated closure.", "acceptance": ["DOD-02", "DOD-06", "DOD-15"]},
     {"task": "DRIVE-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "EXTERNAL_LAYOUT.json", "next": "Complete bounded drive-root ownership classification and record omissions.", "acceptance": ["DOD-08"]},

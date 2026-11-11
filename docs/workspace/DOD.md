@@ -151,7 +151,12 @@ three linked owners and nested Pydantic, and rereads 10,076 linked-owner regular
 files. All three indexes were already captured; the missing-index diagnosis is
 superseded. CHECKPOINT owns the exact evidence locators and counts.
 
-Require primary materialization, every excluded nested/Gitlink/reparse/generated
+DOD-05 remains `PARTIAL` after primary materialization: 172,415 ordinary files /
+6,795,557,609 bytes and 23 supplement PNG files / 5,273,303 bytes have size/SHA-256
+readback with no recorded errors. This receipt does not compare primary Git
+state or complete the 1,029 excluded primary boundaries.
+
+Require primary Git-state comparison, every excluded nested/Gitlink/reparse/generated
 owner, consumer repair, source drift reobservation and independent scoped review
 before retirement or SESSION-G02 PASS_PRESERVATION. Keep the 49 inherited rebuild
 EOL/stat-cache findings and the accidental source sparse-checkout command

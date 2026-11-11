@@ -73,5 +73,9 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 - Correction: all three linked indexes were already captured. Source-side
   sparse-checkout reapply was accidentally invoked by one diagnostic; the
   recorded postconditions do not justify calling the continuation read-only.
-- Limits: inherited EOL/stat-cache differences remain findings. Primary and
-  excluded-owner/consumer preservation are pending; retirement remains false.
+- Primary regular bytes and the trailing-space supplement now have isolated
+  size/SHA-256 readback; reuse the existing restore rather than making another
+  full copy. CHECKPOINT owns the exact materialization receipt and denominator.
+- Limits: inherited EOL/stat-cache differences remain findings. Primary Git-state
+  comparison and excluded-owner/consumer preservation are pending; retirement
+  remains false.
