@@ -453,3 +453,21 @@ Do not infer that `.omnia\cache`, `dist`, `node_modules` or
 `.toolchains\openhands-uv-cache` are disposable merely because they are
 ignored. Re-observe active consumers, preserve manifests and use a
 path-specific receipt for each future operation.
+
+## Queued continuation — Graphify evidence and generated-output cleanup
+
+The latest continuation records one bounded Graphify review and one reversible
+cleanup unit. Graphify is research-only: deterministic graph/index ideas may
+inform a future Omnia design review, but source, assets, credentials and
+runtime behavior are not admitted. The six opened files and exact hashes are
+in the external supplement ledger; inaccessible social/video content remains
+unproven.
+
+The cleanup unit moved the generated Vite dist directory out of the child
+source tree after owner, producer, containment, ignore, status, reparse and
+process checks. Readback matched 140 files and 6,924,863 logical bytes. The
+move was same-volume and therefore reclaimed 0 bytes. Continue one candidate at
+a time; do not touch
+profiles, upstream extraction trees, nested repositories or deleted source
+without their own receipts and restore routes. Preserve the child dirty-state
+count and warnings as open evidence.

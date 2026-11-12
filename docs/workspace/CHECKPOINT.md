@@ -420,3 +420,69 @@ upstream-directory warnings; no source, nested repository, worktree, profile,
 backup or recovery data was deleted.
 
 Receipt: `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-pytest-cache-move.json`.
+
+## Graphify supplement and dist quarantine — 2026-11-12
+
+A canonical public GitHub API review was recorded for Graphify-Labs/graphify
+at ref 8. Repository, README, license and recursive tree endpoints returned
+HTTP 200; the tree response contained 1,306 entries with 	runcated=false.
+The repository metadata reports Apache-2.0. The README and six selected files
+(ARCHITECTURE.md, docs/how-it-works.md, graphify/manifest.py,
+graphify/querylog.py, graphify/rcfile.py, and
+graphify/always_on/claude-md.md) were decoded, hashed and retained in the
+external supplement directory. This is bounded review evidence, not exhaustive
+source, issue, discussion, comment, media or runtime review.
+
+The useful candidate patterns are deterministic code indexing separate from
+semantic extraction, explicit EXTRACTED/INFERRED/AMBIGUOUS provenance,
+module input/output contracts, bounded configurable query depth/budget, and
+scoped graph-first navigation before broad raw search. Admission is
+RESEARCH_ONLY: no external source, asset, credential, private content or
+runtime was copied into Omnia. Full disposition:
+C:\Users\khang\.codex\research\omnia-clean-2026-11-12\supplement-20261112\graphify-disposition.md.
+
+The next generated-only cleanup unit classified dist as an ordinary ignored
+and untracked Vite build output (140 files, 6,924,863 logical bytes). The
+package.json build route is 	sc -b && vite build; no reparse point, tracked
+file, status entry or active process reference remained at the mutation check.
+The directory was moved by exact path to
+D:\OmniaData\quarantine\omnia-clean-20261112\dist. Readback matched file
+count and bytes. The move stayed on D:, so free-space delta was 0 and no
+reclamation credit is claimed. Restore is a single exact reverse move recorded
+in the receipt. Child repository source/profile/worktree state remains dirty and
+independently owned.
+
+Receipts:
+
+- C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-dist-pre.json
+- C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-dist-move.json
+- C:\Users\khang\.codex\research\omnia-clean-2026-11-12\repos-omnia-status-after-dist-move.json
+"@
+'CLEANUP_STATUS_20261112.md'=@"
+
+## Latest bounded unit — Graphify disposition and Vite dist quarantine
+
+Graphify was reviewed from public GitHub API evidence at ref 8: repository,
+README, license and recursive tree all returned 200; 1,306 tree entries were
+reported without truncation. README plus six canonical files were actually
+opened. The Apache-2.0 metadata and candidate lessons are recorded outside the
+product tree. Admission is RESEARCH_ONLY; this does not claim exhaustive
+source/comment/media/runtime review and no external code was copied.
+
+D:\Omnia\repos\omnia\dist was an ordinary, ignored, untracked generated
+Vite output with 140 files and 6,924,863 logical bytes. Its producer is the
+tracked package.json build script (	sc -b && vite build) and
+package-lock.json is present. A path-specific receipt proved containment,
+zero reparse entries, zero tracked/status-visible files and no active process
+reference at mutation time. The directory was moved to
+D:\OmniaData\quarantine\omnia-clean-20261112\dist; readback matched. This
+same-volume move changed free space by 0 bytes, so it is reversible
+externalization and earns no capacity credit. The source path is absent and
+path-scoped Git status is clean after the move.
+
+The child repository remains dirty and independently owned. The root control
+plane is clean at the last committed checkpoint. Remaining candidates include
+
+ode_modules, .toolchains\openhands-uv-cache, .omnia\cache, Chrome
+profile data, upstream extraction trees and mixed source deletions; they remain
+preserved until owner, consumer, retention and restore evidence are complete.

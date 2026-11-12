@@ -233,3 +233,22 @@ control-plane checkout cannot substitute for child-repository acceptance.
 - **CLEAN-11 — NO CAPACITY CREDIT:** the pytest quarantine is on D:, so its
   measured free-space delta is zero. Producer provenance for the five-byte
   marker remains open.
+
+## Graphify and dist acceptance — 2026-11-12
+
+- **RESEARCH-06 — PARTIAL/PASS (bounded):** Graphify repository, README,
+  license and complete recursive-tree response were recorded; README plus six
+  canonical files were reviewed and hashed. The disposition is
+  RESEARCH_ONLY; exhaustive repository, issue/comment/media/runtime review is
+  explicitly out of scope.
+- **CLEAN-12 — PASS (reversible generated unit):** dist moved by exact path
+  to external quarantine after containment, ignore, tracked/status, reparse and
+  active-process gates. 140 files and 6,924,863 logical bytes match after
+  readback.
+- **CLEAN-13 — NO CAPACITY CREDIT:** same-volume quarantine produced a 0-byte
+  D: free-space delta. The exact reverse move is recorded; no deletion or
+  recycle-bin claim is made.
+- **CLEAN-14 — OPEN:** child repository remains dirty with active source,
+  deleted/untracked extraction/profile material, nested/worktree boundaries and
+  missing-directory warnings. A clean root control plane is not child-clean
+  proof.

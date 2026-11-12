@@ -85,3 +85,29 @@ producer is not proven and remains an evidence limitation, not a deletion
 claim.
 
 Receipt: `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-pytest-cache-move.json`.
+
+## Latest bounded unit — Graphify disposition and Vite dist quarantine
+
+Graphify was reviewed from public GitHub API evidence at ref `v8`: repository,
+README, license and recursive tree all returned 200; 1,306 tree entries were
+reported without truncation. README plus six canonical files were actually
+opened. The Apache-2.0 metadata and candidate lessons are recorded outside the
+product tree. Admission is `RESEARCH_ONLY`; this does not claim exhaustive
+source/comment/media/runtime review and no external code was copied.
+
+`D:\Omnia\repos\omnia\dist` was an ordinary, ignored, untracked generated
+Vite output with 140 files and 6,924,863 logical bytes. Its producer is the
+tracked `package.json` build script (`tsc -b && vite build`) and
+`package-lock.json` is present. A path-specific receipt proved containment,
+zero reparse entries, zero tracked/status-visible files and no active process
+reference at mutation time. The directory was moved to
+`D:\OmniaData\quarantine\omnia-clean-20261112\dist`; readback matched. This
+same-volume move changed free space by 0 bytes, so it is reversible
+externalization and earns no capacity credit. The source path is absent and
+path-scoped Git status is clean after the move.
+
+The child repository remains dirty and independently owned. The root control
+plane is clean at the last committed checkpoint. Remaining candidates include
+`node_modules`, `.toolchains\openhands-uv-cache`, `.omnia\cache`, Chrome
+profile data, upstream extraction trees and mixed source deletions; they remain
+preserved until owner, consumer, retention and restore evidence are complete.

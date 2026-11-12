@@ -146,3 +146,23 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 - Limits: producer provenance for the marker is not proven; no deletion or
   disk-reclamation credit is claimed. The child repository remains dirty and
   all larger or mixed-ownership candidates remain preserved.
+
+## 2026-11-12 — Graphify bounded admission and Vite output quarantine
+
+- Decision: record Graphify as RESEARCH_ONLY. Public API metadata, README,
+  license and six selected canonical files support reusable design hypotheses,
+  not source or runtime admission. The candidate lessons are deterministic
+  indexing, explicit edge provenance, bounded query settings, graph-first
+  navigation and opt-in query logging.
+- Evidence: external files under
+  C:\Users\khang\.codex\research\omnia-clean-2026-11-12\supplement-20261112\graphify.
+  The recursive tree had 1,306 entries and was not truncated, but only six
+  files were opened. Issues, comments, media and runtime were not reviewed.
+- Decision: externalize dist from the child repository after proving it is
+  generated Vite output, ignored, untracked, non-reparse, status-free and not
+  referenced by a running process at the final check.
+- Evidence: pre/move receipts bind 140 files and 6,924,863 logical bytes;
+  readback matches and the exact reverse move is recorded.
+- Limit: quarantine is on D:, so free-space delta is zero. No deletion,
+  recycle-bin purge or capacity credit is implied. All mixed-ownership and
+  potentially active candidates remain retained.
