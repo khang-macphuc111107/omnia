@@ -4,13 +4,13 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 12 — Wave 3B GitHub private publication, independent remote/local clean-clone verification, release native shell telemetry, 4-way skill/memory sync, and `SESSION_ADMISSION.json` `READY` bound; full-product runtime, excluded preservation boundaries, and external `final-streak-3` audits remain explicit, 2026-11-12
+**Revision:** 13 — Wave 4 Full Native C++20 migration (`archive/pre-cpp-rust-snapshot-20261112`), Flagship Studio UI ("Obsidian Kinetic Atelier"), 13-skill parity (`deep-cpp-native`), exhaustive `D:`/`C:` reclamation (`+944.29 GiB` physical), and Commit #4 GitHub clean-clone CTest bound; full-product live provider/OS runtime and excluded preservation boundaries remain explicit, 2026-11-12
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
 
 Deliver one discoverable, professional Omnia repository whose product source
-is directly under `D:\Omnia`, with native Rust as the preferred runtime,
+is directly under `D:\Omnia`, with Modern Native C++20 (`MSVC` + `CMake` + `Ninja` + Windows 11 SDK) as the canonical runtime (superseding the archived Rust baseline on tag `archive/pre-cpp-rust-snapshot-20261112`),
 reproducible build entrypoints, a compact handoff, and evidence-backed
 ownership for every retained or moved artifact. The workspace must be clean
 because each file has a deliberate owner and lifecycle, not because unknown
@@ -23,8 +23,7 @@ work was hidden or deleted.
    and restore path exist.
 2. Never publish credentials, tokens, cookies, browser profiles, private chat
    bodies, personal records or access-bearing URLs.
-3. Native Rust is the target. WebView, Electron and Node remain compatibility
-   dependencies only when a measured, documented native seam is not available.
+3. Modern Native C++20 (`MSVC` + `CMake` + `Ninja` + Windows 11 SDK) is the target runtime per explicit Wave 4 user mandate (prior Rust baseline archived on tag `archive/pre-cpp-rust-snapshot-20261112`). Zero `.rs`, `Cargo.*`, Electron, WebView, or Node bundler dependencies belong in the active product runtime.
 4. A hash, enumeration, fixture, mock, preview or green structural check cannot
    prove semantic understanding, live integration, performance, security,
    feature parity or zero defects.
@@ -37,7 +36,7 @@ work was hidden or deleted.
 
 | ID | Task | State | Exit evidence |
 |---|---|---|---|
-| `ROOT-01` | Admit native Rust and complete shared-crate closure at root | `IN_PROGRESS` | Byte receipt, metadata, format, tests and review |
+| `ROOT-01` | Complete native C++20 core, Studio host and Win32 shell closure at root | `IN_PROGRESS` | Out-of-source CMake/Ninja build, 35/35 CTests and review |
 | `ROOT-02` | Reconcile primary/release/rebuild/goal-control differences | `IN_PROGRESS` | Per-change incorporated/retained/superseded/unresolved ledger |
 | `ROOT-03` | Repair or retire nested Git/worktree ownership | `IN_PROGRESS` | Snapshot, path repair and restore drill |
 | `ROOT-04` | Refactor and organize code without behavior loss | `IN_PROGRESS` | Scoped diff, review, tests and explainable status |
@@ -519,3 +518,19 @@ Independent verifier audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa
 - **Independent remote & isolated local clean-clone verification (`ROOT-05` -> `PARTIAL`, `SESSION-G01` -> `PASS_SCOPED`)**: Bound in `D:\OmniaData\qa\github-clean-clone-20261112\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json` (`sha256=35aaac06a396bfc60e6d8a9bc893ccaf28c1f298c2ed958f344bdffc9285e610`, `allChecksPassed=true`): both remote GitHub clone and isolated `--no-local --no-hardlinks` clone match `d8b456e357dde65d8ee314194743fb93655f5d6a`, pass `cargo metadata --locked` and `cargo fmt --all --check` on both `src-tauri/Cargo.toml` and `native/Cargo.toml`, pass `524/524` locked Cargo tests, pass `5/5` `tools/agy-history-sync` unit tests, and pass `12/12` `.agents/skills/*` `quick_validate.py` checks (`rc=0`).
 - **Release native shell telemetry & `exebox-*` sandbox boundary (`QUALITY-01`)**: Bound in `D:\OmniaData\qa\native-20261112\retained-preview\native-shell-cycle24-runtime.json` (`sha256=1a4aa5cac935a76687432cb9ccf54fb4e390c2ef50cfc26c95b545fb9dd93a77`) and `native-shell-cycle24-window.png` (`sha256=68b669ce7e26e0d9abe2836490ca78f9566184607c7903d81e259a7f4e0c7ded`) against `release\omnia-native.exe` (`2,160,128 B`, `sha256=65944d86...`): `16,560,128 B` (`15.79 MiB`) working set, `0.0%` idle CPU, `163.2 ms` window discovery, `uiaIssue: null`. Because Antigravity executes commands inside isolated `exebox-*` Windows desktops rather than the interactive `Default` desktop, `PID 11532` was cleanly terminated after capture (`0` orphan processes); launch `D:\OmniaData\tools\cargo-target\release\omnia-native.exe` directly on `Default` desktop for interactive inspection.
 - **4-way `/learn` synchronization & session admission (`SESSION-01` -> `READY`)**: All `12` curated skills are byte-identical across `D:\Omnia\.agents\skills\`, `~/.codex/skills/`, `~/.agents/skills/`, and Antigravity, alongside `OMNIA_CONTINUITY_AND_PEER_MESH` in `~/.codex/AGENTS.md` and `8` pure-`LF` notes authored in this session under `ad_hoc/notes` (within a shared multi-session directory of `60+` `.md` notes where `33` pre-session historical notes use `CRLF`). [SESSION_ADMISSION.json](SESSION_ADMISSION.json) is now **`READY`** (`SESSION-G01..G07` passed on candidate `d8b456e357dde65d8ee314194743fb93655f5d6a`, `promptSha256=ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592`); three independent frozen-snapshot audit rounds execute against the pushed `HEAD === origin/master` snapshot into external `D:\OmniaData\qa\audits-20261112\final-streak-3\`.
+
+## Wave 3 3-round clean audit & Wave 4 Full Native C++20, Flagship Studio UI and C:/D: deep-clean milestone — 2026-11-12
+
+- **Wave 3 pre-C++20 closure (`3/3` zero-defect audit streak)**: Commit #3 (`c3033728abe6f0a4906a796bf7652c84408356d7`, tree `6198c676e8ef3e2ef055625d0126d7216b57fac1`, `2,039` files) passed **3 consecutive independent zero-finding audit rounds** (`round-1-v2-receipt.json` `sha256=830288fb...`, `round-2-v2-receipt.json` `sha256=928982af...`, `round-3-v2-receipt.json` `sha256=e880b431...` -> `errors=0, warnings=0`) and is permanently preserved on pushed Git tag `archive/pre-cpp-rust-snapshot-20261112` (+ `MANIFEST.json` `sha256=0da02149...` for 2 formerly ignored research scripts).
+- **Wave 4 Full Native C++20 migration (`Steer #9`, `ROOT-01`, `ROOT-04`, `ROOT-05`, `PRODUCT-01`, `QUALITY-01`)**:
+  - Replaced `100%` of Rust/Tauri/web files (`0` `.rs`, `0` `Cargo.*`) with self-contained Modern C++20 (`MSVC 19.51.36260`, `CMake 4.3.1`, `Ninja 1.13.2`, Windows 11 SDK `10.0.26100.0`, `/std:c++20 /utf-8 /EHsc /W4 /WX /Zc:__cplusplus /permissive-`, `0` external package downloads):
+    - `cpp/` (`omnia_core`, `omnia_storage`, `omnia_routing`, `omnia_graph`, `omnia_harness`, and `omnia-studio.exe` Release `687,616 B` `sha256=fb787243...` / `9.30 MiB` working set serving `12` `/api/*` endpoints with `403` `Origin`/`Host`/traversal guards; `6/6` CTest suites PASS).
+    - `native/` (`omnia-native.exe` Release `289,792 B` `sha256=41030923...`, `omnia_qa_seed.exe` `142,336 B`, `omnia_native_tests.exe` `29/29` CTest cases PASS; unified root CMake `46/46` targets & **`35/35` CTest cases PASS**; **`7/7` Win32 PowerShell QA workflows `90/90` cases `rc=0`** in `D:\OmniaData\qa\cpp-native-precheck-20261112\QA_SUITE_SUMMARY_RECEIPT.json` `sha256=6f668cb0...`).
+- **Flagship Studio UI ("Obsidian Kinetic Atelier", `Steer #10`, `PRODUCT-WORKSPACE`)**:
+  - Shipped in `ui/` (`13` files, `8/8` `node --check` `rc=0`) + [FLAGSHIP_STUDIO_UI_SPEC.md](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md) (`sha256=db381ed0...`): 3 themes (`Obsidian Atelier`, `Alabaster Editorial`, `Midnight Blueprint`), **`87/87` WCAG 2.2 pairs `>= 5.12:1`**, **`45/45` headless Edge CDP states** (`maxOverflowX = 0 px`, `0` console errors), and live E2E integration with `omnia-studio.exe`.
+- **13-Skill 4-Way Synchronization & Handoff Refresh (`RESEARCH-01`, `HISTORY-03`, `HANDOFF-01`)**:
+  - Added `deep-cpp-native` (`SKILL.md` `sha256=b87fd5ca...`) and updated `omni-bilingual-skill-router` (`SKILL.md` `sha256=e65f88d0...`), syncing `13/13` curated skills across all 4 surfaces (`39/39` `quick_validate.py` `rc=0`, `274` live skills; `cpp-skill-sync-receipt.json` `sha256=27df8cf8...`); updated `docs/handoff/*` (`210/210` valid links, `SECRET_SCAN_VERIFICATION.json` `sha256=a01b88f6...` `PASS_ZERO_LEAKS`, `leak_count=0`).
+- **Exhaustive `D:\` + `C:\` Deep-Clean Reclamation (`Steer #11..#12`, `DRIVE-01`, `DRIVE-02`)**:
+  - `D:\` free space increased **`59.42 GiB -> 837.57 GiB` (`+778.15 GiB` physical / `799.19 GiB` logical)** ([DEEP_CLEAN_AUDIT_D_DRIVE.md](DEEP_CLEAN_AUDIT_D_DRIVE.md) `sha256=a51f017a...`, `D_DRIVE_DEEP_CLEAN_RECEIPT.json` `sha256=70f2781d...`).
+  - `C:\` free space increased **`23.47 GiB -> 189.60 GiB` (`+166.14 GiB` physical / `183.69 GiB` logical)** ([DEEP_CLEAN_AUDIT_C_DRIVE.md](DEEP_CLEAN_AUDIT_C_DRIVE.md) `sha256=1a88e1fe...`, `C_DRIVE_DEEP_CLEAN_RECEIPT.json` `sha256=ee08c5a0...`).
+  - Independent Wave 4 audit verdict: **`PASS` (`7/7` lanes, `0` open defects)** in `D:\OmniaData\qa\audits-20261112\FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json` (`sha256=f4fd3ead9dfee673e91a272bdb920b833e961ff7521d505e9a6016cc19b4b980`), followed by Commit #4 push to `origin/master` and zero-bloat remote clean-clone C++20 Release build + `CTest` verification (`GITHUB_CPP20_DELIVERY_RECEIPT.json`).

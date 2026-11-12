@@ -1,0 +1,126 @@
+/* ==========================================================================
+   OMNIA STUDIO — OBSIDIAN KINETIC ATELIER
+   Design Token Architecture (Primitive -> Semantic -> Component)
+   Zero External Fonts / Zero Gradients / Zero Backdrop-Blur
+   WCAG 2.2 AA/AAA Verified (>= 5.12:1 across all semantic text/accent pairs)
+   ========================================================================== */
+
+:root {
+  /* --- Typography Scale & Stacks (100% Native OS Zero-CDN) --- */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SFMono-Regular", ui-monospace, monospace;
+  --font-math: "Cambria Math", "STIX Two Math", Cambria, "Times New Roman", Georgia, serif;
+
+  --text-2xs: 0.6875rem;   /* 11px — telemetry labels, uppercase micro-headers */
+  --text-xs: 0.75rem;      /* 12px — badges, hashes, tabular metrics */
+  --text-sm: 0.8125rem;    /* 13px — compact studio controls & tables */
+  --text-base: 0.875rem;   /* 14px — primary studio interface copy */
+  --text-md: 0.9375rem;    /* 15px — chat & derivation prose */
+  --text-lg: 1.0625rem;    /* 17px — panel titles */
+  --text-xl: 1.25rem;      /* 20px — view headers */
+  --text-2xl: 1.5rem;      /* 24px — key telemetry readouts */
+
+  --leading-tight: 1.25;
+  --leading-snug: 1.4;
+  --leading-normal: 1.55;
+  --leading-relaxed: 1.65;
+
+  /* --- 4px Architectural Spacing Grid --- */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* --- Precision Chamfers & Radii (Zero Pill Slop) --- */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* --- Structural Geometry & Hit Targets --- */
+  --header-h: 48px;
+  --footer-h: 28px;
+  --rail-w: 224px;
+  --rail-collapsed-w: 56px;
+  --hit-min: 32px;
+  --focus-width: 2px;
+
+  /* --- Deterministic Studio Motion --- */
+  --ease-atelier: cubic-bezier(0.2, 0, 0, 1);
+  --dur-instant: 70ms;
+  --dur-fast: 120ms;
+  --dur-normal: 180ms;
+
+  /* --- Default Theme: Obsidian Atelier (Dark Flagship) --- */
+  color-scheme: dark;
+
+  --bg-canvas: #080A0F;
+  --bg-rail: #0C0F16;
+  --bg-panel: #111621;
+  --bg-elevated: #171E2C;
+  --bg-interactive: #1D2638;
+  --bg-hover: #232E44;
+  --bg-active: #293753;
+  --bg-code: #0A0D14;
+  --bg-scrim: rgba(4, 6, 10, 0.78);
+
+  --border-subtle: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.145);
+  --border-specular: rgba(255, 255, 255, 0.12);
+  --border-active: rgba(240, 180, 76, 0.55);
+
+  --ink-primary: #F2F5FA;     /* 18.12:1 on canvas, 15.27:1 on elevated (AAA) */
+  --ink-secondary: #C3CDDE;   /* 12.36:1 on canvas, 10.42:1 on elevated (AAA) */
+  --ink-muted: #8E9BB2;       /* 7.05:1 on canvas, 5.94:1 on elevated (AA+) */
+  --ink-on-accent: #080A0F;   /* 10.69:1 on #F0B44C (AAA) */
+
+  --accent-amber: #F0B44C;    /* 9.01:1 min across all surfaces */
+  --accent-amber-tint: rgba(240, 180, 76, 0.12);
+  --accent-amber-border: rgba(240, 180, 76, 0.36);
+
+  --accent-cyan: #38BDF8;     /* 7.79:1 min across all surfaces */
+  --accent-cyan-tint: rgba(56, 189, 248, 0.12);
+  --accent-cyan-border: rgba(56, 189, 248, 0.36);
+
+  --status-emerald: #34D399;  /* 8.68:1 min across all surfaces */
+  --status-emerald-tint: rgba(52, 211, 153, 0.12);
+  --status-emerald-border: rgba(52, 211, 153, 0.36);
+
+  --status-coral: #FB7185;    /* 6.20:1 min across all surfaces */
+  --status-coral-tint: rgba(251, 113, 133, 0.12);
+  --status-coral-border: rgba(251, 113, 133, 0.38);
+
+  --focus-ring: #38BDF8;
+  --shadow-panel: 0 1px 0 var(--border-specular) inset;
+  --shadow-modal: 0 18px 42px rgba(0, 0, 0, 0.62), 0 1px 0 var(--border-specular) inset;
+
+  /* --- Syntax Highlighting Tokens (Zero-CDN C++20 Tokenizer) --- */
+  --syn-kw: #F0B44C;
+  --syn-type: #38BDF8;
+  --syn-str: #34D399;
+  --syn-num: #FB7185;
+  --syn-cmt: #8E9BB2;
+  --syn-fn: #E2E8F0;
+
+  /* --- Canvas Graph Palette --- */
+  --graph-grid: rgba(255, 255, 255, 0.035);
+  --graph-arc: rgba(195, 205, 222, 0.24);
+  --graph-arc-active: #38BDF8;
+  --graph-particle: #F0B44C;
+  --graph-node-fill: #111621;
+  --graph-node-stroke: rgba(255, 255, 255, 0.22);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 0ms;
+    --dur-fast: 0ms;
+    --dur-normal: 0ms;
+  }
+}

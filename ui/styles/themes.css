@@ -1,0 +1,129 @@
+/* ==========================================================================
+   OMNIA STUDIO — 3 LIVE INSTANT STUDIO THEMES
+   1. [data-theme="obsidian"]  — Obsidian Atelier (Signature Dark Flagship)
+   2. [data-theme="alabaster"] — Alabaster Editorial (Museum-Paper Daylight)
+   3. [data-theme="blueprint"] — Midnight Blueprint (Aerospace CAD Deep-Navy)
+   Every foreground/background pair verified >= 5.12:1 (WCAG 2.2 AA/AAA)
+   ========================================================================== */
+
+[data-theme="obsidian"] {
+  color-scheme: dark;
+}
+
+/* --- Theme 2: Alabaster Editorial (Warm Museum Paper + Archival Ink) --- */
+[data-theme="alabaster"] {
+  color-scheme: light;
+
+  --bg-canvas: #F6F5F0;
+  --bg-rail: #EEECE4;
+  --bg-panel: #FFFFFF;
+  --bg-elevated: #F9F8F4;
+  --bg-interactive: #EAE7DC;
+  --bg-hover: #E1DDD0;
+  --bg-active: #D5D0C0;
+  --bg-code: #F2F0E8;
+  --bg-scrim: rgba(17, 20, 28, 0.48);
+
+  --border-subtle: rgba(17, 20, 28, 0.11);
+  --border-strong: rgba(17, 20, 28, 0.22);
+  --border-specular: rgba(255, 255, 255, 0.88);
+  --border-active: rgba(11, 92, 171, 0.55);
+
+  --ink-primary: #11141C;     /* 15.56:1 min (AAA) */
+  --ink-secondary: #2E3646;   /* 10.25:1 min (AAA) */
+  --ink-muted: #4E586E;       /* 6.03:1 min (AA+) */
+  --ink-on-accent: #FFFFFF;   /* 6.70:1 on #0B5CAB */
+
+  --accent-amber: #945200;    /* 5.12:1 min (Warm Ochre-Bronze) */
+  --accent-amber-tint: rgba(148, 82, 0, 0.09);
+  --accent-amber-border: rgba(148, 82, 0, 0.32);
+
+  --accent-cyan: #0B5CAB;     /* 5.67:1 min (Editorial Cobalt) */
+  --accent-cyan-tint: rgba(11, 92, 171, 0.09);
+  --accent-cyan-border: rgba(11, 92, 171, 0.32);
+
+  --status-emerald: #0B6B49;  /* 5.52:1 min (Mineral Viridian) */
+  --status-emerald-tint: rgba(11, 107, 73, 0.09);
+  --status-emerald-border: rgba(11, 107, 73, 0.32);
+
+  --status-coral: #B81D3A;    /* 5.42:1 min (Archival Vermilion) */
+  --status-coral-tint: rgba(184, 29, 58, 0.09);
+  --status-coral-border: rgba(184, 29, 58, 0.32);
+
+  --focus-ring: #0B5CAB;
+  --shadow-panel: 0 1px 0 var(--border-specular) inset;
+  --shadow-modal: 0 16px 36px rgba(17, 20, 28, 0.18), 0 1px 0 var(--border-specular) inset;
+
+  --syn-kw: #945200;
+  --syn-type: #0B5CAB;
+  --syn-str: #0B6B49;
+  --syn-num: #B81D3A;
+  --syn-cmt: #4E586E;
+  --syn-fn: #11141C;
+
+  --graph-grid: rgba(17, 20, 28, 0.055);
+  --graph-arc: rgba(46, 54, 70, 0.26);
+  --graph-arc-active: #0B5CAB;
+  --graph-particle: #B81D3A;
+  --graph-node-fill: #FFFFFF;
+  --graph-node-stroke: rgba(17, 20, 28, 0.28);
+}
+
+/* --- Theme 3: Midnight Blueprint (Aerospace Deep-Navy + Phosphor CAD) --- */
+[data-theme="blueprint"] {
+  color-scheme: dark;
+
+  --bg-canvas: #070E1B;
+  --bg-rail: #0A1324;
+  --bg-panel: #0E1A30;
+  --bg-elevated: #13223D;
+  --bg-interactive: #182B4D;
+  --bg-hover: #1E355E;
+  --bg-active: #254070;
+  --bg-code: #060B16;
+  --bg-scrim: rgba(3, 7, 15, 0.82);
+
+  --border-subtle: rgba(140, 195, 255, 0.11);
+  --border-strong: rgba(140, 195, 255, 0.22);
+  --border-specular: rgba(165, 215, 255, 0.14);
+  --border-active: rgba(76, 201, 255, 0.6);
+
+  --ink-primary: #EDF5FF;     /* 14.43:1 min (AAA) */
+  --ink-secondary: #BFD2EC;   /* 10.31:1 min (AAA) */
+  --ink-muted: #8BA3C7;       /* 6.16:1 min (AA+) */
+  --ink-on-accent: #070E1B;   /* 10.21:1 on #4CC9FF (AAA) */
+
+  --accent-amber: #F4BE58;    /* 9.33:1 min */
+  --accent-amber-tint: rgba(244, 190, 88, 0.12);
+  --accent-amber-border: rgba(244, 190, 88, 0.38);
+
+  --accent-cyan: #4CC9FF;     /* 8.39:1 min */
+  --accent-cyan-tint: rgba(76, 201, 255, 0.13);
+  --accent-cyan-border: rgba(76, 201, 255, 0.4);
+
+  --status-emerald: #3CE0A6;  /* 9.37:1 min */
+  --status-emerald-tint: rgba(60, 224, 166, 0.12);
+  --status-emerald-border: rgba(60, 224, 166, 0.38);
+
+  --status-coral: #FF7D90;    /* 6.49:1 min */
+  --status-coral-tint: rgba(255, 125, 144, 0.13);
+  --status-coral-border: rgba(255, 125, 144, 0.4);
+
+  --focus-ring: #4CC9FF;
+  --shadow-panel: 0 1px 0 var(--border-specular) inset;
+  --shadow-modal: 0 20px 44px rgba(2, 6, 14, 0.72), 0 1px 0 var(--border-specular) inset;
+
+  --syn-kw: #4CC9FF;
+  --syn-type: #3CE0A6;
+  --syn-str: #F4BE58;
+  --syn-num: #FF7D90;
+  --syn-cmt: #8BA3C7;
+  --syn-fn: #EDF5FF;
+
+  --graph-grid: rgba(76, 201, 255, 0.06);
+  --graph-arc: rgba(140, 195, 255, 0.25);
+  --graph-arc-active: #4CC9FF;
+  --graph-particle: #3CE0A6;
+  --graph-node-fill: #0E1A30;
+  --graph-node-stroke: rgba(140, 195, 255, 0.3);
+}

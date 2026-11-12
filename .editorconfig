@@ -8,13 +8,17 @@ indent_style = space
 indent_size = 2
 trim_trailing_whitespace = true
 
-[*.rs]
+[*.{cpp,hpp,h,c}]
+indent_size = 4
+
+[CMakeLists.txt,*.cmake]
+indent_size = 4
+
+[*.py]
+indent_size = 4
+
+[*.ps1]
 indent_size = 4
 
 [*.md]
 trim_trailing_whitespace = false
-
-# Tauri owns and regenerates these compact schema snapshots without a final
-# newline. Keep the exception narrow so handwritten source stays normalized.
-[src-tauri/gen/schemas/*.json]
-insert_final_newline = false

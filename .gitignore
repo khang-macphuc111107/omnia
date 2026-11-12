@@ -1,23 +1,31 @@
-# Product source is tracked at this root.
-# Transitional recovery/reference trees retain their existing ownership.
-repos/
-publish-worktree/
-repo-original-20261001/
-upstream_tools/
-LocalAppData/
-Roaming/
-CursorApp/
-claude-appasar-extracted/
-archive/
-backups/
-quarantine/
-_cleanup-quarantine-*/
-_harness-budget-before-*/
-artifacts/
-logs/
-tmp/
-output/
-downloads/
+# Omnia Native C++20 Studio & Win32 Shell — out-of-source builds live in D:\OmniaData\build\.
+# C++20 / CMake / Ninja / MSVC build outputs & symbols
+build/
+out/
+CMakeFiles/
+CMakeScripts/
+Testing/
+_deps/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+*.obj
+*.o
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.ipch
+*.iobj
+*.ipdb
+*.tlog
 
 # Project-owned reusable skills are tracked; live local agent state is not.
 .agents/
@@ -27,18 +35,18 @@ downloads/
 !.agents/skills/
 !.agents/skills/**
 .claude/
-node_modules/
-target/
-**/target/
-**/target-*/
-dist/
-.cache/
-.vite/
+
+# Python / tooling / transient caches
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.cache/
+node_modules/
+target/
+dist/
 coverage/
-playwright-report/
-test-results/
+
+# Runtime databases, logs & local secrets
 *.db
 *.db-shm
 *.db-wal
@@ -49,14 +57,23 @@ test-results/
 *.log
 .env
 .env.*
-!.env.example
 
-# OS/editor
+# Transitional / externalized root names & ACL-locked orphaned directory
+Roaming/
+repos/
+publish-worktree/
+archive/
+backups/
+quarantine/
+artifacts/
+logs/
+tmp/
+output/
+downloads/
+
+# OS & editor metadata
 .vscode/
 .idea/
+.vs/
 Thumbs.db
 .DS_Store
-
-# Transitional retired paths. New research/recovery/output belongs outside root.
-research/
-projects/

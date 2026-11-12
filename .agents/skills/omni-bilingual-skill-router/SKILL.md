@@ -21,6 +21,7 @@ python scripts/skill_router.py route "thiết kế giao diện trình soạn th�
 python scripts/skill_router.py pipelines
 
 # 3. Resolve a named Omnia pipeline into an actionable 4-stage DAG
+python scripts/skill_router.py pipeline omnia-cpp20-flagship-studio
 python scripts/skill_router.py pipeline omnia-ui-surface
 
 # 4. Run Merkle SHA-256 + frontmatter/body token-budget doctor across skill roots
@@ -32,7 +33,7 @@ python scripts/skill_router.py doctor
 Whenever multiple skills match a complex request, sequence them into four deterministic stages rather than invoking overlapping skills ad hoc:
 
 1. **Stage 1 — Preflight, Intake & Context Guards**: `autonomous-power-continuity`, `additive-steer-queue`, `vietnamese-typo-intent-inference`, `omnia-session-governance-handoff`, `goal-plan-loop-dod`.
-2. **Stage 2 — Core Domain & Bidirectional Peer-Mesh Execution**: Subsystem design, decision-grade proposals (`deep-proposal`), Graphify bidirectional graph navigation, and 2-way peer-mesh collaboration skills (for example, `deep-proposal`, `deep-general-graph-orchestration`, `deep-ui-direction`, `design-system`, `deep-rust-performance`, `rag-ingestion-and-retrieval`, `low-disruption-desktop-control`). Within Stage 2–3, peers may form bounded bidirectional feedback cycles (`author <-> verifier`, `sibling <-> sibling`) governed by `deep-general-graph-orchestration`.
+2. **Stage 2 — Core Domain & Bidirectional Peer-Mesh Execution**: Native Windows 11 C++20 subsystem engineering (`deep-cpp-native`), decision-grade proposals (`deep-proposal`), Graphify bidirectional graph navigation, and 2-way peer-mesh collaboration skills (for example, `deep-cpp-native`, `deep-proposal`, `deep-general-graph-orchestration`, `deep-ui-direction`, `design-system`, `rag-ingestion-and-retrieval`, `low-disruption-desktop-control`). Within Stage 2–3, peers may form bounded bidirectional feedback cycles (`author <-> verifier`, `sibling <-> sibling`) governed by `deep-general-graph-orchestration`.
 3. **Stage 3 — Runtime Verification & Quantitative QA**: `omni-deterministic-verifiers`, `ui-quantitative-audit`, `verification-before-completion`, `security-state-machine-audit`.
 4. **Stage 4 — Provenance Receipt & Continuous Learning**: `cross-artifact-ledger-binding`, `memory-skill-evolution`, `omnia-session-governance-handoff`.
 

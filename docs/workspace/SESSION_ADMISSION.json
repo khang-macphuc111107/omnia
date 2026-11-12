@@ -4,10 +4,11 @@
   "decision": "READY",
   "owner": "root-integrator",
   "policy": "GOAL.md#follow-up-chat-admission--session-01",
-  "candidateCommit": "d8b456e357dde65d8ee314194743fb93655f5d6a",
-  "candidateTree": "5f8ecc4966a859dcc032bca0b3013d2f81233abb",
-  "reviewer": "coordinator + verifier (Wave 3B GitHub clean-clone & gate audit)",
-  "reviewedAt": "2026-11-12T11:42:44Z",
+  "candidateCommit": "c3033728abe6f0a4906a796bf7652c84408356d7",
+  "candidateTree": "6198c676e8ef3e2ef055625d0126d7216b57fac1",
+  "wave4DeliveryReceipt": "D:\\OmniaData\\qa\\github-cpp20-clean-clone-20261112\\GITHUB_CPP20_DELIVERY_RECEIPT.json",
+  "reviewer": "coordinator + verifier (Wave 3 3/3 audit streak + Wave 4 7/7 C++20/UI/Deep-Clean audit PASS)",
+  "reviewedAt": "2026-11-12T15:06:40Z",
   "gates": [
     {
       "id": "SESSION-G01",
@@ -24,11 +25,11 @@
       "required": "PASS_SCOPED",
       "state": "PASS_SCOPED",
       "receipts": [
-        "D:\\OmniaData\\qa\\github-clean-clone-20261112\\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json",
-        "D:\\OmniaData\\qa\\audits-20261112\\FINAL_VERIFICATION_RECEIPT_20261112.json",
-        "D:\\OmniaData\\qa\\native-20261112\\QA_SUITE_SUMMARY_RECEIPT.json"
+        "D:\\OmniaData\\qa\\audits-20261112\\FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json",
+        "D:\\OmniaData\\qa\\cpp-native-precheck-20261112\\QA_SUITE_SUMMARY_RECEIPT.json",
+        "D:\\OmniaData\\qa\\github-clean-clone-20261112\\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json"
       ],
-      "next": "Scoped root closure verified in both remote GitHub clone and isolated --no-local --no-hardlinks clone (cargo metadata/fmt/524 tests/5 Python tests/12 skills all rc=0 with external CARGO_TARGET_DIR); full packaged cold-install parity remains transferred under ROOT-05/PRODUCT-01."
+      "next": "Scoped C++20 root closure verified (0 .rs / 0 Cargo.*, 35/35 unified CTest cases, 7/7 Win32 QA 90/90 rc=0, 45/45 Edge CDP Studio UI states, and remote GitHub clean-clone C++20 Release build + CTest in GITHUB_CPP20_DELIVERY_RECEIPT.json); cold-machine installer packaging remains transferred under ROOT-05/PRODUCT-01."
     },
     {
       "id": "SESSION-G02",
@@ -45,10 +46,11 @@
       "receipts": [
         "CHECKPOINT.md#source-preservation-and-isolated-restore--r10",
         "SOURCE_DISPOSITION_LEDGER.json#preservation",
+        "D:\\OmniaData\\recovery\\pre-cpp-ignored-files-20261112\\MANIFEST.json",
         "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\source-reconciliation-complete.json",
         "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\worktree-relocation-receipt-20261112.json"
       ],
-      "next": "138/138 differing focus rows reviewed (84/84 unique delta artifacts hashed) and 4 checkouts relocated/healthy; keep retirementEligible=false until excluded primary boundaries and elevated UAC Roaming move are completed."
+      "next": "138/138 differing focus rows reviewed, pre-C++20 Rust workspace archived on pushed tag archive/pre-cpp-rust-snapshot-20261112 (c3033728...) + MANIFEST.json (0da02149...), and 4 checkouts healthy; keep retirementEligible=false until excluded primary boundaries and elevated UAC Roaming move complete."
     },
     {
       "id": "SESSION-G03",
@@ -63,11 +65,12 @@
       "state": "PASS_SCOPED",
       "receipts": [
         "EXTERNAL_LAYOUT.json",
-        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\d-drive-root-inventory.json",
-        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\root-externalization-receipt-20261112.json",
-        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\d-drive-reclamation-receipt-20261112.json"
+        "docs/workspace/DEEP_CLEAN_AUDIT_D_DRIVE.md",
+        "docs/workspace/DEEP_CLEAN_AUDIT_C_DRIVE.md",
+        "D:\\OmniaData\\qa\\deep-clean-20261112\\D_DRIVE_DEEP_CLEAN_RECEIPT.json",
+        "D:\\OmniaData\\qa\\deep-clean-20261112\\C_DRIVE_DEEP_CLEAN_RECEIPT.json"
       ],
-      "next": "Bounded D:\\ root inventory, 12-directory externalization, and +10,871,586,816 B (+10.125 GiB) cache reclamation verified; preserve unclassified/active consumers and transfer remaining candidates."
+      "next": "Exhaustive D:\\ (+778.15 GiB physical -> 837.57 GiB free) and C:\\ (+166.14 GiB physical -> 189.60 GiB free) deep-clean reclamation (+944.29 GiB physical total) verified with 0x400 reparse guards; preserve protected worktrees/histories and ACL boundaries."
     },
     {
       "id": "SESSION-G04",
@@ -84,7 +87,7 @@
         "D:\\OmniaData\\exports\\history\\SECRET_SCAN_VERIFICATION.json",
         "tools/agy-history-sync/README.md"
       ],
-      "next": "1,767 multi-host history files hashed (PASS_ZERO_LEAKS, leak_count=0 across 294 exported/handoff files) and 3-surface AGY + 1,102-thread FTS5 sync verified; re-acquire growing tails of active swarm chats after session closure."
+      "next": "1,767 multi-host history files hashed (PASS_ZERO_LEAKS sha256=a01b88f6..., leak_count=0 across 294 exported/handoff files) and 3-surface AGY + 1,102-thread FTS5 sync verified; re-acquire growing tails of active swarm chats after session closure."
     },
     {
       "id": "SESSION-G05",
@@ -99,11 +102,12 @@
       "receipts": [
         "docs/handoff/COLLABORATOR_HANDOFF.md",
         "docs/handoff/USER_PROMPT_REQUIREMENTS_MATRIX.md",
+        "docs/ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md",
         "docs/workspace/STATUS.md",
         "docs/workspace/TRANSFER_CONTRACT.md",
-        "D:\\OmniaData\\qa\\audits-20261112\\FINAL_VERIFICATION_RECEIPT_20261112.json"
+        "D:\\OmniaData\\qa\\audits-20261112\\FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json"
       ],
-      "next": "README, AGENTS, 8 workspace index files, handoff suite, and authoritative ledgers agree on scope, queue order, and receipts with zero broken relative links; execute 3-round frozen-snapshot audit into external final-streak-3\\."
+      "next": "README, AGENTS, workspace index files, C++20/UI handoff suite, deep-clean audit reports, and authoritative ledgers agree on scope, queue order, and receipts with zero broken relative links."
     },
     {
       "id": "SESSION-G06",
@@ -120,7 +124,7 @@
         "D:\\OmniaData\\qa\\github-clean-clone-20261112\\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json",
         "D:\\OmniaData\\exports\\history\\SECRET_SCAN_VERIFICATION.json"
       ],
-      "next": "Authenticated private repo https://github.com/khang-macphuc111107/omnia verified, Commit #1 d8b456e357dde65d8ee314194743fb93655f5d6a pushed and remote-cloned with allChecksPassed=true; invite collaborator's GitHub handle for Discord HTMusTC under /settings/access."
+      "next": "Authenticated private repo https://github.com/khang-macphuc111107/omnia verified, pre-C++20 tag archive/pre-cpp-rust-snapshot-20261112 (c3033728...) and Wave 4 Commit #4 pushed with zero-bloat clean-clone C++20 CTest receipt (GITHUB_CPP20_DELIVERY_RECEIPT.json); invite collaborator's GitHub handle for Discord HTMusTC under /settings/access."
     },
     {
       "id": "SESSION-G07",
@@ -146,7 +150,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "GOAL.md",
-      "next": "Scoped root native & shared-crate closure verified in remote clean clone (524/524 tests); complete full Tauri/packaged host closure and eliminate remaining compatibility seams.",
+      "next": "Scoped C++20 root closure verified (35/35 unified CTests across cpp/ + native/, 0 .rs / 0 Cargo.*); complete packaged native installer closure and full live provider/OS runtime integration.",
       "acceptance": [
         "DOD-01",
         "DOD-02",
@@ -158,7 +162,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "SOURCE_DISPOSITION_LEDGER.json",
-      "next": "138/138 focus rows reviewed and 84/84 unique delta files/patches archived; complete broader non-focus primary working-tree/untracked reconciliation.",
+      "next": "138/138 differing focus rows reviewed, 84/84 unique delta files/patches hashed, and pre-C++20 tree archived on tag archive/pre-cpp-rust-snapshot-20261112; complete primary Git-state comparison on excluded upstream extraction paths.",
       "acceptance": [
         "DOD-04"
       ]
@@ -167,8 +171,8 @@
       "task": "ROOT-03",
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
-      "source": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10",
-      "next": "4 checkouts healthy in D:\\OmniaData; keep retirementEligible=false until primary Git-state comparison, 11 gitlink/57 reparse/961 generated boundaries, and elevated UAC Roaming move are resolved.",
+      "source": "CHECKPOINT.md",
+      "next": "4 checkouts relocated/repaired and verified healthy after Wave 4 C:/D: deep cleans; keep retirementEligible=false until excluded internal junctions and elevated UAC D:\\Omnia\\Roaming move complete.",
       "acceptance": [
         "DOD-05"
       ]
@@ -176,9 +180,9 @@
     {
       "task": "ROOT-04",
       "state": "IN_PROGRESS",
-      "owner": "root-integrator",
+      "owner": "product-owner",
       "source": "GOAL.md",
-      "next": "Core routing/memory/RAG/graph/composer/UIA modules structured and rustfmt-clean; continue bounded refactors on remaining host modules.",
+      "next": "Modular C++20 libraries (cpp/**, native/**) and zero-bundler ES2022 Flagship Studio UI (ui/**) verified with MSVC /W4 /WX 0 warnings and 8/8 node --check; maintain modular boundaries as live runtime expands.",
       "acceptance": [
         "DOD-07"
       ]
@@ -187,8 +191,8 @@
       "task": "ROOT-05",
       "state": "PARTIAL",
       "owner": "root-integrator",
-      "source": "GOAL.md",
-      "next": "Remote GitHub clean clone and isolated local clone passed locked metadata, rustfmt, 524 Cargo tests, 5 Python tests, and 12 skill validations; complete cold-cache/packaged end-to-end build verification.",
+      "source": "README.md",
+      "next": "Out-of-source CMake/Ninja C++20 build and 35/35 CTests verified in clean remote GitHub clone (GITHUB_CPP20_DELIVERY_RECEIPT.json); add cold-machine installer and CI matrix.",
       "acceptance": [
         "DOD-02",
         "DOD-06",
@@ -199,8 +203,8 @@
       "task": "DRIVE-01",
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
-      "source": "EXTERNAL_LAYOUT.json",
-      "next": "Top-level D:\\ inventory and 12 Omnia clutter externalizations bound; classify remaining non-Omnia top-level consumers before any further moves.",
+      "source": "DEEP_CLEAN_AUDIT_D_DRIVE.md",
+      "next": "Exhaustive D:\\ and C:\\ top-level/profile inventories and 0x400 reparse maps bound in DEEP_CLEAN_AUDIT_{D,C}_DRIVE.md; monitor post-session build/QA growth.",
       "acceptance": [
         "DOD-08"
       ]
@@ -209,8 +213,8 @@
       "task": "DRIVE-02",
       "state": "PARTIAL",
       "owner": "root-integrator",
-      "source": "CHECKPOINT.md",
-      "next": "+10,871,586,816 B (+10.125 GiB) reclaimed from 4 regenerable caches; qualify remaining candidates individually before reclaiming.",
+      "source": "DEEP_CLEAN_AUDIT_C_DRIVE.md",
+      "next": "+778.15 GiB physical reclaimed on D:\\ (837.57 GiB free) and +166.14 GiB physical reclaimed on C:\\ (189.60 GiB free); elevated UAC cleanup of D:\\Omnia\\Roaming and D:\\CodexApp\\WindowsApps remains optional user action.",
       "acceptance": [
         "DOD-08"
       ]
@@ -220,7 +224,7 @@
       "state": "IN_PROGRESS",
       "owner": "history-owner",
       "source": "CHECKPOINT.md",
-      "next": "1,767 files watermarked and 3-surface AGY + 1,102-thread FTS5 index verified; re-acquire growing tails of the 18 active swarm chats post-closure.",
+      "next": "1,767 files watermarked and 3-surface AGY + 1,102-thread FTS5 index verified intact across Wave 4 cleans; re-acquire growing tails of active swarm chats post-closure.",
       "acceptance": [
         "DOD-09"
       ]
@@ -230,7 +234,7 @@
       "state": "IN_PROGRESS",
       "owner": "history-owner",
       "source": "GOAL.md",
-      "next": "Flagship 124-prompt matrix + additive steers #1..#8 and multi-host lessons synthesized; continue bounded deep-reads on secondary historical threads.",
+      "next": "Flagship 124-prompt matrix + additive steers #1..#12 and C++20/Win32/UIA lessons synthesized; continue bounded deep-reads on secondary historical threads.",
       "acceptance": [
         "DOD-10"
       ]
@@ -240,7 +244,7 @@
       "state": "IN_PROGRESS",
       "owner": "history-owner",
       "source": "GOAL.md",
-      "next": "Redacted collaborator handoff suite and zero-secret scan (294 files, leak_count=0) verified; refresh tail delta post-session.",
+      "next": "Redacted C++20 collaborator handoff suite and zero-secret scan (294 files, leak_count=0, sha256=a01b88f6...) verified; refresh tail delta post-session.",
       "acceptance": [
         "DOD-10",
         "DOD-11"
@@ -251,7 +255,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "CHECKPOINT.md",
-      "next": "Maintain single-owner ledgers and navigable workspace indexes across subsequent product waves.",
+      "next": "Maintain single-owner C++20 ledgers and navigable workspace indexes across subsequent product waves.",
       "acceptance": [
         "DOD-11"
       ]
@@ -261,7 +265,7 @@
       "state": "IN_PROGRESS",
       "owner": "research-owner",
       "source": "GOAL.md",
-      "next": "103 flagship URLs + 8 REA URLs + github/spec-kit + 12 4-way synced skills + 100-category catalog qualified; retain login-walled social/Gemini links honestly.",
+      "next": "103 flagship URLs + 8 REA URLs + github/spec-kit + 13 4-way synced skills (incl. deep-cpp-native, 274 live) + 100-category catalog qualified; retain login-walled social/Gemini links honestly.",
       "acceptance": [
         "DOD-12"
       ]
@@ -285,7 +289,7 @@
         "PRODUCT-SECURITY",
         "PRODUCT-KNOWLEDGE"
       ],
-      "next": "524/524 Cargo tests, release native shell smoke telemetry (15.79 MiB RAM, 0.0% idle CPU, 163.2 ms discovery), and 3 UI candidates (PENDING_USER_REVIEW) verified; complete live provider streaming, Browser/IDE host, and full E2E runtime across all 12 leaves.",
+      "next": "35/35 C++20 CTests, omnia-studio.exe (671.5 KB, 9.30 MiB RAM, 12/12 /api/* endpoints), omnia-native.exe (283 KiB, 90/90 Win32 QA), and Flagship Studio UI (87/87 WCAG, 45/45 CDP states) verified; complete live third-party provider streaming, DirectWrite equation layout, and full OS/IME E2E across all 12 leaves.",
       "acceptance": [
         "DOD-13"
       ]
@@ -295,7 +299,7 @@
       "state": "IN_PROGRESS",
       "owner": "quality-owner",
       "source": "DOD.md",
-      "next": "7/7 Win32 QA workflows (90/90 cases rc=0) + release runtime capture verified; run physical Vietnamese IME/Narrator E2E QA and 3-round frozen-snapshot audits in D:\\OmniaData\\qa\\audits-20261112\\final-streak-3\\.",
+      "next": "7/7 Win32 QA workflows (90/90 cases rc=0), 45/45 Edge CDP UI states, and 7/7 Wave 4 verifier audits (0 defects) passed; run physical Vietnamese IME/Narrator E2E QA and 3-round frozen-snapshot audits on Commit #4.",
       "acceptance": [
         "DOD-14"
       ]
@@ -305,7 +309,7 @@
       "state": "PARTIAL",
       "owner": "root-integrator",
       "source": "REMOTE_SETUP.md",
-      "next": "Private repo https://github.com/khang-macphuc111107/omnia pushed and remote clean-clone verified (allChecksPassed=true); invite collaborator's GitHub login for Discord handle HTMusTC under /settings/access.",
+      "next": "Private repo https://github.com/khang-macphuc111107/omnia pushed with Commit #4 and zero-bloat remote clean-clone C++20 Release CTest verified; invite collaborator's GitHub login for Discord handle HTMusTC under /settings/access.",
       "acceptance": [
         "DOD-15"
       ]
@@ -325,7 +329,7 @@
     "threadId": null,
     "promptSha256": "ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592",
     "goalActivation": "NOT_REQUESTED",
-    "checkpoint": "CHECKPOINT.md#wave-3b-github-delivery-clean-clone-and-session-admission--2026-11-12"
+    "checkpoint": "CHECKPOINT.md#wave-3-3-round-clean-audit--wave-4-full-native-c20-flagship-studio-ui-and-cd-deep-clean-receipts--2026-11-12"
   },
-  "limits": "Admission gates SESSION-G01..G07 passed (READY) against pushed Commit #1 (d8b456e357dde65d8ee314194743fb93655f5d6a, tree 5f8ecc4966a859dcc032bca0b3013d2f81233abb) and independent remote GitHub clean-clone receipt (GITHUB_DELIVERY_AND_CLONE_RECEIPT.json, allChecksPassed=true). READY authorizes follow-up session creation with NEXT_SESSION_PROMPT.md; it does not claim follow-up session launch (threadId=null), whole-product PRODUCT-01 runtime completion, user selection among the 3 PENDING_USER_REVIEW UI candidates, excluded primary boundary retirement (retirementEligible=false), collaborator GitHub invite completion for Discord handle HTMusTC, or completion of the 3 frozen-snapshot final audit rounds executing into external D:\\OmniaData\\qa\\audits-20261112\\final-streak-3\\."
+  "limits": "Admission gates SESSION-G01..G07 remain READY across the 3/3-audited pre-C++20 snapshot (c3033728abe6f0a4906a796bf7652c84408356d7, archived on tag archive/pre-cpp-rust-snapshot-20261112) and Wave 4 Commit #4 (bound externally with exact HEAD/tree SHA and clean-clone C++20 CTest evidence in D:\\OmniaData\\qa\\github-cpp20-clean-clone-20261112\\GITHUB_CPP20_DELIVERY_RECEIPT.json to avoid self-hash mutation). READY authorizes follow-up session creation with NEXT_SESSION_PROMPT.md; it does not claim follow-up session launch (threadId=null), whole-product live third-party provider streaming completion, excluded primary boundary retirement (retirementEligible=false), collaborator GitHub invite completion for Discord handle HTMusTC, or 3-round frozen-snapshot audit closure on Commit #4."
 }

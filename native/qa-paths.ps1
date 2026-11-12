@@ -53,19 +53,19 @@ function Resolve-OmniaQaExecutable {
         [ValidateSet('debug', 'release')][string]$Profile = 'release'
     )
     if (-not $Executable) {
-        $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else {
+        $targetRoot = if ($env:OMNIA_NATIVE_BUILD_ROOT) { $env:OMNIA_NATIVE_BUILD_ROOT } else {
             $dataRoot = if ($env:OMNIA_DATA_ROOT) { $env:OMNIA_DATA_ROOT } else {
                 Join-Path ([IO.Path]::GetDirectoryName($RepositoryRoot)) 'OmniaData'
             }
             if (-not [IO.Path]::IsPathFullyQualified($dataRoot)) {
                 throw 'OMNIA_DATA_ROOT must be an absolute path.'
             }
-            Join-Path $dataRoot 'build/native'
+            Join-Path $dataRoot 'build'
         }
         if (-not [IO.Path]::IsPathFullyQualified($targetRoot)) {
-            throw 'CARGO_TARGET_DIR must be absolute for native QA; or pass -Executable.'
+            throw 'OMNIA_NATIVE_BUILD_ROOT must be absolute for native QA; or pass -Executable.'
         }
-        $Executable = Join-Path $targetRoot "$Profile/omnia-native.exe"
+        $Executable = Join-Path $targetRoot "omnia-cpp-native-$Profile/omnia-native.exe"
     }
     if (-not [IO.Path]::IsPathFullyQualified($Executable)) {
         throw 'Executable must be an absolute path.'

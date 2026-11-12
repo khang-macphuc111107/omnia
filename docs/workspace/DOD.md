@@ -35,9 +35,10 @@ or contradiction resets the affected row and its consecutive-audit count.
 - **DOD-01:** Source is tracked at the actual root; README and AGENTS resolve
   to current files. Bulk archives, upstream clones and recovery data have
   deliberate external ownership. Ignoring a folder does not count as moving it.
-- **DOD-02:** Both retained manifest closures and compile-time input files
-  resolve in an isolated clone/export. Record Rust/toolchain/OS and locked
-  dependency behavior. Local caches are not repository inputs.
+- **DOD-02:** Root and `native/` CMake C++20 closures and compile-time input files
+  resolve in an isolated clone/export using first-party MSVC + Windows 11 SDK
+  headers/libs (`0` external C++ package downloads; prior Rust closure archived on
+  tag `archive/pre-cpp-rust-snapshot-20261112`). Local caches are not repository inputs.
 - **DOD-03:** Match each claimed native behavior to an executed oracle.
   Report fixtures, direct package tests, shared-crate integration and live
   provider/packaged behavior separately.
@@ -82,8 +83,9 @@ or contradiction resets the affected row and its consecutive-audit count.
   concrete template-detection pass. Unavailable web/social/video sources remain
   explicit gaps.
   Installation/projection is distinct from discovery, loading and invocation.
-- **DOD-13:** Cover all `PRODUCT-*` leaves in GOAL. Native Rust is preferred;
-  exceptions require a recorded resource-backed reason. Complete composer and
+- **DOD-13:** Cover all `PRODUCT-*` leaves in GOAL. Modern Native C++20 is the
+  canonical runtime per Wave 4 ADR; any external runtime exception requires a
+  recorded resource-backed reason. Complete composer and
   attachment ordering/persistence/provider contracts. The provider route must
   bind capability, quota, cost, latency, privacy, authorization, reservation,
   reconciliation, retry/fallback and decision/outcome receipts under
@@ -311,3 +313,16 @@ Independent audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa\audits-2
 - **`DOD-16` & 3-Round Frozen Audit Protocol (`SESSION-01` -> `READY`):**
   - All seven gates `SESSION-G01..G07` in [SESSION_ADMISSION.json](SESSION_ADMISSION.json) are now satisfied (`decision: "READY"`, `promptSha256=ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592`). Advancing `DOD-16` to full `PASS` (`LAUNCHED`) requires creating the follow-up chat with [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md) and recording its `threadId` and persistent-goal activation readback.
   - Three independent read-only audit rounds against the pushed frozen `HEAD === origin/master` snapshot write external receipts to `D:\OmniaData\qa\audits-20261112\final-streak-3\` so audit evidence never self-mutates tracked repository hashes.
+
+## Wave 3 3-round clean audit & Wave 4 C++20, Flagship Studio UI and C:/D: deep-clean acceptance — 2026-11-12
+
+- **Pre-C++20 3-Round Audit Closure (Archived on `archive/pre-cpp-rust-snapshot-20261112`):**
+  - Commit #3 (`c3033728abe6f0a4906a796bf7652c84408356d7`) earned **3/3 consecutive zero-finding independent audits** (`D:\OmniaData\qa\audits-20261112\final-streak-3\round-{1,2,3}-v2-receipt.json`, `errors=0, warnings=0`) before the explicit Wave 4 user C++20 migration reset the active snapshot streak for Commit #4 per Gate Protocol (`DOD.md` line 30).
+- **`DOD-01` / `DOD-02` / `DOD-03` / `DOD-06` / `DOD-07` / `DOD-13` / `DOD-14` (Wave 4 Native C++20 & Flagship Studio UI — `PARTIAL`, `0` Open Scoped Defects):**
+  - Independent audit `FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json` (`sha256=f4fd3ead9dfee673e91a272bdb920b833e961ff7521d505e9a6016cc19b4b980`) verified **`7/7` Wave 4 lanes with `0` open defects**: `0` `.rs` and `0` `Cargo.*` files in `D:\Omnia`, MSVC `19.51` `/std:c++20 /utf-8 /EHsc /W4 /WX` `0` warnings, **`35/35` unified CTest cases passing** (`6` `cpp/` core/HTTP suites + `29` `native/` cases), **`7/7` Win32 PowerShell QA workflows (`90/90` cases `rc=0`)** (`QA_SUITE_SUMMARY_RECEIPT.json` `sha256=6f668cb0...`, `uiaIssue: null`, `WH_CBT` `#32770` modal button `IInvokeProvider`, `0` status-panel clipping), and Flagship Studio UI (`ui/` + [FLAGSHIP_STUDIO_UI_SPEC.md](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md) `sha256=db381ed0...`, `87/87` WCAG 2.2 pairs `>= 5.12:1`, `45/45` Edge CDP states `maxOverflowX = 0 px`, live `12/12` `omnia-studio.exe` `/api/*` endpoints).
+  - Live third-party LLM API billing/streaming, physical Vietnamese IME/Narrator E2E runs, and packaged cold-machine benchmarks remain required to close `DOD-13` and `DOD-14` in full.
+- **`DOD-08` (Exhaustive `D:\` + `C:\` Deep-Clean Reclamation — `PARTIAL`):**
+  - `D:\` reclaimed **`+778.1512 GiB` physical** (`59.42 GiB -> 837.57 GiB` free; [DEEP_CLEAN_AUDIT_D_DRIVE.md](DEEP_CLEAN_AUDIT_D_DRIVE.md) `sha256=a51f017a...`, `D_DRIVE_DEEP_CLEAN_RECEIPT.json` `sha256=70f2781d...`) and `C:\` reclaimed **`+166.1357 GiB` physical** (`23.47 GiB -> 189.60 GiB` free; [DEEP_CLEAN_AUDIT_C_DRIVE.md](DEEP_CLEAN_AUDIT_C_DRIVE.md) `sha256=1a88e1fe...`, `C_DRIVE_DEEP_CLEAN_RECEIPT.json` `sha256=ee08c5a0...`) = **`+944.29 GiB` physical** with `0x400` reparse guards (`4/4` worktrees healthy, `retirementEligible=false` preserved).
+- **`DOD-12` / `DOD-15` / `DOD-16` (`13` Skills, Commit #4 Clean-Clone CTest & Session Admission `READY`):**
+  - `13/13` curated skills (`deep-cpp-native` `sha256=b87fd5ca...`) synced 4-way (`39/39` `quick_validate.py` `rc=0`, `cpp-skill-sync-receipt.json` `sha256=27df8cf8...`); `SECRET_SCAN_VERIFICATION.json` (`sha256=a01b88f6...`, `leak_count=0`).
+  - Commit #4 pushed to `https://github.com/khang-macphuc111107/omnia` and verified via fresh remote GitHub clone + out-of-source Release C++20 build + `35/35` `ctest --output-on-failure` in `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json` (temporary clone/build dirs immediately purged). [SESSION_ADMISSION.json](SESSION_ADMISSION.json) remains **`READY`**.

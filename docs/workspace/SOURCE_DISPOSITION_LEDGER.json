@@ -1258,5 +1258,24 @@
     "primaryUnmaterializedBoundaries": 1029,
     "retirementEligible": false,
     "next": "Reuse verified primary/supplement bytes; compare primary Git state, preserve remaining boundaries/consumers and reacquire current state before semantic disposition."
+  },
+  "wave4Cpp20ArchitecturalReplacement": {
+    "mandate": "Explicit user Wave 4 architectural replacement of Rust/Tauri/legacy web projections with Full Native C++20 (MSVC + CMake + Ninja + Windows 11 SDK) and Flagship Studio UI (ui/**).",
+    "archivedRustSnapshotTag": "archive/pre-cpp-rust-snapshot-20261112",
+    "archivedRustSnapshotCommit": "c3033728abe6f0a4906a796bf7652c84408356d7",
+    "archivedTrackedFilesCount": 1937,
+    "preservedIgnoredScriptsManifest": "D:\\OmniaData\\recovery\\pre-cpp-ignored-files-20261112\\MANIFEST.json",
+    "preservedIgnoredScriptsManifestSha256": "0da021493635b1861e0fa21106abaf285dd175cc5080027f7677446b79a53709",
+    "activeRootLayout": [
+      "CMakeLists.txt",
+      "CMakePresets.json",
+      "cpp/**",
+      "native/**",
+      "ui/**",
+      ".agents/**",
+      "tools/**",
+      "docs/**"
+    ],
+    "retirementEligible": false
   }
 }

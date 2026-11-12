@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep C++20 Native (Win32, CMake, UIA & Direct2D)"
+  short_description: "Zero-overhead Windows 11 C++20, CMake/Ninja/MSVC, RAII, WinSQLite3, Direct2D, UIA, and Winsock2"
+  default_prompt: "Use $deep-cpp-native to architect, implement, or audit a zero-overhead Windows 11 C++20 module with out-of-source CMake/Ninja/MSVC (/W4 /WX), strict RAII, winsqlite3 WAL leases, BCrypt SHA-256, DWM/Direct2D, server-side COM UIA, and Origin-guarded Winsock2 loopback APIs."

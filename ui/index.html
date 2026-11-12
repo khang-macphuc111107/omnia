@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="obsidian">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self';">
+  <title>Omnia Studio — Obsidian Kinetic Atelier (Native C++20)</title>
+  <link rel="stylesheet" href="./styles/tokens.css">
+  <link rel="stylesheet" href="./styles/themes.css">
+  <link rel="stylesheet" href="./styles/layout.css">
+  <link rel="stylesheet" href="./styles/components.css">
+</head>
+<body>
+  <div class="studio-shell" id="omniaStudioShell">
+    <!-- ==================================================================
+         ROW 1: TOP ARCHITECTURAL TELEMETRY HEADER
+         ================================================================== -->
+    <header class="studio-header" role="banner">
+      <div class="header-brand-group">
+        <button type="button" class="btn btn-subtle btn-icon" id="btnToggleRail" title="Toggle Studio Navigation Rail (Ctrl+B)" aria-label="Toggle Studio Navigation Rail">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" stroke="currentColor" stroke-width="1.3"/>
+          </svg>
+        </button>
+        <div class="brand-lockup">
+          <span class="brand-glyph" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <polygon points="8,1.5 14.5,8 8,14.5 1.5,8" stroke="currentColor" stroke-width="1.4"/>
+              <circle cx="8" cy="8" r="2.2" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="brand-title">OMNIA</span>
+          <span class="brand-subtag">ATELIER C++20</span>
+        </div>
+      </div>
+
+      <div class="header-center-telemetry">
+        <button type="button" class="telemetry-pill" id="btnHealthTelemetryPill" title="Click to refresh live /api/health metrics from omnia-studio.exe">
+          <span class="pulse-dot" id="headerPulseDot" aria-hidden="true"></span>
+          <span class="telemetry-strong" id="headerTelemetryText">Native C++20 • MSVC 14.51 • 0 Rust</span>
+          <span class="header-telemetry-detail-extra muted" id="headerTelemetryExtra">• 8.3 MB • 388 KB • 6 Peers</span>
+        </button>
+      </div>
+
+      <div class="header-actions-group">
+        <div class="theme-switcher" role="group" aria-label="Studio Theme Switcher">
+          <button type="button" class="theme-btn" data-theme-pick="obsidian" aria-pressed="true" title="Obsidian Atelier (Signature Dark)">
+            <span class="theme-swatch" style="background:#080A0F;border-color:#F0B44C;"></span>
+            <span>Obsidian</span>
+          </button>
+          <button type="button" class="theme-btn" data-theme-pick="alabaster" aria-pressed="false" title="Alabaster Editorial (Warm Museum Paper)">
+            <span class="theme-swatch" style="background:#F6F5F0;border-color:#0B5CAB;"></span>
+            <span>Alabaster</span>
+          </button>
+          <button type="button" class="theme-btn" data-theme-pick="blueprint" aria-pressed="false" title="Midnight Blueprint (Aerospace CAD Navy)">
+            <span class="theme-swatch" style="background:#070E1B;border-color:#4CC9FF;"></span>
+            <span>Blueprint</span>
+          </button>
+        </div>
+
+        <button type="button" class="btn" id="btnOpenCommandPalette" title="Open Global Command Palette (Ctrl+K)">
+          <span>Command</span>
+          <span class="kbd-hint">Ctrl+K</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- ==================================================================
+         ROW 2: LEFT STUDIO RAIL + 5 INTERACTIVE FLAGSHIP VIEWS
+         ================================================================== -->
+    <div class="studio-body">
+      <aside class="studio-rail" aria-label="Studio Workbenches and SQLite Sessions">
+        <nav class="rail-nav-list" role="tablist" aria-orientation="vertical" aria-label="Flagship Studio Views">
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="true" data-nav-view="chat" title="Studio Chat & Scientific Rich Composer (Alt+1)">
+            <span class="rail-nav-left">
+              <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M2.5 3.5h13v8.5H6.5l-4 3v-3z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                <path d="M6 7.5h6M6 9.8h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              <span class="rail-label-text">Studio Chat</span>
+            </span>
+            <span class="kbd-hint rail-shortcut">Alt+1</span>
+          </button>
+
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" data-nav-view="graph" title="2-Way All-to-All PeerMeshGraph & Graphify (Alt+2)">
+            <span class="rail-nav-left">
+              <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <circle cx="9" cy="4" r="2.2" stroke="currentColor" stroke-width="1.4"/>
+                <circle cx="4" cy="13.5" r="2.2" stroke="currentColor" stroke-width="1.4"/>
+                <circle cx="14" cy="13.5" r="2.2" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M7.6 5.8L5.2 11.5M10.4 5.8l2.4 5.7M6.3 13.5h5.4" stroke="currentColor" stroke-width="1.3"/>
+              </svg>
+              <span class="rail-label-text">Peer Graph</span>
+            </span>
+            <span class="kbd-hint rail-shortcut">Alt+2</span>
+          </button>
+
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" data-nav-view="router" title="Dynamic Provider Router Lab (Alt+3)">
+            <span class="rail-nav-left">
+              <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M2.5 9h4l2-4.5 3 9 2-4.5h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="rail-label-text">Router Lab</span>
+            </span>
+            <span class="kbd-hint rail-shortcut">Alt+3</span>
+          </button>
+
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" data-nav-view="cpp-rag" title="Native C++20 Architecture & Proactive RAG (Alt+4)">
+            <span class="rail-nav-left">
+              <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M6 5.5L2.5 9 6 12.5M12 5.5L15.5 9 12 12.5M10 3.5l-2 11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="rail-label-text">C++20 &amp; RAG</span>
+            </span>
+            <span class="kbd-hint rail-shortcut">Alt+4</span>
+          </button>
+
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" data-nav-view="memory" title="Hierarchical MemoryGraph & Skill Vault (Alt+5)">
+            <span class="rail-nav-left">
+              <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <rect x="3" y="3" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M3 7.5h12M7.5 7.5V15" stroke="currentColor" stroke-width="1.3"/>
+              </svg>
+              <span class="rail-label-text">Memory &amp; Skills</span>
+            </span>
+            <span class="kbd-hint rail-shortcut">Alt+5</span>
+          </button>
+        </nav>
+
+        <div class="rail-sessions-section">
+          <div class="section-eyebrow">
+            <span>SQLite Sessions</span>
+            <span class="badge badge-emerald" id="railLeaseBadge">WAL e14</span>
+          </div>
+          <button type="button" class="btn btn-subtle" id="btnCreateSession" style="width:100%;justify-content:space-between;">
+            <span>+ New WAL Session</span>
+            <span class="mono muted">C++20</span>
+          </button>
+          <div class="session-list" id="railSessionList" aria-label="Session List"></div>
+        </div>
+
+        <div class="rail-footer-meta mono muted" style="font-size:10.5px;">
+          <div>Zero Electron • Zero Node</div>
+          <div>WCAG 2.2 AA/AAA (&gt;= 5.12:1)</div>
+        </div>
+      </aside>
+
+      <main class="studio-stage" id="omniaMainStage">
+        <!-- ==============================================================
+             VIEW 1: STUDIO CHAT, SCIENTIFIC COMPOSER & STEER QUEUE DOCK
+             ============================================================== -->
+        <section class="studio-view view-chat-grid is-active" id="view-chat" data-view-panel="chat" role="tabpanel" aria-label="Studio Chat and Scientific Rich Composer">
+          <div class="chat-primary-column">
+            <div class="chat-stream-scroll" id="chatTurnStream"></div>
+
+            <div class="chat-composer-dock">
+              <div class="composer-toolbar" role="toolbar" aria-label="Rich Formatting and Scientific Equation Toolbar">
+                <div class="toolbar-group">
+                  <button type="button" class="tool-btn" data-fmt="h1" title="Insert Heading 1">H1</button>
+                  <button type="button" class="tool-btn" data-fmt="h2" title="Insert Section Heading">H2</button>
+                  <button type="button" class="tool-btn" data-fmt="bold" title="Bold (**text**)"><strong>B</strong></button>
+                  <button type="button" class="tool-btn" data-fmt="italic" title="Italic (*text*)"><em>I</em></button>
+                  <button type="button" class="tool-btn" data-fmt="underline" title="Underline (__text__)"><u>U</u></button>
+                  <button type="button" class="tool-btn mono" data-fmt="code" title="Inline C++20 Code">&lt;/&gt;</button>
+                  <button type="button" class="tool-btn" data-fmt="checklist" title="Insert Verification Checklist">☑ List</button>
+                  <button type="button" class="tool-btn" data-fmt="table" title="Insert Markdown Table">⊞ Table</button>
+                </div>
+
+                <div class="toolbar-group">
+                  <button type="button" class="tool-btn" id="btnToggleSciPalette" aria-expanded="false" style="color:var(--accent-amber);border-color:var(--accent-amber-border);">
+                    <span>∑ ∫ ⇌ 15 Templates</span>
+                  </button>
+                  <button type="button" class="tool-btn" id="btnSimulatePaste" title="Open Accessible Inline-vs-Tray Paste Chooser (Esc = Zero Mutation)">
+                    <span>📋 Paste Chooser</span>
+                  </button>
+                  <button type="button" class="tool-btn" id="btnAttachEncryptedSample" title="Test Honest ENCRYPTED_UNRESOLVED Archive Handling">
+                    <span>🔒 .7z Sample</span>
+                  </button>
+                  <button type="button" class="tool-btn" id="btnAttachLocalFile" title="Attach Local File">
+                    <span>+ File</span>
+                  </button>
+                  <input type="file" id="composerHiddenFileInput" hidden>
+                  <button type="button" class="tool-btn" id="btnToggleLivePreview" aria-pressed="true" title="Toggle Split Live Math/Markdown Preview">
+                    <span>Split Preview</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 15-Template Scientific Palette -->
+              <div class="template-palette" id="scientificPaletteDrawer" hidden>
+                <div class="row-between">
+                  <span class="section-eyebrow">15 Zero-CDN Math / Physics / Chemistry Templates (Click to Insert)</span>
+                  <div class="row-wrap">
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="All" aria-pressed="true">All (15)</button>
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Math" aria-pressed="false">Math (5)</button>
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Physics" aria-pressed="false">Physics (5)</button>
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Chemistry" aria-pressed="false">Chemistry (5)</button>
+                  </div>
+                </div>
+                <div class="template-grid" id="scientificTemplateGrid"></div>
+              </div>
+
+              <!-- Split Input + Live Typographic Math/Markdown Preview -->
+              <div class="composer-work-grid" id="composerWorkGrid">
+                <textarea
+                  id="omniaComposerInput"
+                  class="composer-textarea"
+                  role="textbox"
+                  aria-multiline="true"
+                  aria-label="Edit"
+                  placeholder="Compose rich prompt, C++20 code, or LaTeX ($ \nabla \times \mathbf{E} $)... Press Ctrl+Enter to dispatch."></textarea>
+                <div class="composer-live-preview" id="composerLivePreview" aria-live="polite" aria-label="Live Rendered Scientific Preview"></div>
+              </div>
+
+              <div class="attachment-tray" id="composerAttachmentTray" aria-label="Deduplicated Attachment Tray"></div>
+
+              <div class="composer-footer-row">
+                <div class="stack-xs">
+                  <span class="mono muted" style="font-size:11px;" id="composerDedupSummary">SHA-256 Content-Addressed Store Ready</span>
+                  <span class="mono" style="font-size:11px;color:var(--accent-cyan);" id="composerStatusToast">IME Safe • Esc Paste Cancel Guarantees Zero Draft Mutation</span>
+                </div>
+                <button type="button" class="btn btn-primary" id="btnDispatchPrompt">
+                  <span>Dispatch via C++20 Router</span>
+                  <span class="kbd-hint" style="background:rgba(0,0,0,0.2);color:inherit;border-color:transparent;">Ctrl+↵</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Dock: Live Additive Steer Queue (STEER_QUEUE) -->
+          <aside class="chat-steer-dock" aria-label="Additive Steer Queue Dock">
+            <div class="row-between">
+              <span class="section-eyebrow">Additive Steer Queue</span>
+              <span class="badge badge-emerald" id="steerQueueCount">2 Active</span>
+            </div>
+
+            <div class="atelier-card-elevated stack-xs">
+              <div class="row-between">
+                <span class="badge badge-amber">🔒 token_budget: NULL</span>
+                <span class="badge badge-cyan">ADDITIVE_INTAKE</span>
+              </div>
+              <div style="font-size:11.5px;color:var(--ink-secondary);line-height:1.45;">
+                Zero-Drop Continuity active: mid-run steers append monotonically without cancelling unfinished tasks.
+              </div>
+            </div>
+
+            <form id="steerEnqueueForm" class="stack-sm">
+              <label class="field-label">
+                <span>Enqueue Live Mid-Run Steer (POST /api/steer/enqueue)</span>
+                <textarea id="steerInputText" class="studio-textarea-sm" placeholder="Add an additive steer instruction without dropping active work..."></textarea>
+              </label>
+              <button type="submit" class="btn btn-primary" style="width:100%;">+ Enqueue Additive Steer</button>
+            </form>
+
+            <div class="row-wrap">
+              <button type="button" class="btn btn-subtle" style="font-size:11px;min-height:28px;padding:0 8px;" data-quick-steer="Verify 0px horizontal overflow at 1024x768 & 1220x820">+ QA Viewport Gate</button>
+              <button type="button" class="btn btn-subtle" style="font-size:11px;min-height:28px;padding:0 8px;" data-quick-steer="Audit winsqlite3 WAL cooperative lease heartbeat">+ Audit WAL Lease</button>
+            </div>
+
+            <div class="section-eyebrow">Active Queue Ledger · GET /api/steer</div>
+            <div class="stack-sm" id="steerQueueList"></div>
+          </aside>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 2: 2-WAY ALL-TO-ALL PEERMESHGRAPH + GRAPHIFY CANVAS
+             ============================================================== -->
+        <section class="studio-view view-graph-grid" id="view-graph" data-view-panel="graph" role="tabpanel" aria-label="Bidirectional PeerMeshGraph and Graphify Canvas" hidden>
+          <div class="graph-topbar">
+            <div class="row-wrap">
+              <span class="section-eyebrow" style="margin-right:6px;">Topology Layer:</span>
+              <button type="button" class="btn btn-subtle" data-graph-layer="peer-mesh" aria-pressed="true">2-Way PeerMeshGraph (A ⇄ B Duplex)</button>
+              <button type="button" class="btn btn-subtle" data-graph-layer="graphify" aria-pressed="false">Graphify Provenance (EXTRACTED / INFERRED / AMBIGUOUS)</button>
+            </div>
+
+            <div class="row-wrap">
+              <label class="mono muted" for="graphTraverseEntity" style="font-size:11px;">BFS Root:</label>
+              <select id="graphTraverseEntity" class="studio-select" style="width:auto;">
+                <option value="omnia-studio">omnia-studio.exe</option>
+                <option value="omnia_routing">omnia_routing</option>
+                <option value="omnia_storage">omnia_storage</option>
+                <option value="omnia_graph">omnia_graph</option>
+                <option value="omnia_harness">omnia_harness</option>
+                <option value="omnia-native">omnia-native.exe</option>
+                <option value="DOD-14">DOD-14 Spec</option>
+              </select>
+              <select id="graphTraverseDirection" class="studio-select" style="width:auto;" aria-label="Traversal Direction">
+                <option value="Both">Both (Forward + Reverse)</option>
+                <option value="Forward">Forward Only</option>
+                <option value="Reverse">Reverse Dependents</option>
+              </select>
+              <select id="graphTraverseDepth" class="studio-select" style="width:auto;" aria-label="Max BFS Depth">
+                <option value="2">Depth 2</option>
+                <option value="3" selected>Depth 3</option>
+                <option value="4">Depth 4</option>
+              </select>
+              <button type="button" class="btn btn-primary" id="btnRunGraphifyTraverse">Run BFS Traversal</button>
+            </div>
+          </div>
+
+          <div class="graph-canvas-stage">
+            <div class="graph-canvas-wrap">
+              <canvas id="peerMeshCanvas" class="peer-canvas" aria-label="Interactive Bidirectional PeerMeshGraph and Graphify Canvas"></canvas>
+            </div>
+            <div class="graph-node-strip" id="graphAccessibleNodeStrip" role="group" aria-label="Accessible Node Selector"></div>
+          </div>
+
+          <aside class="graph-inspector-rail" aria-label="Node Ownership and Duplex Message Dispatcher">
+            <div class="section-eyebrow">Selected Node Ownership &amp; Cursors</div>
+            <div class="atelier-card-elevated stack-xs" id="graphNodeInspector"></div>
+
+            <form id="peerDispatchForm" class="atelier-card stack-sm">
+              <div class="section-eyebrow">Dispatch Live 2-Way Peer Pulse · POST /api/graph/send</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <label class="field-label">
+                  <span>From Peer</span>
+                  <select id="peerSendFrom" class="studio-select">
+                    <option value="ui-atelier">UI Atelier</option>
+                    <option value="coordinator">Coordinator</option>
+                    <option value="cpp-core">C++ Core</option>
+                    <option value="win32-shell">Win32 Shell</option>
+                    <option value="verifier">Verifier</option>
+                  </select>
+                </label>
+                <label class="field-label">
+                  <span>To Peer (A ⇄ B)</span>
+                  <select id="peerSendTo" class="studio-select">
+                    <option value="cpp-core">C++ Core</option>
+                    <option value="verifier">Independent Verifier</option>
+                    <option value="win32-shell">Win32 Shell</option>
+                    <option value="coordinator">Coordinator</option>
+                    <option value="@all">@all Broadcast</option>
+                  </select>
+                </label>
+              </div>
+              <input type="text" id="peerSendText" class="studio-input" placeholder="e.g. Confirm /api/router/decide score waterfall alignment">
+              <button type="submit" class="btn btn-primary">Send 2-Way Duplex Message</button>
+            </form>
+
+            <div class="section-eyebrow">Graphify BFS Provenance · GET /api/graph/traverse</div>
+            <div class="atelier-card stack-xs" id="graphTraversalOutput"></div>
+
+            <div class="section-eyebrow">Live read_since(seq) Duplex Feed</div>
+            <div class="stack-xs" id="graphMessageLedger"></div>
+          </aside>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 3: DYNAMIC PROVIDER ROUTER WORKBENCH
+             ============================================================== -->
+        <section class="studio-view view-router-grid" id="view-router" data-view-panel="router" role="tabpanel" aria-label="Dynamic Provider Router Workbench" hidden>
+          <aside class="router-controls-pane">
+            <div class="section-eyebrow">Deterministic Policy Controls</div>
+            <form id="routerPolicyForm" class="stack-md">
+              <label class="field-label">
+                <span>Task Class</span>
+                <select id="routerTaskClass" class="studio-select">
+                  <option value="code_generation">code_generation (C++20 / Systems)</option>
+                  <option value="architecture_synthesis">architecture_synthesis (RFC / Graph)</option>
+                  <option value="math_derivation">math_derivation (Symbolic / Physics)</option>
+                  <option value="multimodal_vision">multimodal_vision (UI Visual Audit)</option>
+                  <option value="fast_triage">fast_triage (Low-Latency Classification)</option>
+                </select>
+              </label>
+
+              <label class="field-label">
+                <div class="row-between">
+                  <span>Estimated Token Reservation</span>
+                  <span class="mono" id="routerTokensReadout" style="color:var(--accent-amber);">8,192 tok</span>
+                </div>
+                <input type="range" id="routerEstimatedTokens" min="512" max="120000" step="512" value="8192">
+              </label>
+
+              <label class="field-label">
+                <span>Privacy &amp; Data Residency Boundary</span>
+                <select id="routerPrivacyTier" class="studio-select">
+                  <option value="enterprise_zdr" selected>enterprise_zdr (Zero Data Retention)</option>
+                  <option value="strict_local_zero_retention">strict_local_zero_retention (Loopback Only)</option>
+                  <option value="standard_cloud">standard_cloud (General Public Endpoints)</option>
+                </select>
+              </label>
+
+              <label class="row-wrap" style="font-size:12.5px;cursor:pointer;">
+                <input type="checkbox" id="routerRequireStreaming" checked>
+                <span>Require SSE Token Streaming</span>
+              </label>
+
+              <button type="submit" class="btn btn-primary" style="width:100%;">Evaluate &amp; Reserve Route</button>
+            </form>
+
+            <div class="section-eyebrow" style="margin-top:8px;">One-Click Failure &amp; Policy Drills</div>
+            <div class="stack-xs">
+              <button type="button" class="btn btn-subtle" style="justify-content:flex-start;" data-router-scenario="strict-local">1. Enforce Strict Local Zero-Retention Fence</button>
+              <button type="button" class="btn btn-subtle" style="justify-content:flex-start;" data-router-scenario="trip-gemini">2. Trip Primary Gemini Circuit &amp; Observe Failover</button>
+              <button type="button" class="btn btn-subtle" style="justify-content:flex-start;" data-router-scenario="reset-all">3. Reset Circuits &amp; Reconcile Healthy Snapshot</button>
+            </div>
+
+            <div class="atelier-card stack-xs" style="font-size:11.5px;color:var(--ink-secondary);">
+              <strong style="color:var(--ink-primary);">Authoritative Honesty Invariant</strong>
+              <div>QuotaState::Unknown and QuotaState::Stale are never coerced to 0. Secrets and prompt text are 100% redacted from receipts.</div>
+            </div>
+          </aside>
+
+          <div class="router-results-pane">
+            <div class="atelier-card-elevated" id="routerDecisionBanner"></div>
+            <div class="candidate-grid" id="routerCandidateMatrix"></div>
+
+            <details class="reasoning-trace" open>
+              <summary>
+                <span>▸ Secret-Redacted RouteDecisionReceipt JSON (omnia_routing)</span>
+                <span class="badge badge-cyan">Replayable Audit Receipt</span>
+              </summary>
+              <pre class="code-pre" id="routerReceiptJson"></pre>
+            </details>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 4: NATIVE C++20 ARCHITECTURE & PROACTIVE RAG STUDIO
+             ============================================================== -->
+        <section class="studio-view view-cpp-rag-grid" id="view-cpp-rag" data-view-panel="cpp-rag" role="tabpanel" aria-label="Native C++20 Architecture and Proactive RAG Studio" hidden>
+          <div class="cpp-arch-pane">
+            <div class="row-between">
+              <div>
+                <div class="section-eyebrow">Full Native C++20 Target Graph</div>
+                <div style="font-size:1.05rem;font-weight:700;">7 Zero-Rust MSVC 14.51 Modules &amp; Executables</div>
+              </div>
+              <span class="badge badge-emerald">0 .rs • /std:c++20 /W4 /WX</span>
+            </div>
+
+            <div class="row-wrap" id="cppModuleSelectorList" role="group" aria-label="C++20 Module Targets"></div>
+            <div class="atelier-card stack-sm" id="cppModuleDetailCard"></div>
+          </div>
+
+          <div class="rag-studio-pane">
+            <div class="row-between">
+              <div>
+                <div class="section-eyebrow">Bilingual EN/VN ProactiveRag Engine</div>
+                <div style="font-size:1.05rem;font-weight:700;">Live Uncertainty &amp; Source Quarantine Analyzer</div>
+              </div>
+              <span class="badge badge-amber">Zero "search" Keyword Needed</span>
+            </div>
+
+            <form id="ragAnalyzeForm" class="stack-sm">
+              <label class="field-label">
+                <span>Enter Vietnamese or English Technical Prompt (POST /api/rag/plan)</span>
+                <textarea id="ragQueryInput" class="studio-textarea-sm" placeholder="Type any EN or VN technical question without the word 'search'..."></textarea>
+              </label>
+              <div class="row-between">
+                <div class="row-wrap">
+                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="Tại sao cửa sổ modal #32770 cần WH_CBT hook để UIA InvokePattern chạy nền ổn định?">VN: Modal #32770 UIA</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="How does winsqlite3 WAL cooperative lease fencing recover after an unexpected PID crash?">EN: SQLite WAL Lease</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="Giải thích cơ chế khử trùng lặp SHA-256 giữa inline chip và khay đính kèm">VN: SHA-256 Dedup</button>
+                </div>
+                <button type="submit" class="btn btn-primary">Analyze Uncertainty</button>
+              </div>
+            </form>
+
+            <div class="stack-md" id="ragAnalysisOutput"></div>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 5: HIERARCHICAL MEMORYGRAPH & CURATED SKILL VAULT
+             ============================================================== -->
+        <section class="studio-view view-memory-grid" id="view-memory" data-view-panel="memory" role="tabpanel" aria-label="Hierarchical MemoryGraph and Curated Skill Vault" hidden>
+          <div class="memory-pane">
+            <div class="row-between">
+              <div>
+                <div class="section-eyebrow">Hierarchical MemoryGraph · omnia_harness</div>
+                <div style="font-size:1.05rem;font-weight:700;">Namespace Tree &amp; Cryptographic Erasure</div>
+              </div>
+              <div class="row-wrap">
+                <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;" data-ns-filter="ALL" aria-pressed="true">All</button>
+                <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;" data-ns-filter="workspace" aria-pressed="false">workspace/*</button>
+                <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;" data-ns-filter="architecture" aria-pressed="false">architecture/*</button>
+                <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;" data-ns-filter="lessons" aria-pressed="false">lessons/*</button>
+              </div>
+            </div>
+
+            <form id="memoryUpsertForm" class="atelier-card stack-sm">
+              <div class="section-eyebrow">Create / Upsert Memory Node · POST /api/memory/upsert</div>
+              <div style="display:grid;grid-template-columns:1.2fr 1fr 0.8fr;gap:8px;">
+                <input type="text" id="memNamespaceInput" class="studio-input" value="architecture/cpp20-studio" placeholder="Namespace (no .. or \)" required>
+                <input type="text" id="memKeyInput" class="studio-input" placeholder="Key (e.g. origin-guard)" required>
+                <select id="memTierSelect" class="studio-select" aria-label="Memory Tier">
+                  <option value="Durable">Durable</option>
+                  <option value="Working">Working</option>
+                </select>
+              </div>
+              <textarea id="memContentInput" class="studio-textarea-sm" placeholder="Record verified architectural fact or lesson..." required></textarea>
+              <div class="row-between">
+                <span class="mono muted" id="memoryFormFeedback" style="font-size:11px;">Containment guard rejects .. and \ segments.</span>
+                <button type="submit" class="btn btn-primary">Upsert Memory</button>
+              </div>
+            </form>
+
+            <div class="stack-sm" id="memoryEntriesList"></div>
+
+            <div class="section-eyebrow">Plaintext-Free SHA-256 ErasureReceipt Ledger</div>
+            <div class="stack-xs" id="memoryErasureReceipts"></div>
+          </div>
+
+          <div class="skills-pane">
+            <div class="row-between">
+              <div>
+                <div class="section-eyebrow">4-Way Synchronized Skill Registry</div>
+                <div style="font-size:1.05rem;font-weight:700;">Curated Bilingual Skill Vault · GET /api/skills</div>
+              </div>
+              <span class="badge badge-amber" id="skillVaultCountBadge">13 Curated Skills</span>
+            </div>
+
+            <div class="stack-xs">
+              <input type="search" id="skillSearchInput" class="studio-input" placeholder="Instant search EN/VN skills (e.g. c++20, graph, steer, clean, tiếng việt)..." aria-label="Search Curated Skills">
+              <div class="row-wrap">
+                <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="ALL">All</button>
+                <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="cpp">C++20 Native</button>
+                <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="graph">Peer Graph</button>
+                <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="steer">Steer Queue</button>
+                <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="tiếng việt">Tiếng Việt</button>
+              </div>
+            </div>
+
+            <div class="stack-sm" id="skillVaultResults"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- ==================================================================
+         ROW 3: UNCLIPPED BOTTOM STUDIO TELEMETRY & UIA STATUS BAR
+         ================================================================== -->
+    <footer class="studio-footer" role="contentinfo">
+      <div class="footer-segment">
+        <span class="footer-item"><span style="color:var(--status-emerald);">●</span> UIA ControlType.Edit: BOUND</span>
+        <span class="footer-item" id="footerDraftRev">Rev #1</span>
+        <span class="footer-item" id="footerDraftHash">FNV1a:00000000</span>
+        <span class="footer-item">token_budget: NULL</span>
+      </div>
+      <div class="footer-segment">
+        <span class="footer-item">Origin Guard: 127.0.0.1</span>
+        <span class="footer-item" style="color:var(--accent-amber);" id="footerConnectionMode">PROBING C++20 HOST…</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ====================================================================
+       MODAL 1: ACCESSIBLE PASTE PLACEMENT CHOOSER (ESC = ZERO MUTATION)
+       ==================================================================== -->
+  <div class="modal-backdrop" id="pasteChooserModal" role="dialog" aria-modal="true" aria-labelledby="pasteModalTitle" hidden>
+    <div class="modal-dialog" style="max-width:480px;padding:var(--space-4);gap:var(--space-3);">
+      <div class="row-between">
+        <strong id="pasteModalTitle" style="font-size:1rem;">Choose Attachment Placement</strong>
+        <span class="badge badge-cyan">SHA-256 Deduplicated</span>
+      </div>
+      <div class="mono secondary" style="font-size:12px;" id="pasteFileSummary"></div>
+      <p style="margin:0;font-size:12.5px;color:var(--ink-secondary);line-height:1.5;">
+        Inline chips and tray attachments share one content-addressed digest (`0` duplicate bytes). Pressing <strong>Esc</strong> or <strong>Cancel</strong> leaves draft bytes, caret offset, and checksum untouched.
+      </p>
+      <div class="row-between" style="margin-top:4px;">
+        <button type="button" class="btn btn-subtle" id="btnPasteCancelEsc">Cancel (Esc — 0 Mutation)</button>
+        <div class="row-wrap">
+          <button type="button" class="btn" id="btnPasteToTray">2. Attachment Tray</button>
+          <button type="button" class="btn btn-primary" id="btnPasteInlineCaret">1. Insert Inline at Caret</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       MODAL 2: GLOBAL CTRL+K / ⌘K COMMAND PALETTE
+       ==================================================================== -->
+  <div class="modal-backdrop" id="commandPaletteModal" role="dialog" aria-modal="true" aria-label="Omnia Studio Command Palette" hidden>
+    <div class="modal-dialog">
+      <input
+        type="text"
+        id="cmdPaletteInput"
+        class="cmd-search-input"
+        placeholder="Type a command: switch view, theme, insert LaTeX, trip circuit, broadcast peer pulse..."
+        autocomplete="off">
+      <div class="cmd-results-list" id="cmdPaletteResults" role="listbox"></div>
+      <div class="row-between mono muted" style="padding:6px 12px;border-top:1px solid var(--border-subtle);font-size:10.5px;">
+        <span>↑↓ Navigate • Enter Execute • Esc Close</span>
+        <span>Obsidian Kinetic Atelier • C++20</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Zero-Dependency Ordered Studio Modules (Works on Loopback Host AND Standalone File) -->
+  <script defer src="./app/api.js"></script>
+  <script defer src="./app/composer.js"></script>
+  <script defer src="./app/peer-graph.js"></script>
+  <script defer src="./app/router-lab.js"></script>
+  <script defer src="./app/ide-explorer.js"></script>
+  <script defer src="./app/memory-vault.js"></script>
+  <script defer src="./app/command-palette.js"></script>
+  <script defer src="./app/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,447 @@
+/* ==========================================================================
+   OMNIA STUDIO — PRECISION SPATIAL LAYOUT & ZERO-OVERFLOW GRID
+   Verified invariants:
+   - 0 px horizontal overflow at 1024x768, 1220x820, 1440x900+
+   - 0 px bottom status-bar clipping (strict 3-row 100dvh grid)
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  color: var(--ink-primary);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.tabular,
+code,
+pre,
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Master 3-Row Non-Clipping Studio Frame --- */
+.studio-shell {
+  display: grid;
+  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--footer-h);
+  width: 100%;
+  max-width: 100vw;
+  height: 100dvh;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+}
+
+/* --- Row 1: Top Architectural Telemetry Header --- */
+.studio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+  background-color: var(--bg-rail);
+  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-panel);
+  min-width: 0;
+  z-index: 20;
+}
+
+.header-brand-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.header-center-telemetry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.header-actions-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* --- Row 2: Rail + Active View Stage --- */
+.studio-body {
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  transition: grid-template-columns var(--dur-normal) var(--ease-atelier);
+}
+
+.studio-shell.rail-collapsed .studio-body {
+  grid-template-columns: var(--rail-collapsed-w) minmax(0, 1fr);
+}
+
+/* --- Left Navigation & Session Rail --- */
+.studio-rail {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background-color: var(--bg-rail);
+  border-right: 1px solid var(--border-subtle);
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-2);
+  gap: var(--space-3);
+}
+
+.rail-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rail-sessions-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.studio-shell.rail-collapsed .rail-label-text,
+.studio-shell.rail-collapsed .rail-shortcut,
+.studio-shell.rail-collapsed .rail-sessions-section,
+.studio-shell.rail-collapsed .rail-footer-meta {
+  display: none;
+}
+
+/* --- Main Stage & View Panels --- */
+.studio-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+}
+
+.studio-view {
+  display: none;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.studio-view.is-active {
+  display: grid;
+}
+
+/* --- View 1: Chat + Composer + Steer Queue Dock --- */
+.view-chat-grid {
+  grid-template-columns: minmax(0, 1fr) 316px;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-primary-column {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.chat-stream-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  min-width: 0;
+}
+
+.chat-composer-dock {
+  background-color: var(--bg-panel);
+  border-top: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  max-height: 48dvh;
+  overflow-y: auto;
+}
+
+.chat-steer-dock {
+  background-color: var(--bg-rail);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-3);
+  gap: var(--space-3);
+}
+
+/* --- View 2: PeerMeshGraph + Graphify Canvas --- */
+.view-graph-grid {
+  grid-template-columns: minmax(0, 1fr) 356px;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.graph-topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.graph-canvas-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-inspector-rail {
+  background-color: var(--bg-rail);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* --- View 3: Dynamic Provider Router Lab --- */
+.view-router-grid {
+  grid-template-columns: 320px minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.router-controls-pane {
+  background-color: var(--bg-rail);
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.router-results-pane {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* --- View 4: Native C++20 Architecture & Proactive RAG --- */
+.view-cpp-rag-grid {
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.cpp-arch-pane {
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.rag-studio-pane {
+  background-color: var(--bg-rail);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* --- View 5: MemoryGraph & Curated Skill Vault --- */
+.view-memory-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.memory-pane {
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.skills-pane {
+  background-color: var(--bg-rail);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* --- Row 3: Bottom Unclipped Studio Telemetry & UIA Bar --- */
+.studio-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+  background-color: var(--bg-rail);
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  min-width: 0;
+  z-index: 20;
+}
+
+.footer-segment {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.footer-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Responsive Breakpoints (1220x820 and 1024x768 Zero-Overflow Guards) --- */
+@media (max-width: 1260px) {
+  :root {
+    --rail-w: 192px;
+  }
+
+  .view-chat-grid {
+    grid-template-columns: minmax(0, 1fr) 276px;
+  }
+
+  .view-graph-grid {
+    grid-template-columns: minmax(0, 1fr) 316px;
+  }
+
+  .view-router-grid {
+    grid-template-columns: 284px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1120px) {
+  .studio-body {
+    grid-template-columns: var(--rail-collapsed-w) minmax(0, 1fr);
+  }
+
+  .studio-rail .rail-label-text,
+  .studio-rail .rail-shortcut,
+  .studio-rail .rail-sessions-section,
+  .studio-rail .rail-footer-meta {
+    display: none;
+  }
+
+  .view-chat-grid {
+    grid-template-columns: minmax(0, 1fr) 256px;
+  }
+
+  .view-graph-grid {
+    grid-template-columns: minmax(0, 1fr) 292px;
+  }
+
+  .view-router-grid {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .header-telemetry-detail-extra {
+    display: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .view-chat-grid,
+  .view-graph-grid,
+  .view-router-grid,
+  .view-cpp-rag-grid,
+  .view-memory-grid {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+}

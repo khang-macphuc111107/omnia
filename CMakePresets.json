@@ -1,0 +1,73 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "omnia-cpp-core-release",
+      "displayName": "Omnia C++20 Core & Studio (Release, External Build Dir)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../OmniaData/build/omnia-cpp-core-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OMNIA_BUILD_CPP_CORE": "ON",
+        "OMNIA_BUILD_NATIVE_SHELL": "OFF"
+      }
+    },
+    {
+      "name": "omnia-cpp-core-debug",
+      "displayName": "Omnia C++20 Core & Studio (Debug, External Build Dir)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../OmniaData/build/omnia-cpp-core-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "OMNIA_BUILD_CPP_CORE": "ON",
+        "OMNIA_BUILD_NATIVE_SHELL": "OFF"
+      }
+    },
+    {
+      "name": "omnia-full-release",
+      "displayName": "Omnia Full Native C++20 Workspace (Release, External Build Dir)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../OmniaData/build/omnia-full-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OMNIA_BUILD_CPP_CORE": "ON",
+        "OMNIA_BUILD_NATIVE_SHELL": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "omnia-cpp-core-release",
+      "configurePreset": "omnia-cpp-core-release"
+    },
+    {
+      "name": "omnia-cpp-core-debug",
+      "configurePreset": "omnia-cpp-core-debug"
+    },
+    {
+      "name": "omnia-full-release",
+      "configurePreset": "omnia-full-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "omnia-cpp-core-release",
+      "configurePreset": "omnia-cpp-core-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "omnia-cpp-core-debug",
+      "configurePreset": "omnia-cpp-core-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

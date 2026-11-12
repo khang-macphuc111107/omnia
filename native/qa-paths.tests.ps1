@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('omnia-qa-path-test-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $fixtureRoot
 $oldData = $env:OMNIA_DATA_ROOT
-$oldTarget = $env:CARGO_TARGET_DIR
+$oldTarget = $env:OMNIA_NATIVE_BUILD_ROOT
 $passed = [Collections.Generic.List[string]]::new()
 $link = $null
 function Assert-Case([bool]$Condition, [string]$Name) {
@@ -22,8 +22,8 @@ try {
     $data = Join-Path $fixtureRoot 'data'
     $null = New-Item -ItemType Directory -Path $repo
     $env:OMNIA_DATA_ROOT = $data
-    $env:CARGO_TARGET_DIR = $null
-    $release = Join-Path $data 'build/native/release/omnia-native.exe'
+    $env:OMNIA_NATIVE_BUILD_ROOT = $null
+    $release = Join-Path $data 'build/omnia-cpp-native-release/omnia-native.exe'
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $release)
     Set-Content -LiteralPath $release -Value 'path fixture only; never executed'
     $result = Initialize-OmniaQaPaths -RepositoryRoot $repo
@@ -33,13 +33,13 @@ try {
     $next = Initialize-OmniaQaPaths -RepositoryRoot $repo
     Assert-Case ($next.OutputDirectory -ne $result.OutputDirectory) 'unique output for repeated invocation'
     $customTarget = Join-Path $fixtureRoot 'custom-target'
-    $debug = Join-Path $customTarget 'debug/omnia-native.exe'
+    $debug = Join-Path $customTarget 'omnia-cpp-native-debug/omnia-native.exe'
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $debug)
     Set-Content -LiteralPath $debug -Value 'path fixture only; never executed'
-    $env:CARGO_TARGET_DIR = $customTarget
+    $env:OMNIA_NATIVE_BUILD_ROOT = $customTarget
     $customOutput = Join-Path $fixtureRoot 'explicit-output'
     $explicit = Initialize-OmniaQaPaths -RepositoryRoot $repo -Profile debug -OutputDirectory $customOutput
-    Assert-Case ($explicit.Executable -eq $debug -and $explicit.OutputDirectory -eq $customOutput) 'absolute cargo target and explicit output'
+    Assert-Case ($explicit.Executable -eq $debug -and $explicit.OutputDirectory -eq $customOutput) 'absolute build target and explicit output'
     Set-Content -LiteralPath (Join-Path $customOutput 'owner.txt') -Value 'preserve'
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable $release -OutputDirectory $customOutput } 'already exists' 'existing output refused'
     Assert-Case ((Get-Content -Raw -LiteralPath (Join-Path $customOutput 'owner.txt')).Trim() -eq 'preserve') 'existing output preserved'
@@ -51,9 +51,9 @@ try {
     Set-Content -LiteralPath $repoExecutable -Value 'repository executable fixture; never executed'
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable $repoExecutable } 'must be external' 'repository executable refused'
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable $release -OutputDirectory 'relative-output' } 'absolute' 'relative output refused'
-    $env:CARGO_TARGET_DIR = 'relative-target'
-    Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo } 'absolute' 'relative cargo target refused'
-    $env:CARGO_TARGET_DIR = $null
+    $env:OMNIA_NATIVE_BUILD_ROOT = 'relative-target'
+    Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo } 'absolute' 'relative build target refused'
+    $env:OMNIA_NATIVE_BUILD_ROOT = $null
     $env:OMNIA_DATA_ROOT = 'relative-data'
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo } 'absolute' 'relative data root refused'
     $env:OMNIA_DATA_ROOT = $data
@@ -63,7 +63,7 @@ try {
     $link = Join-Path $fixtureRoot 'alias'
     $null = New-Item -ItemType Junction -Path $link -Target $data
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable $release -OutputDirectory (Join-Path $link 'run') } 'reparse' 'junction output refused'
-    Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable (Join-Path $link 'build/native/release/omnia-native.exe') } 'reparse' 'junction executable refused'
+    Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable (Join-Path $link 'build/omnia-cpp-native-release/omnia-native.exe') } 'reparse' 'junction executable refused'
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $link -Executable $release } 'reparse' 'junction repository refused'
     Assert-Refused { Resolve-OmniaQaDatabase $repo 'relative.sqlite3' } 'absolute' 'relative database refused'
     Assert-Refused { Resolve-OmniaQaDatabase $repo (Join-Path $repo 'fixture.sqlite3') } 'must be external' 'source database refused'
@@ -91,7 +91,7 @@ try {
     [ordered]@{ scope = 'native QA path contract; no product execution'; passed = $passed.Count; cases = $passed.ToArray() } | ConvertTo-Json -Depth 4
 } finally {
     $env:OMNIA_DATA_ROOT = $oldData
-    $env:CARGO_TARGET_DIR = $oldTarget
+    $env:OMNIA_NATIVE_BUILD_ROOT = $oldTarget
     $resolved = [IO.Path]::GetFullPath($fixtureRoot)
     $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     if (-not (Test-OmniaQaContainedPath $temp $resolved) -or

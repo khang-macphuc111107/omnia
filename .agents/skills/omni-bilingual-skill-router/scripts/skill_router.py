@@ -45,9 +45,37 @@ VN_EN_SYNONYMS: dict[str, str] = {
     "proposal": "deep proposal rfc thesis grant spec kit rfp tradeoff compliance",
     "rfc": "deep proposal engineering architecture rfc candidate tradeoff rollback",
     "rfp": "deep proposal client solution rfp compliance matrix roi wbs sla",
+    "lap trinh cpp": "deep cpp native cpp20 cmake ninja msvc raii win32 winsqlite3 direct2d dwm uia winsock2",
+    "ung dung ban dia": "deep cpp native cpp20 win32 dwm mica direct2d uia winsqlite3 winsock2",
+    "ban dia": "deep cpp native cpp20 win32 dwm direct2d uia",
+    "cpp20": "deep cpp native cmake ninja msvc raii win32 winsqlite3 bcrypt direct2d dwm uia winsock2",
+    "cpp": "deep cpp native cpp20 cmake ninja msvc raii win32 winsqlite3 direct2d uia winsock2",
+    "cmake": "deep cpp native cpp20 cmake ninja msvc ctest",
+    "ninja": "deep cpp native cpp20 cmake ninja msvc ctest",
+    "msvc": "deep cpp native cpp20 cmake ninja msvc raii win32",
+    "win32": "deep cpp native cpp20 win32 dwm mica direct2d uia wm getobject",
+    "direct2d": "deep cpp native cpp20 win32 dwm mica direct2d directwrite",
+    "winsqlite": "deep cpp native cpp20 winsqlite3 wal lease raii",
+    "winsqlite3": "deep cpp native cpp20 winsqlite3 wal lease raii",
+    "winsock2": "deep cpp native cpp20 winsock2 loopback origin bridge",
+    "webview2": "deep cpp native cpp20 winsock2 loopback origin studio ui",
 }
 
 PREWIRED_PIPELINES: dict[str, dict[str, object]] = {
+    "omnia-cpp20-flagship-studio": {
+        "goal": "Zero-overhead native Windows 11 C++20 engine + Win32/Direct2D/UIA shell + Origin-guarded Winsock2 flagship Studio UI",
+        "skills": [
+            "autonomous-power-continuity",
+            "additive-steer-queue",
+            "deep-cpp-native",
+            "deep-general-graph-orchestration",
+            "deep-ui-direction",
+            "low-disruption-desktop-control",
+            "ui-quantitative-audit",
+            "omni-deterministic-verifiers",
+            "omnia-session-governance-handoff",
+        ],
+    },
     "omnia-deep-proposal": {
         "goal": "Decision-grade Engineering RFC, Academic/Thesis/Grant, Product/Spec-Kit, and Client/RFP proposals with multi-option trade-offs & falsifiable gates",
         "skills": [
@@ -139,7 +167,8 @@ def strip_accents(text: str) -> str:
 
 
 def tokenize_bilingual(text: str) -> list[str]:
-    lowered = " " + strip_accents(text.lower()) + " "
+    normalized = strip_accents(text.lower()).replace("c++20", " cpp20 ").replace("c++", " cpp ")
+    lowered = " " + re.sub(r"\s+", " ", normalized).strip() + " "
     expanded = [lowered]
     for vn_phrase, en_terms in VN_EN_SYNONYMS.items():
         if f" {vn_phrase} " in lowered or (len(vn_phrase) >= 5 and vn_phrase in lowered):

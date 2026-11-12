@@ -82,7 +82,8 @@
       "to": "D:\\OmniaData\\externalized-20261112\\claude-appasar-extracted",
       "files": 1005,
       "logicalBytes": 120586642,
-      "batch": "externalized-20261112"
+      "batch": "externalized-20261112",
+      "wave4Disposition": "reclaimed_in_action_b_b8_asar_cache_20261112"
     },
     {
       "from": "CursorApp",
@@ -208,5 +209,24 @@
   ],
   "remaining": [
     "D:\\Omnia\\Roaming (ACL-locked to stale Windows SID S-1-5-21-3752430534-...-1001; WinError 5 on non-elevated move; exact elevated UAC takeown+icacls+Move-Item command recorded)"
-  ]
+  ],
+  "wave4DeepCleanAndCpp20Receipts": {
+    "dDriveAuditReport": "docs/workspace/DEEP_CLEAN_AUDIT_D_DRIVE.md",
+    "dDriveAuditReportSha256": "a51f017a02ecfc8c0e81bace752fcc99dd4876f764b7237b42c0ae7234882aed",
+    "dDriveReceipt": "D:\\OmniaData\\qa\\deep-clean-20261112\\D_DRIVE_DEEP_CLEAN_RECEIPT.json",
+    "dDriveReceiptSha256": "70f2781df22d91d33bfe0559344041281ea55ea8cec7a9a3eb73a650bc3253af",
+    "dDriveNetPhysicalFreeGainedGiB": 778.1512,
+    "dDriveFreeAfterGiB": 837.568,
+    "cDriveAuditReport": "docs/workspace/DEEP_CLEAN_AUDIT_C_DRIVE.md",
+    "cDriveAuditReportSha256": "1a88e1fe3ae9cafc2bd8a49b941f42c08b02aa15d8a9daadc57fa151f4922ac6",
+    "cDriveReceipt": "D:\\OmniaData\\qa\\deep-clean-20261112\\C_DRIVE_DEEP_CLEAN_RECEIPT.json",
+    "cDriveReceiptSha256": "ee08c5a0fdd87b67ff3e8b04630d6f62ca249e20fbd6b7af802440fd354060eb",
+    "cDriveNetPhysicalFreeGainedGiB": 166.1357,
+    "cDriveFreeAfterGiB": 189.6039,
+    "preCppRustGitTag": "archive/pre-cpp-rust-snapshot-20261112",
+    "preCppRustCommit": "c3033728abe6f0a4906a796bf7652c84408356d7",
+    "preCppIgnoredFilesManifest": "D:\\OmniaData\\recovery\\pre-cpp-ignored-files-20261112\\MANIFEST.json",
+    "preCppIgnoredFilesManifestSha256": "0da021493635b1861e0fa21106abaf285dd175cc5080027f7677446b79a53709",
+    "externalCppBuildRoot": "D:\\OmniaData\\build"
+  }
 }

@@ -1,6 +1,6 @@
 # Omnia research, references and skill catalog index
 
-**Index role:** Navigable index to qualified external URLs, repositories, media transcripts, academic curricula, UI direction references, and skill catalogs (`RESEARCH-01`, `DOD-12`).
+**Index role:** Navigable index to qualified external URLs, repositories, media transcripts, academic curricula, Flagship Studio UI design specifications, and skill catalogs (`RESEARCH-01`, `DOD-12`).
 
 ## Qualified external research ledgers (`D:\OmniaData\research\`)
 
@@ -13,17 +13,17 @@
    - `D:\OmniaData\research\url-qualification-20261112\rea-supplement-20261112\REA_QUALIFICATION_REPORT.md` (`sha256=085bd386...`)
    - Scope: disambiguated `5` separate `Awesome-REA` repositories (`yibie/awesome-rea` `CC0-1.0`, `reacher-z/Awesome-REA` `MIT`, `kaixinbaba/awesome-rea` `MIT`, `git-sanbu/awesome-rea` `MIT`, `awesomerea/awesome-rea` `MIT`), `IhzuRFgJRvU` MP4/VTTs/contact sheet + comments, `morluto/rea/discussions/4470` (`AGPL-3.0` `opendevicedb` marked `RESEARCH_ONLY`), and `github/spec-kit` `v1.4.0` (`MIT`, `ADMIT_CONCEPT` 9-command closed-loop specification workflow).
 3. **Graphify & four-keyword GitHub discovery**:
-   - `D:\OmniaData\research\omnia-clean-2026-11-12\` & [`../handoff/BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md`](../handoff/BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md) — `Graphify-Labs/graphify` (`v8`, `Apache-2.0`, `RESEARCH_ONLY` concepts implemented natively in Rust `GraphifyIndex`), plus `agent`/`memory`/`code`/`open` star-ranked discovery envelopes.
-4. **UI direction references & 3 interactive prototypes (`PRODUCT-WORKSPACE`, `DOD-14`)**:
-   - [`../ui-direction/DIRECTION_DECISION.md`](../ui-direction/DIRECTION_DECISION.md) (`PENDING_USER_REVIEW`)
-   - External standalone offline prototypes: `D:\OmniaData\qa\ui-direction-20261112\{candidate-a-precision-studio,candidate-b-academic-workbench,candidate-c-minimal-systems}\` (`24/24` WCAG 2.2 contrast checks `>= 5.78:1`, `0` AI-slop gradients/blur).
+   - `D:\OmniaData\research\omnia-clean-2026-11-12\` & [`../handoff/BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md`](../handoff/BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md) — `Graphify-Labs/graphify` (`v8`, `Apache-2.0`, `RESEARCH_ONLY` concepts implemented natively in C++20 `omnia::graph::GraphifyIndex` under [`../../cpp/src/graph/graphify_index.cpp`](../../cpp/src/graph/graphify_index.cpp)), plus `agent`/`memory`/`code`/`open` star-ranked discovery envelopes.
+4. **Flagship Studio UI ("Obsidian Kinetic Atelier") & prior 3-candidate direction (`PRODUCT-WORKSPACE`, `DOD-14`)**:
+   - [`../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md`](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md) (`sha256=db381ed0...`) & [`../../ui/`](../../ui/) (`87/87` WCAG 2.2 checks `>= 5.12:1` across 3 themes, `45/45` headless Edge CDP states `maxOverflowX = 0 px`, `12/12` live `omnia-studio.exe` `/api/*` endpoints).
+   - [`../ui-direction/DIRECTION_DECISION.md`](../ui-direction/DIRECTION_DECISION.md) + standalone prototypes under `D:\OmniaData\qa\ui-direction-20261112\`.
 
 ## Skill taxonomy & `100`-category blueprint
 
 - **Sanitized *Khởi động và Quy trình Omnia* extraction & structured catalog:**
   - `D:\OmniaData\research\omnia-clean-2026-11-12\GDOC_1YSB_SANITIZED.md` (`545,379 B`, `0` bad control bytes, `sha256=099ea575...`)
   - `D:\OmniaData\research\omnia-clean-2026-11-12\omni-deep-1000-catalog.json` (`100` domain categories, `1,001` unique `deep-*` skill specifications, `7` canonical repo artifact groups — stored externally without polluting the repo with synthetic stubs).
-- **Global `273`-skill taxonomy audit:** `D:\OmniaData\research\omnia-clean-2026-11-12\skill-taxonomy-audit.json` & `.md` (`0` YAML/UTF-8 errors, `0` descriptions `> 1024` chars).
-- **12 curated repo-tracked Omnia skills** ([`../../.agents/skills.json`](../../.agents/skills.json) & [`../../.agents/skills/`](../../.agents/skills/)):
-  `additive-steer-queue`, `autonomous-power-continuity`, `codex-mcp-namespace-diagnostics`, `deep-clean`, `deep-general-graph-orchestration`, `deep-proposal`, `deep-steer`, `goal-plan-loop-dod`, `omni-bilingual-skill-router`, `omni-deterministic-verifiers`, `omnia-session-governance-handoff`, `vietnamese-typo-intent-inference`.
+- **Global `274`-skill live mount & Wave 4 C++20 skill sync:** `D:\OmniaData\research\omnia-clean-2026-11-12\cpp-skill-sync-receipt.json` (`sha256=27df8cf8...`, `39/39` `quick_validate.py` `rc=0`, `0` YAML/UTF-8 errors, `0` descriptions `> 1024` chars).
+- **13 curated repo-tracked Omnia skills** ([`../../.agents/skills.json`](../../.agents/skills.json) & [`../../.agents/skills/`](../../.agents/skills/)):
+  `additive-steer-queue`, `autonomous-power-continuity`, `codex-mcp-namespace-diagnostics`, `deep-clean`, `deep-cpp-native`, `deep-general-graph-orchestration`, `deep-proposal`, `deep-steer`, `goal-plan-loop-dod`, `omni-bilingual-skill-router`, `omni-deterministic-verifiers`, `omnia-session-governance-handoff`, `vietnamese-typo-intent-inference`.
 - **Internal nested-repository reference triage:** [`REFERENCE_AUDIT.md`](REFERENCE_AUDIT.md)
