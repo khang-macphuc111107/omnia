@@ -486,3 +486,19 @@ plane is clean at the last committed checkpoint. Remaining candidates include
 ode_modules, .toolchains\openhands-uv-cache, .omnia\cache, Chrome
 profile data, upstream extraction trees and mixed source deletions; they remain
 preserved until owner, consumer, retention and restore evidence are complete.
+
+
+## Node dependency quarantine — 2026-11-12
+
+The generated `node_modules` directory was separately classified as a normal,
+ignored and untracked dependency install: 12,111 files and 194,672,966 logical
+bytes, no reparse entries, zero tracked/status-visible files and no active
+process reference at the final gate. `package.json` declares the build/test
+scripts and the unchanged `package-lock.json` provides the regeneration route.
+An exact-path move placed it at
+`D:\OmniaData\quarantine\omnia-clean-20261112\node_modules`; readback counts
+and bytes matched and the source path is absent. This is reversible
+same-volume externalization with zero free-space delta, not deletion or
+capacity reclamation. Restore command and pre/move receipts are recorded
+outside the product tree. No source, lockfile, nested repository, profile or
+worktree data was touched.

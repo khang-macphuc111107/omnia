@@ -471,3 +471,14 @@ a time; do not touch
 profiles, upstream extraction trees, nested repositories or deleted source
 without their own receipts and restore routes. Preserve the child dirty-state
 count and warnings as open evidence.
+
+
+## Queued continuation — dependency output quarantine
+
+The latest cleanup unit externalized `node_modules` from the child repository
+with exact receipts. Counts and logical bytes matched (12,111 / 194,672,966),
+source and destination containment passed, and no active process used the path
+at the final gate. This reduced source-tree clutter but reclaimed 0 bytes on D:
+because the quarantine is same-volume. Continue candidate-by-candidate; keep
+`package.json`, `package-lock.json`, source edits, nested repositories,
+worktrees, profiles and extraction material intact until separately proven.

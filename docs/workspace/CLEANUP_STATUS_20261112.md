@@ -111,3 +111,17 @@ plane is clean at the last committed checkpoint. Remaining candidates include
 `node_modules`, `.toolchains\openhands-uv-cache`, `.omnia\cache`, Chrome
 profile data, upstream extraction trees and mixed source deletions; they remain
 preserved until owner, consumer, retention and restore evidence are complete.
+
+
+## Latest generated dependency unit — node_modules
+
+`D:\Omnia\repos\omnia\node_modules` was moved to
+`D:\OmniaData\quarantine\omnia-clean-20261112\node_modules` after exact
+containment, ordinary-directory, ignore, tracked/status and active-process
+checks. It contained 12,111 files and 194,672,966 logical bytes; readback
+matched exactly. The source path is absent and path-scoped Git status is clean.
+Because source and quarantine share D:, the free-space delta is 0 bytes; this
+is reversible externalization, not deletion or disk reclamation. `npm ci` with
+the unchanged lockfile is a regeneration route, but it was not run. Keep the
+quarantine until the next controlled build/restore check and do not infer that
+other generated or mixed-ownership trees are disposable.

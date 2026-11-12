@@ -252,3 +252,16 @@ control-plane checkout cannot substitute for child-repository acceptance.
   deleted/untracked extraction/profile material, nested/worktree boundaries and
   missing-directory warnings. A clean root control plane is not child-clean
   proof.
+
+
+## Node dependency cleanup acceptance — 2026-11-12
+
+- **CLEAN-15 — PASS (reversible generated unit):** `node_modules` moved by
+  exact path after containment, ignore, tracked/status, reparse and process
+  gates; 12,111 files and 194,672,966 bytes match after readback.
+- **CLEAN-16 — NO CAPACITY CREDIT:** same-volume externalization produced a
+  0-byte D: free-space delta. The reverse move and `npm ci` regeneration route
+  are recorded; deletion was not performed.
+- **CLEAN-17 — OPEN:** the child repository remains dirty and its remaining
+  source, profile, extraction, nested/worktree and cache candidates need their
+  own owner and restore evidence.

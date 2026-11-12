@@ -166,3 +166,16 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 - Limit: quarantine is on D:, so free-space delta is zero. No deletion,
   recycle-bin purge or capacity credit is implied. All mixed-ownership and
   potentially active candidates remain retained.
+
+
+## 2026-11-12 — Node dependency quarantine
+
+- Decision: move `node_modules` out of the child source tree as a reversible
+  generated-output unit. It was ignored, untracked, non-reparse, status-free and
+  not referenced by a running process at the final gate.
+- Evidence: pre/move receipts record 12,111 files and 194,672,966 logical bytes;
+  readback matches. `package-lock.json` hash and `npm ci` regeneration route are
+  recorded. The exact reverse move is the restore path.
+- Limit: same-volume move changed free space by 0 bytes. No deletion or
+  capacity credit is claimed. Keep source, lockfile and quarantine provenance;
+  do not delete the quarantine until a restore/build check qualifies it.
