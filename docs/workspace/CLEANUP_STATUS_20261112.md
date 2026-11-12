@@ -2,7 +2,7 @@
 
 ## Current evidence
 
-- Root repository: `D:\Omnia`, branch `master`, HEAD `c60eae8fec36df5b2bc633742a70178f3c7d8d04`.
+- Root repository: `D:\Omnia`, branch `master`, HEAD `a36c6f9ec4f3df84258d49aa280e94b5360da987`.
 - Root working tree after the documentation commit is clean (`git status --short --branch` reports only `## master`).
 - Child repository `D:\Omnia\repos\omnia` remains independently owned and dirty: the inventory recorded 4,783 status entries, including 1,775 untracked, 199 modified and 2,809 deleted entries at HEAD `55f21dacf5acb2c6f386aff1ece6a5245bad0fc4`.
 - `D:\Omnia\repos\omnia` contains registered linked worktrees under the Codex worktree directory and `D:\Omnia\publish-worktree`; this prevents treating it as an ordinary folder to flatten or delete.
@@ -11,12 +11,14 @@
 
 ## What was changed in this pass
 
-- Four GitHub REST API searches were recorded outside the product tree for exact keywords `agent`, `memory`, `code`, and `open`, each sorted by stars descending with up to 100 results. The query and result artifacts are under `C:\Users\khang\.codex\research\omnia-clean-2026-11-12`.
-- Root workspace documents were snapshotted, diff-checked and committed as `c60eae8` after the cleanup inventory and research scope were recorded. No child repository, nested `.git`, worktree, backup, recovery tree, source file, cache, profile or download was deleted or moved in this pass.
+- Four GitHub REST API searches were recorded outside the product tree for exact keywords `agent`, `memory`, `code`, and `open`, each sorted by stars descending with 100 results. The query and result artifacts are under `C:\Users\khang\.codex\research\omnia-clean-2026-11-12`.
+- A bounded canonical-source ledger was added for 16 unique repositories selected from the top five star-ranked results per keyword. It records README status, content hash, license endpoint status, default-branch tree metadata and a bounded path sample. It does not claim exhaustive source, issue, comment, media or runtime review.
+- Three historical Cargo target caches were classified as generated, ignored, untracked, non-reparse output with zero status entries. A pre-mutation receipt was written, then the directories were moved by exact path to `D:\OmniaData\quarantine\omnia-clean-20261112\cargo-targets`. File counts and logical bytes matched after the move. This is reversible externalization, not deletion or a backup proof.
+- The same-volume move measured a `0` byte D: free-space delta. No capacity reclamation credit is claimed. The child repository status remained 4,783 entries (199 modified, 2,809 deleted, 1,775 untracked) after the move. Root governance documents were then committed as the current HEAD.
 
 ## Deferred cleanup
 
-The child repository is not clean because its changes include active source edits, deleted/untracked extraction/profile data, nested repositories and generated/toolchain material. Before mutation, each candidate needs an owner, reproducibility or restore route, containment proof, active-use check and before/after receipt. Candidate generated areas were inventoried but not removed because their current ignore/status ownership is mixed and some may be in active use.
+The child repository is not clean because its changes include active source edits, deleted/untracked extraction/profile data, nested repositories and generated/toolchain material. The Cargo target unit is now quarantined, but it does not make the child clean. Before any further mutation, each candidate needs an owner, reproducibility or restore route, containment proof, active-use check and before/after receipt. The `.pytest-cache` item has an untracked file and remains retained; `.pytest_cache`, `.omnia\cache`, `dist`, `node_modules` and `.toolchains\openhands-uv-cache` remain classified but untouched. Chrome profiles and upstream extraction trees remain preserved because their status and reparse boundaries are mixed.
 
 Do not use `git clean`, `git reset --hard`, force push, nested `.git` deletion or broad recursive deletion as a substitute for reconciliation. The next safe unit is a path-specific quarantine or supported producer cleanup, starting with one generated candidate and an isolated restore test. Keep root cleanliness and child-repository cleanliness as separate gates.
 
@@ -29,5 +31,57 @@ Do not use `git clean`, `git reset --hard`, force push, nested `.git` deletion o
 - `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\filesystem-boundary-before.json`
 - `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\generated-candidate-inventory.json`
 - `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\repos-omnia-status-summary.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\github-top20-selection.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\github-bounded-source-ledger.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\github-bounded-source-ledger.md`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-cargo-targets-pre.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-cargo-targets-move.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\repos-omnia-status-after-cargo-move.json`
+- `D:\OmniaData\quarantine\omnia-clean-20261112\cargo-targets`
 
 This status file does not claim exhaustive repository review, complete source understanding, zero defects, or a clean child repository.
+
+## Exact four-keyword search result
+
+The recorded API queries returned 100 repositories each:
+
+| Keyword | API sort | Returned | Search total at retrieval |
+|---|---:|---:|---:|
+| `agent` | stars descending | 100 | 2,168,326 |
+| `memory` | stars descending | 100 | 504,894 |
+| `code` | stars descending | 100 | 7,668,461 |
+| `open` | stars descending | 100 | 1,750,296 |
+
+Repository identity deduplication produced 324 unique repositories in the saved
+metadata envelope. The bounded ledger intentionally covers 16 selected
+repositories rather than pretending that 324 repositories were opened and
+understood in full. A useful idea remains a research candidate until its
+license, privacy, compatibility, security and implementation evidence are
+reviewed.
+
+## Cleanup unit receipt
+
+The three moved directories contained 12,949 files and 10,931,752,220 logical
+bytes in total. The destination readback matched each pre-move file count and
+logical-byte sum. The move used exact resolved paths, rejected reparse points,
+required `git check-ignore` exit 0, required zero tracked files and zero status
+entries, and checked destination collisions before mutation. The operation did
+not use `git clean`, `git reset`, nested Git deletion, a broad computed path or a
+history rewrite. Because source and quarantine are both on D:, measured free
+space stayed unchanged. Deletion or recycle-bin purge is a separate future
+decision and is not implied by the quarantine.
+
+## Second cleanup unit — pytest cache quarantine
+
+After the Cargo-target move, the status-visible `.pytest-cache` contained one
+five-byte `clean` marker. `.pytest_cache` contained four standard pytest cache
+files (`.gitignore`, `CACHEDIR.TAG`, `README.md` and `v/cache/lastfailed`). No
+tracked files were present. Both directories were ordinary, contained under the
+child repository, and had no destination collision. They were moved to
+`D:\OmniaData\quarantine\omnia-clean-20261112\pytest-cache` by exact path.
+The measured D: free-space delta was `0` bytes because this is same-volume
+externalization. The status-visible marker was preserved before the move; its
+producer is not proven and remains an evidence limitation, not a deletion
+claim.
+
+Receipt: `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-pytest-cache-move.json`.

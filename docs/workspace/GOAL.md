@@ -424,3 +424,32 @@ path records what was actually inspected.
    privacy/licenses/destination, publish and clean-clone verify before admission;
    create the requested chat only when SESSION_ADMISSION is READY and record
    actual goal activation separately from creation.
+
+## Latest queued execution — four-keyword research and one cleanup unit
+
+The four explicit search terms for this queue item are `agent`, `memory`,
+`code` and `open`. Each query has 100 star-descending results in the external
+metadata envelope. The current bounded inspection selects 16 unique top-five
+repositories and records README hashes, license endpoint results and tree
+metadata. The queue item must never be reported as exhaustive GitHub reading:
+comments, issues, media, private history and runtime behavior remain outside
+the observed scope.
+
+The first cleanup unit used the child repository's ignored Cargo target
+directories. A receipt proved exact containment under
+`D:\Omnia\repos\omnia`, ordinary directories, no tracked files, no status
+entries and no active Cargo/rustc process observed. The directories were moved
+to `D:\OmniaData\quarantine\omnia-clean-20261112\cargo-targets`; readback
+matched 12,949 files and 10,931,752,220 logical bytes. Since the move stayed on
+D:, free space did not change. The child repository still has 4,783 status
+entries, so this queue item advances cleanup classification but does not close
+the child-clean or disk-reclamation goals.
+
+The next unit is `.pytest-cache` triage. It contains a status-visible
+untracked file and must be retained until its producer, owner and regeneration
+route are proved. The older `.pytest_cache` directory has no status entry but
+is not globally ignored; inspect its producer and retention before any move.
+Do not infer that `.omnia\cache`, `dist`, `node_modules` or
+`.toolchains\openhands-uv-cache` are disposable merely because they are
+ignored. Re-observe active consumers, preserve manifests and use a
+path-specific receipt for each future operation.

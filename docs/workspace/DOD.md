@@ -202,3 +202,34 @@ Changing scope or a material input resets affected streaks. Whole-goal completio
 requires every mandatory parent task and DoD gate, not merely a passing subset.
 Current final streak: **0**. No finite test set proves absolute absence of bugs
 or complete understanding of inaccessible history.
+
+## Four-keyword research and cleanup acceptance — 2026-11-12
+
+- **RESEARCH-04 — PASS (bounded discovery):** the four requested GitHub API
+  searches each returned 100 star-descending repositories and preserved exact
+  query URLs, retrieval timestamp, totals and repository metadata.
+- **RESEARCH-05 — PARTIAL:** 16 unique top-five selections have canonical
+  README/license/tree endpoint records and README hashes. This does not satisfy
+  exhaustive repository, source, issue, comment, media or runtime review.
+- **CLEAN-07 — PASS (reversible unit):** three ignored, untracked, non-reparse
+  Cargo target directories were moved by exact path to external quarantine;
+  file counts and logical bytes matched after readback.
+- **CLEAN-08 — NO CAPACITY CREDIT:** the quarantine is on the same volume, so
+  measured free-space delta is zero. It is not deletion, recycle-bin purge or
+  proof that D: has recovered space.
+- **CLEAN-09 — OPEN:** the child repository remains independently dirty with
+  4,783 status entries and missing-directory warnings. No clean-child or
+  flattening credit is earned.
+
+The receipts and bounded source ledger are outside the product tree under
+`C:\Users\khang\.codex\research\omnia-clean-2026-11-12`. A later cleanup unit
+must preserve this denominator and re-observe status before acting; a clean root
+control-plane checkout cannot substitute for child-repository acceptance.
+
+- **CLEAN-10 — PASS (reversible unit):** `.pytest-cache` and `.pytest_cache`
+  were moved by exact path to external quarantine after containment, tracked
+  status and collision checks. Counts and logical bytes are bound in the
+  pytest-cache receipt.
+- **CLEAN-11 — NO CAPACITY CREDIT:** the pytest quarantine is on D:, so its
+  measured free-space delta is zero. Producer provenance for the five-byte
+  marker remains open.

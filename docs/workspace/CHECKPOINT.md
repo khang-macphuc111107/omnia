@@ -339,6 +339,34 @@ history, publication, admission or final-audit states.
 
 A receipt is stored outside the product tree at C:\Users\khang\.codex\research\omnia-ui-direction\20261111\UI_STYLE_RESEARCH_RECEIPT.json. It records 10 GitHub queries, 68 unique first-seen repository identities, 8 fetched official design/accessibility pages, 11 selected README retrievals and a separate content-extract receipt. It admits process-level lessons only: reference provenance, layered tokens, accessible primitives, state coverage, preview/QA separation and measurable contrast/focus checks. No source code, assets, fonts or visual identity were copied. Social/video links remain unreviewed and the receipt is not exhaustive source or runtime proof.
 
+## Four-keyword research and Cargo-cache cleanup — 2026-11-12
+
+The exact GitHub queries `agent`, `memory`, `code` and `open` each returned 100
+repositories sorted by stars descending. The metadata envelope records the query
+URLs, retrieval time, result totals and repository fields; identity
+deduplication produced 324 unique entries. A bounded canonical-source ledger
+then inspected README, license endpoint and recursive tree metadata for 16
+unique top-five selections. README hashes and HTTP statuses are recorded in
+`C:\Users\khang\.codex\research\omnia-clean-2026-11-12\github-bounded-source-ledger.json`.
+This is discovery and bounded inspection evidence only. It is not exhaustive
+source, issue, comment, media or runtime review and no repository code or asset
+was admitted to Omnia.
+
+Three ignored, untracked, ordinary Cargo target directories in
+`D:\Omnia\repos\omnia` were moved by exact path to
+`D:\OmniaData\quarantine\omnia-clean-20261112\cargo-targets` after a
+path-specific receipt. The after readback matched 4,513, 3,709 and 4,727 files
+and their recorded logical bytes. The same-volume move produced zero D: free
+space delta, so it earns no reclamation credit. The child status remains 4,783
+entries with 12 missing-directory warnings; no source, nested repository,
+worktree, profile, backup or recovery data was deleted.
+
+Receipts:
+
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-cargo-targets-pre.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-cargo-targets-move.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\repos-omnia-status-after-cargo-move.json`
+
 ## Next executable actions
 
 1. Finish this primary-materialization checkpoint before consuming queued additions.
@@ -365,3 +393,30 @@ A receipt is stored outside the product tree at C:\Users\khang\.codex\research\o
    Publish only after privacy/license/account/clone gates; launch the requested
    follow-up chat under all seven reviewed admission gates with detailed goal
    activation.
+7. Continue child-repository classification from the unchanged 4,783-entry
+   status. Reconcile missing-directory warnings and nested/reparse owners before
+   touching profiles, upstream extractions, backups or deleted source. Treat the
+   Cargo quarantine as reversible and decide on deletion only with a separate
+   retention and restore proof.
+
+## Four-keyword research and cache quarantine — 2026-11-12
+
+The exact GitHub queries `agent`, `memory`, `code` and `open` each returned 100
+repositories sorted by stars descending. The metadata envelope records query
+URLs, retrieval time, result totals and repository fields; identity
+deduplication produced 324 unique entries. A bounded canonical-source ledger
+inspected README, license endpoint and recursive tree metadata for 16 unique
+top-five selections. This is discovery and bounded inspection evidence only;
+it is not exhaustive source, issue, comment, media or runtime review and no
+external code or asset was admitted to Omnia.
+
+The generated-cache cleanup then moved `.pytest-cache` (one status-visible
+five-byte marker) and `.pytest_cache` (four standard pytest cache files) to
+`D:\OmniaData\quarantine\omnia-clean-20261112\pytest-cache`. Exact containment,
+ordinary-directory status, zero tracked files and destination collision checks
+passed. The same-volume move measured zero free-space delta. The child
+repository still has 4,783 status entries and the previously recorded missing
+upstream-directory warnings; no source, nested repository, worktree, profile,
+backup or recovery data was deleted.
+
+Receipt: `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-pytest-cache-move.json`.

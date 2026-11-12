@@ -109,3 +109,40 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 - Evidence: external receipt C:\Users\khang\.codex\research\omnia-ui-direction\20261111\UI_STYLE_RESEARCH_RECEIPT.json records 10 GitHub queries, 68 unique repository identities, 8 official pages fetched and 11 selected README retrievals. A content-extract receipt records the actual inspected text ranges and access limitations.
 - Admission: retain only general workflow lessons—explicit reference provenance, layered tokens, accessible primitives, state coverage, preview before implementation and separate visual/behavioral gates. Do not vendor repository code, assets, fonts or copied visual identity.
 - Limits: GitHub search results are discovery evidence; selected README inspection is high-level and official pages are not exhaustive. Social/video sources and named terms remain unreviewed. No Omnia runtime, UI preview, user approval or performance credit is earned.
+
+## 2026-11-12 — Four-keyword research and reversible Cargo quarantine
+
+- Decision: preserve the four exact GitHub searches as external discovery
+  evidence, then inspect only a bounded, explicitly selected top-five subset
+  per keyword. Do not imply that 400 search rows or 324 deduplicated
+  repositories were fully read.
+- Evidence: `github-four-keywords.json` and
+  `github-four-keywords-unique.json` record 100 results for each of `agent`,
+  `memory`, `code` and `open`, sorted by stars descending. The bounded ledger
+  records README hashes, license endpoint results and tree metadata for 16
+  unique repositories.
+- Admission rule: no external source code, assets, credentials, private
+  transcripts, issue/comment bodies or runtime behavior are admitted from this
+  research batch. Any later reuse requires a separate license, privacy,
+  security, compatibility and implementation review.
+- Decision: externalize three generated Cargo target caches from the dirty
+  child repository to `D:\OmniaData\quarantine\omnia-clean-20261112\cargo-targets`
+  by exact path after a receipt proved containment, ignore state, zero tracked
+  files, zero status entries, ordinary directories and no observed Cargo/rustc
+  process.
+- Limits: the move is reversible and same-volume. File counts and logical
+  bytes read back exactly, but free-space delta is zero and no deletion or
+  reclamation credit is earned. Child status remains dirty and missing
+  directory warnings remain. Future cleanup must be candidate-by-candidate.
+
+## 2026-11-12 — Pytest cache quarantine
+
+- Decision: move the two small pytest cache directories out of the child source
+  tree after path-specific checks. The status-visible `.pytest-cache` marker is
+  retained in external quarantine rather than silently discarded.
+- Evidence: `cleanup-receipt-pytest-cache-move.json` records one five-byte file
+  and four standard pytest cache files, zero tracked files, exact containment,
+  ordinary-directory checks and zero same-volume free-space delta.
+- Limits: producer provenance for the marker is not proven; no deletion or
+  disk-reclamation credit is claimed. The child repository remains dirty and
+  all larger or mixed-ownership candidates remain preserved.
