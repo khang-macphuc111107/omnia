@@ -502,3 +502,7 @@ same-volume externalization with zero free-space delta, not deletion or
 capacity reclamation. Restore command and pre/move receipts are recorded
 outside the product tree. No source, lockfile, nested repository, profile or
 worktree data was touched.
+
+## OpenHands uv cache quarantine — 2026-11-12
+
+The generated `D:\Omnia\repos\omnia\.toolchains\openhands-uv-cache` directory was separately classified as an ignored, untracked uv/OpenHands package cache. Pre-move evidence recorded 85,557 entries, 71,261 files, 2,083,312,334 logical bytes, zero reparse entries, zero tracked files, zero status-visible files and no active process reference at the final gate. The retained `.gitignore`, `.lock` and `CACHEDIR.TAG` markers, plus `uv` cache producer and regeneration route, are recorded in the external receipts. An exact-path move placed it at `D:\OmniaData\quarantine\omnia-clean-20261112\openhands-uv-cache`; readback counts and bytes matched and the source path is absent. This is reversible same-volume externalization with a zero-byte free-space delta, not deletion or capacity reclamation. The recorded reverse move is the restore route. No source edits, nested repository, profile, worktree or unknown cache data was touched.

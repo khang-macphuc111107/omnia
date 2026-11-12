@@ -265,3 +265,9 @@ control-plane checkout cannot substitute for child-repository acceptance.
 - **CLEAN-17 — OPEN:** the child repository remains dirty and its remaining
   source, profile, extraction, nested/worktree and cache candidates need their
   own owner and restore evidence.
+
+## OpenHands uv cache cleanup acceptance — 2026-11-12
+
+- **CLEAN-18 — PASS (reversible generated unit):** the OpenHands uv cache moved by exact path after containment, ignore, tracked/status, reparse and process gates; 71,261 files, 2,083,312,334 logical bytes and 85,557 entries match after readback, and the source path is absent.
+- **CLEAN-19 — NO CAPACITY CREDIT:** source and quarantine share D:, so the observed free-space delta is 0 bytes. The reverse move and uv regeneration route are recorded; deletion was not performed.
+- **CLEAN-20 — OPEN:** child-repository dirtiness and all mixed-ownership, profile, nested-repository, worktree, source-deletion and meaningful-cache candidates remain unresolved. This unit does not establish child-repository cleanliness or full-drive reclamation.

@@ -125,3 +125,7 @@ is reversible externalization, not deletion or disk reclamation. `npm ci` with
 the unchanged lockfile is a regeneration route, but it was not run. Keep the
 quarantine until the next controlled build/restore check and do not infer that
 other generated or mixed-ownership trees are disposable.
+
+## Latest generated cache unit — OpenHands uv cache
+
+`D:\Omnia\repos\omnia\.toolchains\openhands-uv-cache` was moved to `D:\OmniaData\quarantine\omnia-clean-20261112\openhands-uv-cache` after exact containment, ordinary-directory, ignore, tracked/status, reparse and active-process checks. The pre-move receipt records 71,261 files and 2,083,312,334 logical bytes across 85,557 entries; the move receipt confirms matching readback and source absence. Its producer is the uv/OpenHands package cache and the restore route is the exact reverse move or supported cache regeneration. Because source and quarantine share D:, the free-space delta is 0 bytes; this action is reversible externalization, not deletion or disk reclamation. Keep the quarantine and receipts until a controlled restore/build check qualifies retention. Other generated, mixed-ownership, profile, nested-repository, worktree and source-deletion candidates remain open.

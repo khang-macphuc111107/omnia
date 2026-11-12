@@ -179,3 +179,10 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 - Limit: same-volume move changed free space by 0 bytes. No deletion or
   capacity credit is claimed. Keep source, lockfile and quarantine provenance;
   do not delete the quarantine until a restore/build check qualifies it.
+
+## 2026-11-12 — OpenHands uv cache quarantine
+
+- Decision: move `D:\Omnia\repos\omnia\.toolchains\openhands-uv-cache` out of the child source tree as one reversible generated-cache unit.
+- Evidence: the pre-move receipt records 85,557 entries, 71,261 files and 2,083,312,334 logical bytes; the directory was ignored, untracked, status-free, ordinary, non-reparse and not referenced by an active process at the final gate. The move receipt confirms matching readback, source absence and the exact reverse move command.
+- Producer and recovery: uv/OpenHands package-cache markers and the supported uv regeneration route remain documented; no lockfile, source, nested repository, profile or worktree was changed.
+- Limit: quarantine is on D:, so the free-space delta is 0 bytes. No deletion, recycle-bin purge or capacity credit is implied. Retain the quarantine until a controlled restore/build check and retention decision are complete.

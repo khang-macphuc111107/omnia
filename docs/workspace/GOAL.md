@@ -482,3 +482,7 @@ at the final gate. This reduced source-tree clutter but reclaimed 0 bytes on D:
 because the quarantine is same-volume. Continue candidate-by-candidate; keep
 `package.json`, `package-lock.json`, source edits, nested repositories,
 worktrees, profiles and extraction material intact until separately proven.
+
+## Queued continuation — OpenHands uv cache quarantine
+
+The latest cleanup unit externalized `D:\Omnia\repos\omnia\.toolchains\openhands-uv-cache` with exact pre/move receipts. The cache was ignored, untracked, status-free, non-reparse and unused by a running process at the final gate; counts and logical bytes matched (71,261 / 2,083,312,334) and the source path is absent. This reduced source-tree clutter but reclaimed 0 bytes on D: because the quarantine remains on the same volume. Continue candidate-by-candidate with ownership, producer, privacy, retention, restore and capacity evidence. Keep `.omnia\cache`, browser/profile data, upstream extraction trees, nested repositories, linked worktrees, deleted source and active edits intact until separately qualified.
