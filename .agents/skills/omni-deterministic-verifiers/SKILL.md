@@ -1,8 +1,8 @@
 ---
 name: omni-deterministic-verifiers
-description: Run zero-dependency Phase-3 machine verifiers for byte and LF preservation, SHA-256 digests, control-character hygiene, WCAG 2.1 color contrast ratios, secret and credential leak scanning, progressive-disclosure token ceilings, and SKILL.md structural audits.
+description: Run zero-dependency Phase-3 machine verifiers for byte and LF preservation, SHA-256 digests, control-character hygiene, WCAG 2.1 color contrast ratios, secret and credential leak scanning, progressive-disclosure token ceilings, SKILL.md structural audits, FFmpeg media tail-decode gates, and localhost HTTP/WebSocket Origin parity checks.
 metadata:
-  short-description: Deterministic SHA-256, LF, WCAG contrast, secret, and token verifiers
+  short-description: Deterministic SHA-256, LF, WCAG contrast, secret, media, and Origin verifiers
 ---
 
 # Omni Deterministic Phase-3 Verifiers
@@ -39,3 +39,7 @@ python scripts/verify_pack.py skill-doctor path/to/skills_root
    - Verify primary body text `>= 4.5:1` (`wcag_aa_normal_text_4_5: true`) and interactive UI chrome `>= 3.0:1` (`wcag_aa_large_ui_3_0: true`) numerically before presenting UI candidates.
 3. **Skill Authoring (`skill-doctor`)**:
    - Verify valid UTF-8 `LF`, non-empty `name` matching directory slug, `description` `<= 1,024` chars without angle brackets, and zero unresolved `[TODO:...]` scaffold markers.
+4. **Media Tail-Decode & MSE Discontinuity Gate (FFmpeg)**:
+   - Never treat `ffmpeg -v error -ss <T> -i file.mp4 -f null -` exit code `0` alone as proof of media completeness: input-seeking past actual EOF exits `0` with empty `stderr` and `0` decoded frames. Parse `Duration:` against expected duration AND run `-stats -v error -ss <tail_start> -t <window> -i file.mp4 -f null -` asserting decoded `frame=` count `> 0` near the expected tail and across `#EXT-X-DISCONTINUITY` / `ffmpeg -f concat` part seams. For MSE fMP4 streams with mid-stream `moov`, `timestampOffset` jumps, or `tfdt` resets, split into sequential part files for `-f concat` remuxing, scope `<video>` polling strictly to MSE (`blob:` / `srcObject`), and refuse EME/DRM (`mediaKeys` / `SAMPLE-AES` / CENC) and anti-bot gates (`2026-11-12-omnidownloader-mse-capture-and-security-hardening.md`).
+5. **Localhost Daemon HTTP + Companion WebSocket `Origin` Parity**:
+   - Browser `WebSocket` handshakes do not send CORS `OPTIONS` preflights. Whenever a localhost daemon restricts HTTP routes to loopback/extension `Origin` allowlists, verify matching exact-origin enforcement on companion `WebSocketServer` (`verifyClient` / `upgrade` handler) with negative cross-origin probes (`Origin: https://evil.example` -> `403`) on both surfaces.

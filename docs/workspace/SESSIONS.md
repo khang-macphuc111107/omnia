@@ -18,5 +18,5 @@ Authoritative private watermark receipt: `D:\OmniaData\exports\history\WATERMARK
 
 - **Collaborator (`HTMusTC`) executive orientation:** [`../handoff/COLLABORATOR_HANDOFF.md`](../handoff/COLLABORATOR_HANDOFF.md)
 - **Cross-host engineering lessons & anti-patterns:** [`../handoff/LESSONS_LEARNED_AND_ANTIPATTERNS.md`](../handoff/LESSONS_LEARNED_AND_ANTIPATTERNS.md)
-- **Session admission ledger (`SESSION-G01`..`SESSION-G07`):** [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) (currently `DEFERRED` pending `DELIVERY-01` push + clean-clone verification)
+- **Session admission ledger (`SESSION-G01`..`SESSION-G07`):** [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) (`decision: "READY"` — `SESSION-G01..G07` passed with Commit #1 `d8b456e3...` remote/local clean-clone verification; follow-up chat `threadId` launch pending)
 - **Transfer contract & prepared launch prompt:** [`TRANSFER_CONTRACT.md`](TRANSFER_CONTRACT.md) & [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md)

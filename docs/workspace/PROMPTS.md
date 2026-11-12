@@ -10,7 +10,7 @@
 2. **Additive steer intake ledger**:
    - [`STEER_QUEUE.md`](STEER_QUEUE.md) — records every mid-run steer item, non-cancellation invariants (`token_budget IS NULL`), and reconciliation status.
 3. **Prepared follow-up session launch prompt (`SESSION-01`, `DOD-16`)**:
-   - [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) — carries the `SESSION-G07` open-transfer contract. Launch remains `DEFERRED` until all seven gates in [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) reach `READY`.
+   - [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) — carries the `SESSION-G07` open-transfer contract. [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) is now `"READY"` (`SESSION-G01..G07` passed with Commit #1 `d8b456e3...` remote/local clean-clone verification); creating the follow-up chat and recording its `threadId` + persistent-goal activation readback advances admission to `LAUNCHED`.
 4. **Prompt-derived subsystem specifications**:
    - Rich Word-grade composer, live Markdown/LaTeX, Math/Phys/Chem palettes & inline-at-caret vs tray attachments: [`COMPOSER_REQUIREMENTS.md`](COMPOSER_REQUIREMENTS.md)
    - Deterministic capability/quota/cost/latency/circuit-breaker routing: [`DYNAMIC_ROUTING_REQUIREMENTS.md`](DYNAMIC_ROUTING_REQUIREMENTS.md)
