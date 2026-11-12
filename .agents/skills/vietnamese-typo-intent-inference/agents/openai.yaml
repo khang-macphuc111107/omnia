@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vietnamese Typo & Intent Inference"
+  short_description: "Decode VNI, Telex, QWERTY slips, and VN-EN dev shorthand"
+  default_prompt: "Use $vietnamese-typo-intent-inference to infer exact user intent from bilingual Vietnamese-English text with VNI/Telex slips, QWERTY typos, or chat shorthand."

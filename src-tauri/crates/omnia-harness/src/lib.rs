@@ -5,6 +5,7 @@
 //! in `docs/omnia-harness/M1-HARNESS-DESIGN.md`.
 
 pub mod agent;
+pub mod agent_graph;
 pub mod budget;
 pub mod checkpoint;
 pub mod commands;
@@ -19,6 +20,7 @@ pub mod model;
 pub mod permission;
 pub mod plan;
 pub mod plugins;
+pub mod proactive_rag;
 pub mod prompt;
 pub mod provider;
 pub mod run_control;

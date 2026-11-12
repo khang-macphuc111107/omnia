@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex MCP Namespace Diagnostics"
+  short_description: "Fix unsupported call, SSE namespace stripping, and MCP manifests"
+  default_prompt: "Use $codex-mcp-namespace-diagnostics to fix unsupported call errors, SSE namespace routing, and MCP/skill issues."

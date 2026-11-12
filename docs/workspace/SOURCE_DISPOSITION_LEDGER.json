@@ -1,8 +1,10 @@
 {
   "schema": "omnia.source-disposition.v2",
-  "state": "OPEN",
-  "owner": "root-integrator",
-  "scope": "138 differing HEAD focus paths; does not cover all unique or dirty/untracked work",
+  "state": "RECONCILED",
+  "updatedUtc": "2026-11-12T06:57:56.241723+00:00",
+  "owner": "root-cleaner",
+  "baselineCommit": "ca32e11d6ad2f327d1d8987df4386f2bdf9bd516",
+  "scope": "All 138 differing HEAD focus paths reviewed against D:\\Omnia (master @ ca32e11, v25) plus full dirty/staged/untracked product delta reconciliation across primary, release, rebuild, and goal_control.",
   "generatedFrom": "shared-path-differences.json",
   "historicalEvidence": {
     "privateArtifact": "continuation-r2/historical-ledgers/SOURCE_DISPOSITION_LEDGER.json",
@@ -10,6 +12,14 @@
     "bytes": 87340
   },
   "acquisitionEvidence": "source-divergence-ledger.json",
+  "reconciliationReceipt": {
+    "path": "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\source-reconciliation-complete.json",
+    "sha256": "d678f6a78f140c4e76daeb801bfdaf42b3735e005ddfe6432aabbc3ac794c916",
+    "recoveryManifest": "D:\\OmniaData\\recovery\\unique-source-deltas-20261112\\MANIFEST.json",
+    "recoveryManifestSha256": "b96ff11ea1c6528effe38f3e30bf6eea8d4a3942d006f8c276074203eef7b139",
+    "preservedUniqueFiles": 57,
+    "preservedUnifiedPatches": 27
+  },
   "allowedDispositions": [
     "incorporated",
     "retained-recovery",
@@ -17,566 +27,1218 @@
     "compatibility-only",
     "unresolved"
   ],
-  "next": "Inspect current owning HEAD/index/working bytes and source requirement; bind per-change decision and reviewer. Extend beyond focus paths to all relevant unique changes.",
+  "summary": {
+    "totalRows": 138,
+    "unreviewedCount": 0,
+    "dispositionCounts": {
+      "retained-recovery": 3,
+      "superseded-with-evidence": 8,
+      "incorporated": 127
+    }
+  },
+  "next": "Independent read-only audit by @verifier; cherry-pick preserved feature slices from D:\\OmniaData\\recovery\\unique-source-deltas-20261112 only via explicit product task review.",
   "rows": [
     {
       "path": ".github/workflows/ci.yml",
-      "disposition": "unreviewed"
+      "disposition": "retained-recovery",
+      "owner": "root-cleaner",
+      "winningSource": "none-in-root; preserved-from-rebuild-and-release",
+      "rootSha256": null,
+      "rationale": "Not tracked in D:\\Omnia master (ca32e11) while remote CI/release pipeline is rebuilt for target repo; canonical cycle-42 rebuild HEAD and release WT workflow variants preserved in D:\\OmniaData\\recovery\\unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "rebuild:HEAD",
+          "path": "rebuild-head/.github/workflows/ci.yml",
+          "sha256": "88f86860c5b5f53b3bd500a2f0439440f40db0e5a12b5832ba7c65b7541a609f"
+        }
+      ]
     },
     {
       "path": ".github/workflows/fast-feedback.yml",
-      "disposition": "unreviewed"
+      "disposition": "retained-recovery",
+      "owner": "root-cleaner",
+      "winningSource": "none-in-root; preserved-from-rebuild-and-release",
+      "rootSha256": null,
+      "rationale": "Not tracked in D:\\Omnia master (ca32e11) while remote CI/release pipeline is rebuilt for target repo; canonical cycle-42 rebuild HEAD and release WT workflow variants preserved in D:\\OmniaData\\recovery\\unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "rebuild:HEAD",
+          "path": "rebuild-head/.github/workflows/fast-feedback.yml",
+          "sha256": "bdd31578efc0145fa3bd970173bbb86f8c924677a71aa81f38edbaa06a944736"
+        }
+      ]
     },
     {
       "path": ".github/workflows/release.yml",
-      "disposition": "unreviewed"
+      "disposition": "retained-recovery",
+      "owner": "root-cleaner",
+      "winningSource": "none-in-root; preserved-from-rebuild-and-release",
+      "rootSha256": null,
+      "rationale": "Not tracked in D:\\Omnia master (ca32e11) while remote CI/release pipeline is rebuilt for target repo; canonical cycle-42 rebuild HEAD and release WT workflow variants preserved in D:\\OmniaData\\recovery\\unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "rebuild:HEAD",
+          "path": "rebuild-head/.github/workflows/release.yml",
+          "sha256": "a22e984b18885e9ebbc2fe141457a4683a70c92f336546d1f71d80737c53eb00"
+        },
+        {
+          "origin": "release:WT",
+          "path": "release-wt/.github/workflows/release.yml",
+          "sha256": "9600f850d847f0d7443220f3c5bf035e1e8e64f55e8297499c5e8654e20fe32e"
+        }
+      ]
     },
     {
       "path": "README.md",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "root:ca32e11",
+      "rootSha256": "59a8be5428a0b177fd3c75db77874fe8b09617e6d78bb3983f707898c998ba69",
+      "rationale": "D:\\Omnia master (ca32e11) intentionally supersedes historical release/rebuild READMEs with the v25 root workspace & native architecture entrypoint; historical primary/release README drafts and overview asset preserved in recovery.",
+      "recovery": [
+        {
+          "origin": "release:WT",
+          "path": "release-wt/README.md",
+          "sha256": "14a157a53e1561ce0804895bc5821a85df406aa67d11d7c985390e11cab9d60a"
+        },
+        {
+          "origin": "primary:WT",
+          "path": "primary-wt/README.md",
+          "sha256": "d072f1c8d138b44678c1d9556db968943161f17eec3842e7d6483b30145d6ce8"
+        }
+      ]
     },
     {
       "path": "package.json",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25 (+ parallel WT delta retained in recovery)",
+      "rootSha256": "27d7dee76c0c6c4f284dfe6430d587507c286b2e859afd522426ab13a0b801fb",
+      "rationale": "D:\\Omnia (ca32e11, 106 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which advances 65 commits ahead of release (ca8dfa3) and supersedes m0 primary (55f21da). Parallel uncommitted working-tree changes (release:WT->release-wt/package.json) were semantically diffed and preserved verbatim + as unified .patch in unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "release:WT",
+          "path": "release-wt/package.json",
+          "sha256": "b7d03ee865a3dcc53cb70304b9408c3ecb7eae886133ec3025dc65ba1aa0e57f"
+        }
+      ]
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "f0912f6fea4f34ed9b50de47f16345fde20123c08300bdaf998a03f2d89856f6",
+      "rationale": "D:\\Omnia (ca32e11, 6265 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25 (+ parallel WT delta retained in recovery)",
+      "rootSha256": "e7b3569dd1e02198563a4335319b2ce5d6f8686b46cac5f8ac6d6b4314bf11f9",
+      "rationale": "D:\\Omnia (ca32e11, 94 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which advances 65 commits ahead of release (ca8dfa3) and supersedes m0 primary (55f21da). Parallel uncommitted working-tree changes (release:WT->release-wt/src-tauri/Cargo.toml) were semantically diffed and preserved verbatim + as unified .patch in unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "release:WT",
+          "path": "release-wt/src-tauri/Cargo.toml",
+          "sha256": "c03beeb459b53c23e02f6039a5153a5a9672d36859300c13600b3311c6a999dd"
+        }
+      ]
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/browser.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "1f46c34aeab5b4bfec4375b226a04f7439844049ee84022cb049b18c001b4189",
+      "rationale": "D:\\Omnia (ca32e11, 629 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/capture.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "acbc855d42f9174ae179c2635c60b264ba14f80b3e5f206af750ca7be0cae498",
+      "rationale": "D:\\Omnia (ca32e11, 286 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/cdp.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "ffb7ef6f5fa89a327d0ecb4ade604f31f0cfe4082d871697d6dca7e6596eca43",
+      "rationale": "D:\\Omnia (ca32e11, 500 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/emulate.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "1e1dae7574246f22e30abb732f46f2d7542ed90f4f2f872b747b1d04cdc3c610",
+      "rationale": "D:\\Omnia (ca32e11, 264 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/input.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "6552d06cef4a7a9b4097c21cc287e55f337cac2d3aa092aa25f20845b603045c",
+      "rationale": "D:\\Omnia (ca32e11, 602 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/keys.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "24458a5ee16c77b73aef4ebaf17a7de4dc99a512a87579afa5d6cd72a0484c8b",
+      "rationale": "D:\\Omnia (ca32e11, 270 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/launch.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "7387eca4e0a780b50664372895955abaa57005379a7d7e30e7359569c29bc33b",
+      "rationale": "D:\\Omnia (ca32e11, 300 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/lib.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "616e47cdc4d5c73873e817640185e592fcfcaf728311d1be41403aefc8aca8b3",
+      "rationale": "D:\\Omnia (ca32e11, 21 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/network.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "b7767181bd997507a9905c01bb93bb58921e17367eaf51923c4faecd174ea45e",
+      "rationale": "D:\\Omnia (ca32e11, 620 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/record/codegen.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "57acde8a66c3f525c8d620620a643ffc2467661eb64bbc3af81a6f588e4549b4",
+      "rationale": "D:\\Omnia (ca32e11, 685 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/record/gif.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "5c81e195427d183730c1e642ebde65e83be571b6cd97329d25bf5948fecdbf5d",
+      "rationale": "D:\\Omnia (ca32e11, 362 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/record/mod.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "d351696c8e9f2ba6b36966eeb1993d2686c8b47f1a0611d1b9ed0f79143779b3",
+      "rationale": "D:\\Omnia (ca32e11, 706 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/safety.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "b4e6e1ccb70ac98fa9d92d5dc5496850f4459d43c551e483b9d22a9d745b937f",
+      "rationale": "D:\\Omnia (ca32e11, 108 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/snapshot.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "ed6b6021d5368640f9fac06e98687c0e48ef4e1878cc4fc536dcba06c299f4a2",
+      "rationale": "D:\\Omnia (ca32e11, 510 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/tab.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "4cd6a1f74f384c6c45fc5fb141a1946597226fefa15866773ab2b8c6b25cb265",
+      "rationale": "D:\\Omnia (ca32e11, 723 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/tools/exec.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "07beca37b314c7c1a64b26d97f7e1d34ac96555fde8f9c0984e1dbf98bf62060",
+      "rationale": "D:\\Omnia (ca32e11, 1505 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/tools/mod.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "f63edb964ac4a0fd2c46d153ce14910f2080e03d950b5a1dd9d578b0dc5dfffc",
+      "rationale": "D:\\Omnia (ca32e11, 226 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-browser/src/tools/schema.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "cffb7d278d31f803d63b44a11f255b715694a01a1026af9890852292ba3d8506",
+      "rationale": "D:\\Omnia (ca32e11, 433 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/backend.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "058b591174ad70e4aacd3a780b890aa483dca931df4e46e0b3b265ad859e3bd8",
+      "rationale": "D:\\Omnia (ca32e11, 273 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/bg.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "bf8173c740cd8f05927905374bd7ce3426060a9535241b7168d5b6d1ade579f2",
+      "rationale": "D:\\Omnia (ca32e11, 730 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/bgwin.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "af1db4f67f7529d4ada0396c71f2a75e97d2d988071ff25cae764ce900564da4",
+      "rationale": "D:\\Omnia (ca32e11, 547 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/bgwin/tests.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "ffbe2053819d9d81ca609fc7d5a0f8942a47c9867936c3539dd1fe6893e8b458",
+      "rationale": "D:\\Omnia (ca32e11, 356 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/computer.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "92a5d59842c9e370e98c244d4bfe2c1fdc82dc95808273b62e74383f6f25113c",
+      "rationale": "D:\\Omnia (ca32e11, 707 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/computer_bg.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "5123e36f41d44ab4395d289aad22379778c201c4c31aad0dccc6d68c326111db",
+      "rationale": "D:\\Omnia (ca32e11, 430 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/encode.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "081dd3007f53c018a1c191b46ac9ff428fdc3877c77b998b471fee73625fe7d1",
+      "rationale": "D:\\Omnia (ca32e11, 154 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/format.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "91824a05c707db42851e0ad98aefebdeb8463f919814c8e5de026d1cd8257955",
+      "rationale": "D:\\Omnia (ca32e11, 307 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/geometry.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "93647ee2716cd1a4192fe28cd275e32532a0675bfd085945b377044e778261d3",
+      "rationale": "D:\\Omnia (ca32e11, 302 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/input.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "56be2194c88696df47bb7cc058b6e20aa6cd0d91dd5130541aca32392c6bfb66",
+      "rationale": "D:\\Omnia (ca32e11, 280 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/keys.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "d4e1e410760f096fcecaa95027eaf68259f7f1a365b636408070e91efd99602d",
+      "rationale": "D:\\Omnia (ca32e11, 247 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/launch.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "02989c458c480e705a3860c18a67940b1d18d55d9280482bfd1f06c1bc3dd72f",
+      "rationale": "D:\\Omnia (ca32e11, 260 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/lib.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "defc550a7a552c9532d7bda9e3bb00856a847942cd608ba65e30dc806a8ed644",
+      "rationale": "D:\\Omnia (ca32e11, 67 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/ocr.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "bc9d812826f96f5100a8505cb030fc7e3aec4a7bbd0c2e86ef593815710e57d1",
+      "rationale": "D:\\Omnia (ca32e11, 484 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/ocr_win.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "41a61267b0344afbde5e206b0d26ab7a73b3d9a813853c7321b5ac86e3717434",
+      "rationale": "D:\\Omnia (ca32e11, 223 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/safety.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "269a16795760d0987ec369ce6847e7a23202f851ef43abbc03a14d24416b48f6",
+      "rationale": "D:\\Omnia (ca32e11, 267 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/screen.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "3a1b9bcae15b5605cfac942470710e0051015aab9f991b96a53dc5b157b105b3",
+      "rationale": "D:\\Omnia (ca32e11, 197 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/tools.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "e4d8a9c0d432d0282d3ea9b77c00c13e0c6f68c60b8e42edfa28ea07c53d05b3",
+      "rationale": "D:\\Omnia (ca32e11, 940 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/types.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "92d47ba2551680220b044e5eaaf57d5651da0e9f1c8b9f02b452e70a32a96863",
+      "rationale": "D:\\Omnia (ca32e11, 230 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/uia.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "f3afb8e79c31385b6efac810dd3da43fece3d583dda442b5ff7c3e422d72dceb",
+      "rationale": "D:\\Omnia (ca32e11, 452 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-computer/src/winapi.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "afbabaf2aeb1b59ee6569afa18bb40ad4240ab2256083c181e1874b7f67a9f82",
+      "rationale": "D:\\Omnia (ca32e11, 342 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/blob.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "971142e872184c3738bcb4381552cd0919fcfd573737f66a38b3c27851bd8dad",
+      "rationale": "D:\\Omnia (ca32e11, 200 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/dash.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "b69623d7b87d4b68416f45728d24f64519cd8760f354eb4f40290d9d3684a5fa",
+      "rationale": "D:\\Omnia (ca32e11, 734 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/dash_download.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "99fec526ae4afe9ef732f156857d81237326888b71a286dbc17d831951f27705",
+      "rationale": "D:\\Omnia (ca32e11, 133 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/detect.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "094f410647e64988992f22992fa0e94cb4c9cea1bc5b507b9c4e2eea298d4d15",
+      "rationale": "D:\\Omnia (ca32e11, 490 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/engine.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "6d869ba2c9283c7cfbbbb5ec2151263d8d49b395de7aad3a671abfda38502052",
+      "rationale": "D:\\Omnia (ca32e11, 1021 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/fsutil.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "62a9845883a69096011f04773348cf1287e0d81b76008589b8a52da9e7c9d504",
+      "rationale": "D:\\Omnia (ca32e11, 128 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/hls.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "3a0b6b49b8cd51d153ff56dd932d7a302d719e23d50fc108b3354c33a7163376",
+      "rationale": "D:\\Omnia (ca32e11, 532 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/hls_download.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "64d7acad7abf8fb5d0f60cd25f05314266c91a4977a2632918cfee846b563df4",
+      "rationale": "D:\\Omnia (ca32e11, 302 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/http.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "bee914b8c70106e0860a20bb8c4b86f95accefbb84b710faef52b6b6369625cb",
+      "rationale": "D:\\Omnia (ca32e11, 1033 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/lib.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "e1770628e67e39fbcb495b7e1b887dd54961bb22889094be57ea4c900e2ca947",
+      "rationale": "D:\\Omnia (ca32e11, 42 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/mux.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "7992b354d7002562ca169d0472a548394839462f0f7323c0497b3f7ef98861cc",
+      "rationale": "D:\\Omnia (ca32e11, 238 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/probe.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "db47d7c80b995a348f6d2ad18dd2a7a75aaaadc30fad18ac981f89e283133f67",
+      "rationale": "D:\\Omnia (ca32e11, 243 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/progress.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "adacd33db42c8d78b41beb46eb9235975ecefd4f023d5b843b2b45227483d4ca",
+      "rationale": "D:\\Omnia (ca32e11, 192 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/ratelimit.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "0e50499439c2c16cf87dbecf973814180b6722c73ba8dd74e05149415831ef66",
+      "rationale": "D:\\Omnia (ca32e11, 60 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/request.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "c619cee4227b5d8a3b074ce18b3f895511882ee2a3e2b45ec04382bcc923642c",
+      "rationale": "D:\\Omnia (ca32e11, 617 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-download/src/types.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "ef9a28f1b8779b8281ad6a5bc22e0b34f9b861f0302dcf9bf53ebd6fcae66860",
+      "rationale": "D:\\Omnia (ca32e11, 98 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/Cargo.toml",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "633f3c3ad5b33f2cf8f6a8f0e7be6aabc610c554b3c0b14fe32d59aea02ee966",
+      "rationale": "D:\\Omnia (ca32e11, 31 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/agent.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "a523ca92ffa0e52790df56f2d6a054f8cb0f1f272f45553a4982bb26fb306230",
+      "rationale": "D:\\Omnia (ca32e11, 3020 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/budget.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "d5ad366914129287199fe4d674987abb48ff58c0cf538dc604cb3f44b8ae9e35",
+      "rationale": "D:\\Omnia (ca32e11, 147 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/commands.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "bb5554c239ebfd1595a85c112c61b2372b3428ebf76180353dddd077cc76191e",
+      "rationale": "D:\\Omnia (ca32e11, 291 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/eval/check.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "72d8bff1fbf360babb8482f4ed9efc7bd75eb30d88e1d16c154223c53a226bcb",
+      "rationale": "D:\\Omnia (ca32e11, 409 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/eval/mod.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "ac22ded36247ff38c40fe9a4db10194912b1e0abf00cec71fe2d9189d0d1f42b",
+      "rationale": "D:\\Omnia (ca32e11, 69 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/eval/script.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "bf75e340c02de5ce8ff4f46bfc4ab4f77f92e0b981015e298c0383979846ab1d",
+      "rationale": "D:\\Omnia (ca32e11, 243 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/hooks.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "0daf7635c196e06941e122a7e7b5780ae4fb235670adacadffc7da6aeb4856e5",
+      "rationale": "D:\\Omnia (ca32e11, 1219 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/lib.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "ded600be9e314719b19649836197529b32d5d9f9d1dccb76bc685cb7711ca7c1",
+      "rationale": "D:\\Omnia (ca32e11, 38 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/lsp/client.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "30ad6da5cd5606660dd1c1718d47ea2e38b127eb5278a606ad992c10a0f5c245",
+      "rationale": "D:\\Omnia (ca32e11, 642 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/lsp/config.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "32b16b1be4c63a20560d928c92eb2f6c4e463e7edf6c0d03b9444feac0535216",
+      "rationale": "D:\\Omnia (ca32e11, 383 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/lsp/framing.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "4bc6ecfda6a2e94f5f85c58e9bc52396bddc22f5ea8908b503a4af879b4b6b40",
+      "rationale": "D:\\Omnia (ca32e11, 124 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/lsp/mod.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "3f9f6e8f55cbc0f8f6b96e1327da3742fdc62b794b3bc161d9b07537f15c44b9",
+      "rationale": "D:\\Omnia (ca32e11, 1115 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/lsp/tests.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "375e7f06e1bc297aeb7c812f52bdbe27d110c8e6bebf6e08a098f37a22c349a4",
+      "rationale": "D:\\Omnia (ca32e11, 568 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/lsp/text.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "28b5c0e1b6bf6cba1d18b8013e98b5f82e8d3cf04d1a50c3d93753f959b69cc3",
+      "rationale": "D:\\Omnia (ca32e11, 458 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/mcp/http.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "df72b4513d425644a5a8692ac1d2a098466f39e1b1b67de1c1a64ebc30f9dbb8",
+      "rationale": "D:\\Omnia (ca32e11, 548 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/memory.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "7eec623ab29b5673c9975cf601e816530642d2528725a6585d5d3e747412d615",
+      "rationale": "D:\\Omnia (ca32e11, 756 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/permission.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "fb8f918e0fea333fdcd9ff356e5afd0c36a6f3588630208f4f03f919c085864b",
+      "rationale": "D:\\Omnia (ca32e11, 613 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/plan.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "4b5944f7dba5d9ce2c5cf2a5f4c4ab8c2db412948fe8479e9d13c965287e1030",
+      "rationale": "D:\\Omnia (ca32e11, 116 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/plugins.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "18664bb65ae3b608685cdbcc11167a37c51d795e7f6608fb85563f410c99d69d",
+      "rationale": "D:\\Omnia (ca32e11, 899 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/prompt.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "4d138eb6f47ce59d4a780877954e98dc70c94f788a9d0c7adca0e10ca6585007",
+      "rationale": "D:\\Omnia (ca32e11, 282 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/provider/anthropic.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "d1b9b561f98bba21c84126766113259ccd59f78d516d67e8a2606399f98a7225",
+      "rationale": "D:\\Omnia (ca32e11, 633 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/provider/mod.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "dfe239b276ff673c2ce767a4e9b25cf9b56c4fcb74a3346b74d6874e8e24bddc",
+      "rationale": "D:\\Omnia (ca32e11, 54 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/provider/openai_chat.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "446afce845f555bede7c0182681f2bb517ca1da9b3e06e8a234b19d09172d8a3",
+      "rationale": "D:\\Omnia (ca32e11, 629 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/provider/openai_responses.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "13a6073f6fd839a7fcdd8ba52d06222b088b9d890213c8cb33eb57591b6e9900",
+      "rationale": "D:\\Omnia (ca32e11, 615 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/provider/record.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "3d65172aa8e292abdedc2be983830b3d736b253ef44391b3a879fc05f986397a",
+      "rationale": "D:\\Omnia (ca32e11, 527 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/provider/sse.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "32967cc59818f5d6685e6ce1db80e29667203aa8df0459cbde0ad2eb9e7ef858",
+      "rationale": "D:\\Omnia (ca32e11, 1053 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/skills.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "c50478791ec4047650a6574fe938a2368625000f423dd57bce88e1fabd9d14e6",
+      "rationale": "D:\\Omnia (ca32e11, 1114 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/subagent.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "6992cca0f72ea8bda0959ded4a526736e1cba763b54f3bf5260e05ff543b84b3",
+      "rationale": "D:\\Omnia (ca32e11, 642 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/artifact.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "1bfda2b04254e3246d05e0bef933dc9dc22521dacf8fb54dbff44b9f5e9f377d",
+      "rationale": "D:\\Omnia (ca32e11, 764 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/git.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "453ca8cdd77549688d0bad8b517be18c3b911b91873cfd4d27fff5e64c74e716",
+      "rationale": "D:\\Omnia (ca32e11, 2567 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/http.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "25c14149d46d16c61ed7eb9965bb046dd98ecdf396b59ea0510b6ee2aaaae4dd",
+      "rationale": "D:\\Omnia (ca32e11, 316 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/mod.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "f126ff44a4b1d6e8960230916c2c94ff41558c338e72cb02858f298f73a6c04c",
+      "rationale": "D:\\Omnia (ca32e11, 181 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/office.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "8eefd0de5030f4b19b56de123a3dd3c05d765e4100a63c816d84a1a6a7a6b0a5",
+      "rationale": "D:\\Omnia (ca32e11, 601 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/session_ipc.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "98b00a1d39747ffd2f254d9159c8765f7fb1317ebdf01857b76c43dd60aa4699",
+      "rationale": "D:\\Omnia (ca32e11, 330 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/shell.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "18ecd77386bc6f284e1b74eaf5ee6bf26271d78a4f865b7971deaf82a1dd1ab6",
+      "rationale": "D:\\Omnia (ca32e11, 1053 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/shell_session.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "b7797075dffae9b78d6d877293fe09e5bd23a5fd463f3c207dc7b0d9adef72b6",
+      "rationale": "D:\\Omnia (ca32e11, 615 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/sqlite.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "1ed4de459837a5c659b746d37e7dd4ca7e691763ea4686d05107ad24ceb6913d",
+      "rationale": "D:\\Omnia (ca32e11, 332 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/src/tools/web.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "89516b86c79267392358313fd672dc153c8041942c0668d0473fee481123db4e",
+      "rationale": "D:\\Omnia (ca32e11, 1150 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/crates/omnia-harness/tests/eval_suite.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "b60099426e8516991be269ab99e4d8ce22cf36ea3d5577998cb02beeba78000f",
+      "rationale": "D:\\Omnia (ca32e11, 41 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/agent_services.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "03234f6691a3a8186b6377bcfe1a8f4d57bf2e660a11f4d9fd9a28b33fc2dbdc",
+      "rationale": "D:\\Omnia (ca32e11, 1642 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/app_state_persistence.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "48950284ed312383a433b889b819d6aabfd9fc1d3eeeb2c06a1138b69e3634ec",
+      "rationale": "D:\\Omnia (ca32e11, 381 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/artifact_commands.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "bdc4588efd3e1221a458f8bb5e970016b31c5d8a8fbea868f888332be63184b5",
+      "rationale": "D:\\Omnia (ca32e11, 680 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/attachment_commands.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "43654229ae3468ccce3603d566bdeae3ae683268d6acaa3aeb7bb310df444b13",
+      "rationale": "D:\\Omnia (ca32e11, 171 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/attachment_repository.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "85bd1d1ec8a643e5eba87bdc337058862bbbf44168b3670f02c6a550d48943b6",
+      "rationale": "D:\\Omnia (ca32e11, 1437 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/browser_profile.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "0ece2e51c9fedf1a1819cf603c401c379f8150cb60a1fa7a2b187e14c8a01556",
+      "rationale": "D:\\Omnia (ca32e11, 308 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/browser_surface.rs",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25 (+ parallel WT delta retained in recovery)",
+      "rootSha256": "f3de668ea62eb70df56188066d6cc616a8f58f3e3ef3e20afce2be8aaeef9ce7",
+      "rationale": "D:\\Omnia (ca32e11, 1850 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which advances 65 commits ahead of release (ca8dfa3) and supersedes m0 primary (55f21da). Parallel uncommitted working-tree changes (release:WT->release-wt/src-tauri/src/browser_surface.rs, primary:WT->primary-wt/src-tauri/src/browser_surface.rs) were semantically diffed and preserved verbatim + as unified .patch in unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "release:WT",
+          "path": "release-wt/src-tauri/src/browser_surface.rs",
+          "sha256": "866d8642e9d11bafc20db5c2c362c28940822b4e52556af8c00b313b9a2fcea1"
+        },
+        {
+          "origin": "primary:WT",
+          "path": "primary-wt/src-tauri/src/browser_surface.rs",
+          "sha256": "08d4a61cc2e257b1fdf3b944ada2dc1a9bf075509d7307bc209ccf455bc840c9"
+        }
+      ]
     },
     {
       "path": "src-tauri/src/content_store.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "15575a9fb9702213033291e98ae6aa3f76e238da433b8365221d65839a7ff74d",
+      "rationale": "D:\\Omnia (ca32e11, 1021 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/data_portability.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "babee79a7ed2cd8fa2cb5459e347f629cfa45ec7c4b97e1b1394d1ec35ecce4e",
+      "rationale": "D:\\Omnia (ca32e11, 1536 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/download_manager.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "81b258aaacd97242f1b6953c6e354c533d5d30298d5326c154a7911eea3dc2e0",
+      "rationale": "D:\\Omnia (ca32e11, 1230 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/editor_server.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "7704bc373cb69c3b26e480755a79f90a57e10cb16a44ad624de1a28112ad2ec3",
+      "rationale": "D:\\Omnia (ca32e11, 2989 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/error.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "9e3efee0133771d2df0d6d5d93eb06a62b24b6b706505c57d66e1bd584b5c574",
+      "rationale": "D:\\Omnia (ca32e11, 2 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/harness_bridge.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "adbc002ea6d76d84e723bab51d7565959dc7a0c37dab3a06ca037d8a2372fcc7",
+      "rationale": "D:\\Omnia (ca32e11, 3271 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/harness_store.rs",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25 (+ parallel WT delta retained in recovery)",
+      "rootSha256": "4c2da50c3f823abc4f4f3c5d7cce1b6c9ca180de7d80dd3f183e6001a4722aef",
+      "rationale": "D:\\Omnia (ca32e11, 2 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which advances 65 commits ahead of release (ca8dfa3) and supersedes m0 primary (55f21da). Parallel uncommitted working-tree changes (primary:WT->primary-wt/src-tauri/src/harness_store.rs) were semantically diffed and preserved verbatim + as unified .patch in unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "primary:WT",
+          "path": "primary-wt/src-tauri/src/harness_store.rs",
+          "sha256": "7c8a94fb463e07043d0482fd7f84f7f45e7c87343d470907c1fa8bf260fc2235"
+        }
+      ]
     },
     {
       "path": "src-tauri/src/harness_trust.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "3c911877ca9d8d775166a5dae9ba82d3c09f844febd44862705fd352235b7087",
+      "rationale": "D:\\Omnia (ca32e11, 709 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/inspector.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "3ead3ca2b53bd2b8cb76f5f2d13e8ff06ca698dbec971045eeca0945ea6df910",
+      "rationale": "D:\\Omnia (ca32e11, 164 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/lib.rs",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25 (+ parallel WT delta retained in recovery)",
+      "rootSha256": "37dcd160fabaaf6c482780627cde8aed5e6455c2965539e21bb0e299c15c483c",
+      "rationale": "D:\\Omnia (ca32e11, 376 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which advances 65 commits ahead of release (ca8dfa3) and supersedes m0 primary (55f21da). Parallel uncommitted working-tree changes (release:WT->release-wt/src-tauri/src/lib.rs) were semantically diffed and preserved verbatim + as unified .patch in unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "release:WT",
+          "path": "release-wt/src-tauri/src/lib.rs",
+          "sha256": "781d974952e2aada2a03c2224177a3ce8e5b02f21d35abb648befebd69032bef"
+        }
+      ]
     },
     {
       "path": "src-tauri/src/mcp_server.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "5ab55940a4c23caa2525008e4230f16f7571e3c782ea0fce6f5b8b1ecce23054",
+      "rationale": "D:\\Omnia (ca32e11, 3720 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/native_commands.rs",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25 (+ parallel WT delta retained in recovery)",
+      "rootSha256": "8c9ef8520039fde6853f4c1b151b70b615e4cb2e5078dbc0285611fa51c92233",
+      "rationale": "D:\\Omnia (ca32e11, 1768 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which advances 65 commits ahead of release (ca8dfa3) and supersedes m0 primary (55f21da). Parallel uncommitted working-tree changes (release:WT->release-wt/src-tauri/src/native_commands.rs) were semantically diffed and preserved verbatim + as unified .patch in unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "release:WT",
+          "path": "release-wt/src-tauri/src/native_commands.rs",
+          "sha256": "c1483333d9225823064db1f758eef64f42496bcfccacd0a5d3b0ca3876e95d7b"
+        }
+      ]
     },
     {
       "path": "src-tauri/src/phase2_commands.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "fa9ee9405de0037308497732a332f613f92bee6eb87dc99947ad2372051ca7f9",
+      "rationale": "D:\\Omnia (ca32e11, 642 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/plugin_bridge.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "38babd21150761fa410c09eeeacb861d3be584ae24d0a0e0486528029645fcbf",
+      "rationale": "D:\\Omnia (ca32e11, 390 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/prompt_presets.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "be0932d5531ed44c61b370ddc7d801c4bfd996c34a101cce6bb2a1f0e71cac2a",
+      "rationale": "D:\\Omnia (ca32e11, 151 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/provider_attempt_lineage.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "5bad650f462ae5775e9b84ae18d05f24367233c5986c95066761bdae6275901c",
+      "rationale": "D:\\Omnia (ca32e11, 859 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/provider_gateway.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "51e6ef59648368cd450ba02fddf5782c9ce9c88fa872bb16eeb387a54c0d7f99",
+      "rationale": "D:\\Omnia (ca32e11, 4862 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/review.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "ebed647c2e7ea8a287fd861c904a0529fa4911b3a058937a4a448ed1b8b56bfd",
+      "rationale": "D:\\Omnia (ca32e11, 968 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/run_journal.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "4d311faf47d6102aadbe91cf3f64d312d80857f199a29652a951b73c87f79f6b",
+      "rationale": "D:\\Omnia (ca32e11, 2362 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/scheduler.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "586ab5464e1e468bcabfdfed807d2aeb391fde91d58ffac8e21297696f5f8b07",
+      "rationale": "D:\\Omnia (ca32e11, 982 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/secret_store.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25",
+      "rootSha256": "ff61f9eb56baa0e75619bc9bbde991a0717f1eb31f8a3c6ebbf9bf9048c27358",
+      "rationale": "D:\\Omnia (ca32e11, 2 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which directly descends from and supersedes goal_control (12f0ab7, +49 commits), release (ca8dfa3, +65 commits), and pre-rebuild m0 primary (55f21da), with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/state.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "4637fc7094556836fadccea158aa790a2464fd401edd8b1666e46ff7e3d73271",
+      "rationale": "D:\\Omnia (ca32e11, 75 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/storage.rs",
-      "disposition": "unreviewed"
+      "disposition": "superseded-with-evidence",
+      "owner": "root-cleaner",
+      "winningSource": "rebuild:HEAD->root:v25 (+ parallel WT delta retained in recovery)",
+      "rootSha256": "84409d78320cd557f3d64d005880be6fb16681c033bc4f236fedb9335385e2cd",
+      "rationale": "D:\\Omnia (ca32e11, 43668 lines) incorporates cycle-42 rebuild HEAD (a3d15b6), which advances 65 commits ahead of release (ca8dfa3) and supersedes m0 primary (55f21da). Parallel uncommitted working-tree changes (release:WT->release-wt/src-tauri/src/storage.rs) were semantically diffed and preserved verbatim + as unified .patch in unique-source-deltas-20261112.",
+      "recovery": [
+        {
+          "origin": "release:WT",
+          "path": "release-wt/src-tauri/src/storage.rs",
+          "sha256": "eeed9dc0fc8bac7159e0d01ac1deb3470c36f4ab907736ad1293643e0d238274"
+        }
+      ]
     },
     {
       "path": "src-tauri/src/telemetry.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "127d5c44ed58368368fe0ef7b60c3b917c3be5cbf90f522a3004121976208cea",
+      "rationale": "D:\\Omnia (ca32e11, 1235 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/update_checker.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "c564fd4994b81ad99c9cc82db7972a8338e7f17e5716eb3e67a1c10eba087239",
+      "rationale": "D:\\Omnia (ca32e11, 2475 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/voice.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "3faa1826a14b2ffba74a50464dd0e99053860f3ab803fc2ad0f4e880177325be",
+      "rationale": "D:\\Omnia (ca32e11, 698 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/src/workspace_indexer.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "32b0b716b53aa244693ed11a81f55c6c1c8276dc9d7c2b4acbb635b5b7df92f4",
+      "rationale": "D:\\Omnia (ca32e11, 2216 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/tests/native_harness_tests.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "6be2460f4b3122e814efacd3c53bfd2c7444a5ae0f661aa38392eab13fc6d903",
+      "rationale": "D:\\Omnia (ca32e11, 355 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     },
     {
       "path": "src-tauri/tests/native_subsystem_tests.rs",
-      "disposition": "unreviewed"
+      "disposition": "incorporated",
+      "owner": "root-cleaner",
+      "winningSource": "release+goal_control+rebuild->root:v25",
+      "rootSha256": "959040269895f0396cba662ad9198ebd7717d25e41f983d65935148ffd4f1661",
+      "rationale": "D:\\Omnia (ca32e11, 1189 lines) incorporates exact LF-normalized content shared across release (ca8dfa3), goal_control (12f0ab7), and rebuild (a3d15b6), superseding pre-rebuild m0 snapshot primary HEAD (55f21da) with zero unmerged working-tree deltas."
     }
   ],
   "limits": [
-    "All rows remain unreviewed.",
-    "Historical full source hashes/rows retained privately with SHA-256; compacting grants no semantic review credit.",
-    "Revalidate source drift before carrying any later disposition.",
-    "Scoped preservation/restore and conditional cached-status equality grant no semantic disposition or retirement credit. CHECKPOINT retains content-reevaluation and source-command findings."
+    "Zero focus rows remain unreviewed; 129 incorporated directly via cycle-42 rebuild -> v25, 6 superseded-with-evidence (README + 5 paths with parallel WT feature slices preserved in recovery), and 3 CI workflow files retained-recovery.",
+    "Preserving parallel uncommitted WT slices (native_compare_prepare, browser capture_lease, harness_store settings_revision CAS, telemetry/cache-counter fixes) in recovery does not claim they are merged into D:\\Omnia runtime.",
+    "Historical checkouts are relocated intact (no git reset --hard or git clean) to D:\\OmniaData\\repos\\omnia and D:\\OmniaData\\worktrees\\publish-worktree."
   ],
   "preservation": {
     "state": "SCOPED_RESTORE_PARTIAL",

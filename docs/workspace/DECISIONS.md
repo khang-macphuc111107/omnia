@@ -149,16 +149,16 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 
 ## 2026-11-12 — Graphify bounded admission and Vite output quarantine
 
-- Decision: record Graphify as RESEARCH_ONLY. Public API metadata, README,
+- Decision: record Graphify as `RESEARCH_ONLY`. Public API metadata, README,
   license and six selected canonical files support reusable design hypotheses,
   not source or runtime admission. The candidate lessons are deterministic
   indexing, explicit edge provenance, bounded query settings, graph-first
   navigation and opt-in query logging.
 - Evidence: external files under
-  C:\Users\khang\.codex\research\omnia-clean-2026-11-12\supplement-20261112\graphify.
+  `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\supplement-20261112\graphify`.
   The recursive tree had 1,306 entries and was not truncated, but only six
   files were opened. Issues, comments, media and runtime were not reviewed.
-- Decision: externalize dist from the child repository after proving it is
+- Decision: externalize `dist` from the child repository after proving it is
   generated Vite output, ignored, untracked, non-reparse, status-free and not
   referenced by a running process at the final check.
 - Evidence: pre/move receipts bind 140 files and 6,924,863 logical bytes;
@@ -187,8 +187,29 @@ their metadata. Bulk nonproduct material is moved outside the product tree.
 - Producer and recovery: uv/OpenHands package-cache markers and the supported uv regeneration route remain documented; no lockfile, source, nested repository, profile or worktree was changed.
 - Limit: quarantine is on D:, so the free-space delta is 0 bytes. No deletion, recycle-bin purge or capacity credit is implied. Retain the quarantine until a controlled restore/build check and retention decision are complete.
 
-## Root scratch quarantine — 2026-11-12Fifteen root-level Playwright/build probe scripts and generated logs were classified as temporary artifacts after reading their contents and checking their Git state. The exact paths were `.tmp-build-preview-mock.log`, `.tmp-build-renderer.log`, `.tmp-check.cjs`, `.tmp-inspect.cjs`, `.tmp-long.cjs`, `.tmp-poll.cjs`, `.tmp-preview-check.cjs`, `.tmp-preview.mjs`, `.tmp-preview2.mjs`, `.tmp-preview3.mjs`, `.tmp-preview4.mjs`, `.tmp-prod-mock.cjs`, `.tmp-rag-tsc.log`, `.tmp-workspace-test.log` and `debug.log`. Their pre-move receipt records 15 files and 41,003 logical bytes; the move receipt confirms byte and SHA-256 readback, source absence and the exact reverse move by manifest. They were moved to `D:\OmniaData\quarantine\omnia-clean-20261112\root-scratch-20261112-033528`. The move was same-volume and therefore produced no meaningful capacity recovery (observed filesystem delta was -4,096 bytes); no deletion or recycle-bin operation was performed. The child repository remains independently dirty with source changes, deletions, untracked extraction/profile material, nested Git roots, worktrees and missing-directory warnings.
+## Root scratch quarantine — 2026-11-12
+
+Fifteen root-level Playwright/build probe scripts and generated logs were classified as temporary artifacts after reading their contents and checking their Git state. The exact paths were `.tmp-build-preview-mock.log`, `.tmp-build-renderer.log`, `.tmp-check.cjs`, `.tmp-inspect.cjs`, `.tmp-long.cjs`, `.tmp-poll.cjs`, `.tmp-preview-check.cjs`, `.tmp-preview.mjs`, `.tmp-preview2.mjs`, `.tmp-preview3.mjs`, `.tmp-preview4.mjs`, `.tmp-prod-mock.cjs`, `.tmp-rag-tsc.log`, `.tmp-workspace-test.log` and `debug.log`. Their pre-move receipt records 15 files and 41,003 logical bytes; the move receipt confirms byte and SHA-256 readback, source absence and the exact reverse move by manifest. They were moved to `D:\OmniaData\quarantine\omnia-clean-20261112\root-scratch-20261112-033528`. The move was same-volume and therefore produced no meaningful capacity recovery (observed filesystem delta was -4,096 bytes); no deletion or recycle-bin operation was performed. The child repository remains independently dirty with source changes, deletions, untracked extraction/profile material, nested Git roots, worktrees and missing-directory warnings.
 
 ## Fresh child status after root scratch quarantine — 2026-11-12
 
 A complete `git status --porcelain=v1 -uall` was rerun after the root scratch move. The child repository `D:\Omnia\repos\omnia` is still on `omnia/m0-snapshot` at `55f21dacf5acb2c6f386aff1ece6a5245bad0fc4`; the captured status has 4,772 entries: 199 modified, 2,809 deleted, 1,764 untracked, zero renames, zero added-only entries and zero other statuses. Git emitted 12 missing-directory warnings under upstream extraction paths; those paths remain an unresolved ownership/source-integrity boundary. The authoritative porcelain, stderr and JSON summary are stored at `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\child-status-post-root-scratch-20261112-033648\`. This evidence supersedes the earlier 4,783-entry historical baseline for the current checkpoint only. It does not prove the child is clean, that deleted paths are safe to restore, or that extracted/profile material can be deleted.
+
+## 2026-11-12 — Source focus reconciliation, worktree relocation and D: cache reclamation
+
+- Decision: classify all `138` differing focus rows in `SOURCE_DISPOSITION_LEDGER.json` (`127` `incorporated`, `8` `superseded-with-evidence`, `3` `retained-recovery`, `0` `unreviewed`) while preserving `57` unique source files and `27` patches (`84/84` SHA-256 verified) under `D:\OmniaData\recovery\unique-source-deltas-20261112\`.
+- Decision: externalize `12` non-product clutter directories from `D:\Omnia` to `D:\OmniaData\externalized-20261112\` (`187,694` files, `0` capacity credit), relocate `publish-worktree` and `repos\omnia` to `D:\OmniaData\{worktrees,repos}\` with `git worktree repair` across all `4` checkouts, and reclaim only the `4` proven regenerable quarantined build caches (`cargo-targets`, `openhands-uv-cache`, `node_modules`, `dist` -> **`+10.125 GiB`** net free space on `D:\`, keeping `.pytest-cache` and `root-scratch-*` preserved).
+- Limit: keep `retirementEligible=false` for excluded primary boundaries (`~20,198` unnormalized internal junctions under `upstream_extractions/`) and document `D:\Omnia\Roaming` honestly as an orphaned-SID ACL boundary (`WinError 5`, ignored in `.gitignore` pending an elevated UAC move).
+
+## 2026-11-12 — Curated 12-skill repo parity vs external 1,001-skill catalog and Windows Antigravity mount
+
+- Decision: track `12` validated, byte-identical pure `LF` skills under `.agents/skills/` (`!.agents/skills/**` + `!.agents/skills.json`, including `deep-proposal`, `deep-general-graph-orchestration`, `omni-bilingual-skill-router`, `omni-deterministic-verifiers`, `omnia-session-governance-handoff`, `vietnamese-typo-intent-inference`) while storing the extracted `100`-category / `1,001`-skill *Khởi động và Quy trình Omnia* blueprint externally in `D:\OmniaData\research\omnia-clean-2026-11-12\omni-deep-1000-catalog.json`.
+- Rationale: preserves complete specification fidelity without polluting the product repository or agent context budget with 1,000 synthetic stub folders.
+- Windows runtime fix: use drive-absolute forward-slash paths (`C:/...`, `D:/...`) in machine-local `~/.gemini/config/skills.json` because Go `filepath.IsAbs` rejects `~/` when `$env:HOME` is unset on Windows, while keeping repo `.agents/skills.json` portable (`{"entries": [{"path": ".agents/skills"}]}`).
+
+## 2026-11-12 — Bidirectional PeerMeshGraph, Graphify provenance, server-side Win32 UIA and AGY 3-surface sync
+
+- Decision: model multi-agent coordination in `omnia-harness/src/agent_graph.rs` as a 2-way all-to-all `PeerMeshGraph` (`A <-> B` duplex links, `disjoint_paths` single-writer guard, `max_hops`/`epoch` cycle bounds) paired with `GraphifyIndex` (`Forward`/`Reverse`/`Both` traversal with `EXTRACTED`/`INFERRED`/`AMBIGUOUS` provenance).
+- Decision: implement server-side COM `IRawElementProviderSimple` (`IValueProvider` + `IInvokeProvider`) and a thread-scoped `WH_CBT` (`HCBT_ACTIVATE`) `#32770` modal hook in `native/src/uia_edit.rs` so Windows UI Automation discovers `ControlType.Edit` and invokes modal confirmation buttons reliably even when the window is non-foreground (`7/7` native QA workflows, `90/90` cases `rc=0`).
+- Decision: maintain `tools/agy-history-sync/` in-repo (`0` external dependencies, `Path.home()` portable) to reconcile Antigravity Desktop/IDE (`~/.gemini/antigravity`) and CLI (`~/.gemini/antigravity-cli`) SQLite/protobuf stores (`0` ghost summaries, active growing-tail sessions excluded) and build a unified FTS5 search index.
+- Decision: split workspace navigation into concise single-purpose index files (`PLAN.md`, `TASKS.md`, `PROMPTS.md`, `SESSIONS.md`, `SOURCES.md`, `REFS.md`, `STEER_QUEUE.md`, `TRANSFER_CONTRACT.md`) routing to one authoritative owner per fact, and updated local Git identity to `khang-macphuc111107 <khang.macphuc111107@gmail.com>` targeting `https://github.com/khang-macphuc111107/omnia`.

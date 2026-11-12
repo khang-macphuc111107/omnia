@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Proposal (RFC, Thesis, Spec-Kit & RFP)"
+  short_description: "Rigorous RFC, academic thesis/grant, Spec-Kit, and RFP proposals"
+  default_prompt: "Use $deep-proposal to draft or audit a decision-grade Engineering RFC, Academic/Thesis/Grant, Product/Spec-Kit, or Client/RFP proposal with trade-off matrices and falsifiable gates."

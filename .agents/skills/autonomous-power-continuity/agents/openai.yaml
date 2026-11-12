@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autonomous Power Continuity"
+  short_description: "Hydrate full context, run disjoint swarms, and audit live QA"
+  default_prompt: "Use $autonomous-power-continuity to hydrate full history and codebase context, decompose work across disjoint-ownership agents, and verify every DoD gate with live QA and an independent audit."

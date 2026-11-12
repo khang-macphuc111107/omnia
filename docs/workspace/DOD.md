@@ -9,17 +9,17 @@ required evidence.
 | `DOD-01` | Source is discoverable at root | Tracked tree, README and source-aware ignores | `PARTIAL` |
 | `DOD-02` | Native dependency closure resolves | Locked metadata, path audit and clone metadata | `PARTIAL` |
 | `DOD-03` | Scoped native behavior passes | Command logs, exit codes and environment | `PARTIAL` |
-| `DOD-04` | Divergent work is reconciled | Per-path ledger, owner, disposition and review | `OPEN` |
+| `DOD-04` | Divergent work is reconciled | Per-path ledger, owner, disposition and review | `PARTIAL` |
 | `DOD-05` | Nested Git/worktrees are safe | Snapshot, index/untracked/ignored capture and restore | `PARTIAL` |
 | `DOD-06` | Generated output does not dirty source | Ignore policy, external target and status receipt | `PARTIAL` |
-| `DOD-07` | Code is clean and maintainable | Format/lint/static review and ownership map | `OPEN` |
-| `DOD-08` | D: cleanup is measured/reversible | Ownership, allocated bytes, candidate ledger and delta | `OPEN` |
+| `DOD-07` | Code is clean and maintainable | Format/lint/static review and ownership map | `PARTIAL` |
+| `DOD-08` | D: cleanup is measured/reversible | Ownership, allocated bytes, candidate ledger and delta | `PARTIAL` |
 | `DOD-09` | History corpus is bounded/honest | Watermark, denominator and missing/truncation ledger | `PARTIAL` |
-| `DOD-10` | History has semantic review | Ranges, independent audit and redacted synthesis | `OPEN` |
+| `DOD-10` | History has semantic review | Ranges, independent audit and redacted synthesis | `PARTIAL` |
 | `DOD-11` | Handoff docs agree | Cross-reference validator and readback | `PARTIAL` |
-| `DOD-12` | Skills/research are qualified | Query, revision, license, ranges and decision | `OPEN` |
-| `DOD-13` | Native capabilities are real | Packaged/live receipts for each claim | `OPEN` |
-| `DOD-14` | QA covers UI/security/performance/recovery | Independent negative/race/reload/resource evidence | `OPEN` |
+| `DOD-12` | Skills/research are qualified | Query, revision, license, ranges and decision | `PARTIAL` |
+| `DOD-13` | Native capabilities are real | Packaged/live receipts for each claim | `PARTIAL` |
+| `DOD-14` | QA covers UI/security/performance/recovery | Independent negative/race/reload/resource evidence | `PARTIAL` |
 | `DOD-15` | Public delivery is reproducible | Authenticated account, pushed SHA, clone and secret scan | `OPEN` |
 | `DOD-16` | Follow-up chat starts with durable goal | Thread ID, prompt, activation receipt and checkpoint | `DEFERRED` |
 
@@ -239,9 +239,9 @@ control-plane checkout cannot substitute for child-repository acceptance.
 - **RESEARCH-06 — PARTIAL/PASS (bounded):** Graphify repository, README,
   license and complete recursive-tree response were recorded; README plus six
   canonical files were reviewed and hashed. The disposition is
-  RESEARCH_ONLY; exhaustive repository, issue/comment/media/runtime review is
+  `RESEARCH_ONLY`; exhaustive repository, issue/comment/media/runtime review is
   explicitly out of scope.
-- **CLEAN-12 — PASS (reversible generated unit):** dist moved by exact path
+- **CLEAN-12 — PASS (reversible generated unit):** `dist` moved by exact path
   to external quarantine after containment, ignore, tracked/status, reparse and
   active-process gates. 140 files and 6,924,863 logical bytes match after
   readback.
@@ -272,8 +272,30 @@ control-plane checkout cannot substitute for child-repository acceptance.
 - **CLEAN-19 — NO CAPACITY CREDIT:** source and quarantine share D:, so the observed free-space delta is 0 bytes. The reverse move and uv regeneration route are recorded; deletion was not performed.
 - **CLEAN-20 — OPEN:** child-repository dirtiness and all mixed-ownership, profile, nested-repository, worktree, source-deletion and meaningful-cache candidates remain unresolved. This unit does not establish child-repository cleanliness or full-drive reclamation.
 
-## Root scratch quarantine — 2026-11-12Fifteen root-level Playwright/build probe scripts and generated logs were classified as temporary artifacts after reading their contents and checking their Git state. The exact paths were `.tmp-build-preview-mock.log`, `.tmp-build-renderer.log`, `.tmp-check.cjs`, `.tmp-inspect.cjs`, `.tmp-long.cjs`, `.tmp-poll.cjs`, `.tmp-preview-check.cjs`, `.tmp-preview.mjs`, `.tmp-preview2.mjs`, `.tmp-preview3.mjs`, `.tmp-preview4.mjs`, `.tmp-prod-mock.cjs`, `.tmp-rag-tsc.log`, `.tmp-workspace-test.log` and `debug.log`. Their pre-move receipt records 15 files and 41,003 logical bytes; the move receipt confirms byte and SHA-256 readback, source absence and the exact reverse move by manifest. They were moved to `D:\OmniaData\quarantine\omnia-clean-20261112\root-scratch-20261112-033528`. The move was same-volume and therefore produced no meaningful capacity recovery (observed filesystem delta was -4,096 bytes); no deletion or recycle-bin operation was performed. The child repository remains independently dirty with source changes, deletions, untracked extraction/profile material, nested Git roots, worktrees and missing-directory warnings.
+## Root scratch quarantine — 2026-11-12
+
+Fifteen root-level Playwright/build probe scripts and generated logs were classified as temporary artifacts after reading their contents and checking their Git state. The exact paths were `.tmp-build-preview-mock.log`, `.tmp-build-renderer.log`, `.tmp-check.cjs`, `.tmp-inspect.cjs`, `.tmp-long.cjs`, `.tmp-poll.cjs`, `.tmp-preview-check.cjs`, `.tmp-preview.mjs`, `.tmp-preview2.mjs`, `.tmp-preview3.mjs`, `.tmp-preview4.mjs`, `.tmp-prod-mock.cjs`, `.tmp-rag-tsc.log`, `.tmp-workspace-test.log` and `debug.log`. Their pre-move receipt records 15 files and 41,003 logical bytes; the move receipt confirms byte and SHA-256 readback, source absence and the exact reverse move by manifest. They were moved to `D:\OmniaData\quarantine\omnia-clean-20261112\root-scratch-20261112-033528`. The move was same-volume and therefore produced no meaningful capacity recovery (observed filesystem delta was -4,096 bytes); no deletion or recycle-bin operation was performed. The child repository remains independently dirty with source changes, deletions, untracked extraction/profile material, nested Git roots, worktrees and missing-directory warnings.
 
 ## Fresh child status after root scratch quarantine — 2026-11-12
 
 A complete `git status --porcelain=v1 -uall` was rerun after the root scratch move. The child repository `D:\Omnia\repos\omnia` is still on `omnia/m0-snapshot` at `55f21dacf5acb2c6f386aff1ece6a5245bad0fc4`; the captured status has 4,772 entries: 199 modified, 2,809 deleted, 1,764 untracked, zero renames, zero added-only entries and zero other statuses. Git emitted 12 missing-directory warnings under upstream extraction paths; those paths remain an unresolved ownership/source-integrity boundary. The authoritative porcelain, stderr and JSON summary are stored at `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\child-status-post-root-scratch-20261112-033648\`. This evidence supersedes the earlier 4,783-entry historical baseline for the current checkpoint only. It does not prove the child is clean, that deleted paths are safe to restore, or that extracted/profile material can be deleted.
+
+## Wave 2 scoped verification acceptance — 2026-11-12
+
+Independent audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa\audits-20261112\FINAL_VERIFICATION_RECEIPT_20261112.json`) verified all scoped Wave 1 and Wave 2 lanes with **`0` open defects**, advancing `DOD-04`, `DOD-07`, `DOD-08`, `DOD-10`, `DOD-12`, `DOD-13` and `DOD-14` to **`PARTIAL`** while keeping `DOD-15` `OPEN` (pending remote push and independent clean-clone test), `DOD-16` `DEFERRED`, and whole-goal final audit streak at **`0`**:
+
+- **`DOD-03` / `DOD-07` / `DOD-13` / `DOD-14` (Scoped Rust & Native Win32 QA — PASS within scope):**
+  - `cargo fmt --all --check` and `cargo check --locked` exited `0` across both `native/Cargo.toml` and `src-tauri/Cargo.toml`; **`524/524` locked Cargo tests passed** (`omnia-provider-services` `31`, `omnia-harness` `393`, `omnia-session-store` `71`, `omnia-native` `29`) using external `$env:CARGO_TARGET_DIR = 'D:\OmniaData\tools\cargo-target'`.
+  - All **`7/7` external Win32 PowerShell QA workflows (`90/90` cases, `rc=0`)** passed under `D:\OmniaData\qa\native-20261112\QA_SUITE_SUMMARY_RECEIPT.json` against `debug\omnia-native.exe` (`42e405d2...`) and `release\omnia-native.exe` (`65944d86...`):
+    - Resolved historical r7 `Missing UIA control: Edit ` (`qa-smoke.ps1` `4/4`, **`"uiaIssue": null`** via server-side COM `IRawElementProviderSimple` + `IValueProvider` in `native/src/uia_edit.rs`).
+    - Resolved historical r7 status-panel text clipping (`0` clipping in pixel-inspected `1220x820` `smoke` and `session` captures).
+    - Resolved `#46` non-foreground `#32770` modal `MessageBoxW` UIA `InvokePattern.Invoke()` failure (`qa-guard.ps1` `12/12` `rc=0` via thread-scoped `WH_CBT` `HCBT_ACTIVATE` `modal_message_box` + duplicate-subclass guard).
+  - Three offline interactive UI direction candidates + `docs/ui-direction/DIRECTION_DECISION.md` passed anti-slop and `24/24` WCAG 2.2 contrast checks (`>= 5.78:1`), remaining `PENDING_USER_REVIEW`.
+  - Live third-party provider billing/streaming, physical Vietnamese IME/Narrator E2E runs, WebView-free Browser/IDE engines, and packaged release CPU/RAM/GPU benchmarks remain required to close `DOD-13` and `DOD-14` in full.
+- **`DOD-04` / `DOD-05` / `DOD-08` (Reconciliation, Worktrees & `D:\` Reclamation — PARTIAL):**
+  - `138/138` differing focus rows in `SOURCE_DISPOSITION_LEDGER.json` have reviewed dispositions (`127` `incorporated`, `8` `superseded-with-evidence`, `3` `retained-recovery`, `0` `unreviewed`) and `84/84` unique source-delta files/patches are SHA-256 verified in `D:\OmniaData\recovery\unique-source-deltas-20261112\`.
+  - `12` root clutter directories (`187,694` files) moved to `D:\OmniaData\externalized-20261112\` (`0` capacity credit); `publish-worktree` and `repos\omnia` relocated to `D:\OmniaData\` and repaired across all `4` checkouts (`retirementEligible=false` preserved for excluded primary boundaries and `D:\Omnia\Roaming` orphaned-SID `WinError 5`).
+  - Reclaiming `4` proven regenerable quarantined build caches (`96,461` files / `13,216,664,383` logical bytes) increased `D:\` free space by **`+10,871,586,816` bytes (`+10.125 GiB`)** (`61.05 GiB -> 71.175 GiB`).
+- **`DOD-09` / `DOD-10` / `DOD-11` / `DOD-12` (History, Handoff, Skills & Research — PARTIAL):**
+  - `1,767`-file multi-host history watermark hashed (`PASS_ZERO_LEAKS` across `294` exported/handoff files); `tools/agy-history-sync/` (`5/5` tests `OK`) synchronized AGY Desktop (`144/144`), AGY CLI (`126/126`), and unified FTS5 (`1,102` threads) with `0` ghost records (`18` active swarm DBs excluded).
+  - `103/103` flagship URLs + `8` REA URLs + `github/spec-kit` (`v1.4.0`) qualified; `12` curated skills synced byte-identically across Codex and `.agents/skills/` (`24/24` `quick_validate.py` `PASS`), `100`-category / `1,001`-skill catalog extracted to `omni-deep-1000-catalog.json`, and 8 navigable workspace index files bound in [STATUS.md](STATUS.md).

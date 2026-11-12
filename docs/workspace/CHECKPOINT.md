@@ -1,4 +1,4 @@
-# Omnia checkpoint — 2026-11-11, continuation revision 7
+# Omnia checkpoint — 2026-11-12, continuation revision 8 (Wave 3A pre-commit)
 
 ## Resume here
 
@@ -127,9 +127,7 @@ continuation-r8 launched and retained a replacement evaluation shell:
   `$PID` occurred after launch; recovery identified the existing process and
   recorded it without launching a duplicate.
 - r8 observed visible/responding/not minimized/not foreground. Capture:
-  `D:\OmniaData\qa
-ative\continuation-r8
-ative-preview-r8-window.png`,
+  `D:\OmniaData\qa\native\continuation-r8\native-preview-r8-window.png`,
   1220 × 820, SHA-256
   `460541807FA61BD2BCDE78E2A8468A675826BDCE05B445B6A8EB96178E37199F`.
 - r9/PREVIEW-REOBSERVATION.json, recorded
@@ -423,30 +421,30 @@ Receipt: `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-
 
 ## Graphify supplement and dist quarantine — 2026-11-12
 
-A canonical public GitHub API review was recorded for Graphify-Labs/graphify
-at ref 8. Repository, README, license and recursive tree endpoints returned
-HTTP 200; the tree response contained 1,306 entries with 	runcated=false.
-The repository metadata reports Apache-2.0. The README and six selected files
-(ARCHITECTURE.md, docs/how-it-works.md, graphify/manifest.py,
-graphify/querylog.py, graphify/rcfile.py, and
-graphify/always_on/claude-md.md) were decoded, hashed and retained in the
+A canonical public GitHub API review was recorded for `Graphify-Labs/graphify`
+at ref `v8`. Repository, README, license and recursive tree endpoints returned
+HTTP 200; the tree response contained 1,306 entries with `truncated=false`.
+The repository metadata reports `Apache-2.0`. The README and six selected files
+(`ARCHITECTURE.md`, `docs/how-it-works.md`, `graphify/manifest.py`,
+`graphify/querylog.py`, `graphify/rcfile.py`, and
+`graphify/always_on/claude-md.md`) were decoded, hashed and retained in the
 external supplement directory. This is bounded review evidence, not exhaustive
 source, issue, discussion, comment, media or runtime review.
 
 The useful candidate patterns are deterministic code indexing separate from
-semantic extraction, explicit EXTRACTED/INFERRED/AMBIGUOUS provenance,
+semantic extraction, explicit `EXTRACTED`/`INFERRED`/`AMBIGUOUS` provenance,
 module input/output contracts, bounded configurable query depth/budget, and
 scoped graph-first navigation before broad raw search. Admission is
-RESEARCH_ONLY: no external source, asset, credential, private content or
+`RESEARCH_ONLY`: no external source, asset, credential, private content or
 runtime was copied into Omnia. Full disposition:
-C:\Users\khang\.codex\research\omnia-clean-2026-11-12\supplement-20261112\graphify-disposition.md.
+`C:\Users\khang\.codex\research\omnia-clean-2026-11-12\supplement-20261112\graphify-disposition.md`.
 
-The next generated-only cleanup unit classified dist as an ordinary ignored
+The next generated-only cleanup unit classified `dist` as an ordinary ignored
 and untracked Vite build output (140 files, 6,924,863 logical bytes). The
-package.json build route is 	sc -b && vite build; no reparse point, tracked
+`package.json` build route is `tsc -b && vite build`; no reparse point, tracked
 file, status entry or active process reference remained at the mutation check.
 The directory was moved by exact path to
-D:\OmniaData\quarantine\omnia-clean-20261112\dist. Readback matched file
+`D:\OmniaData\quarantine\omnia-clean-20261112\dist`. Readback matched file
 count and bytes. The move stayed on D:, so free-space delta was 0 and no
 reclamation credit is claimed. Restore is a single exact reverse move recorded
 in the receipt. Child repository source/profile/worktree state remains dirty and
@@ -454,36 +452,33 @@ independently owned.
 
 Receipts:
 
-- C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-dist-pre.json
-- C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-dist-move.json
-- C:\Users\khang\.codex\research\omnia-clean-2026-11-12\repos-omnia-status-after-dist-move.json
-"@
-'CLEANUP_STATUS_20261112.md'=@"
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-dist-pre.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\cleanup-receipt-dist-move.json`
+- `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\repos-omnia-status-after-dist-move.json`
 
 ## Latest bounded unit — Graphify disposition and Vite dist quarantine
 
-Graphify was reviewed from public GitHub API evidence at ref 8: repository,
+Graphify was reviewed from public GitHub API evidence at ref `v8`: repository,
 README, license and recursive tree all returned 200; 1,306 tree entries were
 reported without truncation. README plus six canonical files were actually
 opened. The Apache-2.0 metadata and candidate lessons are recorded outside the
-product tree. Admission is RESEARCH_ONLY; this does not claim exhaustive
+product tree. Admission is `RESEARCH_ONLY`; this does not claim exhaustive
 source/comment/media/runtime review and no external code was copied.
 
-D:\Omnia\repos\omnia\dist was an ordinary, ignored, untracked generated
+`D:\Omnia\repos\omnia\dist` was an ordinary, ignored, untracked generated
 Vite output with 140 files and 6,924,863 logical bytes. Its producer is the
-tracked package.json build script (	sc -b && vite build) and
-package-lock.json is present. A path-specific receipt proved containment,
+tracked `package.json` build script (`tsc -b && vite build`) and
+`package-lock.json` is present. A path-specific receipt proved containment,
 zero reparse entries, zero tracked/status-visible files and no active process
 reference at mutation time. The directory was moved to
-D:\OmniaData\quarantine\omnia-clean-20261112\dist; readback matched. This
+`D:\OmniaData\quarantine\omnia-clean-20261112\dist`; readback matched. This
 same-volume move changed free space by 0 bytes, so it is reversible
 externalization and earns no capacity credit. The source path is absent and
 path-scoped Git status is clean after the move.
 
 The child repository remains dirty and independently owned. The root control
 plane is clean at the last committed checkpoint. Remaining candidates include
-
-ode_modules, .toolchains\openhands-uv-cache, .omnia\cache, Chrome
+`node_modules`, `.toolchains\openhands-uv-cache`, `.omnia\cache`, Chrome
 profile data, upstream extraction trees and mixed source deletions; they remain
 preserved until owner, consumer, retention and restore evidence are complete.
 
@@ -507,8 +502,34 @@ worktree data was touched.
 
 The generated `D:\Omnia\repos\omnia\.toolchains\openhands-uv-cache` directory was separately classified as an ignored, untracked uv/OpenHands package cache. Pre-move evidence recorded 85,557 entries, 71,261 files, 2,083,312,334 logical bytes, zero reparse entries, zero tracked files, zero status-visible files and no active process reference at the final gate. The retained `.gitignore`, `.lock` and `CACHEDIR.TAG` markers, plus `uv` cache producer and regeneration route, are recorded in the external receipts. An exact-path move placed it at `D:\OmniaData\quarantine\omnia-clean-20261112\openhands-uv-cache`; readback counts and bytes matched and the source path is absent. This is reversible same-volume externalization with a zero-byte free-space delta, not deletion or capacity reclamation. The recorded reverse move is the restore route. No source edits, nested repository, profile, worktree or unknown cache data was touched.
 
-## Root scratch quarantine — 2026-11-12Fifteen root-level Playwright/build probe scripts and generated logs were classified as temporary artifacts after reading their contents and checking their Git state. The exact paths were `.tmp-build-preview-mock.log`, `.tmp-build-renderer.log`, `.tmp-check.cjs`, `.tmp-inspect.cjs`, `.tmp-long.cjs`, `.tmp-poll.cjs`, `.tmp-preview-check.cjs`, `.tmp-preview.mjs`, `.tmp-preview2.mjs`, `.tmp-preview3.mjs`, `.tmp-preview4.mjs`, `.tmp-prod-mock.cjs`, `.tmp-rag-tsc.log`, `.tmp-workspace-test.log` and `debug.log`. Their pre-move receipt records 15 files and 41,003 logical bytes; the move receipt confirms byte and SHA-256 readback, source absence and the exact reverse move by manifest. They were moved to `D:\OmniaData\quarantine\omnia-clean-20261112\root-scratch-20261112-033528`. The move was same-volume and therefore produced no meaningful capacity recovery (observed filesystem delta was -4,096 bytes); no deletion or recycle-bin operation was performed. The child repository remains independently dirty with source changes, deletions, untracked extraction/profile material, nested Git roots, worktrees and missing-directory warnings.
+## Root scratch quarantine — 2026-11-12
+
+Fifteen root-level Playwright/build probe scripts and generated logs were classified as temporary artifacts after reading their contents and checking their Git state. The exact paths were `.tmp-build-preview-mock.log`, `.tmp-build-renderer.log`, `.tmp-check.cjs`, `.tmp-inspect.cjs`, `.tmp-long.cjs`, `.tmp-poll.cjs`, `.tmp-preview-check.cjs`, `.tmp-preview.mjs`, `.tmp-preview2.mjs`, `.tmp-preview3.mjs`, `.tmp-preview4.mjs`, `.tmp-prod-mock.cjs`, `.tmp-rag-tsc.log`, `.tmp-workspace-test.log` and `debug.log`. Their pre-move receipt records 15 files and 41,003 logical bytes; the move receipt confirms byte and SHA-256 readback, source absence and the exact reverse move by manifest. They were moved to `D:\OmniaData\quarantine\omnia-clean-20261112\root-scratch-20261112-033528`. The move was same-volume and therefore produced no meaningful capacity recovery (observed filesystem delta was -4,096 bytes); no deletion or recycle-bin operation was performed. The child repository remains independently dirty with source changes, deletions, untracked extraction/profile material, nested Git roots, worktrees and missing-directory warnings.
 
 ## Fresh child status after root scratch quarantine — 2026-11-12
 
 A complete `git status --porcelain=v1 -uall` was rerun after the root scratch move. The child repository `D:\Omnia\repos\omnia` is still on `omnia/m0-snapshot` at `55f21dacf5acb2c6f386aff1ece6a5245bad0fc4`; the captured status has 4,772 entries: 199 modified, 2,809 deleted, 1,764 untracked, zero renames, zero added-only entries and zero other statuses. Git emitted 12 missing-directory warnings under upstream extraction paths; those paths remain an unresolved ownership/source-integrity boundary. The authoritative porcelain, stderr and JSON summary are stored at `C:\Users\khang\.codex\research\omnia-clean-2026-11-12\child-status-post-root-scratch-20261112-033648\`. This evidence supersedes the earlier 4,783-entry historical baseline for the current checkpoint only. It does not prove the child is clean, that deleted paths are safe to restore, or that extracted/profile material can be deleted.
+
+## Wave 2 & additive execution receipts — 2026-11-12
+
+Independent final lane audit: `D:\OmniaData\qa\audits-20261112\FINAL_VERIFICATION_RECEIPT_20261112.json` and `FINAL_VERIFICATION_REPORT_20261112.md` -> **`PASS_ALL_SCOPED_LANES_ZERO_OPEN_DEFECTS` (`0` open defects; all 3 mid-wave findings `DEFECT-01..03` repaired and re-verified)**.
+
+### Bound artifacts, test counts and SHA-256 digests
+
+- **Serialized Cargo build & tests (`$env:CARGO_TARGET_DIR = 'D:\OmniaData\tools\cargo-target'`, `524/524` passed)**:
+  - `omnia-provider-services` (`31/31`): `src-tauri/crates/omnia-provider-services/src/dynamic_router.rs` (`133,752 B`, `sha256=ce1ef4abdeb631c09fcb6bee1ebcbb1d3d6f6fb88527e7acf81be576ec97c930`).
+  - `omnia-harness` (`393/393`; `1` ignored): `proactive_rag.rs` (`52,745 B`, `sha256=e2fa4d338b9fdc4fe8522c4ce895b11bfd1f2f0ec527f962dcd55ba4ec5b9a7b`), `agent_graph.rs` (`55,618 B`, `sha256=adc1da5e9f91db375616707141c03a1f1b9c631f229828274dc31cf14da1b0ef`), `skills.rs` (`sha256=37e29aea7387dc71...`), plus hierarchical/cyclic-graph `memory.rs`.
+  - `omnia-session-store` (`71/71`) & `omnia-native` (`29/29`): `native/src/composer.rs` (`82,419 B`, `sha256=2a5463baa284b78346acd2b1bfa205e665399b82bc7d10930d530b3d1f3c78b5`), `native/src/uia_edit.rs` (`20,965 B`, `sha256=1cd9a2649bc3b38c184a68f627abf9b6b29cdcafcbfe3507937560954457a98b`), `native/src/session_panel.rs` (`24,563 B`, `sha256=4c638e4123c851e4d0e4032165cea890fbc4eb47098fb103cba8a6927ebc8c09`), `native/src/win32.rs` (`18,895 B`, `sha256=942c3b648ccc343ac89a9e826c80655b180f64eea96b1bebcda6f1d52157d5cf`).
+  - External binaries: `debug\omnia-native.exe` (`3,488,256 B`, `sha256=42e405d28e4b583eb97d56107c63192cb0f4ebbd83aa9c89e7448b95feaa6d7f`) and `release\omnia-native.exe` (`2,160,128 B`, `sha256=65944d8685fa4e219cbcf43f5d6bf99eb7fb379fa1a4bb2d8caab077380a2872`).
+- **External Win32 Native QA (`7/7` workflows, `90/90` cases `rc=0`)**:
+  - Receipt: `D:\OmniaData\qa\native-20261112\QA_SUITE_SUMMARY_RECEIPT.json` (`qa-paths.tests.ps1` `40/40`, `qa-capture.tests.ps1` `14/14`, `qa-smoke.ps1` `4/4` with `"uiaIssue": null`, `qa-session.ps1` `5/5`, `qa-paging.ps1` `9/9`, `qa-guard.ps1` `12/12`, `qa-ownership.ps1` `6/6`; `0` status-panel clipping in `1220x820` PNG captures). Note: the two open r7 `QUALITY-01` defects recorded earlier in this file (lines 107–110) are now resolved for this evaluation shell; live provider/IME/Narrator scope remains open.
+- **Skills, catalog, history, research, UI direction & cleanup**:
+  - `12` curated skills in `.agents/skills/` (`24/24` `quick_validate.py` `PASS`, incl. `deep-proposal` `SKILL.md` `sha256=c33d1650e106f95b7bee5101552dbaf8f12dc20af7f74a87f55c47abc141dc1e`); external sanitized GDoc `GDOC_1YSB_SANITIZED.md` (`sha256=099ea575...`) & `omni-deep-1000-catalog.json` (`100` categories / `1,001` specs, `sha256=5075c05b...`); `273` unique skills mounted live across 4 roots in Windows Antigravity.
+  - `tools/agy-history-sync/` (`agy_history_sync.py` `sha256=f029c2b1...`, `test_agy_history_sync.py` `sha256=acf55a6d...`, `5/5` tests `OK`): Desktop `144/144` DBs (`0` ghost), CLI `126/126` DBs (`0` ghost), unified FTS5 `1,102` threads (`sha256=efee7f1e...`), `PASS_ZERO_LEAKS` (`sha256=883739f6...`) across `294` files.
+  - `COMPLETE_103_URL_LEDGER.json` (`sha256=ef6d38dc...`) + `REA_8_URL_SUPPLEMENT_LEDGER.json` (`sha256=a9a9eadd...`, `8` REA URLs + `github/spec-kit` `v1.4.0`).
+  - `docs/ui-direction/DIRECTION_DECISION.md` (`sha256=7366e4aa...`, `PENDING_USER_REVIEW`) + 3 interactive prototypes under `D:\OmniaData\qa\ui-direction-20261112\`.
+  - `SOURCE_DISPOSITION_LEDGER.json` (`138/138` focus rows reviewed, `84/84` delta files/patches hashed; `retirementEligible=false`), `EXTERNAL_LAYOUT.json` (`12` root clutter dirs externalized + `4` worktrees healthy; `Roaming` orphaned SID documented), and `d-drive-reclamation-receipt-20261112.json` (**`+10,871,586,816` B / `+10.125 GiB`** reclaimed on `D:\`).
+
+### Navigable workspace index map
+
+Use [STATUS.md](STATUS.md) to jump directly to [PLAN.md](PLAN.md), [TASKS.md](TASKS.md), [PROMPTS.md](PROMPTS.md), [SESSIONS.md](SESSIONS.md), [SOURCES.md](SOURCES.md), [REFS.md](REFS.md), [STEER_QUEUE.md](STEER_QUEUE.md), and [TRANSFER_CONTRACT.md](TRANSFER_CONTRACT.md). Next executable Wave 3 actions: create Commit #1 on `master`, push to `https://github.com/khang-macphuc111107/omnia`, run an isolated clean-clone build/test receipt (`DELIVERY-01`), and keep `SESSION_ADMISSION.json` honest.

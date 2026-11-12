@@ -7,6 +7,7 @@
 use std::{fmt, sync::Arc};
 
 use reqwest::header::{HeaderName, HeaderValue};
+use serde::{Deserialize, Serialize};
 
 use super::{
     anthropic::AnthropicProvider,
@@ -19,7 +20,8 @@ use super::{
     Provider, ProviderConfig,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AdapterFamily {
     OpenAiChat,
     OpenAiResponses,
@@ -27,7 +29,8 @@ pub enum AdapterFamily {
     Gemini,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthScheme {
     None,
     Bearer,

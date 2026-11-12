@@ -2436,12 +2436,28 @@ mod tests {
         Arc::new(HookRunner::new(config, "s1"))
     }
 
+    async fn read_hook_file_eventually(file: &std::path::Path) -> String {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(file) {
+                if text.lines().any(|l| l.trim_start().starts_with('{')) {
+                    return text;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for notification hook output at {}",
+                file.display()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     #[tokio::test]
     async fn notification_hook_fires_for_approvals_with_the_documented_payload() {
-        let dir = std::env::temp_dir().join(format!("omnia-notify-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
         let file = dir.join("notified.jsonl");
-        let _ = std::fs::remove_file(&file);
         let provider = ScriptedProvider::new(vec![
             tool_turn(&[("a", "write", r#"{"path":"x"}"#)]),
             text_turn("ok"),
@@ -2453,7 +2469,7 @@ mod tests {
             .run(&mut history, &ToolContext::new(&dir))
             .await
             .unwrap();
-        let text = std::fs::read_to_string(&file).unwrap();
+        let text = read_hook_file_eventually(&file).await;
         let payload: Value = serde_json::from_str(
             text.lines()
                 .find(|l| l.trim_start().starts_with('{'))
@@ -2469,15 +2485,13 @@ mod tests {
             (Some(1), Some(1))
         );
         assert!(payload["message"].as_str().unwrap().contains("approval"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn present_plan_ends_the_turn_and_fires_plan_ready() {
-        let dir = std::env::temp_dir().join(format!("omnia-plan-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
         let file = dir.join("notified.jsonl");
-        let _ = std::fs::remove_file(&file);
         let provider = ScriptedProvider::new(vec![
             tool_turn(&[("p", "present_plan", r##"{"plan":"# Plan\n1. do it"}"##)]),
             text_turn("must never be requested"),
@@ -2506,9 +2520,8 @@ mod tests {
             event,
             AgentEvent::PlanPresented { id, plan } if id == "p" && plan.contains("do it")
         )));
-        let text = std::fs::read_to_string(&file).unwrap();
+        let text = read_hook_file_eventually(&file).await;
         assert!(text.contains("plan_ready"), "{text}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -16,14 +16,14 @@ use crate::{EffectClass, HarnessError, HarnessResult, Tool, ToolContext, ToolOut
 
 const MAX_SKILL_FILE_BYTES: u64 = 256 * 1024;
 const MAX_SKILL_NAME_CHARS: usize = 128;
-const MAX_DESCRIPTION_CHARS: usize = 300;
+const MAX_DESCRIPTION_CHARS: usize = 1024;
 const MAX_LISTED_FILES: usize = 50;
 const MAX_WALK_DEPTH: usize = 4;
 /// Candidate roots larger than this fail closed, rather than allocating or
 /// walking an unbounded directory before the per-root skill limit applies.
 const MAX_SKILL_ROOT_ENTRIES: usize = 4096;
 /// Sorted directory candidates are bounded separately from root entries.
-const MAX_SKILLS_PER_ROOT: usize = 256;
+const MAX_SKILLS_PER_ROOT: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -286,10 +286,49 @@ pub fn discover_skills_with_plugins(
 }
 
 fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
+    let mut indices = text.char_indices();
+    let Some((limit_byte, next_char)) = indices.nth(max) else {
         return text.to_owned();
+    };
+    if max == 0 {
+        return "…".to_owned();
     }
-    let mut out: String = text.chars().take(max).collect();
+    let prefix = &text[..limit_byte];
+    let min_sentence_chars = max / 2;
+    let mut sentence_end_byte = None;
+    let mut chars_seen = 0usize;
+    let mut iter = prefix.char_indices().peekable();
+    while let Some((byte_idx, ch)) = iter.next() {
+        chars_seen += 1;
+        if matches!(ch, '.' | '!' | '?' | '。' | '！' | '？') && chars_seen >= min_sentence_chars
+        {
+            let followed_by_space = match iter.peek() {
+                Some(&(_, next)) => next.is_whitespace(),
+                None => next_char.is_whitespace(),
+            };
+            if followed_by_space {
+                sentence_end_byte = Some(byte_idx + ch.len_utf8());
+            }
+        }
+    }
+    if let Some(end_byte) = sentence_end_byte {
+        let mut out = prefix[..end_byte].trim_end().to_owned();
+        out.push('…');
+        return out;
+    }
+
+    let min_word_chars = (max * 3) / 4;
+    let mut word_end_byte = None;
+    for (char_pos, (byte_idx, ch)) in prefix.char_indices().enumerate() {
+        if ch.is_whitespace() && char_pos >= min_word_chars {
+            word_end_byte = Some(byte_idx);
+        }
+    }
+    let cut = match word_end_byte {
+        Some(end_byte) => prefix[..end_byte].trim_end(),
+        None => prefix.trim_end(),
+    };
+    let mut out = cut.to_owned();
     out.push('…');
     out
 }
@@ -304,8 +343,11 @@ pub fn skills_prompt_section(skills: &[Skill]) -> String {
          full instructions before acting.\n\n",
     );
     for skill in skills {
-        let description =
-            truncate_chars(&skill.description.replace('\n', " "), MAX_DESCRIPTION_CHARS);
+        let normalized = skill
+            .description
+            .replace("\r\n", " ")
+            .replace(['\r', '\n'], " ");
+        let description = truncate_chars(&normalized, MAX_DESCRIPTION_CHARS);
         out.push_str(&format!("- {}: {}\n", skill.name, description));
     }
     out
@@ -900,19 +942,19 @@ mod tests {
             write_skill(
                 tmp.path(),
                 ".omnia/skills",
-                &format!("skill-{index:03}"),
-                &format!("---\nname: skill-{index:03}\n---\n"),
+                &format!("skill-{index:04}"),
+                &format!("---\nname: skill-{index:04}\n---\n"),
             );
         }
         let skills = discover_skills(tmp.path(), &[]);
         assert_eq!(skills.len(), MAX_SKILLS_PER_ROOT);
         assert_eq!(
             skills.first().map(|skill| skill.name.as_str()),
-            Some("skill-000")
+            Some("skill-0000")
         );
         assert_eq!(
             skills.last().map(|skill| skill.name.as_str()),
-            Some("skill-255")
+            Some("skill-1023")
         );
     }
 
@@ -951,19 +993,53 @@ mod tests {
     #[test]
     fn prompt_section_truncates() {
         assert_eq!(skills_prompt_section(&[]), "");
-        let skill = Skill {
-            name: "n".into(),
-            description: "d".repeat(500),
+        let preserved = Skill {
+            name: "mid".into(),
+            description: "d".repeat(925),
             path: PathBuf::new(),
             dir: PathBuf::new(),
             source: SkillSource::User,
         };
-        let section = skills_prompt_section(&[skill]);
+        let oversized = Skill {
+            name: "n".into(),
+            description: "d".repeat(1500),
+            path: PathBuf::new(),
+            dir: PathBuf::new(),
+            source: SkillSource::User,
+        };
+        let section = skills_prompt_section(&[preserved, oversized]);
         assert!(section.starts_with("# Skills"));
         assert!(section.contains("`skill` tool"));
         assert!(section
             .lines()
-            .any(|l| l.starts_with("- n: ") && l.chars().count() < 320));
+            .any(|l| l == format!("- mid: {}", "d".repeat(925))));
+        assert!(section
+            .lines()
+            .any(|l| l.starts_with("- n: ") && l.ends_with('…') && l.chars().count() <= 1032));
+    }
+
+    #[test]
+    fn truncate_chars_preserves_utf8_and_sentence_or_word_boundaries() {
+        let exact = "tiếng Việt buổi tiếp đống".repeat(40);
+        assert!(exact.chars().count() <= MAX_DESCRIPTION_CHARS);
+        assert_eq!(truncate_chars(&exact, MAX_DESCRIPTION_CHARS), exact);
+
+        let sentence_text =
+            "Suy luận lỗi gõ phím tiếng Việt (buổi, tiếp, đống). Phần sau vượt quá giới hạn ký tự cho phép.";
+        let truncated_sentence = truncate_chars(sentence_text, 65);
+        assert_eq!(
+            truncated_sentence,
+            "Suy luận lỗi gõ phím tiếng Việt (buổi, tiếp, đống).…"
+        );
+
+        let word_text = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+        let truncated_word = truncate_chars(word_text, 44);
+        assert_eq!(truncated_word, "alpha beta gamma delta epsilon zeta eta…");
+
+        let early_abbrev = format!("e.g. {}", "x".repeat(120));
+        let truncated_abbrev = truncate_chars(&early_abbrev, 80);
+        assert_eq!(truncated_abbrev.chars().count(), 81);
+        assert!(truncated_abbrev.ends_with('…'));
     }
 
     #[tokio::test]

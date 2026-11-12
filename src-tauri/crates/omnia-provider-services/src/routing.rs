@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+pub use crate::dynamic_router::*;
+
 use omnia_harness::{
     provider::{
         destination::{DestinationError, DestinationErrorClass},

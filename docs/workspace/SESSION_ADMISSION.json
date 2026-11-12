@@ -11,86 +11,318 @@
   "gates": [
     {
       "id": "SESSION-G01",
-      "tasks": ["ROOT-01", "ROOT-05"],
-      "dod": ["DOD-01", "DOD-02", "DOD-03", "DOD-06"],
+      "tasks": [
+        "ROOT-01",
+        "ROOT-05"
+      ],
+      "dod": [
+        "DOD-01",
+        "DOD-02",
+        "DOD-03",
+        "DOD-06"
+      ],
       "required": "PASS_SCOPED",
       "state": "PARTIAL",
-      "receipts": [],
-      "next": "Validate committed root source and required inputs from an isolated clone/export."
+      "receipts": [
+        "D:\\OmniaData\\qa\\audits-20261112\\FINAL_VERIFICATION_RECEIPT_20261112.json",
+        "D:\\OmniaData\\qa\\native-20261112\\QA_SUITE_SUMMARY_RECEIPT.json"
+      ],
+      "next": "Commit clean root tree and validate locked metadata/build/tests from an independent clean clone."
     },
     {
       "id": "SESSION-G02",
-      "tasks": ["ROOT-02", "ROOT-03"],
-      "dod": ["DOD-04", "DOD-05"],
+      "tasks": [
+        "ROOT-02",
+        "ROOT-03"
+      ],
+      "dod": [
+        "DOD-04",
+        "DOD-05"
+      ],
       "required": "PASS_PRESERVATION",
       "state": "PARTIAL",
-      "receipts": ["CHECKPOINT.md#source-preservation-and-isolated-restore--r10", "SOURCE_DISPOSITION_LEDGER.json#preservation"],
-      "next": "Primary bytes/supplement are verified; compare primary Git state, preserve excluded owners/consumers and review fresh state. Scoped R2 status remains conditional; retirement remains ineligible."
+      "receipts": [
+        "CHECKPOINT.md#source-preservation-and-isolated-restore--r10",
+        "SOURCE_DISPOSITION_LEDGER.json#preservation",
+        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\source-reconciliation-complete.json",
+        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\worktree-relocation-receipt-20261112.json"
+      ],
+      "next": "138/138 focus rows reconciled and 4 worktrees relocated/repaired; compare primary Git state, preserve excluded boundaries (retirementEligible=false), and run elevated UAC move for Roaming."
     },
     {
       "id": "SESSION-G03",
-      "tasks": ["DRIVE-01", "DRIVE-02"],
-      "dod": ["DOD-08"],
+      "tasks": [
+        "DRIVE-01",
+        "DRIVE-02"
+      ],
+      "dod": [
+        "DOD-08"
+      ],
       "required": "PASS_SCOPED",
       "state": "PARTIAL",
-      "receipts": [],
-      "next": "Bind actual drive-root scope and all completed cleanup/relocation receipts; transfer unknowns."
+      "receipts": [
+        "EXTERNAL_LAYOUT.json",
+        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\d-drive-root-inventory.json",
+        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\root-externalization-receipt-20261112.json",
+        "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\d-drive-reclamation-receipt-20261112.json"
+      ],
+      "next": "D:\\ root inventory and +10.125 GiB cache reclamation verified; preserve unclassified/active external consumers."
     },
     {
       "id": "SESSION-G04",
-      "tasks": ["HISTORY-01"],
-      "dod": ["DOD-09"],
+      "tasks": [
+        "HISTORY-01"
+      ],
+      "dod": [
+        "DOD-09"
+      ],
       "required": "PASS_SCOPED",
       "state": "PARTIAL",
-      "receipts": [],
-      "next": "Freeze privately retrievable source prefixes and preserve watermark, gaps and growing tails."
+      "receipts": [
+        "D:\\OmniaData\\exports\\history\\WATERMARK_AND_DENOMINATORS.json",
+        "D:\\OmniaData\\exports\\history\\SECRET_SCAN_VERIFICATION.json",
+        "tools/agy-history-sync/README.md"
+      ],
+      "next": "1,767 files hashed (PASS_ZERO_LEAKS) and AGY 3-surface + unified 1,102-thread FTS5 index verified; capture growing tails of the 18 active swarm sessions after closure."
     },
     {
       "id": "SESSION-G05",
-      "tasks": ["HANDOFF-01"],
-      "dod": ["DOD-11"],
+      "tasks": [
+        "HANDOFF-01"
+      ],
+      "dod": [
+        "DOD-11"
+      ],
       "required": "PASS_SCOPED",
-      "state": "IN_PROGRESS",
-      "receipts": [],
-      "next": "Resolve current handoff findings and review final source-bound documents and references."
+      "state": "PARTIAL",
+      "receipts": [
+        "docs/handoff/COLLABORATOR_HANDOFF.md",
+        "docs/handoff/USER_PROMPT_REQUIREMENTS_MATRIX.md",
+        "docs/workspace/STATUS.md",
+        "docs/workspace/TRANSFER_CONTRACT.md"
+      ],
+      "next": "Bind committed candidate SHA across handoff/admission records after Commit #1 and clean-clone check."
     },
     {
       "id": "SESSION-G06",
-      "tasks": ["DELIVERY-01"],
-      "dod": ["DOD-15"],
+      "tasks": [
+        "DELIVERY-01"
+      ],
+      "dod": [
+        "DOD-15"
+      ],
       "required": "PASS_SCOPED",
-      "state": "OPEN",
-      "receipts": [],
-      "next": "Verify destination identity, privacy/licenses, pushed tree and independent clean clone."
+      "state": "IN_PROGRESS",
+      "receipts": [
+        "docs/workspace/REMOTE_SETUP.md",
+        "D:\\OmniaData\\exports\\history\\SECRET_SCAN_VERIFICATION.json"
+      ],
+      "next": "Push committed tree to https://github.com/khang-macphuc111107/omnia, verify remote SHA, and run independent clean-clone checks."
     },
     {
       "id": "SESSION-G07",
-      "tasks": ["SESSION-01"],
-      "dod": ["DOD-16"],
+      "tasks": [
+        "SESSION-01"
+      ],
+      "dod": [
+        "DOD-16"
+      ],
       "required": "PASS_TRANSFER",
       "state": "PARTIAL",
-      "receipts": [],
-      "next": "Refresh the transfer list from every unfinished parent and product leaf at admission."
+      "receipts": [
+        "docs/workspace/TRANSFER_CONTRACT.md",
+        "docs/workspace/TASKS.md",
+        "docs/workspace/NEXT_SESSION_PROMPT.md"
+      ],
+      "next": "Refresh candidateCommit/candidateTree at final admission check before launching follow-up session."
     }
   ],
   "openTransfer": [
-    {"task": "ROOT-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "GOAL.md", "next": "Bind source admission to fresh clone checks.", "acceptance": ["DOD-01", "DOD-02", "DOD-03"]},
-    {"task": "ROOT-02", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "SOURCE_DISPOSITION_LEDGER.json", "next": "Review HEAD/index/dirty/untracked differences and disposition each relevant change.", "acceptance": ["DOD-04"]},
-    {"task": "ROOT-03", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10", "next": "Reuse verified primary/supplement bytes; compare primary Git state and preserve excluded owners/consumers; retain EOL findings and reacquire source drift before retirement.", "acceptance": ["DOD-05"]},
-    {"task": "ROOT-04", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Refactor reviewed components with behavioral oracles.", "acceptance": ["DOD-07"]},
-    {"task": "ROOT-05", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Repair export completeness and verify isolated closure.", "acceptance": ["DOD-02", "DOD-06", "DOD-15"]},
-    {"task": "DRIVE-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "EXTERNAL_LAYOUT.json", "next": "Complete bounded drive-root ownership classification and record omissions.", "acceptance": ["DOD-08"]},
-    {"task": "DRIVE-02", "state": "PARTIAL", "owner": "root-integrator", "source": "CHECKPOINT.md", "next": "Retain completed cleanup receipts; classify remaining candidates before reclaiming.", "acceptance": ["DOD-08"]},
-    {"task": "HISTORY-01", "state": "IN_PROGRESS", "owner": "history-owner", "source": "CHECKPOINT.md", "next": "Freeze/retrieve prefixes, reconcile projected gaps and later growth.", "acceptance": ["DOD-09"]},
-    {"task": "HISTORY-02", "state": "OPEN", "owner": "history-owner", "source": "GOAL.md", "next": "Assign bounded semantic review units and independent prompt extraction.", "acceptance": ["DOD-10"]},
-    {"task": "HISTORY-03", "state": "OPEN", "owner": "history-owner", "source": "GOAL.md", "next": "Create private exports and audited redacted synthesis with exact locators.", "acceptance": ["DOD-10", "DOD-11"]},
-    {"task": "HANDOFF-01", "state": "IN_PROGRESS", "owner": "root-integrator", "source": "CHECKPOINT.md", "next": "Maintain one current checkpoint and reconcile facts after every material batch.", "acceptance": ["DOD-11"]},
-    {"task": "RESEARCH-01", "state": "OPEN", "owner": "research-owner", "source": "GOAL.md", "next": "Continue recorded source quotas and qualify atomic improvements for both harnesses.", "acceptance": ["DOD-12"]},
-    {"task": "PRODUCT-01", "state": "OPEN", "owner": "product-owner", "source": "GOAL.md#product-breakdown-retained-in-the-queue", "leaves": ["PRODUCT-NATIVE", "PRODUCT-COMPOSER", "PRODUCT-ATTACHMENTS", "PRODUCT-CHAT", "PRODUCT-CONTROL", "PRODUCT-GRAPH", "PRODUCT-MEMORY", "PRODUCT-USE", "PRODUCT-MEDIA", "PRODUCT-WORKSPACE", "PRODUCT-SECURITY", "PRODUCT-KNOWLEDGE"], "next": "Implement each required leaf and bind real runtime/resource evidence.", "acceptance": ["DOD-13"]},
-    {"task": "QUALITY-01", "state": "OPEN", "owner": "quality-owner", "source": "DOD.md", "next": "Execute feature-specific QA and independent final audits only on eligible frozen scope.", "acceptance": ["DOD-14"]},
-    {"task": "DELIVERY-01", "state": "OPEN", "owner": "root-integrator", "source": "GOAL.md", "next": "Complete publication/clone checks and maintain delivery evidence on subsequent changes.", "acceptance": ["DOD-15"]},
-    {"task": "SESSION-01", "state": "DEFERRED", "owner": "root-integrator", "source": "NEXT_SESSION_PROMPT.md", "next": "Launch only after all seven admission gates pass; record prompt hash, chat ID and goal activation.", "acceptance": ["DOD-16"]}
+    {
+      "task": "ROOT-01",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "GOAL.md",
+      "next": "Bind source admission to fresh clone checks.",
+      "acceptance": [
+        "DOD-01",
+        "DOD-02",
+        "DOD-03"
+      ]
+    },
+    {
+      "task": "ROOT-02",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "SOURCE_DISPOSITION_LEDGER.json",
+      "next": "Review HEAD/index/dirty/untracked differences and disposition each relevant change.",
+      "acceptance": [
+        "DOD-04"
+      ]
+    },
+    {
+      "task": "ROOT-03",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10",
+      "next": "Reuse verified primary/supplement bytes; compare primary Git state and preserve excluded owners/consumers; retain EOL findings and reacquire source drift before retirement.",
+      "acceptance": [
+        "DOD-05"
+      ]
+    },
+    {
+      "task": "ROOT-04",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "GOAL.md",
+      "next": "Core routing/memory/RAG/graph/composer/UIA modules structured and rustfmt-clean; continue bounded refactors on remaining host modules.",
+      "acceptance": [
+        "DOD-07"
+      ]
+    },
+    {
+      "task": "ROOT-05",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "GOAL.md",
+      "next": "Verify committed root tree in an isolated clean clone without workstation-private paths.",
+      "acceptance": [
+        "DOD-02",
+        "DOD-06",
+        "DOD-15"
+      ]
+    },
+    {
+      "task": "DRIVE-01",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "EXTERNAL_LAYOUT.json",
+      "next": "Complete bounded drive-root ownership classification and record omissions.",
+      "acceptance": [
+        "DOD-08"
+      ]
+    },
+    {
+      "task": "DRIVE-02",
+      "state": "PARTIAL",
+      "owner": "root-integrator",
+      "source": "CHECKPOINT.md",
+      "next": "Retain completed cleanup receipts; classify remaining candidates before reclaiming.",
+      "acceptance": [
+        "DOD-08"
+      ]
+    },
+    {
+      "task": "HISTORY-01",
+      "state": "IN_PROGRESS",
+      "owner": "history-owner",
+      "source": "CHECKPOINT.md",
+      "next": "Freeze/retrieve prefixes, reconcile projected gaps and later growth.",
+      "acceptance": [
+        "DOD-09"
+      ]
+    },
+    {
+      "task": "HISTORY-02",
+      "state": "IN_PROGRESS",
+      "owner": "history-owner",
+      "source": "GOAL.md",
+      "next": "Flagship 124-prompt matrix and multi-host lessons synthesized; continue bounded deep-reads on secondary historical threads.",
+      "acceptance": [
+        "DOD-10"
+      ]
+    },
+    {
+      "task": "HISTORY-03",
+      "state": "IN_PROGRESS",
+      "owner": "history-owner",
+      "source": "GOAL.md",
+      "next": "Redacted collaborator handoff suite and zero-secret scan (294 files, 0 leaks) verified; refresh tail delta post-session.",
+      "acceptance": [
+        "DOD-10",
+        "DOD-11"
+      ]
+    },
+    {
+      "task": "HANDOFF-01",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "CHECKPOINT.md",
+      "next": "Maintain one current checkpoint and reconcile facts after every material batch.",
+      "acceptance": [
+        "DOD-11"
+      ]
+    },
+    {
+      "task": "RESEARCH-01",
+      "state": "IN_PROGRESS",
+      "owner": "research-owner",
+      "source": "GOAL.md",
+      "next": "103 flagship URLs + 8 REA URLs + github/spec-kit + 12 curated skills + 100-category catalog qualified; retain login-walled gaps honestly.",
+      "acceptance": [
+        "DOD-12"
+      ]
+    },
+    {
+      "task": "PRODUCT-01",
+      "state": "IN_PROGRESS",
+      "owner": "product-owner",
+      "source": "GOAL.md#product-breakdown-retained-in-the-queue",
+      "leaves": [
+        "PRODUCT-NATIVE",
+        "PRODUCT-COMPOSER",
+        "PRODUCT-ATTACHMENTS",
+        "PRODUCT-CHAT",
+        "PRODUCT-CONTROL",
+        "PRODUCT-GRAPH",
+        "PRODUCT-MEMORY",
+        "PRODUCT-USE",
+        "PRODUCT-MEDIA",
+        "PRODUCT-WORKSPACE",
+        "PRODUCT-SECURITY",
+        "PRODUCT-KNOWLEDGE"
+      ],
+      "next": "524/524 Cargo tests + 3 UI candidates (PENDING_USER_REVIEW) verified; complete live provider streaming, Browser/IDE host, and resource budgets across all 12 leaves.",
+      "acceptance": [
+        "DOD-13"
+      ]
+    },
+    {
+      "task": "QUALITY-01",
+      "state": "IN_PROGRESS",
+      "owner": "quality-owner",
+      "source": "DOD.md",
+      "next": "7/7 Win32 QA workflows (90/90 cases rc=0) and Wave 2 verifier audit passed (0 open defects); run live E2E provider/IME/Narrator QA and 3-round frozen whole-goal audits.",
+      "acceptance": [
+        "DOD-14"
+      ]
+    },
+    {
+      "task": "DELIVERY-01",
+      "state": "IN_PROGRESS",
+      "owner": "root-integrator",
+      "source": "GOAL.md",
+      "next": "Local identity khang-macphuc111107 configured; push Commit #1 to GitHub and verify clean clone.",
+      "acceptance": [
+        "DOD-15"
+      ]
+    },
+    {
+      "task": "SESSION-01",
+      "state": "DEFERRED",
+      "owner": "root-integrator",
+      "source": "NEXT_SESSION_PROMPT.md",
+      "next": "Launch only after all seven admission gates pass; record prompt hash, chat ID and goal activation.",
+      "acceptance": [
+        "DOD-16"
+      ]
+    }
   ],
-  "launch": {"threadId": null, "promptSha256": null, "goalActivation": "NOT_REQUESTED", "checkpoint": null},
-  "limits": "Deferred transfer; r10 scoped restore does not complete preservation, semantic reconciliation, publication, runtime or final audit. Refresh current states and evidence before admission."
+  "launch": {
+    "threadId": null,
+    "promptSha256": null,
+    "goalActivation": "NOT_REQUESTED",
+    "checkpoint": null
+  },
+  "limits": "Deferred transfer prior to Commit #1 push and isolated clean-clone verification. Wave 2 verified 524/524 Cargo tests, 7/7 Win32 QA workflows (90/90 cases rc=0), 12 curated skills, 3-surface AGY sync, 138/138 focus rows, and +10.125 GiB D: reclamation, while preserving open full-product runtime leaves, excluded primary boundaries (retirementEligible=false), PENDING_USER_REVIEW UI direction selection, and 0/3 whole-goal frozen final audit rounds."
 }

@@ -1,0 +1,41 @@
+# Omnia work breakdown index
+
+**Index role:** Concise index of the **16 canonical parent tasks** and **12 `PRODUCT-*` leaves**. Authoritative contracts live in [`GOAL.md`](GOAL.md), acceptance oracles in [`DOD.md`](DOD.md), evidence watermarks in [`CHECKPOINT.md`](CHECKPOINT.md), and session-transfer bindings in [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json).
+
+## 16 canonical parent tasks
+
+| Task ID | Summary | Scoped status | Primary repository / external evidence locator | Acceptance |
+|---|---|---|---|---|
+| `ROOT-01` | Native Rust & shared-crate closure at root | `IN_PROGRESS` | [`../../native/Cargo.toml`](../../native/Cargo.toml), [`../../src-tauri/Cargo.toml`](../../src-tauri/Cargo.toml) (`524/524` locked tests) | `DOD-01`, `DOD-02`, `DOD-03` |
+| `ROOT-02` | Reconcile primary/release/rebuild/goal-control deltas | `IN_PROGRESS` | [`SOURCE_DISPOSITION_LEDGER.json`](SOURCE_DISPOSITION_LEDGER.json) (`138/138` focus rows reviewed; unique deltas archived) | `DOD-04` |
+| `ROOT-03` | Safe nested Git & linked worktree relocation/preservation | `IN_PROGRESS` | `D:\OmniaData\research\omnia-clean-2026-11-12\worktree-relocation-receipt-20261112.json` (`4` checkouts healthy; `retirementEligible=false`) | `DOD-05` |
+| `ROOT-04` | Behavior-preserving modular code organization | `IN_PROGRESS` | `dynamic_router.rs`, `proactive_rag.rs`, `agent_graph.rs`, `composer.rs`, `uia_edit.rs` (`cargo fmt --check` exit `0`) | `DOD-07` |
+| `ROOT-05` | Self-contained root build & clean-clone closure | `IN_PROGRESS` | [`../../README.md`](../../README.md), [`../../.gitignore`](../../.gitignore), [`../../tools/maintained-scripts/stage-public-release.mjs`](../../tools/maintained-scripts/stage-public-release.mjs) | `DOD-02`, `DOD-06`, `DOD-15` |
+| `DRIVE-01` | Bounded `D:\` top-level ownership & consumer inventory | `IN_PROGRESS` | `D:\OmniaData\research\omnia-clean-2026-11-12\d-drive-root-inventory.json`, [`EXTERNAL_LAYOUT.json`](EXTERNAL_LAYOUT.json) | `DOD-08` |
+| `DRIVE-02` | Reversible cache cleanup & measured free-space delta | `PARTIAL` | `D:\OmniaData\research\omnia-clean-2026-11-12\d-drive-reclamation-receipt-20261112.json` (`+10.125 GiB` reclaimed) | `DOD-08` |
+| `HISTORY-01` | Multi-host chat history watermark & 3-surface sync | `IN_PROGRESS` | `D:\OmniaData\exports\history\WATERMARK_AND_DENOMINATORS.json`, [`../../tools/agy-history-sync/README.md`](../../tools/agy-history-sync/README.md) | `DOD-09` |
+| `HISTORY-02` | Hierarchical semantic history review | `IN_PROGRESS` | [`../handoff/COLLABORATOR_HANDOFF.md`](../handoff/COLLABORATOR_HANDOFF.md), [`../handoff/LESSONS_LEARNED_AND_ANTIPATTERNS.md`](../handoff/LESSONS_LEARNED_AND_ANTIPATTERNS.md) | `DOD-10` |
+| `HISTORY-03` | Redacted prompt/requirement synthesis & zero-secret audit | `IN_PROGRESS` | [`../handoff/USER_PROMPT_REQUIREMENTS_MATRIX.md`](../handoff/USER_PROMPT_REQUIREMENTS_MATRIX.md) (`PASS_ZERO_LEAKS` across `294` files) | `DOD-10`, `DOD-11` |
+| `HANDOFF-01` | Unified specs, ledgers, indexes & continuity rules | `IN_PROGRESS` | [`GOAL.md`](GOAL.md), [`DOD.md`](DOD.md), [`CHECKPOINT.md`](CHECKPOINT.md), [`DECISIONS.md`](DECISIONS.md), [`PLAN.md`](PLAN.md), [`TRANSFER_CONTRACT.md`](TRANSFER_CONTRACT.md) | `DOD-11` |
+| `RESEARCH-01` | Authentic URL/media/repo qualification & atomic skills | `IN_PROGRESS` | [`REFS.md`](REFS.md), [`../../.agents/skills/`](../../.agents/skills/) (`12` synced skills; `103 + 9` URLs; `100`-cat catalog) | `DOD-12` |
+| `PRODUCT-01` | Native shell, composer, router, memory, graph & workspace | `IN_PROGRESS` | Scoped core modules & unit/UIA suites verified; full end-to-end runtime leaves remain open below | `DOD-13` |
+| `QUALITY-01` | Code, security, Win32 UIA, visual & recovery QA | `IN_PROGRESS` | `D:\OmniaData\qa\native-20261112\QA_SUITE_SUMMARY_RECEIPT.json` (`7/7` workflows, `90/90` cases `rc=0`) & `FINAL_VERIFICATION_RECEIPT_20261112.json` | `DOD-14` |
+| `DELIVERY-01` | Verified GitHub identity, push & clean-clone handoff | `IN_PROGRESS` | [`REMOTE_SETUP.md`](REMOTE_SETUP.md) (`https://github.com/khang-macphuc111107/omnia`) — awaiting push & clean-clone receipt | `DOD-15` |
+| `SESSION-01` | Follow-up Omnia session launch after 7 admission gates | `DEFERRED` | [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json), [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) | `DOD-16` |
+
+## 12 `PRODUCT-*` capability leaves (`PRODUCT-01`)
+
+| Leaf ID | Subsystem | Implemented & scoped-verified foundation | Remaining open runtime scope |
+|---|---|---|---|
+| `PRODUCT-NATIVE` | Win32 Rust shell (`omnia-native`) | [`../../native/src/`](../../native/src/) (`29/29` Rust tests; `7/7` QA scripts `rc=0`; `0` clipping; server-side COM UIA) | Live provider wire-up, Browser/IDE host engines, comparative CPU/RAM/GPU budgets |
+| `PRODUCT-COMPOSER` | Rich prompt editor & palettes | [`../../native/src/composer.rs`](../../native/src/composer.rs), [`COMPOSER_REQUIREMENTS.md`](COMPOSER_REQUIREMENTS.md) (spans, Markdown/LaTeX blocks, Math/Phys/Chem palettes, undo/redo, draft persistence) | Full live WYSIWYG native glyph layout, physical Vietnamese IME & Narrator matrix |
+| `PRODUCT-ATTACHMENTS` | Dual-mode inline & tray attachments | [`../../native/src/composer.rs`](../../native/src/composer.rs) (inline-at-caret vs tray modal model, deduplicated payload IDs, non-mutating cancel, ordered provider fallback serialization) | Live OS drag/drop stream conversion workers & upload progress wiring |
+| `PRODUCT-CHAT` | Dynamic provider/model/quota router | [`../../src-tauri/crates/omnia-provider-services/src/dynamic_router.rs`](../../src-tauri/crates/omnia-provider-services/src/dynamic_router.rs), [`DYNAMIC_ROUTING_REQUIREMENTS.md`](DYNAMIC_ROUTING_REQUIREMENTS.md) (`31/31` tests covering all 10 failure/recovery scenarios) | Live authenticated multi-provider HTTP streaming & persistent ledger binding in native UI |
+| `PRODUCT-CONTROL` | Goal/plan/task CRUD, steer & CAS | Existing `omnia-harness` / `omnia-session-store` run/control primitives + [`STEER_QUEUE.md`](STEER_QUEUE.md) | End-to-end native UI goal/task CRUD & active-run steer controls |
+| `PRODUCT-GRAPH` | Bidirectional peer-mesh & Graphify | [`../../src-tauri/crates/omnia-harness/src/agent_graph.rs`](../../src-tauri/crates/omnia-harness/src/agent_graph.rs) (`PeerMeshGraph` 2-way `Duplex`, `disjoint_paths`, `max_hops`/`epoch`, `GraphifyIndex` `Forward`/`Reverse`/`Both`) | Multi-process worker runtime lease integration & native graph inspector view |
+| `PRODUCT-MEMORY` | Hierarchical/graph memory & proactive RAG | [`../../src-tauri/crates/omnia-harness/src/memory.rs`](../../src-tauri/crates/omnia-harness/src/memory.rs), [`../../src-tauri/crates/omnia-harness/src/proactive_rag.rs`](../../src-tauri/crates/omnia-harness/src/proactive_rag.rs) (`Working`/`Durable` tiers, `MemoryGraph`, EN/VN uncertainty detector, cited/unused source ledgers) | Live vector/BM25 retrieval corpus benchmark & UI memory drawer |
+| `PRODUCT-USE` | Low-disruption browser/OS/UIA control | `omnia-browser`, `omnia-computer`, [`../../native/qa-capture.ps1`](../../native/qa-capture.ps1), `WH_CBT` background UIA invoke | Per-API capability matrix & live low-disruption desktop/browser execution receipts |
+| `PRODUCT-MEDIA` | Addressable image/video/audio/doc evidence | `omnia-download`, media frame/VTT pipeline patterns in [`REFS.md`](REFS.md) | Native attachment/media timeline inspector & OCR/ASR runtime integration |
+| `PRODUCT-WORKSPACE` | Anti-slop UI direction & workbench surfaces | [`../ui-direction/DIRECTION_DECISION.md`](../ui-direction/DIRECTION_DECISION.md) (3 interactive candidates under `D:\OmniaData\qa\ui-direction-20261112\`, `24/24` WCAG >= `5.78:1`, `PENDING_USER_REVIEW`) | User candidate selection + production native Win32/GPU surface implementation |
+| `PRODUCT-SECURITY` | Authorization, secret redaction & safe audits | Secret-free router/erasure receipts, `PASS_ZERO_LEAKS` redaction pipeline, path/reparse/sidecar guards in `qa-paths.ps1` | Full capability authorization matrix & OS/service audit UI |
+| `PRODUCT-KNOWLEDGE` | Study, curriculum, scientific & proposal workflows | `deep-proposal` & `omnia-session-governance-handoff` in [`../../.agents/skills/`](../../.agents/skills/), HCMUT curriculum PDFs qualified | Native study/notebook workspace & reproducible export runners |

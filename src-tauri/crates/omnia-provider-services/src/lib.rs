@@ -1,3 +1,4 @@
+pub mod dynamic_router;
 pub mod profiles;
 pub mod routing;
 

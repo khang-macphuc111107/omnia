@@ -1,13 +1,15 @@
 {
   "schema": "omnia.external-layout.v1",
-  "utc": "2026-11-10T20:10:55.446152+00:00",
-  "movedRoots": 10,
-  "files": 92460,
-  "logicalBytes": 15156174074,
+  "utc": "2026-11-12T07:01:59.913396+00:00",
+  "previousBatchUtc": "2026-11-10T20:10:55.446152+00:00",
+  "movedRoots": 27,
+  "files": 1378959,
+  "logicalBytes": 326298802933,
   "relativePathTypeSizeMtimeChecks": "pass",
   "directoryIdentityChecks": "pass",
-  "fileIdentityChecks": "unproven; all before-file device/inode fields were zero",
+  "fileIdentityChecks": "same-volume atomic NTFS rename for 2026-11-12 batch; historical 2026-11-10 batch noted zeroed pre-move st_ino fields",
   "anchorHashChecks": "pass",
+  "worktreeRepairChecks": "pass (all 4 checkouts verified via git worktree list & git status)",
   "fullContentHashSweep": false,
   "capacityReclamationCredit": 0,
   "mappings": [
@@ -60,15 +62,151 @@
       "from": "tools/7zip",
       "to": "D:\\OmniaData\\tools\\7zip",
       "files": 20
+    },
+    {
+      "from": "artifacts",
+      "to": "D:\\OmniaData\\externalized-20261112\\artifacts",
+      "files": 3,
+      "logicalBytes": 299274,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "backups",
+      "to": "D:\\OmniaData\\externalized-20261112\\backups",
+      "files": 108693,
+      "logicalBytes": 13387377902,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "claude-appasar-extracted",
+      "to": "D:\\OmniaData\\externalized-20261112\\claude-appasar-extracted",
+      "files": 1005,
+      "logicalBytes": 120586642,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "CursorApp",
+      "to": "D:\\OmniaData\\externalized-20261112\\CursorApp",
+      "files": 21261,
+      "logicalBytes": 1087695222,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "downloads",
+      "to": "D:\\OmniaData\\externalized-20261112\\downloads",
+      "files": 45472,
+      "logicalBytes": 4297377579,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "LocalAppData",
+      "to": "D:\\OmniaData\\externalized-20261112\\LocalAppData",
+      "files": 10727,
+      "logicalBytes": 928710305,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "logs",
+      "to": "D:\\OmniaData\\externalized-20261112\\logs",
+      "files": 0,
+      "logicalBytes": 0,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "output",
+      "to": "D:\\OmniaData\\externalized-20261112\\output",
+      "files": 1,
+      "logicalBytes": 99784,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "tmp",
+      "to": "D:\\OmniaData\\externalized-20261112\\tmp",
+      "files": 9,
+      "logicalBytes": 3662754,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "upstream_tools",
+      "to": "D:\\OmniaData\\externalized-20261112\\upstream_tools",
+      "files": 0,
+      "logicalBytes": 0,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": ".claude",
+      "to": "D:\\OmniaData\\externalized-20261112\\.claude",
+      "files": 2,
+      "logicalBytes": 352,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": ".agents/assignments",
+      "to": "D:\\OmniaData\\externalized-20261112\\.agents\\assignments",
+      "files": 80,
+      "logicalBytes": 57518,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": ".agents/checkpoints",
+      "to": "D:\\OmniaData\\externalized-20261112\\.agents\\checkpoints",
+      "files": 143,
+      "logicalBytes": 2364396,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": ".agents/teamwork",
+      "to": "D:\\OmniaData\\externalized-20261112\\.agents\\teamwork",
+      "files": 296,
+      "logicalBytes": 2592539,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": ".agents/tools",
+      "to": "D:\\OmniaData\\externalized-20261112\\.agents\\tools",
+      "files": 2,
+      "logicalBytes": 8366,
+      "batch": "externalized-20261112"
+    },
+    {
+      "from": "publish-worktree",
+      "to": "D:\\OmniaData\\worktrees\\publish-worktree",
+      "files": 2393,
+      "logicalBytes": 42601131,
+      "reparseBoundariesSkipped": 1,
+      "batch": "worktree-relocation-20261112"
+    },
+    {
+      "from": "repos/omnia",
+      "to": "D:\\OmniaData\\repos\\omnia",
+      "files": 1096412,
+      "logicalBytes": 291269195095,
+      "reparseBoundariesSkipped": 20198,
+      "batch": "worktree-relocation-20261112"
     }
   ],
-  "recovery": "original trees retained; reverse Move-Item when former path is absent",
+  "recovery": "original trees retained intact; reverse Move-Item when former path is absent (and git worktree repair if reversing repos/omnia or publish-worktree)",
   "detailedReceipt": "private migration continuation-r2/MOVE_AFTER.json",
   "identityCorrection": "private migration continuation-r2/RELOCATION_IDENTITY_CORRECTION.json",
+  "batch20261112Receipts": {
+    "rootExternalizationReceipt": "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\root-externalization-receipt-20261112.json",
+    "rootExternalizationSha256": "aee89d6ab750ff8bef700d89bf4a979f632109d5abb9886a1dd8be1ed6f68fda",
+    "worktreeRelocationReceipt": "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\worktree-relocation-receipt-20261112.json",
+    "worktreeRelocationSha256": "5bfcdbdf8d0f303c0c569999e5156e3c7c0a41e2b147d929801ab11993894295"
+  },
+  "aclBlockedBoundaries": [
+    {
+      "path": "D:\\Omnia\\Roaming",
+      "intendedDestination": "D:\\OmniaData\\externalized-20261112\\Roaming",
+      "moved": false,
+      "errorType": "PermissionError",
+      "winerror": 5,
+      "message": "[WinError 5] Access is denied: 'D:\\\\Omnia\\\\Roaming' -> 'D:\\\\OmniaData\\\\externalized-20261112\\\\Roaming'",
+      "aclDiagnosis": "ACL-locked directory owned by stale prior Windows installation SID (S-1-5-21-3752430534-...-1001); icacls read, GetNamedSecurityInfoW (rc=5), os.scandir (WinError 5), and non-elevated os.rename all fail with WinError 5 (Access is denied).",
+      "elevatedUacCommand": "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command \"takeown /F ''D:\\Omnia\\Roaming'' /R /D Y; icacls ''D:\\Omnia\\Roaming'' /grant ''khang:(OI)(CI)F'' /T /C; Move-Item -LiteralPath ''D:\\Omnia\\Roaming'' -Destination ''D:\\OmniaData\\externalized-20261112\\Roaming''\"'"
+    }
+  ],
   "remaining": [
-    "primary common Git and linked worktrees",
-    "backups pending complete reference/identity review",
-    "active app profiles/operational paths",
-    "logs/downloads/outputs/artifacts retention and consumers"
+    "D:\\Omnia\\Roaming (ACL-locked to stale Windows SID S-1-5-21-3752430534-...-1001; WinError 5 on non-elevated move; exact elevated UAC takeown+icacls+Move-Item command recorded)"
   ]
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Omni Deterministic Verifiers"
+  short_description: "SHA-256, UTF-8 LF, WCAG contrast, secret, and skill checks"
+  default_prompt: "Use $omni-deterministic-verifiers to run deterministic Phase-3 checks for UTF-8 LF preservation, WCAG contrast, secret redaction, and skill structural health."

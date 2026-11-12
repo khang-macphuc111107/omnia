@@ -1,0 +1,4 @@
+interface:
+  display_name: "Additive Steer Queue"
+  short_description: "Queue mid-run steers without dropping unfinished goals"
+  default_prompt: "Use $additive-steer-queue to append this new request to the active backlog, reconcile any conflicts with completed work, and continue until every unfinished task is verified."

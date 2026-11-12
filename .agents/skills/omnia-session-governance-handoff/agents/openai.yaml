@@ -1,0 +1,4 @@
+interface:
+  display_name: "Omnia Session Governance & Handoff"
+  short_description: "Session admission, canonical docs, and 6-state receipts"
+  default_prompt: "Use $omnia-session-governance-handoff to run Phase-0 session preflight, update canonical workspace/handoff artifacts cleanly, and emit a falsifiable 6-state completion receipt."

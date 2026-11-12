@@ -1,0 +1,4 @@
+interface:
+  display_name: "Omni Bilingual Skill Router"
+  short_description: "BM25 VN-EN skill search, 4-stage DAGs, and lockfile doctor"
+  default_prompt: "Use $omni-bilingual-skill-router to find the highest-signal skills for this Vietnamese or English request and assemble a 4-stage execution DAG."

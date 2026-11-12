@@ -3,6 +3,8 @@
 #[cfg(windows)]
 mod session_panel;
 #[cfg(windows)]
+mod uia_edit;
+#[cfg(windows)]
 mod win32;
 
 fn main() {

@@ -1,5 +1,6 @@
 //! UI projection only. Durable sessions and provider authority remain in the
 //! existing Rust services; this shell must not invent a second database.
+pub mod composer;
 pub mod session_form;
 pub mod sessions;
 

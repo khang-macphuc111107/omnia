@@ -1,5 +1,9 @@
 //! Native session metadata UI using the shared Rust authority. All storage
 //! borrows finish before any Win32 call that may synchronously reenter.
+//!
+//! Includes dynamic `WM_SIZE` & per-window DPI layout (`QUALITY-01`) so the
+//! session status readout (`ID = 126`) never clips above `Refresh sessions`
+//! (`ID = 127`) at `1220x820` or under display scaling.
 use omnia_native::session_form::SessionForm;
 use omnia_native::sessions::{SessionCommand, SessionWorker, EFFORTS};
 use omnia_session_store::session_navigation::AgentSessionPageCursor;
@@ -8,7 +12,7 @@ use std::{cell::RefCell, path::PathBuf, ptr, rc::Rc};
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::LibraryLoader::GetModuleHandleW,
+    System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     UI::{
         Controls::EM_SETLIMITTEXT, Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*,
     },
@@ -16,10 +20,14 @@ use windows_sys::Win32::{
 
 #[derive(Clone, Copy)]
 struct Handles {
+    header_label: HWND,
     list: HWND,
     new: HWND,
+    title_label: HWND,
     title: HWND,
+    model_label: HWND,
     model: HWND,
+    effort_label: HWND,
     effort: HWND,
     apply: HWND,
     status: HWND,
@@ -48,6 +56,26 @@ struct Panel {
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
+}
+
+pub(crate) unsafe fn window_dpi(hwnd: HWND) -> u32 {
+    type GetDpiForWindowFn = unsafe extern "system" fn(HWND) -> u32;
+    let user32 = GetModuleHandleW(wide("user32.dll").as_ptr());
+    if !user32.is_null() {
+        if let Some(proc_addr) = GetProcAddress(user32, b"GetDpiForWindow\0".as_ptr()) {
+            let get_dpi: GetDpiForWindowFn = std::mem::transmute(proc_addr);
+            let dpi = get_dpi(hwnd);
+            if dpi >= 72 {
+                return dpi;
+            }
+        }
+    }
+    96
+}
+
+#[inline]
+pub(crate) fn scale_px(px: i32, dpi: u32) -> i32 {
+    ((px as i64 * dpi as i64 + 48) / 96) as i32
 }
 
 unsafe fn text(hwnd: HWND, value: &str) {
@@ -111,48 +139,110 @@ fn requested_database() -> Result<Option<PathBuf>, String> {
     Ok(database)
 }
 
+unsafe fn layout_panel(hwnd: HWND, handles: Handles) {
+    let mut rect: RECT = std::mem::zeroed();
+    if GetClientRect(hwnd, &mut rect) == 0 {
+        return;
+    }
+    let dpi = window_dpi(hwnd);
+    let s = |v: i32| scale_px(v, dpi);
+    let width = (rect.right - rect.left).max(s(220));
+    let height = (rect.bottom - rect.top).max(s(560));
+
+    // Reserve generous room for the multi-line status label (`126`) above `Refresh sessions` (`127`).
+    let extra_vertical = (height - s(650)).max(0);
+    let list_h = s(100) + (extra_vertical / 2);
+
+    let mut y = 0;
+    MoveWindow(handles.header_label, 0, y, width, s(22), 1);
+    y += s(25);
+    MoveWindow(handles.new, 0, y, width, s(30), 1);
+    y += s(35);
+    MoveWindow(handles.list, 0, y, width, list_h, 1);
+    y += list_h + s(6);
+
+    let half_gap = s(8);
+    let page_btn_w = ((width - half_gap) / 2).max(s(60));
+    MoveWindow(handles.previous, 0, y, page_btn_w, s(28), 1);
+    MoveWindow(
+        handles.next,
+        page_btn_w + half_gap,
+        y,
+        (width - page_btn_w - half_gap).max(s(60)),
+        s(28),
+        1,
+    );
+    y += s(34);
+
+    MoveWindow(handles.title_label, 0, y, width, s(20), 1);
+    y += s(22);
+    MoveWindow(handles.title, 0, y, width, s(26), 1);
+    y += s(32);
+
+    MoveWindow(handles.model_label, 0, y, width, s(20), 1);
+    y += s(22);
+    MoveWindow(handles.model, 0, y, width, s(26), 1);
+    y += s(32);
+
+    MoveWindow(handles.effort_label, 0, y, width, s(20), 1);
+    y += s(22);
+    // Note: For CBS_DROPDOWNLIST, height specifies the expanded dropdown box height.
+    MoveWindow(handles.effort, 0, y, width, s(220), 1);
+    y += s(34);
+
+    MoveWindow(handles.apply, 0, y, width, s(30), 1);
+    y += s(38);
+
+    let refresh_h = s(30);
+    let refresh_y = (height - refresh_h - s(2)).max(y + s(156));
+    let status_h = (refresh_y - y - s(6)).max(s(150));
+    MoveWindow(handles.status, 0, y, width, status_h, 1);
+    MoveWindow(handles.refresh, 0, refresh_y, width, refresh_h, 1);
+}
+
 unsafe fn initialize(hwnd: HWND) -> Result<Box<Panel>, String> {
-    control(hwnd, "STATIC", "Sessions · native SQLite", 0, 119, 0, 24)?;
+    let header_label = control(hwnd, "STATIC", "Sessions · native SQLite", 0, 119, 0, 22)?;
     let new = control(
         hwnd,
         "BUTTON",
         "New projectless chat",
         WS_TABSTOP,
         121,
-        28,
-        32,
+        25,
+        30,
     )?;
+    crate::uia_edit::attach_button(new, "121", "New projectless chat");
     let list = control(
         hwnd,
         "LISTBOX",
         "",
         WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY as u32,
         120,
-        68,
-        140,
+        60,
+        104,
     )?;
-    let previous = control(hwnd, "BUTTON", "Previous page", WS_TABSTOP, 128, 212, 30)?;
-    let next = control(hwnd, "BUTTON", "Next page", WS_TABSTOP, 129, 212, 30)?;
-    MoveWindow(previous, 0, 212, 137, 30, 0);
-    MoveWindow(next, 145, 212, 137, 30, 0);
-    control(hwnd, "STATIC", "Session title", 0, 130, 252, 22)?;
+    let previous = control(hwnd, "BUTTON", "Previous page", WS_TABSTOP, 128, 170, 28)?;
+    crate::uia_edit::attach_button(previous, "128", "Previous page");
+    let next = control(hwnd, "BUTTON", "Next page", WS_TABSTOP, 129, 170, 28)?;
+    crate::uia_edit::attach_button(next, "129", "Next page");
+    let title_label = control(hwnd, "STATIC", "Session title", 0, 130, 204, 20)?;
     let title = control(
         hwnd,
         "EDIT",
         "",
         WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
         122,
-        277,
-        28,
+        226,
+        26,
     )?;
-    control(
+    let model_label = control(
         hwnd,
         "STATIC",
         "Model ID (profile not connected)",
         0,
         131,
-        317,
-        22,
+        258,
+        20,
     )?;
     let model = control(
         hwnd,
@@ -160,18 +250,18 @@ unsafe fn initialize(hwnd: HWND) -> Result<Box<Panel>, String> {
         "",
         WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
         123,
-        342,
-        28,
+        280,
+        26,
     )?;
-    control(hwnd, "STATIC", "Effort", 0, 132, 382, 22)?;
+    let effort_label = control(hwnd, "STATIC", "Effort", 0, 132, 312, 20)?;
     let effort = control(
         hwnd,
         "COMBOBOX",
         "",
         WS_TABSTOP | CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
         124,
-        407,
-        240,
+        334,
+        220,
     )?;
     for name in EFFORTS {
         SendMessageW(effort, CB_ADDSTRING, 0, wide(name).as_ptr() as isize);
@@ -182,19 +272,25 @@ unsafe fn initialize(hwnd: HWND) -> Result<Box<Panel>, String> {
         "Save session settings",
         WS_TABSTOP,
         125,
-        447,
-        32,
+        368,
+        30,
     )?;
-    let status = control(hwnd, "STATIC", "", 0, 126, 491, 115)?;
-    let refresh = control(hwnd, "BUTTON", "Refresh sessions", WS_TABSTOP, 127, 610, 30)?;
+    crate::uia_edit::attach_button(apply, "125", "Save session settings");
+    let status = control(hwnd, "STATIC", "", 0, 126, 406, 210)?;
+    let refresh = control(hwnd, "BUTTON", "Refresh sessions", WS_TABSTOP, 127, 622, 30)?;
+    crate::uia_edit::attach_button(refresh, "127", "Refresh sessions");
     for edit in [title, model] {
         SendMessageW(edit, EM_SETLIMITTEXT, 256, 0);
     }
     let handles = Handles {
+        header_label,
         list,
         new,
+        title_label,
         title,
+        model_label,
         model,
+        effort_label,
         effort,
         apply,
         status,
@@ -202,6 +298,8 @@ unsafe fn initialize(hwnd: HWND) -> Result<Box<Panel>, String> {
         previous,
         next,
     };
+    layout_panel(hwnd, handles);
+
     let state = if let Some(path) = requested_database()? {
         let target = hwnd as usize;
         let worker = SessionWorker::start(path, move || unsafe {
@@ -229,7 +327,10 @@ unsafe fn initialize(hwnd: HWND) -> Result<Box<Panel>, String> {
         ] {
             EnableWindow(item, 0);
         }
-        text(status, "Storage disconnected.\n\nLaunch with --session-db <isolated absolute path> to evaluate durable sessions.\n\nNo personal database is opened automatically.");
+        text(
+            status,
+            "Storage disconnected.\n\nLaunch with --session-db <isolated absolute path> to evaluate durable sessions.\n\nNo personal database is opened automatically.",
+        );
     }
     let panel = Box::new(Panel { handles, state });
     if let Some(state) = &panel.state {
@@ -280,12 +381,23 @@ unsafe fn render(handles: Handles, state: &Rc<RefCell<Model>>) {
             .as_deref()
             .and_then(|effort| EFFORTS.iter().position(|name| *name == effort));
         SendMessageW(handles.effort, CB_SETCURSEL, index.unwrap_or(3), 0);
-        text(handles.status, &format!("Settings revision {}\n{} rows (limit 50). {}\n\nProvider unconfigured; no request sent. Draft is unsaved.", active.settings_revision, rows.len(), location));
+        text(
+            handles.status,
+            &format!(
+                "Settings revision {}\n{} rows (limit 50). {}\n\nProvider unconfigured; no request sent. Draft is unsaved.",
+                active.settings_revision,
+                rows.len(),
+                location
+            ),
+        );
     } else {
         text(handles.title, "");
         text(handles.model, "");
         SendMessageW(handles.effort, CB_SETCURSEL, usize::MAX, 0);
-        text(handles.status, "No active session.\nCreate or select a session. Draft below is a separate, unsaved scratch buffer.");
+        text(
+            handles.status,
+            "No active session.\nCreate or select a session. Draft below is a separate, unsaved scratch buffer.",
+        );
     }
     let baseline = active_exists.then(|| read_form(handles));
     state.borrow_mut().baseline = baseline;
@@ -304,12 +416,13 @@ unsafe fn confirm_discard(handles: Handles, state: &Rc<RefCell<Model>>) -> bool 
     let current = read_form(handles);
     let dirty = current.changed_from(state.borrow().baseline.as_ref());
     // Release all RefCell borrows before entering the nested Win32 modal loop.
-    !dirty || MessageBoxW(
+    !dirty
+        || crate::uia_edit::modal_message_box(
             GetAncestor(handles.list, GA_ROOT),
-        wide("Session settings have unsaved changes. Discard them?\n\nChoose No to keep editing, or save the settings before navigating.").as_ptr(),
-        wide("Omnia — unsaved session settings").as_ptr(),
-        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
-    ) == IDYES
+            wide("Session settings have unsaved changes. Discard them?\n\nChoose No to keep editing, or save the settings before navigating.").as_ptr(),
+            wide("Omnia — unsaved session settings").as_ptr(),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDYES
 }
 
 unsafe fn restore_selection(handles: Handles, state: &Rc<RefCell<Model>>) {
@@ -340,7 +453,7 @@ pub unsafe fn can_close(hwnd: HWND) -> bool {
         });
     if let Some((handles, state)) = snapshot {
         if state.borrow().pending {
-            MessageBoxW(
+            crate::uia_edit::modal_message_box(
                 GetAncestor(hwnd, GA_ROOT),
                 wide("A storage operation is still pending. Wait for its result before closing.")
                     .as_ptr(),
@@ -352,6 +465,20 @@ pub unsafe fn can_close(hwnd: HWND) -> bool {
         return confirm_discard(handles, &state);
     }
     true
+}
+
+pub unsafe fn apply_font_and_relayout(hwnd: HWND, font: HFONT) {
+    let mut child = GetWindow(hwnd, GW_CHILD);
+    while !child.is_null() {
+        SendMessageW(child, WM_SETFONT, font as usize, 1);
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+    if let Some(handles) = (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Panel)
+        .as_ref()
+        .map(|p| p.handles)
+    {
+        layout_panel(hwnd, handles);
+    }
 }
 
 unsafe fn set_busy(handles: Handles, busy: bool) {
@@ -533,7 +660,9 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
     match message {
         WM_CREATE => match initialize(hwnd) {
             Ok(panel) => {
+                let handles = panel.handles;
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(panel) as isize);
+                layout_panel(hwnd, handles);
                 0
             }
             Err(error) => {
@@ -541,6 +670,15 @@ unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM)
                 -1
             }
         },
+        WM_SIZE => {
+            if let Some(handles) = (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Panel)
+                .as_ref()
+                .map(|p| p.handles)
+            {
+                layout_panel(hwnd, handles);
+            }
+            0
+        }
         message if message == WM_APP + 25 => {
             let snapshot = (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Panel)
                 .as_ref()
@@ -608,7 +746,7 @@ pub unsafe fn create(parent: HWND, font: HFONT) -> Result<HWND, String> {
         24,
         80,
         282,
-        610,
+        650,
         parent,
         140usize as HMENU,
         instance,
@@ -617,10 +755,6 @@ pub unsafe fn create(parent: HWND, font: HFONT) -> Result<HWND, String> {
     if panel.is_null() {
         return Err("Create session panel failed".into());
     }
-    let mut child = GetWindow(panel, GW_CHILD);
-    while !child.is_null() {
-        SendMessageW(child, WM_SETFONT, font as usize, 1);
-        child = GetWindow(child, GW_HWNDNEXT);
-    }
+    apply_font_and_relayout(panel, font);
     Ok(panel)
 }

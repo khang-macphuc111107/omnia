@@ -1,0 +1,4 @@
+interface:
+  display_name: "General Graph & Bidirectional Peer Mesh"
+  short_description: "2-way all-to-all agent graphs and Graphify bidirectional provenance"
+  default_prompt: "Use $deep-general-graph-orchestration to design or verify a bidirectional all-to-all agent peer mesh (A <-> B) and Graphify-style forward/reverse provenance graph."

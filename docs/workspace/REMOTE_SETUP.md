@@ -1,8 +1,17 @@
 # Remote setup
 
-The root Git repository is configured locally with:
+The root Git repository (`D:\Omnia`) is configured locally per the user's Msg #114 mandate and verified Git Credential Manager (GCM) account (correcting the earlier `khang-macphuc11107` typo):
 
-- user.name: `khang-macphuc11107`
-- user.email: `khang-macphuc11107@users.noreply.github.com`
+- `user.name`: `khang-macphuc111107`
+- `user.email`: `khang.macphuc111107@gmail.com`
+- Target GitHub repository: `https://github.com/khang-macphuc111107/omnia`
+- Intended collaborator: `HTMusTC`
 
-No remote is configured because an exact GitHub repository URL was not provided. Do not guess a remote or push workspace data without an explicit destination. Add one later with `git remote add origin <exact-url>` after reviewing the root allowlist.
+No `origin` remote is configured yet while `DELIVERY-01` / `DOD-15` privacy, secret-redaction, license, root-allowlist, and clean-clone checks are finalized. Do not guess an alternate remote or push unreviewed workspace or externalized `D:\OmniaData` artifacts.
+
+When ready to publish the verified tree:
+
+```powershell
+git -C "D:\Omnia" remote add origin https://github.com/khang-macphuc111107/omnia.git
+git -C "D:\Omnia" remote -v
+```
