@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 11 — Wave 2 subsystem, 7/7 native QA, 12-skill parity, 3-surface AGY history sync, URL qualification, source reconciliation and +10.125 GiB D: reclamation receipts bound; full-product runtime and excluded preservation boundaries remain open, 2026-11-12
+**Revision:** 12 — Wave 3B GitHub private publication, independent remote/local clean-clone verification, release native shell telemetry, 4-way skill/memory sync, and `SESSION_ADMISSION.json` `READY` bound; full-product runtime, excluded preservation boundaries, and external `final-streak-3` audits remain explicit, 2026-11-12
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -41,7 +41,7 @@ work was hidden or deleted.
 | `ROOT-02` | Reconcile primary/release/rebuild/goal-control differences | `IN_PROGRESS` | Per-change incorporated/retained/superseded/unresolved ledger |
 | `ROOT-03` | Repair or retire nested Git/worktree ownership | `IN_PROGRESS` | Snapshot, path repair and restore drill |
 | `ROOT-04` | Refactor and organize code without behavior loss | `IN_PROGRESS` | Scoped diff, review, tests and explainable status |
-| `ROOT-05` | Make root build and clean clone self-contained | `IN_PROGRESS` | Fresh clone metadata/build/test and private-path scan |
+| `ROOT-05` | Make root build and clean clone self-contained | `PARTIAL` | Fresh clone metadata/build/test and private-path scan |
 | `DRIVE-01` | Inventory D: ownership and disk consumers | `IN_PROGRESS` | Bounded top-level inventory and reparse classification |
 | `DRIVE-02` | Reclaim only proven disposable caches/duplicates | `PARTIAL` | Candidate manifest, retention decision and free-space delta |
 | `HISTORY-01` | Freeze and inventory accessible Codex history | `IN_PROGRESS` | Watermark, denominator and missing/truncated ledger |
@@ -51,8 +51,8 @@ work was hidden or deleted.
 | `RESEARCH-01` | Qualify research/skills and project supported improvements | `IN_PROGRESS` | Query/source/revision/license/admit-defer-reject records |
 | `PRODUCT-01` | Complete native shell, provider, editor, browser, IDE and harness | `IN_PROGRESS` | Runtime receipts for each claimed capability |
 | `QUALITY-01` | Run code, security, UI, performance, accessibility and recovery QA | `IN_PROGRESS` | Independent positive/negative/race/reload/resource results |
-| `DELIVERY-01` | Verify GitHub identity, publication and clone handoff | `IN_PROGRESS` | Account receipt, pushed SHA and clean clone |
-| `SESSION-01` | Create follow-up Omnia chat only after handoff gates | `DEFERRED` | Thread ID, immediate goal activation and checkpoint |
+| `DELIVERY-01` | Verify GitHub identity, publication and clone handoff | `PARTIAL` | Account receipt, pushed SHA and clean clone |
+| `SESSION-01` | Create follow-up Omnia chat only after handoff gates | `READY` | Thread ID, immediate goal activation and checkpoint |
 
 ## Evidence states
 
@@ -512,3 +512,10 @@ Independent verifier audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa
   - `103/103` flagship URLs + `8` REA URLs + `github/spec-kit` (`v1.4.0`) qualified under `D:\OmniaData\research\url-qualification-20261112\`.
   - `138/138` focus rows reconciled in [SOURCE_DISPOSITION_LEDGER.json](SOURCE_DISPOSITION_LEDGER.json) (`84/84` unique delta files/patches hashed; `retirementEligible=false` preserved for excluded primary boundaries), `12` root clutter directories externalized, `4` worktrees repaired, `D:\Omnia\Roaming` orphaned-SID ACL boundary documented, and **`+10,871,586,816` bytes (`+10.125 GiB`)** reclaimed on `D:\`.
 - **Honest scope boundary**: Scoped module/QA verification does not close whole-product `PRODUCT-01`, live third-party provider billing/streaming, WebView-free Browser/IDE parity, `DELIVERY-01` remote push + clean-clone verification, or the 3-round whole-goal frozen-snapshot clean audit (`0` whole-goal rounds earned). See [PLAN.md](PLAN.md), [TASKS.md](TASKS.md), and [TRANSFER_CONTRACT.md](TRANSFER_CONTRACT.md).
+
+## Wave 3B GitHub delivery, clean-clone & session admission — 2026-11-12
+
+- **GitHub publication (`DELIVERY-01` -> `PARTIAL`, `SESSION-G06` -> `PASS_SCOPED`)**: Private repository `https://github.com/khang-macphuc111107/omnia` (`origin` -> `https://github.com/khang-macphuc111107/omnia.git`, owner `khang-macphuc111107`) created and pushed with Commit #1 `d8b456e357dde65d8ee314194743fb93655f5d6a` (tree `5f8ecc4966a859dcc032bca0b3013d2f81233abb`, `2,039` tracked files; see [REMOTE_SETUP.md](REMOTE_SETUP.md)). Because `HTMusTC` is a Discord handle rather than a GitHub login, collaborator access invitation remains a user step under `/settings/access`.
+- **Independent remote & isolated local clean-clone verification (`ROOT-05` -> `PARTIAL`, `SESSION-G01` -> `PASS_SCOPED`)**: Bound in `D:\OmniaData\qa\github-clean-clone-20261112\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json` (`sha256=35aaac06a396bfc60e6d8a9bc893ccaf28c1f298c2ed958f344bdffc9285e610`, `allChecksPassed=true`): both remote GitHub clone and isolated `--no-local --no-hardlinks` clone match `d8b456e357dde65d8ee314194743fb93655f5d6a`, pass `cargo metadata --locked` and `cargo fmt --all --check` on both `src-tauri/Cargo.toml` and `native/Cargo.toml`, pass `524/524` locked Cargo tests, pass `5/5` `tools/agy-history-sync` unit tests, and pass `12/12` `.agents/skills/*` `quick_validate.py` checks (`rc=0`).
+- **Release native shell telemetry & `exebox-*` sandbox boundary (`QUALITY-01`)**: Bound in `D:\OmniaData\qa\native-20261112\retained-preview\native-shell-cycle24-runtime.json` (`sha256=1a4aa5cac935a76687432cb9ccf54fb4e390c2ef50cfc26c95b545fb9dd93a77`) and `native-shell-cycle24-window.png` (`sha256=68b669ce7e26e0d9abe2836490ca78f9566184607c7903d81e259a7f4e0c7ded`) against `release\omnia-native.exe` (`2,160,128 B`, `sha256=65944d86...`): `16,560,128 B` (`15.79 MiB`) working set, `0.0%` idle CPU, `163.2 ms` window discovery, `uiaIssue: null`. Because Antigravity executes commands inside isolated `exebox-*` Windows desktops rather than the interactive `Default` desktop, `PID 11532` was cleanly terminated after capture (`0` orphan processes); launch `D:\OmniaData\tools\cargo-target\release\omnia-native.exe` directly on `Default` desktop for interactive inspection.
+- **4-way `/learn` synchronization & session admission (`SESSION-01` -> `READY`)**: All `12` curated skills are byte-identical across `D:\Omnia\.agents\skills\`, `~/.codex/skills/`, `~/.agents/skills/`, and Antigravity, alongside `OMNIA_CONTINUITY_AND_PEER_MESH` in `~/.codex/AGENTS.md` and `59` pure-`LF` memory notes. [SESSION_ADMISSION.json](SESSION_ADMISSION.json) is now **`READY`** (`SESSION-G01..G07` passed on candidate `d8b456e357dde65d8ee314194743fb93655f5d6a`, `promptSha256=ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592`); three independent frozen-snapshot audit rounds execute against Commit #2 (`HEAD === origin/master`) into external `D:\OmniaData\qa\audits-20261112\final-streak-3\`.

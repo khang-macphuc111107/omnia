@@ -1,13 +1,13 @@
 {
   "schema": "omnia.session-admission.v1",
   "goalId": "OMNIA-ROOT-CLEAN-2026-11-11",
-  "decision": "DEFERRED",
+  "decision": "READY",
   "owner": "root-integrator",
   "policy": "GOAL.md#follow-up-chat-admission--session-01",
-  "candidateCommit": null,
-  "candidateTree": null,
-  "reviewer": null,
-  "reviewedAt": null,
+  "candidateCommit": "d8b456e357dde65d8ee314194743fb93655f5d6a",
+  "candidateTree": "5f8ecc4966a859dcc032bca0b3013d2f81233abb",
+  "reviewer": "coordinator + verifier (Wave 3B GitHub clean-clone & gate audit)",
+  "reviewedAt": "2026-11-12T11:42:44Z",
   "gates": [
     {
       "id": "SESSION-G01",
@@ -22,12 +22,13 @@
         "DOD-06"
       ],
       "required": "PASS_SCOPED",
-      "state": "PARTIAL",
+      "state": "PASS_SCOPED",
       "receipts": [
+        "D:\\OmniaData\\qa\\github-clean-clone-20261112\\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json",
         "D:\\OmniaData\\qa\\audits-20261112\\FINAL_VERIFICATION_RECEIPT_20261112.json",
         "D:\\OmniaData\\qa\\native-20261112\\QA_SUITE_SUMMARY_RECEIPT.json"
       ],
-      "next": "Commit clean root tree and validate locked metadata/build/tests from an independent clean clone."
+      "next": "Scoped root closure verified in both remote GitHub clone and isolated --no-local --no-hardlinks clone (cargo metadata/fmt/524 tests/5 Python tests/12 skills all rc=0 with external CARGO_TARGET_DIR); full packaged cold-install parity remains transferred under ROOT-05/PRODUCT-01."
     },
     {
       "id": "SESSION-G02",
@@ -40,14 +41,14 @@
         "DOD-05"
       ],
       "required": "PASS_PRESERVATION",
-      "state": "PARTIAL",
+      "state": "PASS_PRESERVATION",
       "receipts": [
         "CHECKPOINT.md#source-preservation-and-isolated-restore--r10",
         "SOURCE_DISPOSITION_LEDGER.json#preservation",
         "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\source-reconciliation-complete.json",
         "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\worktree-relocation-receipt-20261112.json"
       ],
-      "next": "138/138 focus rows reconciled and 4 worktrees relocated/repaired; compare primary Git state, preserve excluded boundaries (retirementEligible=false), and run elevated UAC move for Roaming."
+      "next": "138/138 differing focus rows reviewed (84/84 unique delta artifacts hashed) and 4 checkouts relocated/healthy; keep retirementEligible=false until excluded primary boundaries and elevated UAC Roaming move are completed."
     },
     {
       "id": "SESSION-G03",
@@ -59,14 +60,14 @@
         "DOD-08"
       ],
       "required": "PASS_SCOPED",
-      "state": "PARTIAL",
+      "state": "PASS_SCOPED",
       "receipts": [
         "EXTERNAL_LAYOUT.json",
         "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\d-drive-root-inventory.json",
         "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\root-externalization-receipt-20261112.json",
         "D:\\OmniaData\\research\\omnia-clean-2026-11-12\\d-drive-reclamation-receipt-20261112.json"
       ],
-      "next": "D:\\ root inventory and +10.125 GiB cache reclamation verified; preserve unclassified/active external consumers."
+      "next": "Bounded D:\\ root inventory, 12-directory externalization, and +10,871,586,816 B (+10.125 GiB) cache reclamation verified; preserve unclassified/active consumers and transfer remaining candidates."
     },
     {
       "id": "SESSION-G04",
@@ -77,13 +78,13 @@
         "DOD-09"
       ],
       "required": "PASS_SCOPED",
-      "state": "PARTIAL",
+      "state": "PASS_SCOPED",
       "receipts": [
         "D:\\OmniaData\\exports\\history\\WATERMARK_AND_DENOMINATORS.json",
         "D:\\OmniaData\\exports\\history\\SECRET_SCAN_VERIFICATION.json",
         "tools/agy-history-sync/README.md"
       ],
-      "next": "1,767 files hashed (PASS_ZERO_LEAKS) and AGY 3-surface + unified 1,102-thread FTS5 index verified; capture growing tails of the 18 active swarm sessions after closure."
+      "next": "1,767 multi-host history files hashed (PASS_ZERO_LEAKS, leak_count=0 across 294 exported/handoff files) and 3-surface AGY + 1,102-thread FTS5 sync verified; re-acquire growing tails of active swarm chats after session closure."
     },
     {
       "id": "SESSION-G05",
@@ -94,14 +95,15 @@
         "DOD-11"
       ],
       "required": "PASS_SCOPED",
-      "state": "PARTIAL",
+      "state": "PASS_SCOPED",
       "receipts": [
         "docs/handoff/COLLABORATOR_HANDOFF.md",
         "docs/handoff/USER_PROMPT_REQUIREMENTS_MATRIX.md",
         "docs/workspace/STATUS.md",
-        "docs/workspace/TRANSFER_CONTRACT.md"
+        "docs/workspace/TRANSFER_CONTRACT.md",
+        "D:\\OmniaData\\qa\\audits-20261112\\FINAL_VERIFICATION_RECEIPT_20261112.json"
       ],
-      "next": "Bind committed candidate SHA across handoff/admission records after Commit #1 and clean-clone check."
+      "next": "README, AGENTS, 8 workspace index files, handoff suite, and authoritative ledgers agree on scope, queue order, and receipts with zero broken relative links; execute 3-round frozen-snapshot audit into external final-streak-3\\."
     },
     {
       "id": "SESSION-G06",
@@ -112,12 +114,13 @@
         "DOD-15"
       ],
       "required": "PASS_SCOPED",
-      "state": "IN_PROGRESS",
+      "state": "PASS_SCOPED",
       "receipts": [
         "docs/workspace/REMOTE_SETUP.md",
+        "D:\\OmniaData\\qa\\github-clean-clone-20261112\\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json",
         "D:\\OmniaData\\exports\\history\\SECRET_SCAN_VERIFICATION.json"
       ],
-      "next": "Push committed tree to https://github.com/khang-macphuc111107/omnia, verify remote SHA, and run independent clean-clone checks."
+      "next": "Authenticated private repo https://github.com/khang-macphuc111107/omnia verified, Commit #1 d8b456e357dde65d8ee314194743fb93655f5d6a pushed and remote-cloned with allChecksPassed=true; invite collaborator's GitHub handle for Discord HTMusTC under /settings/access."
     },
     {
       "id": "SESSION-G07",
@@ -128,13 +131,13 @@
         "DOD-16"
       ],
       "required": "PASS_TRANSFER",
-      "state": "PARTIAL",
+      "state": "PASS_TRANSFER",
       "receipts": [
         "docs/workspace/TRANSFER_CONTRACT.md",
         "docs/workspace/TASKS.md",
         "docs/workspace/NEXT_SESSION_PROMPT.md"
       ],
-      "next": "Refresh candidateCommit/candidateTree at final admission check before launching follow-up session."
+      "next": "All 16 parent tasks and 12 PRODUCT-* leaves preserved in openTransfer with promptSha256 bound; launch follow-up chat with NEXT_SESSION_PROMPT.md and record threadId + goalActivation readback before setting LAUNCHED."
     }
   ],
   "openTransfer": [
@@ -143,7 +146,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "GOAL.md",
-      "next": "Bind source admission to fresh clone checks.",
+      "next": "Scoped root native & shared-crate closure verified in remote clean clone (524/524 tests); complete full Tauri/packaged host closure and eliminate remaining compatibility seams.",
       "acceptance": [
         "DOD-01",
         "DOD-02",
@@ -155,7 +158,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "SOURCE_DISPOSITION_LEDGER.json",
-      "next": "Review HEAD/index/dirty/untracked differences and disposition each relevant change.",
+      "next": "138/138 focus rows reviewed and 84/84 unique delta files/patches archived; complete broader non-focus primary working-tree/untracked reconciliation.",
       "acceptance": [
         "DOD-04"
       ]
@@ -165,7 +168,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "CHECKPOINT.md#source-preservation-and-isolated-restore--r10",
-      "next": "Reuse verified primary/supplement bytes; compare primary Git state and preserve excluded owners/consumers; retain EOL findings and reacquire source drift before retirement.",
+      "next": "4 checkouts healthy in D:\\OmniaData; keep retirementEligible=false until primary Git-state comparison, 11 gitlink/57 reparse/961 generated boundaries, and elevated UAC Roaming move are resolved.",
       "acceptance": [
         "DOD-05"
       ]
@@ -182,10 +185,10 @@
     },
     {
       "task": "ROOT-05",
-      "state": "IN_PROGRESS",
+      "state": "PARTIAL",
       "owner": "root-integrator",
       "source": "GOAL.md",
-      "next": "Verify committed root tree in an isolated clean clone without workstation-private paths.",
+      "next": "Remote GitHub clean clone and isolated local clone passed locked metadata, rustfmt, 524 Cargo tests, 5 Python tests, and 12 skill validations; complete cold-cache/packaged end-to-end build verification.",
       "acceptance": [
         "DOD-02",
         "DOD-06",
@@ -197,7 +200,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "EXTERNAL_LAYOUT.json",
-      "next": "Complete bounded drive-root ownership classification and record omissions.",
+      "next": "Top-level D:\\ inventory and 12 Omnia clutter externalizations bound; classify remaining non-Omnia top-level consumers before any further moves.",
       "acceptance": [
         "DOD-08"
       ]
@@ -207,7 +210,7 @@
       "state": "PARTIAL",
       "owner": "root-integrator",
       "source": "CHECKPOINT.md",
-      "next": "Retain completed cleanup receipts; classify remaining candidates before reclaiming.",
+      "next": "+10,871,586,816 B (+10.125 GiB) reclaimed from 4 regenerable caches; qualify remaining candidates individually before reclaiming.",
       "acceptance": [
         "DOD-08"
       ]
@@ -217,7 +220,7 @@
       "state": "IN_PROGRESS",
       "owner": "history-owner",
       "source": "CHECKPOINT.md",
-      "next": "Freeze/retrieve prefixes, reconcile projected gaps and later growth.",
+      "next": "1,767 files watermarked and 3-surface AGY + 1,102-thread FTS5 index verified; re-acquire growing tails of the 18 active swarm chats post-closure.",
       "acceptance": [
         "DOD-09"
       ]
@@ -227,7 +230,7 @@
       "state": "IN_PROGRESS",
       "owner": "history-owner",
       "source": "GOAL.md",
-      "next": "Flagship 124-prompt matrix and multi-host lessons synthesized; continue bounded deep-reads on secondary historical threads.",
+      "next": "Flagship 124-prompt matrix + additive steers #1..#8 and multi-host lessons synthesized; continue bounded deep-reads on secondary historical threads.",
       "acceptance": [
         "DOD-10"
       ]
@@ -237,7 +240,7 @@
       "state": "IN_PROGRESS",
       "owner": "history-owner",
       "source": "GOAL.md",
-      "next": "Redacted collaborator handoff suite and zero-secret scan (294 files, 0 leaks) verified; refresh tail delta post-session.",
+      "next": "Redacted collaborator handoff suite and zero-secret scan (294 files, leak_count=0) verified; refresh tail delta post-session.",
       "acceptance": [
         "DOD-10",
         "DOD-11"
@@ -248,7 +251,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "CHECKPOINT.md",
-      "next": "Maintain one current checkpoint and reconcile facts after every material batch.",
+      "next": "Maintain single-owner ledgers and navigable workspace indexes across subsequent product waves.",
       "acceptance": [
         "DOD-11"
       ]
@@ -258,7 +261,7 @@
       "state": "IN_PROGRESS",
       "owner": "research-owner",
       "source": "GOAL.md",
-      "next": "103 flagship URLs + 8 REA URLs + github/spec-kit + 12 curated skills + 100-category catalog qualified; retain login-walled gaps honestly.",
+      "next": "103 flagship URLs + 8 REA URLs + github/spec-kit + 12 4-way synced skills + 100-category catalog qualified; retain login-walled social/Gemini links honestly.",
       "acceptance": [
         "DOD-12"
       ]
@@ -282,7 +285,7 @@
         "PRODUCT-SECURITY",
         "PRODUCT-KNOWLEDGE"
       ],
-      "next": "524/524 Cargo tests + 3 UI candidates (PENDING_USER_REVIEW) verified; complete live provider streaming, Browser/IDE host, and resource budgets across all 12 leaves.",
+      "next": "524/524 Cargo tests, release native shell smoke telemetry (15.79 MiB RAM, 0.0% idle CPU, 163.2 ms discovery), and 3 UI candidates (PENDING_USER_REVIEW) verified; complete live provider streaming, Browser/IDE host, and full E2E runtime across all 12 leaves.",
       "acceptance": [
         "DOD-13"
       ]
@@ -292,27 +295,27 @@
       "state": "IN_PROGRESS",
       "owner": "quality-owner",
       "source": "DOD.md",
-      "next": "7/7 Win32 QA workflows (90/90 cases rc=0) and Wave 2 verifier audit passed (0 open defects); run live E2E provider/IME/Narrator QA and 3-round frozen whole-goal audits.",
+      "next": "7/7 Win32 QA workflows (90/90 cases rc=0) + release runtime capture verified; run physical Vietnamese IME/Narrator E2E QA and 3-round frozen-snapshot audits in D:\\OmniaData\\qa\\audits-20261112\\final-streak-3\\.",
       "acceptance": [
         "DOD-14"
       ]
     },
     {
       "task": "DELIVERY-01",
-      "state": "IN_PROGRESS",
+      "state": "PARTIAL",
       "owner": "root-integrator",
-      "source": "GOAL.md",
-      "next": "Local identity khang-macphuc111107 configured; push Commit #1 to GitHub and verify clean clone.",
+      "source": "REMOTE_SETUP.md",
+      "next": "Private repo https://github.com/khang-macphuc111107/omnia pushed and remote clean-clone verified (allChecksPassed=true); invite collaborator's GitHub login for Discord handle HTMusTC under /settings/access.",
       "acceptance": [
         "DOD-15"
       ]
     },
     {
       "task": "SESSION-01",
-      "state": "DEFERRED",
+      "state": "READY",
       "owner": "root-integrator",
       "source": "NEXT_SESSION_PROMPT.md",
-      "next": "Launch only after all seven admission gates pass; record prompt hash, chat ID and goal activation.",
+      "next": "All 7 admission gates passed (READY); create follow-up Omnia session with NEXT_SESSION_PROMPT.md, record threadId and persistent-goal activation readback before setting LAUNCHED.",
       "acceptance": [
         "DOD-16"
       ]
@@ -320,9 +323,9 @@
   ],
   "launch": {
     "threadId": null,
-    "promptSha256": null,
+    "promptSha256": "ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592",
     "goalActivation": "NOT_REQUESTED",
-    "checkpoint": null
+    "checkpoint": "CHECKPOINT.md#wave-3b-github-delivery-clean-clone-and-session-admission--2026-11-12"
   },
-  "limits": "Deferred transfer prior to Commit #1 push and isolated clean-clone verification. Wave 2 verified 524/524 Cargo tests, 7/7 Win32 QA workflows (90/90 cases rc=0), 12 curated skills, 3-surface AGY sync, 138/138 focus rows, and +10.125 GiB D: reclamation, while preserving open full-product runtime leaves, excluded primary boundaries (retirementEligible=false), PENDING_USER_REVIEW UI direction selection, and 0/3 whole-goal frozen final audit rounds."
+  "limits": "Admission gates SESSION-G01..G07 passed (READY) against pushed Commit #1 (d8b456e357dde65d8ee314194743fb93655f5d6a, tree 5f8ecc4966a859dcc032bca0b3013d2f81233abb) and independent remote GitHub clean-clone receipt (GITHUB_DELIVERY_AND_CLONE_RECEIPT.json, allChecksPassed=true). READY authorizes follow-up session creation with NEXT_SESSION_PROMPT.md; it does not claim follow-up session launch (threadId=null), whole-product PRODUCT-01 runtime completion, user selection among the 3 PENDING_USER_REVIEW UI candidates, excluded primary boundary retirement (retirementEligible=false), collaborator GitHub invite completion for Discord handle HTMusTC, or completion of the 3 frozen-snapshot final audit rounds executing into external D:\\OmniaData\\qa\\audits-20261112\\final-streak-3\\."
 }

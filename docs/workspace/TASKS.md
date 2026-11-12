@@ -10,7 +10,7 @@
 | `ROOT-02` | Reconcile primary/release/rebuild/goal-control deltas | `IN_PROGRESS` | [`SOURCE_DISPOSITION_LEDGER.json`](SOURCE_DISPOSITION_LEDGER.json) (`138/138` focus rows reviewed; unique deltas archived) | `DOD-04` |
 | `ROOT-03` | Safe nested Git & linked worktree relocation/preservation | `IN_PROGRESS` | `D:\OmniaData\research\omnia-clean-2026-11-12\worktree-relocation-receipt-20261112.json` (`4` checkouts healthy; `retirementEligible=false`) | `DOD-05` |
 | `ROOT-04` | Behavior-preserving modular code organization | `IN_PROGRESS` | `dynamic_router.rs`, `proactive_rag.rs`, `agent_graph.rs`, `composer.rs`, `uia_edit.rs` (`cargo fmt --check` exit `0`) | `DOD-07` |
-| `ROOT-05` | Self-contained root build & clean-clone closure | `IN_PROGRESS` | [`../../README.md`](../../README.md), [`../../.gitignore`](../../.gitignore), [`../../tools/maintained-scripts/stage-public-release.mjs`](../../tools/maintained-scripts/stage-public-release.mjs) | `DOD-02`, `DOD-06`, `DOD-15` |
+| `ROOT-05` | Self-contained root build & clean-clone closure | `PARTIAL` | `D:\OmniaData\qa\github-clean-clone-20261112\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json` (`allChecksPassed=true`), [`../../README.md`](../../README.md), [`../../.gitignore`](../../.gitignore) | `DOD-02`, `DOD-06`, `DOD-15` |
 | `DRIVE-01` | Bounded `D:\` top-level ownership & consumer inventory | `IN_PROGRESS` | `D:\OmniaData\research\omnia-clean-2026-11-12\d-drive-root-inventory.json`, [`EXTERNAL_LAYOUT.json`](EXTERNAL_LAYOUT.json) | `DOD-08` |
 | `DRIVE-02` | Reversible cache cleanup & measured free-space delta | `PARTIAL` | `D:\OmniaData\research\omnia-clean-2026-11-12\d-drive-reclamation-receipt-20261112.json` (`+10.125 GiB` reclaimed) | `DOD-08` |
 | `HISTORY-01` | Multi-host chat history watermark & 3-surface sync | `IN_PROGRESS` | `D:\OmniaData\exports\history\WATERMARK_AND_DENOMINATORS.json`, [`../../tools/agy-history-sync/README.md`](../../tools/agy-history-sync/README.md) | `DOD-09` |
@@ -20,8 +20,8 @@
 | `RESEARCH-01` | Authentic URL/media/repo qualification & atomic skills | `IN_PROGRESS` | [`REFS.md`](REFS.md), [`../../.agents/skills/`](../../.agents/skills/) (`12` synced skills; `103 + 9` URLs; `100`-cat catalog) | `DOD-12` |
 | `PRODUCT-01` | Native shell, composer, router, memory, graph & workspace | `IN_PROGRESS` | Scoped core modules & unit/UIA suites verified; full end-to-end runtime leaves remain open below | `DOD-13` |
 | `QUALITY-01` | Code, security, Win32 UIA, visual & recovery QA | `IN_PROGRESS` | `D:\OmniaData\qa\native-20261112\QA_SUITE_SUMMARY_RECEIPT.json` (`7/7` workflows, `90/90` cases `rc=0`) & `FINAL_VERIFICATION_RECEIPT_20261112.json` | `DOD-14` |
-| `DELIVERY-01` | Verified GitHub identity, push & clean-clone handoff | `IN_PROGRESS` | [`REMOTE_SETUP.md`](REMOTE_SETUP.md) (`https://github.com/khang-macphuc111107/omnia`) — awaiting push & clean-clone receipt | `DOD-15` |
-| `SESSION-01` | Follow-up Omnia session launch after 7 admission gates | `DEFERRED` | [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json), [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) | `DOD-16` |
+| `DELIVERY-01` | Verified GitHub identity, push & clean-clone handoff | `PARTIAL` | [`REMOTE_SETUP.md`](REMOTE_SETUP.md), `D:\OmniaData\qa\github-clean-clone-20261112\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json` (`https://github.com/khang-macphuc111107/omnia` pushed & remote-cloned; `/settings/access` invite open) | `DOD-15` |
+| `SESSION-01` | Follow-up Omnia session launch after 7 admission gates | `READY` | [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) (`SESSION-G01..G07` passed; `threadId` launch pending), [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) | `DOD-16` |
 
 ## 12 `PRODUCT-*` capability leaves (`PRODUCT-01`)
 

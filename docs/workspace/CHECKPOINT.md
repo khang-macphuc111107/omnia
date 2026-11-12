@@ -1,4 +1,4 @@
-# Omnia checkpoint — 2026-11-12, continuation revision 8 (Wave 3A pre-commit)
+# Omnia checkpoint — 2026-11-12, continuation revision 9 (Wave 3B delivery & session admission)
 
 ## Resume here
 
@@ -19,8 +19,17 @@
   layout milestone. The receipt for this logical preservation checkpoint belongs
   in external `continuation-r10-source-preservation/checkpoint-r4`, avoiding a
   self-hash update. No product implementation is changed by this document batch.
-- Final independent whole-goal audit streak: **0**. Session admission remains
-  `DEFERRED`; no candidate/reviewer/created-chat/goal-activation receipt exists.
+- Pushed GitHub baseline (Commit #1): `d8b456e357dde65d8ee314194743fb93655f5d6a`,
+  tree `5f8ecc4966a859dcc032bca0b3013d2f81233abb`, `2,039` tracked files on
+  `https://github.com/khang-macphuc111107/omnia` (`origin/master`), verified by
+  independent remote & local clean clones (`GITHUB_DELIVERY_AND_CLONE_RECEIPT.json`,
+  `sha256=35aaac06a396bfc60e6d8a9bc893ccaf28c1f298c2ed958f344bdffc9285e610`, `allChecksPassed=true`).
+- Session admission in [SESSION_ADMISSION.json](SESSION_ADMISSION.json) is now
+  **`READY`** (`SESSION-G01..G07` satisfied against `d8b456e357dde65d8ee314194743fb93655f5d6a`,
+  `promptSha256=ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592`; follow-up chat `threadId` not yet launched).
+  Three independent read-only final audit rounds against Commit #2's frozen
+  `HEAD === origin/master` snapshot record receipts externally under
+  `D:\OmniaData\qa\audits-20261112\final-streak-3\` without mutating tracked files.
 
 ## Completed QA batch and current documentation ownership
 
@@ -532,4 +541,19 @@ Independent final lane audit: `D:\OmniaData\qa\audits-20261112\FINAL_VERIFICATIO
 
 ### Navigable workspace index map
 
-Use [STATUS.md](STATUS.md) to jump directly to [PLAN.md](PLAN.md), [TASKS.md](TASKS.md), [PROMPTS.md](PROMPTS.md), [SESSIONS.md](SESSIONS.md), [SOURCES.md](SOURCES.md), [REFS.md](REFS.md), [STEER_QUEUE.md](STEER_QUEUE.md), and [TRANSFER_CONTRACT.md](TRANSFER_CONTRACT.md). Next executable Wave 3 actions: create Commit #1 on `master`, push to `https://github.com/khang-macphuc111107/omnia`, run an isolated clean-clone build/test receipt (`DELIVERY-01`), and keep `SESSION_ADMISSION.json` honest.
+Use [STATUS.md](STATUS.md) to jump directly to [PLAN.md](PLAN.md), [TASKS.md](TASKS.md), [PROMPTS.md](PROMPTS.md), [SESSIONS.md](SESSIONS.md), [SOURCES.md](SOURCES.md), [REFS.md](REFS.md), [STEER_QUEUE.md](STEER_QUEUE.md), and [TRANSFER_CONTRACT.md](TRANSFER_CONTRACT.md).
+
+## Wave 3B GitHub delivery, clean-clone and session admission — 2026-11-12
+
+- **GitHub remote & Commit #1 push (`DELIVERY-01` / `SESSION-G06` -> `PASS_SCOPED`)**:
+  - Private repository `https://github.com/khang-macphuc111107/omnia` (`origin` -> `https://github.com/khang-macphuc111107/omnia.git`, owner `khang-macphuc111107`, `credential.https://github.com.username=khang-macphuc111107`) received Commit #1 `d8b456e357dde65d8ee314194743fb93655f5d6a` (tree `5f8ecc4966a859dcc032bca0b3013d2f81233abb`, `2,039` tracked files). Collaborator handle `HTMusTC` was verified to be a Discord handle rather than a GitHub login; collaborator invite is left to the user's exact GitHub login choice under `https://github.com/khang-macphuc111107/omnia/settings/access`.
+- **Independent remote GitHub clone & isolated local clone (`ROOT-05` / `SESSION-G01` -> `PASS_SCOPED`)**:
+  - Receipt: `D:\OmniaData\qa\github-clean-clone-20261112\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json` (`8,958 B`, `sha256=35aaac06a396bfc60e6d8a9bc893ccaf28c1f298c2ed958f344bdffc9285e610`, `allChecksPassed=true`).
+  - Verified checks on `remote-github-clone` and `isolated-local-clone`: both `HEAD` SHAs equal `d8b456e357dde65d8ee314194743fb93655f5d6a` (`2,039` tracked files), `cargo metadata --locked --no-deps` `rc=0` on `src-tauri/Cargo.toml` and `native/Cargo.toml`, `cargo fmt --all --check` `rc=0` on both workspaces, `524/524` locked Cargo tests `rc=0`, `5/5` `tools/agy-history-sync` unit tests `rc=0`, and `12/12` `.agents/skills/*` `quick_validate.py` validations `rc=0`.
+- **Release native shell runtime telemetry & `exebox-*` desktop boundary (`QUALITY-01`)**:
+  - Receipt: `D:\OmniaData\qa\native-20261112\retained-preview\native-shell-cycle24-runtime.json` (`6,111 B`, `sha256=1a4aa5cac935a76687432cb9ccf54fb4e390c2ef50cfc26c95b545fb9dd93a77`) and `native-shell-cycle24-window.png` (`107,800 B`, `sha256=68b669ce7e26e0d9abe2836490ca78f9566184607c7903d81e259a7f4e0c7ded`).
+  - Measured `D:\OmniaData\tools\cargo-target\release\omnia-native.exe` (`2,160,128 B`, `sha256=65944d8685fa4e219cbcf43f5d6bf99eb7fb379fa1a4bb2d8caab077380a2872`): `16,560,128 B` (`15.79 MiB`) working set (`17,453,056 B` peak), `0.0%` idle CPU, `163.22 ms` window discovery, `4/4` mode/close smoke checks passed, `uiaIssue: null`.
+  - Honest desktop boundary: Antigravity executes tool commands inside isolated `exebox-*` Windows desktops rather than the interactive `Default` desktop, so `PID 11532` was cleanly terminated after capture (`0` orphan processes) rather than leaving an invisible background process. Launch `D:\OmniaData\tools\cargo-target\release\omnia-native.exe` directly from an interactive `Default`-desktop terminal/Explorer session to inspect live.
+- **4-way `/learn` synchronization & `SESSION_ADMISSION.json` `READY`**:
+  - `~/.codex/AGENTS.md` updated with `OMNIA_CONTINUITY_AND_PEER_MESH`, all `12` curated skills synchronized byte-identically across `D:\Omnia\.agents\skills\`, `~/.codex/skills/`, `~/.agents/skills/`, and Antigravity (`4-way` parity), and `59` pure-`LF` notes maintained in `~/.codex/memories_v2/extensions/ad_hoc/notes/` (including `2026-11-12-antigravity-win32-uia-and-git-lessons.md`).
+  - [SESSION_ADMISSION.json](SESSION_ADMISSION.json) advanced to **`READY`** (`SESSION-G01..G07` satisfied, `promptSha256=ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592`). Commit #2 binds these Wave 3B receipts and pushes `HEAD === origin/master`, after which 3 independent frozen-snapshot verification rounds write external audit receipts to `D:\OmniaData\qa\audits-20261112\final-streak-3\`.

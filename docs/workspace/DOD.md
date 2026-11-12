@@ -20,8 +20,8 @@ required evidence.
 | `DOD-12` | Skills/research are qualified | Query, revision, license, ranges and decision | `PARTIAL` |
 | `DOD-13` | Native capabilities are real | Packaged/live receipts for each claim | `PARTIAL` |
 | `DOD-14` | QA covers UI/security/performance/recovery | Independent negative/race/reload/resource evidence | `PARTIAL` |
-| `DOD-15` | Public delivery is reproducible | Authenticated account, pushed SHA, clone and secret scan | `OPEN` |
-| `DOD-16` | Follow-up chat starts with durable goal | Thread ID, prompt, activation receipt and checkpoint | `DEFERRED` |
+| `DOD-15` | Public delivery is reproducible | Authenticated account, pushed SHA, clone and secret scan | `PARTIAL` |
+| `DOD-16` | Follow-up chat starts with durable goal | Thread ID, prompt, activation receipt and checkpoint | `READY` |
 
 ## Gate protocol
 
@@ -299,3 +299,15 @@ Independent audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa\audits-2
 - **`DOD-09` / `DOD-10` / `DOD-11` / `DOD-12` (History, Handoff, Skills & Research — PARTIAL):**
   - `1,767`-file multi-host history watermark hashed (`PASS_ZERO_LEAKS` across `294` exported/handoff files); `tools/agy-history-sync/` (`5/5` tests `OK`) synchronized AGY Desktop (`144/144`), AGY CLI (`126/126`), and unified FTS5 (`1,102` threads) with `0` ghost records (`18` active swarm DBs excluded).
   - `103/103` flagship URLs + `8` REA URLs + `github/spec-kit` (`v1.4.0`) qualified; `12` curated skills synced byte-identically across Codex and `.agents/skills/` (`24/24` `quick_validate.py` `PASS`), `100`-category / `1,001`-skill catalog extracted to `omni-deep-1000-catalog.json`, and 8 navigable workspace index files bound in [STATUS.md](STATUS.md).
+
+## Wave 3B delivery, clean-clone & admission acceptance — 2026-11-12
+
+- **`DOD-01` / `DOD-02` / `DOD-06` / `DOD-15` (GitHub Delivery & Independent Clean Clone — `PARTIAL`, `SESSION-G01` & `SESSION-G06` `PASS_SCOPED`):**
+  - Authenticated private repository `https://github.com/khang-macphuc111107/omnia` created under `khang-macphuc111107` and pushed with Commit #1 `d8b456e357dde65d8ee314194743fb93655f5d6a` (tree `5f8ecc4966a859dcc032bca0b3013d2f81233abb`, `2,039` tracked files; zero secrets `PASS_ZERO_LEAKS` `sha256=883739f6...`).
+  - Independent remote GitHub clone and isolated `--no-local --no-hardlinks` local clone verified in `D:\OmniaData\qa\github-clean-clone-20261112\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json` (`sha256=35aaac06a396bfc60e6d8a9bc893ccaf28c1f298c2ed958f344bdffc9285e610`, `allChecksPassed=true`): locked Cargo metadata (`rc=0`), `cargo fmt --all --check` (`rc=0`), `524/524` Cargo tests (`rc=0`), `5/5` `agy_history_sync` unit tests (`rc=0`), and `12/12` `.agents/skills/*` `quick_validate.py` checks (`rc=0`).
+  - `DOD-15` remains `PARTIAL` only for user-managed collaborator invitation (`HTMusTC` Discord handle -> GitHub username under `/settings/access`) and any future public-visibility release decision.
+- **`DOD-14` (Release Native Shell Telemetry — `PARTIAL`):**
+  - `release\omnia-native.exe` (`2,160,128 B`, `sha256=65944d86...`) verified in `native-shell-cycle24-runtime.json` (`sha256=1a4aa5cac935a76687432cb9ccf54fb4e390c2ef50cfc26c95b545fb9dd93a77`) and `native-shell-cycle24-window.png` (`sha256=68b669ce7e26e0d9abe2836490ca78f9566184607c7903d81e259a7f4e0c7ded`): `15.79 MiB` working set (`16,560,128 B`), `0.0%` idle CPU, `163.2 ms` window discovery, `uiaIssue: null`, cleanly terminated inside Antigravity's isolated `exebox-*` desktop (`0` orphan processes).
+- **`DOD-16` & 3-Round Frozen Audit Protocol (`SESSION-01` -> `READY`):**
+  - All seven gates `SESSION-G01..G07` in [SESSION_ADMISSION.json](SESSION_ADMISSION.json) are now satisfied (`decision: "READY"`, `promptSha256=ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592`). Advancing `DOD-16` to full `PASS` (`LAUNCHED`) requires creating the follow-up chat with [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md) and recording its `threadId` and persistent-goal activation readback.
+  - Three independent read-only audit rounds against Commit #2's frozen `HEAD === origin/master` snapshot write external receipts to `D:\OmniaData\qa\audits-20261112\final-streak-3\` so audit evidence never self-mutates tracked repository hashes.
