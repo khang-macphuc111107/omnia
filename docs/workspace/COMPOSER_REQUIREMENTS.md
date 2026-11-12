@@ -23,6 +23,8 @@ Verify inline/tray paste and drop; start/middle/end caret; multi-file batches; i
 
 Native-first requirement remains in force. Quoted collaborator conversation mentions C++; this is historical design input, not a command replacing directly requested native Rust. Record an architecture decision and measured resource budgets before selecting rich text/math rendering dependencies. Existing web compatibility implementations are not proof of native parity.
 
+- **Wave 4 architectural supersession (2026-11-12, `Steer #9`, [DECISIONS.md](DECISIONS.md))**: By explicit user mandate, the pre-Wave-4 Rust/Tauri runtime was archived on tag `archive/pre-cpp-rust-snapshot-20261112` and superseded across `D:\Omnia` by Modern Native C++20 (`cpp/`, `native/`) and the Flagship Studio UI (`ui/`). All composer, attachment, and rendering implementations now target native C++20 (`native/src/composer.cpp`, `cpp/src/harness/composer_steer.cpp`) and `ui/app/composer.js`.
+
 ## Open decisions
 
 Exact supported rich document interchange; Markdown constructs with no font/color equivalent; provider payload mappings; conversion size/time budgets; cross-platform native rendering; drag behavior while selecting text; default paste focus. Resolve through prototype evidence and user-visible specs before claiming done.

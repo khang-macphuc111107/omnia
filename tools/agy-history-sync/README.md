@@ -31,19 +31,19 @@ Forensic inspection of local Antigravity storage reveals how the three surfaces 
 
 ```powershell
 # 1. Inspect current multi-surface counts and sync parity
-python tools/agy-history-sync/agy_history_sync.py status
+python -B tools/agy-history-sync/agy_history_sync.py status
 
 # 2. Preview bidirectional sync plan without modifying any files
-python tools/agy-history-sync/agy_history_sync.py sync --dry-run --exclude-active <active-uuid>
+python -B tools/agy-history-sync/agy_history_sync.py sync --dry-run --exclude-active <active-uuid>
 
 # 3. Backup, sync completed conversations bidirectionally, verify integrity, and rebuild unified FTS5 index
-python tools/agy-history-sync/agy_history_sync.py sync --apply --exclude-active <active-uuid>
+python -B tools/agy-history-sync/agy_history_sync.py sync --apply --exclude-active <active-uuid>
 
 # 4. Search across Antigravity App, Antigravity IDE, Antigravity CLI, and Codex
-python tools/agy-history-sync/agy_history_sync.py search "dynamic router quota" --roots-only
+python -B tools/agy-history-sync/agy_history_sync.py search "dynamic router quota" --roots-only
 
 # 5. Run unit test suite
-python -m unittest discover -s tools/agy-history-sync -p "test_*.py" -v
+python -B -m unittest discover -s tools/agy-history-sync -p "test_*.py" -v
 ```
 
 ### Resuming Any Synced Conversation

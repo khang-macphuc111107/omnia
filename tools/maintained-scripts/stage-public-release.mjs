@@ -6,18 +6,19 @@ import { fileURLToPath } from "node:url";
 
 const requiredFiles = [
   ".gitattributes", ".gitignore", "AGENTS.md", "README.md",
-  "native/Cargo.toml", "native/Cargo.lock",
-  "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs",
-  "docs/storage-schema.sql", "package.json", "package-lock.json",
+  "CMakeLists.txt", "CMakePresets.json",
+  "cpp/CMakeLists.txt", "native/CMakeLists.txt", "ui/index.html",
+  "docs/storage-schema.sql", "docs/workspace/DECISIONS.md",
   "tools/maintained-scripts/stage-public-release.mjs",
   ".agents/skills/goal-plan-loop-dod/SKILL.md",
   ".agents/skills/deep-steer/SKILL.md",
+  ".agents/skills/deep-cpp-native/SKILL.md",
 ];
-const requiredDirectories = ["native", "src-tauri/crates", "src", "scripts", "docs", "tests"];
+const requiredDirectories = ["cpp", "native", "ui", "docs", "tools", ".agents/skills"];
 const forbiddenDirectories = new Set([
-  ".git", "node_modules", "target", "dist", "backups", "quarantine",
+  ".git", "node_modules", "target", "build", "dist", "backups", "quarantine",
   "repos", "publish-worktree", "localappdata", "roaming", "cursorapp",
-  "logs", "downloads", "output", "tmp", ".cache", ".pytest_cache",
+  "logs", "downloads", "output", "tmp", ".cache", ".pytest_cache", "__pycache__",
 ]);
 const startedAt = new Date().toISOString();
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -73,6 +74,9 @@ function validateName(name) {
   const basename = parts.at(-1).toLowerCase();
   if (basename === ".env" || (basename.startsWith(".env.") && basename !== ".env.example")) {
     throw new Error(`Private environment file is tracked: ${name}`);
+  }
+  if (basename.endsWith(".rs") || basename === "cargo.toml" || basename === "cargo.lock") {
+    throw new Error(`Retired Rust/Cargo file is tracked: ${name}`);
   }
 }
 

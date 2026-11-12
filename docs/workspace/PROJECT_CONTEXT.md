@@ -1,9 +1,14 @@
 # Project context entrypoint
 
-The product repository is rooted at `D:\Omnia`. Its preferred runtime is native
-Rust. `native/` is an independent Windows shell package and shared services
-currently live under `src-tauri/crates/`. The React/Tauri source is retained
-compatibility code during migration.
+The product repository is rooted at `D:\Omnia`. Its canonical runtime is Modern
+Native C++20 (`MSVC` + `CMake` + `Ninja` + Windows 11 SDK): shared core,
+storage, dynamic routing, `PeerMeshGraph`/`GraphifyIndex`, harness services,
+and the loopback Studio server (`omnia-studio.exe`) live under `cpp/`, the
+native Windows DWM Mica / Direct2D / server-side COM UIA shell
+(`omnia-native.exe`) lives under `native/`, and the zero-bundler Flagship
+Studio UI ("Obsidian Kinetic Atelier") lives under `ui/` (with the pre-Wave-4
+Rust/Tauri snapshot archived losslessly on Git tag
+`archive/pre-cpp-rust-snapshot-20261112`).
 
 Read [GOAL.md](GOAL.md) for requirements, atomic tasks, execution order and
 retained backlog; [DOD.md](DOD.md) for acceptance; [CHECKPOINT.md](CHECKPOINT.md)

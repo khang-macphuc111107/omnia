@@ -20,7 +20,7 @@
 | `RESEARCH-01` | Authentic URL/media/repo qualification & `13` atomic skills | `IN_PROGRESS` | [`REFS.md`](REFS.md), [`../../.agents/skills/`](../../.agents/skills/) (`13` 4-way synced skills incl. `deep-cpp-native`; `103 + 9` URLs; `100`-cat catalog) | `DOD-12` |
 | `PRODUCT-01` | Native C++20 Win32 shell, Studio server, Flagship UI, router, graph & memory | `IN_PROGRESS` | Scoped C++20 libraries, `omnia-studio.exe`, `omnia-native.exe`, & `ui/` verified; live provider/OS/IME E2E leaves remain open below | `DOD-13` |
 | `QUALITY-01` | Code, security, Win32 UIA (`90/90`), Edge CDP (`45/45`) & recovery QA | `IN_PROGRESS` | `D:\OmniaData\qa\cpp-native-precheck-20261112\QA_SUITE_SUMMARY_RECEIPT.json` (`7/7` workflows, `90/90` cases `rc=0`) & `audit-wave4-*.json` | `DOD-14` |
-| `DELIVERY-01` | Verified GitHub identity, Commit #4 push & C++20 clean-clone handoff | `PARTIAL` | [`REMOTE_SETUP.md`](REMOTE_SETUP.md), `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json` (`/settings/access` invite open) | `DOD-15` |
+| `DELIVERY-01` | Verified GitHub identity, Commit #5 push & C++20 clean-clone handoff | `PARTIAL` | [`REMOTE_SETUP.md`](REMOTE_SETUP.md), `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json` (`/settings/access` invite open) | `DOD-15` |
 | `SESSION-01` | Follow-up Omnia session launch after 7 admission gates | `READY` | [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) (`SESSION-G01..G07` passed; `threadId` launch pending), [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) | `DOD-16` |
 
 ## 12 `PRODUCT-*` capability leaves (`PRODUCT-01`)

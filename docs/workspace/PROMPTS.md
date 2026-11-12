@@ -10,7 +10,7 @@
 2. **Additive steer intake ledger**:
    - [`STEER_QUEUE.md`](STEER_QUEUE.md) — records every mid-run steer item (including explicit user architectural replacement `Steer #9` archiving Rust on tag `archive/pre-cpp-rust-snapshot-20261112`), non-cancellation invariants (`token_budget IS NULL`), and reconciliation status.
 3. **Prepared follow-up session launch prompt (`SESSION-01`, `DOD-16`)**:
-   - [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) (`sha256=ef94c52e0c68763a...`) — carries the `SESSION-G07` open-transfer contract. [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) remains `"READY"` (`SESSION-G01..G07` satisfied); creating the follow-up chat and recording its `threadId` + persistent-goal activation readback advances admission to `LAUNCHED`.
+   - [`NEXT_SESSION_PROMPT.md`](NEXT_SESSION_PROMPT.md) (`sha256=d277af284a6e2d87...`) — carries the `SESSION-G07` open-transfer contract. [`SESSION_ADMISSION.json`](SESSION_ADMISSION.json) remains `"READY"` (`SESSION-G01..G07` satisfied); creating the follow-up chat and recording its `threadId` + persistent-goal activation readback advances admission to `LAUNCHED`.
 4. **Prompt-derived subsystem & UI specifications**:
    - Rich Word-grade composer, live Markdown/LaTeX, Math/Phys/Chem palettes & inline-at-caret vs tray attachments: [`COMPOSER_REQUIREMENTS.md`](COMPOSER_REQUIREMENTS.md)
    - Deterministic capability/quota/cost/latency/circuit-breaker routing: [`DYNAMIC_ROUTING_REQUIREMENTS.md`](DYNAMIC_ROUTING_REQUIREMENTS.md)

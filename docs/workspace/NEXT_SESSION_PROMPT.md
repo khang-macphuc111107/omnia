@@ -84,7 +84,7 @@ into a claim of absolute understanding.
 ## Product and research
 
 Keep all `PRODUCT-*` leaves and earlier research/skills in GOAL's queue.
-Prioritize native Rust and measured CPU/RAM/disk/GPU budgets; document any
+Prioritize modern native C++20 (`cpp/`, `native/`) and Flagship Studio UI (`ui/`, per Wave 4 ADR in `DECISIONS.md`; prior Rust snapshot archived on tag `archive/pre-cpp-rust-snapshot-20261112`) and measured CPU/RAM/disk/GPU budgets; document any
 compatibility exception. Follow `COMPOSER_REQUIREMENTS.md` for live
 Markdown/LaTeX, rich formatting, visual equations and inline/tray attachments
 at caret with correct provider order. Qualify goal CRUD/queue/steer/continue,
@@ -105,7 +105,7 @@ record inaccessible/unused sources, generate three materially different style
 candidates, score them with stated weights, reject generic/template directions
 with reasons, write a concrete direction brief and measurable token seed, preview
 major surfaces/states, obtain independent anti-slop critique and record the
-user.s review status. Then hand off to `modern-tech-ui-design`,
+user's review status. Then hand off to `modern-tech-ui-design`,
 `deep-ui-quantitative` and `deep-ui-qa`. Keep visual, functional, accessibility,
 performance and user-approval gates separate.
 

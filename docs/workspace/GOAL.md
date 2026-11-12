@@ -4,7 +4,7 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 13 — Wave 4 Full Native C++20 migration (`archive/pre-cpp-rust-snapshot-20261112`), Flagship Studio UI ("Obsidian Kinetic Atelier"), 13-skill parity (`deep-cpp-native`), exhaustive `D:`/`C:` reclamation (`+944.29 GiB` physical), and Commit #4 GitHub clean-clone CTest bound; full-product live provider/OS runtime and excluded preservation boundaries remain explicit, 2026-11-12
+**Revision:** 13 — Wave 4 Full Native C++20 migration (`archive/pre-cpp-rust-snapshot-20261112`), Flagship Studio UI ("Obsidian Kinetic Atelier"), 13-skill parity (`deep-cpp-native`), exhaustive `D:`/`C:` reclamation (`+944.29 GiB` physical), and Commit #5 GitHub clean-clone CTest bound; full-product live provider/OS runtime and excluded preservation boundaries remain explicit, 2026-11-12
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
 
 ## Outcome
@@ -101,7 +101,7 @@ Current sequence:
 
 These are dependency boundaries, not a claim that the work is already done.
 Independent read-only review may run alongside an earlier step. Shared file
-mutations and resource-heavy Cargo builds are serialized.
+mutations and resource-heavy native C++20 CMake/Ninja builds are serialized.
 
 ## Task contracts
 
@@ -113,7 +113,7 @@ approval.
 
 | Parent | Required work and output | Prerequisite / acceptance |
 |---|---|---|
-| `ROOT-01` | Native package, all local crate dependencies, required assets, schema and retained compatibility host at root | File provenance; locked metadata; formatting; scoped tests; missing-input audit |
+| `ROOT-01` | Native C++20 packages (`cpp/`, `native/`), Flagship Studio UI (`ui/`), required assets, schema and Studio host at root | File provenance; CMake closure; formatting; scoped CTests; missing-input audit |
 | `ROOT-02` | Compare primary, release, rebuild and goal-control HEADs **and** index, dirty and untracked bytes; classify every unique relevant change | Correct NUL/rename parsing, complete external records, semantic incorporated/retained/superseded/unresolved decisions |
 | `ROOT-03` | End with one product Git root; preserve old objects, refs, index, working bytes and linked worktrees outside it | Common-store topology, reparse/handle checks, restore drill and repaired consumers before metadata retirement |
 | `ROOT-04` | Improve names, modules, imports, formatting, dead code and error boundaries in reviewed components | Behavioral contract before edits; focused positive/negative tests; no unexplained diff |
@@ -176,7 +176,7 @@ These are required work families under `PRODUCT-01`, not implemented features:
 
 | Leaf | Scope | Observable completion |
 |---|---|---|
-| `PRODUCT-NATIVE` | Windows native Rust shell and shared services; minimal CPU/RAM/disk/GPU use | Native entrypoint, dependency/resource measurements, justified exceptions, startup/idle/interaction evidence |
+| `PRODUCT-NATIVE` | Windows native C++20 shell (`native/`) and shared C++20 services (`cpp/`); minimal CPU/RAM/disk/GPU use | Native entrypoint, dependency/resource measurements, justified exceptions, startup/idle/interaction evidence |
 | `PRODUCT-COMPOSER` | Rich prompt editor, live Markdown/LaTeX, Word-like formatting, tables, rendered equation/symbol palettes | `COMPOSER_REQUIREMENTS.md` matrix including Unicode/IME, undo/restart, inline/tray caret placement and serialized provider order |
 | `PRODUCT-ATTACHMENTS` | Auto attachment, paste/drop, conversion and extraction | Original/derived provenance, stable IDs, progress/cancel/retry, unsupported/encrypted status, no silent omission |
 | `PRODUCT-CHAT` | Provider/API/model/settings, streaming, tool calls, profiles, sessions and transcript | Actual provider delivery, error/cancel/retry behavior, ordering, durable state and credential protection |
@@ -228,7 +228,7 @@ planning/goal/queue/steer/continue; clean Git/backup/rollback/recovery;
 architecture/refactor/code quality; research/source/citation/proof;
 memory/RAG/context; browser/computer/Windows/process capture and control;
 media/document/artifact workflows; modern quantitative UI/UX/QA;
-security and defensive adversarial evaluation; native Rust/toolchains and
+security and defensive adversarial evaluation; native C++20/toolchains (superseding archived Rust) and
 performance; academic curricula, tutoring, problem solving and communication.
 Synonyms and repeated “deep” names are aliases or additional scenarios, not
 automatic new skill folders. Merge only supported improvements into their
@@ -517,7 +517,7 @@ Independent verifier audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa
 - **GitHub publication (`DELIVERY-01` -> `PARTIAL`, `SESSION-G06` -> `PASS_SCOPED`)**: Private repository `https://github.com/khang-macphuc111107/omnia` (`origin` -> `https://github.com/khang-macphuc111107/omnia.git`, owner `khang-macphuc111107`) created and pushed with Commit #1 `d8b456e357dde65d8ee314194743fb93655f5d6a` (tree `5f8ecc4966a859dcc032bca0b3013d2f81233abb`, `2,039` tracked files; see [REMOTE_SETUP.md](REMOTE_SETUP.md)). Because `HTMusTC` is a Discord handle rather than a GitHub login, collaborator access invitation remains a user step under `/settings/access`.
 - **Independent remote & isolated local clean-clone verification (`ROOT-05` -> `PARTIAL`, `SESSION-G01` -> `PASS_SCOPED`)**: Bound in `D:\OmniaData\qa\github-clean-clone-20261112\GITHUB_DELIVERY_AND_CLONE_RECEIPT.json` (`sha256=35aaac06a396bfc60e6d8a9bc893ccaf28c1f298c2ed958f344bdffc9285e610`, `allChecksPassed=true`): both remote GitHub clone and isolated `--no-local --no-hardlinks` clone match `d8b456e357dde65d8ee314194743fb93655f5d6a`, pass `cargo metadata --locked` and `cargo fmt --all --check` on both `src-tauri/Cargo.toml` and `native/Cargo.toml`, pass `524/524` locked Cargo tests, pass `5/5` `tools/agy-history-sync` unit tests, and pass `12/12` `.agents/skills/*` `quick_validate.py` checks (`rc=0`).
 - **Release native shell telemetry & `exebox-*` sandbox boundary (`QUALITY-01`)**: Bound in `D:\OmniaData\qa\native-20261112\retained-preview\native-shell-cycle24-runtime.json` (`sha256=1a4aa5cac935a76687432cb9ccf54fb4e390c2ef50cfc26c95b545fb9dd93a77`) and `native-shell-cycle24-window.png` (`sha256=68b669ce7e26e0d9abe2836490ca78f9566184607c7903d81e259a7f4e0c7ded`) against `release\omnia-native.exe` (`2,160,128 B`, `sha256=65944d86...`): `16,560,128 B` (`15.79 MiB`) working set, `0.0%` idle CPU, `163.2 ms` window discovery, `uiaIssue: null`. Because Antigravity executes commands inside isolated `exebox-*` Windows desktops rather than the interactive `Default` desktop, `PID 11532` was cleanly terminated after capture (`0` orphan processes); launch `D:\OmniaData\tools\cargo-target\release\omnia-native.exe` directly on `Default` desktop for interactive inspection.
-- **4-way `/learn` synchronization & session admission (`SESSION-01` -> `READY`)**: All `12` curated skills are byte-identical across `D:\Omnia\.agents\skills\`, `~/.codex/skills/`, `~/.agents/skills/`, and Antigravity, alongside `OMNIA_CONTINUITY_AND_PEER_MESH` in `~/.codex/AGENTS.md` and `8` pure-`LF` notes authored in this session under `ad_hoc/notes` (within a shared multi-session directory of `60+` `.md` notes where `33` pre-session historical notes use `CRLF`). [SESSION_ADMISSION.json](SESSION_ADMISSION.json) is now **`READY`** (`SESSION-G01..G07` passed on candidate `d8b456e357dde65d8ee314194743fb93655f5d6a`, `promptSha256=ef94c52e0c68763aecf8c94dd650ed396a987c8e402d1131bcb1f7a3e54de592`); three independent frozen-snapshot audit rounds execute against the pushed `HEAD === origin/master` snapshot into external `D:\OmniaData\qa\audits-20261112\final-streak-3\`.
+- **4-way `/learn` synchronization & session admission (`SESSION-01` -> `READY`)**: All `12` curated skills are byte-identical across `D:\Omnia\.agents\skills\`, `~/.codex/skills/`, `~/.agents/skills/`, and Antigravity, alongside `OMNIA_CONTINUITY_AND_PEER_MESH` in `~/.codex/AGENTS.md` and `8` pure-`LF` notes authored in this session under `ad_hoc/notes` (within a shared multi-session directory of `60+` `.md` notes where `33` pre-session historical notes use `CRLF`). [SESSION_ADMISSION.json](SESSION_ADMISSION.json) is now **`READY`** (`SESSION-G01..G07` passed on candidate `d8b456e357dde65d8ee314194743fb93655f5d6a`, `promptSha256=d277af284a6e2d8716f9ccb77ef07a16326321d53b725520c4499015d8619cfb`); three independent frozen-snapshot audit rounds execute against the pushed `HEAD === origin/master` snapshot into external `D:\OmniaData\qa\audits-20261112\final-streak-3\`.
 
 ## Wave 3 3-round clean audit & Wave 4 Full Native C++20, Flagship Studio UI and C:/D: deep-clean milestone — 2026-11-12
 
@@ -533,4 +533,4 @@ Independent verifier audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa
 - **Exhaustive `D:\` + `C:\` Deep-Clean Reclamation (`Steer #11..#12`, `DRIVE-01`, `DRIVE-02`)**:
   - `D:\` free space increased **`59.42 GiB -> 837.57 GiB` (`+778.15 GiB` physical / `799.19 GiB` logical)** ([DEEP_CLEAN_AUDIT_D_DRIVE.md](DEEP_CLEAN_AUDIT_D_DRIVE.md) `sha256=a51f017a...`, `D_DRIVE_DEEP_CLEAN_RECEIPT.json` `sha256=70f2781d...`).
   - `C:\` free space increased **`23.47 GiB -> 189.60 GiB` (`+166.14 GiB` physical / `183.69 GiB` logical)** ([DEEP_CLEAN_AUDIT_C_DRIVE.md](DEEP_CLEAN_AUDIT_C_DRIVE.md) `sha256=1a88e1fe...`, `C_DRIVE_DEEP_CLEAN_RECEIPT.json` `sha256=ee08c5a0...`).
-  - Independent Wave 4 audit verdict: **`PASS` (`7/7` lanes, `0` open defects)** in `D:\OmniaData\qa\audits-20261112\FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json` (`sha256=f4fd3ead9dfee673e91a272bdb920b833e961ff7521d505e9a6016cc19b4b980`), followed by Commit #4 push to `origin/master` and zero-bloat remote clean-clone C++20 Release build + `CTest` verification (`GITHUB_CPP20_DELIVERY_RECEIPT.json`).
+  - Independent Wave 4 audit verdict: **`PASS` (`7/7` lanes, `0` open defects)** in `D:\OmniaData\qa\audits-20261112\FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json` (`sha256=0e776c268a90fd712d390f3427a26bc503641438439cd69411c4221fd4ba47fc`), followed by Commit #5 push to `origin/master` and zero-bloat remote clean-clone C++20 Release build + `CTest` verification (`GITHUB_CPP20_DELIVERY_RECEIPT.json`).

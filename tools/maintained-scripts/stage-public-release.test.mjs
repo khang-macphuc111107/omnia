@@ -9,14 +9,15 @@ import test from "node:test";
 const script = fileURLToPath(new URL("./stage-public-release.mjs", import.meta.url));
 const baseFiles = [
   ".gitattributes", ".gitignore", "AGENTS.md", "README.md",
-  "native/Cargo.toml", "native/Cargo.lock", "native/src/main.rs",
-  "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs",
-  "src-tauri/crates/shared/Cargo.toml", "docs/storage-schema.sql",
-  "package.json", "package-lock.json", "scripts/check.mjs",
-  "src/main.ts", "tests/check.rs",
+  "CMakeLists.txt", "CMakePresets.json",
+  "cpp/CMakeLists.txt", "cpp/src/main.cpp",
+  "native/CMakeLists.txt", "native/src/main.cpp",
+  "ui/index.html", "ui/app/main.js",
+  "docs/storage-schema.sql", "docs/workspace/DECISIONS.md",
   "tools/maintained-scripts/stage-public-release.mjs",
   ".agents/skills/goal-plan-loop-dod/SKILL.md",
   ".agents/skills/deep-steer/SKILL.md",
+  ".agents/skills/deep-cpp-native/SKILL.md",
 ];
 
 function git(root, args, check = true) {
@@ -84,7 +85,10 @@ test("exports committed native, skills, tooling and binary/Unicode paths", (t) =
   assert.equal(receipt.workingTreeIncluded, false);
   assert.equal(fs.readFileSync(path.join(f.destination, "README.md"), "utf8"), "fixture README.md\n");
   assert.deepEqual(fs.readFileSync(path.join(f.destination, "docs", path.basename(special))), binary);
-  assert.equal(fs.existsSync(path.join(f.destination, "native", "Cargo.toml")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "native", "CMakeLists.txt")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "cpp", "CMakeLists.txt")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "ui", "index.html")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, ".agents", "skills", "deep-cpp-native", "SKILL.md")), true);
   assert.equal(fs.existsSync(path.join(f.destination, ".git")), false);
   assert.equal(fs.existsSync(path.join(f.destination, "not-committed.txt")), false);
   assert.equal(fs.existsSync(path.join(f.destination, ".agents", "skills", "deep-steer", "SKILL.md")), true);
@@ -168,4 +172,53 @@ test("refuses a reparse destination parent", (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Reparse\/symlink boundary/u);
   assert.equal(fs.existsSync(path.join(owned, "candidate")), false);
+});
+
+test("refuses retired Rust and Cargo files before creating output", (t) => {
+  for (const retired of ["native/src/legacy.rs", "native/Cargo.toml", "Cargo.lock"]) {
+    const f = fixture(t);
+    const target = path.join(f.source, ...retired.split("/"));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "// retired\n");
+    commit(f.source);
+    const result = run(f);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Retired Rust\/Cargo file is tracked/u);
+    assert.equal(fs.existsSync(f.destination), false);
+  }
+});
+
+test("exports live repository HEAD cleanly into external temp directory", (t) => {
+  const liveRoot = path.resolve(path.dirname(script), "../..");
+  const tempBase = fs.mkdtempSync(path.join(os.tmpdir(), "omnia-live-export-test-"));
+  const destination = path.join(tempBase, "candidate");
+  t.after(() => {
+    const resolved = fs.realpathSync.native(tempBase);
+    const tempRoot = fs.realpathSync.native(os.tmpdir());
+    const relative = path.relative(tempRoot, resolved);
+    assert.ok(!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+    assert.ok(path.basename(resolved).startsWith("omnia-live-export-test-"));
+    fs.rmSync(`${destination}.receipt.json`, { force: true });
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.rmSync(resolved, { recursive: true, force: true });
+  });
+  const expectedHead = git(liveRoot, ["rev-parse", "HEAD"]).stdout.trim();
+  const result = spawnSync(process.execPath, [script], {
+    encoding: "utf8", timeout: 30000, windowsHide: true,
+    env: {
+      ...process.env,
+      OMNIA_SOURCE_ROOT: liveRoot,
+      OMNIA_EXPORT_DESTINATION: destination,
+      OMNIA_EXPORT_REVISION: "HEAD",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const receipt = JSON.parse(fs.readFileSync(`${destination}.receipt.json`, "utf8"));
+  assert.equal(receipt.state, "EXPORTED");
+  assert.equal(receipt.commit, expectedHead);
+  assert.ok(receipt.fileCount >= 160);
+  assert.equal(fs.existsSync(path.join(destination, "CMakeLists.txt")), true);
+  assert.equal(fs.existsSync(path.join(destination, "cpp", "CMakeLists.txt")), true);
+  assert.equal(fs.existsSync(path.join(destination, "native", "CMakeLists.txt")), true);
+  assert.equal(fs.existsSync(path.join(destination, "ui", "index.html")), true);
 });
