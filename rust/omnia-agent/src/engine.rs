@@ -724,6 +724,7 @@ struct ExecutionProgressState {
     files_mutated: BTreeSet<String>,
     shell_runs_total: u32,
     verified_since_last_mutation: bool,
+    test_suite_passed_since_last_mutation: bool,
     last_shell_exit_code: Option<i32>,
     verify_gate_nudges: u32,
     narration_nudges: u32,
@@ -1389,9 +1390,18 @@ impl NativeSuperEngine {
 
                 // 4. One-shot Final Review Gate: re-check every stated requirement & edge case
                 // (catches `9/10 checks` premature exits) while budget clearly remains.
-                let review_floor = Duration::from_secs((total_budget_secs / 5).max(45));
+                // Anti-Termination-Lag (arXiv:2611.14960): if a real test suite already ran green
+                // (`FailToPass` / `AllGreen`) after the last edit, do NOT force an extra turn.
+                let base_floor = (total_budget_secs / 5).max(45);
+                let heavy_floor = if self.stream_budget.first_delta_timeout >= Duration::from_secs(120) {
+                    base_floor.max(120)
+                } else {
+                    base_floor
+                };
+                let review_floor = Duration::from_secs(heavy_floor);
                 if self.final_review_gate
                     && !progress.files_mutated.is_empty()
+                    && !progress.test_suite_passed_since_last_mutation
                     && progress.final_review_nudges < 1
                     && prompt_turns + 2 <= max_turns
                     && rem_now > review_floor
@@ -1570,6 +1580,7 @@ impl NativeSuperEngine {
                                 .unwrap_or_else(|| "workspace_file".into());
                             progress.files_mutated.insert(label.clone());
                             progress.verified_since_last_mutation = false;
+                            progress.test_suite_passed_since_last_mutation = false;
                             if let Some((fp_hex, err_kind, symptom)) =
                                 progress.last_failed_edit.take()
                             {
@@ -1598,11 +1609,17 @@ impl NativeSuperEngine {
                             .lock()
                             .unwrap()
                             .record_test_outcome_detailed(cur_turn, &tool_text);
+                        let transition_passed_suite = matches!(
+                            transition,
+                            TestOutcomeTransition::FailToPass { .. }
+                                | TestOutcomeTransition::AllGreen { .. }
+                        );
                         match transition {
                             TestOutcomeTransition::Regression(reg_alert) => {
                                 tool_text.push_str("\n\n");
                                 tool_text.push_str(&reg_alert);
                                 progress.escalate_reasoning = true;
+                                progress.test_suite_passed_since_last_mutation = false;
                             }
                             TestOutcomeTransition::FailToPass {
                                 prev_failed,
@@ -1615,6 +1632,7 @@ impl NativeSuperEngine {
                         }
                         if effective_error {
                             progress.last_shell_exit_code = Some(1);
+                            progress.test_suite_passed_since_last_mutation = false;
                             let fp_hex = format!("{:016x}", error_fingerprint(&tool_text));
                             let err_kind = format!("{:?}", classify_tool_error("shell", &tool_text));
                             let symptom: String = tool_text.chars().take(200).collect();
@@ -1633,6 +1651,9 @@ impl NativeSuperEngine {
                             progress.last_shell_exit_code = Some(0);
                             if !progress.files_mutated.is_empty() {
                                 progress.verified_since_last_mutation = true;
+                                if transition_passed_suite {
+                                    progress.test_suite_passed_since_last_mutation = true;
+                                }
                             }
                             if let Some((fp_hex, err_kind, symptom)) =
                                 progress.last_failed_shell.take()
@@ -6101,6 +6122,44 @@ data: {\"type\":\"message_stop\"}\n\n".to_string();
         let reqs = captured.lock().unwrap();
         assert_eq!(reqs.len(), 4);
         assert!(reqs[3].contains("[Final Review Gate]"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn final_review_gate_skips_after_passing_test_suite_anti_termination_lag() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let cap_bg = Arc::clone(&captured);
+        let srv = tokio::spawn(async move {
+            let responses = [
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"w1\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"m.py\\\",\\\"content\\\":\\\"V = 1\\\\n\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"s1\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"echo 5 passed, 0 failed\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Tests passed, done.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":140,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
+            ];
+            for body in responses {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut sock).await;
+                cap_bg.lock().unwrap().push(req);
+                let frame = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = sock.write_all(frame.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_eng_atl_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.final_review_gate = true;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("fix m.py", 10, 300, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "Tests passed, done.");
+        assert_eq!(eng.total_final_review_nudges, 0);
+        assert_eq!(captured.lock().unwrap().len(), 3);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
