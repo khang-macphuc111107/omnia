@@ -10,12 +10,8 @@ name = "omnia"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
 mimalloc.workspace = true
 omnia-agent.workspace = true
-omnia-core.workspace = true
-omnia-downloader.workspace = true
-omnia-notebook.workspace = true
-omnia-routing.workspace = true
-omnia-storage.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
