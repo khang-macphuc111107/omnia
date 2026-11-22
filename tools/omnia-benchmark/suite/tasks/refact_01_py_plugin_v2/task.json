@@ -1,0 +1,17 @@
+{
+  "id": "refact_01_py_plugin_v2",
+  "axis": 6,
+  "axis_name": "Refactoring & Polyglot Migration",
+  "title": "Async ExecutionContext v2 plugin refactor + v1 DeprecationWarning shim",
+  "difficulty": "hard",
+  "languages": [
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "refactor",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

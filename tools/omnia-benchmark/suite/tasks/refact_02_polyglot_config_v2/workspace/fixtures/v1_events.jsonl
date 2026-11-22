@@ -1,0 +1,4 @@
+{"type":"user.signup","timestamp_sec":1710506096,"tags_csv":" beta, alpha, beta , ","payload":{"user":"alice","plan":"pro","nested":{"z":9,"a":1}}}
+{"type":"invoice.paid","timestamp_sec":1710506150.25,"tags_csv":"billing,eu,billing","payload":{"city":"café 東京","amount":19.99,"items":[{"sku":"B2","qty":2},{"sku":"A1","qty":1}]}}
+{"type":"audit.ping","timestamp_sec":1710507000.125,"tags_csv":"  ,  ","payload":{"ok":true,"note":"résumé","empty_obj":{},"nullable":null}}
+{"schema_version":1,"type":"metric.flush","timestamp_sec":1710508000,"tags_csv":"ops, telemetry, ops, core","payload":{"host":"win-01","counts":{"errors":0,"sent":42},"meta":{"zeta":"last","alpha":"first"}}}

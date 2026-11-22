@@ -1,0 +1,11 @@
+{
+  "active_services": {
+    "auth": "services/auth/pkg_07/expiry.py",
+    "billing": "services/billing/pkg_14/retry.mjs",
+    "events": "services/events/pkg_21/dlq.py"
+  },
+  "deprecated_roots": [
+    "legacy_deprecated",
+    "test_fixtures"
+  ]
+}

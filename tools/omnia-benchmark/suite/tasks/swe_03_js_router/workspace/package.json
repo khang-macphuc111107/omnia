@@ -1,0 +1,10 @@
+{
+  "name": "mini-trie-router",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Zero-dependency ESM URL trie router and async middleware pipeline",
+  "main": "src/router.mjs",
+  "scripts": {
+    "test": "node tests/basic.test.mjs"
+  }
+}

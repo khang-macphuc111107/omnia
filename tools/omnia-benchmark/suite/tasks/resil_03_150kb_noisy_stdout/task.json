@@ -1,0 +1,18 @@
+{
+  "id": "resil_03_150kb_noisy_stdout",
+  "axis": 11,
+  "axis_name": "Adversarial Harness Resilience & Fault Injection",
+  "title": "Buried failure debugging inside 150 KB noisy test-runner diagnostic stdout",
+  "difficulty": "medium",
+  "languages": [
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "resilience",
+  "fault_mode": null,
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

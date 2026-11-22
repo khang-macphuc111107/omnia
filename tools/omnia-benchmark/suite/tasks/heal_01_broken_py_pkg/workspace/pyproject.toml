@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantlib-mini"
+version = "0.4.2"
+description = "Zero-dependency Python fixed-income bond pricing library"
+requires-python = ">=3.11"
+keywords = ["finance", "bonds", "fixed-income"
+
+[tool.quantlib_mini]
+default_currency = "USD"
+default_day_count = "ACT/ACT"
+default_curve_path = "data\yield_curve.csv"
+settlement_lag_days = 0
+holiday_calendar = "US"

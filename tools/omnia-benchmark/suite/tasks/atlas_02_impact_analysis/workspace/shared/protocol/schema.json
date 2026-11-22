@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.nimbus.internal/protocol/v1/schema.json",
+  "title": "Nimbus Cloud Wire Protocol v1",
+  "type": "object",
+  "$defs": {
+    "TenantTier": {
+      "type": "string",
+      "enum": ["free", "pro", "enterprise"],
+      "description": "Billing plan tier attached to tenant records, JWT claims, and rate limits."
+    },
+    "SubscriptionState": {
+      "type": "string",
+      "enum": ["trialing", "active", "past_due", "suspended", "canceled"],
+      "description": "Lifecycle state persisted on subscriptions.subscription_state."
+    },
+    "AuthTokenClaims": {
+      "type": "object",
+      "required": [
+        "sub",
+        "tenant_id",
+        "tenant_tier",
+        "subscription_state",
+        "session_id",
+        "iat",
+        "exp"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sub": { "type": "string" },
+        "tenant_id": { "type": "string", "pattern": "^tnt_[a-z0-9_]+$" },
+        "tenant_tier": { "$ref": "#/$defs/TenantTier" },
+        "subscription_state": { "$ref": "#/$defs/SubscriptionState" },
+        "session_id": { "type": "string" },
+        "iat": { "type": "integer" },
+        "exp": { "type": "integer" }
+      }
+    },
+    "InvoicePayload": {
+      "type": "object",
+      "required": [
+        "invoice_id",
+        "tenant_id",
+        "subscription_id",
+        "tenant_tier",
+        "amount_cents",
+        "currency",
+        "issued_at",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "invoice_id": { "type": "string", "pattern": "^inv_[a-zA-Z0-9]+$" },
+        "tenant_id": { "type": "string" },
+        "subscription_id": { "type": "string" },
+        "tenant_tier": { "$ref": "#/$defs/TenantTier" },
+        "amount_cents": { "type": "integer", "minimum": 0 },
+        "currency": { "type": "string", "enum": ["USD", "EUR", "GBP"] },
+        "issued_at": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["draft", "open", "paid", "void", "uncollectible"] }
+      }
+    },
+    "WebhookHeaders": {
+      "type": "object",
+      "required": ["X-Nimbus-Signature-V1", "X-Nimbus-Timestamp", "X-Request-Id"],
+      "properties": {
+        "X-Nimbus-Signature-V1": {
+          "type": "string",
+          "pattern": "^sha256=[0-9a-f]{64}$",
+          "description": "HMAC-SHA256 hex digest over '<timestamp>.<raw_body>'."
+        },
+        "X-Nimbus-Timestamp": {
+          "type": "string",
+          "description": "Unix epoch timestamp in seconds as ASCII decimal string."
+        },
+        "X-Request-Id": {
+          "type": "string"
+        }
+      }
+    },
+    "QueueJobEnvelope": {
+      "type": "object",
+      "required": ["job_id", "job_type", "tenant_id", "attempt", "payload"],
+      "properties": {
+        "job_id": { "type": "string" },
+        "job_type": {
+          "type": "string",
+          "enum": ["invoice.created", "dunning.final_notice", "webhook.replay"]
+        },
+        "tenant_id": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "payload": { "type": "object" }
+      }
+    }
+  }
+}

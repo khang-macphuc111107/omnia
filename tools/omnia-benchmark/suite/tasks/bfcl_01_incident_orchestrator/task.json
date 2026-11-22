@@ -1,0 +1,18 @@
+{
+  "id": "bfcl_01_incident_orchestrator",
+  "axis": 5,
+  "axis_name": "BFCL v4 Tool-Calling & Abstention",
+  "title": "Multi-alert ops tool chaining + abstention on false-positive alert",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "sql"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "tool_state",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": "setup.py",
+  "verify_script": "verify.py"
+}

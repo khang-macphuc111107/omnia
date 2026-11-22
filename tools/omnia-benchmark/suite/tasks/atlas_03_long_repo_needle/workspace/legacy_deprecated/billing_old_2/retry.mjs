@@ -1,0 +1,2 @@
+export const MAX_RETRY_DELAY_MS = 30000;
+export function oldBackoff2(attempt) { return 500 * (2 ** attempt); }

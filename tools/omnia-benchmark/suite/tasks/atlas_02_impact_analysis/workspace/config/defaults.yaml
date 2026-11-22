@@ -1,0 +1,57 @@
+# Nimbus Cloud Base Configuration (Layer 1: defaults)
+# Overridden by config/env_<env>.yaml and config/tenants.json where enabled.
+
+service:
+  cluster_name: nimbus-global
+  log_level: info
+  trace_sampling_rate: 0.1
+
+auth:
+  jwt_issuer: https://auth.nimbus.internal
+  jwt_audience: nimbus-api
+  access_token_ttl_sec: 900
+  refresh_token_ttl_sec: 86400
+  session_redis_ttl_sec: 3600
+  min_session_ttl_sec: 300
+  max_session_ttl_sec: 7200
+  allow_tenant_ttl_override: false
+  redis_key_prefix: "nimbus:auth:sess:"
+  refresh_key_prefix: "nimbus:auth:rt:"
+
+gateway:
+  listen_port: 8080
+  upstream_timeout_ms: 4000
+  circuit_breaker_error_threshold: 5
+  circuit_breaker_cooldown_sec: 30
+  webhook_hmac_header: "X-Nimbus-Signature-V1"
+  webhook_replay_window_sec: 300
+  rate_limit_rpm_by_tier:
+    free: 60
+    pro: 600
+    enterprise: 6000
+
+billing:
+  default_currency: USD
+  webhook_header: "X-Nimbus-Signature-V1"
+  grace_period_days: 7
+  invoice_tax_bps: 825
+  proration_enabled: true
+  plan_monthly_cents:
+    free: 0
+    pro: 4900
+    enterprise: 29900
+
+worker:
+  queue_name: "queue:billing_events"
+  dlq_key: "dlq:billing_events"
+  poll_interval_ms: 250
+  dlq:
+    base_delay_sec: 5
+    backoff_multiplier: 2
+    max_delay_sec: 300
+    max_attempts: 5
+    jitter_pct: 0.15
+  reconciler:
+    batch_size: 200
+    callback_hmac_header: "X-Nimbus-Signature-V1"
+    allow_unsigned_legacy_callbacks: true

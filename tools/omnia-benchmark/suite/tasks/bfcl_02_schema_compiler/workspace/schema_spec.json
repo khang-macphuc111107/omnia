@@ -1,0 +1,181 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "InventoryReconciliationPayload",
+  "description": "Strict schema for inventory reconciliation compiled from catalog_tool.py. No extra properties are permitted at any nesting level.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "as_of_date",
+    "generated_at",
+    "base_currency",
+    "items",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version identifier; must be exactly '1.0'."
+    },
+    "as_of_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "FX valuation date (YYYY-MM-DD), e.g. '2026-10-01'."
+    },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "description": "Valid ISO-8601 UTC timestamp ending in 'Z' (seconds precision)."
+    },
+    "base_currency": {
+      "type": "string",
+      "const": "USD",
+      "description": "Reporting base currency; must be 'USD'."
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Active products ONLY (inactive/discontinued products MUST be excluded), strictly sorted lexicographically ascending by product_id with no duplicates.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "product_id",
+          "name",
+          "supplier_id",
+          "supplier_status",
+          "supplier_risk",
+          "currency",
+          "unit_price",
+          "expected_stock",
+          "physical_stock",
+          "discrepancy_units",
+          "status",
+          "physical_value_usd",
+          "discrepancy_value_usd"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "pattern": "^SKU-\\d{3}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "supplier_id": {
+            "type": "string",
+            "pattern": "^SUP-\\d{2}$"
+          },
+          "supplier_status": {
+            "type": "string",
+            "enum": ["active", "suspended"]
+          },
+          "supplier_risk": {
+            "type": "boolean",
+            "description": "true iff supplier_status == 'suspended', else false."
+          },
+          "currency": {
+            "type": "string",
+            "enum": ["USD", "EUR", "GBP", "JPY"]
+          },
+          "unit_price": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "expected_stock": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "physical_stock": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Sum of physical stock counts across all warehouses (0 for warehouses omitting the SKU)."
+          },
+          "discrepancy_units": {
+            "type": "integer",
+            "description": "physical_stock - expected_stock (negative for shortage, positive for surplus, 0 for match)."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["match", "shortage", "surplus"],
+            "description": "'match' if discrepancy_units == 0, 'shortage' if < 0, 'surplus' if > 0."
+          },
+          "physical_value_usd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Exact Decimal(physical_stock) * Decimal(str(unit_price)) * Decimal(str(fx_rate)) quantized to 2 decimal places using ROUND_HALF_UP."
+          },
+          "discrepancy_value_usd": {
+            "type": "number",
+            "description": "Exact Decimal(discrepancy_units) * Decimal(str(unit_price)) * Decimal(str(fx_rate)) quantized to 2 decimal places using ROUND_HALF_UP (ties away from zero)."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active_product_count",
+        "excluded_inactive_count",
+        "match_count",
+        "shortage_count",
+        "surplus_count",
+        "supplier_risk_count",
+        "total_expected_units",
+        "total_physical_units",
+        "total_physical_value_usd",
+        "net_discrepancy_value_usd"
+      ],
+      "properties": {
+        "active_product_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excluded_inactive_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of inactive/discontinued products excluded from items and aggregates."
+        },
+        "match_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "shortage_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "surplus_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "supplier_risk_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of active items where supplier_risk is true."
+        },
+        "total_expected_units": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sum of expected_stock over active items only."
+        },
+        "total_physical_units": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sum of physical_stock over active items only."
+        },
+        "total_physical_value_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Sum of rounded per-item physical_value_usd values across all active items, quantized to 2 decimal places."
+        },
+        "net_discrepancy_value_usd": {
+          "type": "number",
+          "description": "Sum of rounded per-item discrepancy_value_usd values across all active items, quantized to 2 decimal places."
+        }
+      }
+    }
+  }
+}

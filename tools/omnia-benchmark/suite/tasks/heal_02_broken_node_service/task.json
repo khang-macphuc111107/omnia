@@ -1,0 +1,18 @@
+{
+  "id": "heal_02_broken_node_service",
+  "axis": 7,
+  "axis_name": "Error Recovery & Self-Healing",
+  "title": "5-fault cascading broken Node.js + Python subprocess bridge recovery",
+  "difficulty": "hard",
+  "languages": [
+    "javascript",
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "error_recovery",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

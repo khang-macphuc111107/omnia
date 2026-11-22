@@ -1,0 +1,6 @@
+{"id":"evt-001","type":"order.created","message":"Espresso order at café 東京 🚀","source_path":"C:\\Users\\dev\\docs\\new\\order_001.txt","amount":19.95}
+{"id":"evt-002","type":"user.signup","message":"Welcome résumé user naïve","source_path":"C:\\Users\\dev\\profiles\\tab_user\\bio.md","amount":null}
+{"id":"evt-003","type":"file.indexed","message":"Indexed quarterly ledger","source_path":"D:\\finance\\2024\\new_reports\\q4.csv","amount":0}
+{"id":"evt-004","type":"system.ping","message":"Heartbeat OK — 日本語テスト","source_path":"","amount":null}
+{"id":"evt-005","type":"order.created","message":"Bulk shipment confirmed","source_path":"C:\\data\\exports\\north\\batch_5.json","amount":450.0}
+{"id":"evt-006","type":"file.indexed","message":"Synced archive snapshot 📦","source_path":"C:\\Users\\dev\\archive\\target\\snap.tar","amount":null}

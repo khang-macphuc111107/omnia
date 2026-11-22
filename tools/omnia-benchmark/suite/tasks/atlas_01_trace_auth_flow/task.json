@@ -1,0 +1,21 @@
+{
+  "id": "atlas_01_trace_auth_flow",
+  "axis": 4,
+  "axis_name": "SWE-Atlas Codebase Q&A",
+  "title": "Cross-service auth, TTL precedence & DLQ trace on 18-file monorepo",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "typescript",
+    "yaml",
+    "json",
+    "sql"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "citation_qa",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "heal_03_win_crlf_lock",
+  "axis": 7,
+  "axis_name": "Error Recovery & Self-Healing",
+  "title": "5-fault Windows UTF-8 BOM, CRLF key leak, SQLite lock race & atomic export recovery",
+  "difficulty": "hard",
+  "languages": [
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "self_heal",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

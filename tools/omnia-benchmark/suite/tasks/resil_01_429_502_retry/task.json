@@ -1,0 +1,18 @@
+{
+  "id": "resil_01_429_502_retry",
+  "axis": 11,
+  "axis_name": "Adversarial Harness Resilience & Fault Injection",
+  "title": "Token-bucket rate limiter fix under deterministic HTTP 429 & 502 fault injection",
+  "difficulty": "medium",
+  "languages": [
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "resilience",
+  "fault_mode": "429_502",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

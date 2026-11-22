@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "tenants": {
+    "tnt_acme": {
+      "display_name": "Acme Robotics",
+      "tenant_tier": "enterprise",
+      "webhook_url": "https://hooks.acme.example/nimbus",
+      "webhook_secret_ref": "vault://secrets/tnt_acme/webhook",
+      "overrides": {
+        "session_redis_ttl_sec": 900,
+        "custom_rpm_limit": 7500
+      }
+    },
+    "tnt_globex": {
+      "display_name": "Globex Logistics",
+      "tenant_tier": "pro",
+      "webhook_url": "https://api.globex.example/webhooks/billing",
+      "webhook_secret_ref": "vault://secrets/tnt_globex/webhook",
+      "overrides": {
+        "session_redis_ttl_sec": 5400
+      }
+    },
+    "tnt_initech": {
+      "display_name": "Initech Software",
+      "tenant_tier": "free",
+      "webhook_url": null,
+      "webhook_secret_ref": null,
+      "overrides": {}
+    },
+    "tnt_umbrella": {
+      "display_name": "Umbrella BioLabs",
+      "tenant_tier": "enterprise",
+      "webhook_url": "https://events.umbrella.example/nimbus-cb",
+      "webhook_secret_ref": "vault://secrets/tnt_umbrella/webhook",
+      "overrides": {
+        "session_redis_ttl_sec": 120
+      }
+    }
+  }
+}

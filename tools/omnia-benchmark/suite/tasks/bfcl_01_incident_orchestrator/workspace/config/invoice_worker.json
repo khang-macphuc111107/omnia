@@ -1,0 +1,13 @@
+{
+  "service": "invoice-worker",
+  "version": "v1.8.0",
+  "queue_name": "invoices.dispatch.v1",
+  "batch_size": 50,
+  "max_concurrency": 32,
+  "partner_endpoint": "https://api.partner-tax.example/v2/invoices",
+  "partner_rate_limit_concurrency": 8,
+  "dlq_threshold": 500,
+  "retry_backoff_ms": 250,
+  "last_modified": "2026-10-14T19:15:00Z",
+  "modified_by": "auto-scaler-policy-sync"
+}

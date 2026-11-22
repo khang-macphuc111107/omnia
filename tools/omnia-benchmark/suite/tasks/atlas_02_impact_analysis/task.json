@@ -1,0 +1,21 @@
+{
+  "id": "atlas_02_impact_analysis",
+  "axis": 4,
+  "axis_name": "SWE-Atlas Codebase Q&A",
+  "title": "Breaking schema/HMAC protocol impact audit & zero-downtime rollout order",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "typescript",
+    "yaml",
+    "json",
+    "sql"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "citation_qa",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

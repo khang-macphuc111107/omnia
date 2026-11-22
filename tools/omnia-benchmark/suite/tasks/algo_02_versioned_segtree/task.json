@@ -1,0 +1,17 @@
+{
+  "id": "algo_02_versioned_segtree",
+  "axis": 3,
+  "axis_name": "LiveCodeBench Novel Algorithmic Synthesis",
+  "title": "VersionedSignalBuffer: Persistent Lazy Segment Tree with Dual Kadane & Branching Snapshots",
+  "difficulty": "hard",
+  "languages": [
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "algorithmic",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

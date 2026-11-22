@@ -1,0 +1,17 @@
+{
+  "id": "swe_02_py_scheduler",
+  "axis": 1,
+  "axis_name": "SWE-bench Multi-File Bug Fixing",
+  "title": "DAG workflow executor fan-in, disconnected cycle detection & backoff cap",
+  "difficulty": "hard",
+  "languages": [
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "fail_to_pass",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

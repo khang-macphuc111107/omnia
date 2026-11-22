@@ -1,0 +1,38 @@
+# Nimbus Cloud Production Environment Overrides (Layer 2: env)
+# Merged on top of config/defaults.yaml before tenant overrides are applied.
+
+service:
+  cluster_name: nimbus-prod-us-east
+  log_level: warn
+  trace_sampling_rate: 0.05
+
+auth:
+  session_redis_ttl_sec: 1800
+  min_session_ttl_sec: 300
+  max_session_ttl_sec: 3600
+  allow_tenant_ttl_override: true
+
+gateway:
+  upstream_timeout_ms: 2500
+  webhook_hmac_header: "X-Nimbus-Signature-V1"
+  rate_limit_rpm_by_tier:
+    free: 30
+    pro: 500
+    enterprise: 5000
+
+billing:
+  webhook_header: "X-Nimbus-Signature-V1"
+  grace_period_days: 5
+  plan_monthly_cents:
+    free: 0
+    pro: 4900
+    enterprise: 34900
+
+worker:
+  dlq_key: "dlq:billing_events"
+  dlq:
+    base_delay_sec: 10
+    max_delay_sec: 600
+  reconciler:
+    batch_size: 500
+    callback_hmac_header: "X-Nimbus-Signature-V1"

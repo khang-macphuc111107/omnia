@@ -1,0 +1,8 @@
+{
+  "default_channel": "general",
+  "routes": {
+    "order.created": { "channel": "orders", "priority": "high", "tag": "SALES" },
+    "user.signup": { "channel": "users", "priority": "normal", "tag": "AUTH" },
+    "file.indexed": { "channel": "storage", "priority": "low", "tag": "FS" },
+  }
+}

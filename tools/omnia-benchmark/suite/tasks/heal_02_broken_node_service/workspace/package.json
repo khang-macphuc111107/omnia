@@ -1,0 +1,10 @@
+{
+  "name": "event-bridge",
+  "version": "1.0.0",
+  "description": "Zero-dependency Node.js ESM + Python subprocess NDJSON event bridge",
+  "type": "module",
+  "main": "src/index.mjs",
+  "scripts": {
+    "test": "node test/bridge.test.mjs"
+  }
+}

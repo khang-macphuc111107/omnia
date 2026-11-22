@@ -1,0 +1,17 @@
+{
+  "id": "swe_04_rs_utf8_interval",
+  "axis": 1,
+  "axis_name": "SWE-bench Multi-File Bug Fixing",
+  "title": "Rust multi-file UTF-8 char-boundary slicing, half-open interval algebra & batch span edits",
+  "difficulty": "hard",
+  "languages": [
+    "rust"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "fail_to_pass",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

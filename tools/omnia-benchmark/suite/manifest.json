@@ -1,0 +1,442 @@
+{
+  "schema_version": "1.0",
+  "total_tasks": 24,
+  "axes_covered": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    11
+  ],
+  "tasks": [
+    {
+      "id": "swe_01_py_ledger",
+      "axis": 1,
+      "axis_name": "SWE-bench Multi-File Bug Fixing",
+      "title": "Multi-currency double-entry ledger FX rounding & hold reconciliation",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "fail_to_pass",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "swe_02_py_scheduler",
+      "axis": 1,
+      "axis_name": "SWE-bench Multi-File Bug Fixing",
+      "title": "DAG workflow executor fan-in, disconnected cycle detection & backoff cap",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "fail_to_pass",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "swe_03_js_router",
+      "axis": 1,
+      "axis_name": "SWE-bench Multi-File Bug Fixing",
+      "title": "ESM trie router precedence backtracking, %2F param decode & async errors",
+      "difficulty": "hard",
+      "languages": [
+        "javascript"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "fail_to_pass",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "swe_04_rs_utf8_interval",
+      "axis": 1,
+      "axis_name": "SWE-bench Multi-File Bug Fixing",
+      "title": "Rust multi-file UTF-8 char-boundary slicing, half-open interval algebra & batch span edits",
+      "difficulty": "hard",
+      "languages": [
+        "rust"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "fail_to_pass",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "term_01_git_archaeology",
+      "axis": 2,
+      "axis_name": "Terminal-Bench CLI & State Engineering",
+      "title": "Git bisect regression hunt, 3-branch merge conflict resolution, and selective revert",
+      "difficulty": "hard",
+      "languages": [
+        "git",
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "state_verification",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "term_02_log_etl_pipeline",
+      "axis": 2,
+      "axis_name": "Terminal-Bench CLI & State Engineering",
+      "title": "Multi-format telemetry ETL pipeline (JSONL/CSV/TSV/BOM/corrupt) with hidden re-run verification",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "state_verification",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "term_03_sqlite_migration",
+      "axis": 2,
+      "axis_name": "Terminal-Bench CLI & State Engineering",
+      "title": "Idempotent SQLite v1-to-v2 normalized schema migration with FX conversion and orphan quarantine",
+      "difficulty": "hard",
+      "languages": [
+        "sqlite",
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "state_verification",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "algo_01_temporal_k_shortest",
+      "axis": 3,
+      "axis_name": "LiveCodeBench Novel Algorithmic Synthesis",
+      "title": "Time-Windowed Dynamic Toll-Surge Minimum-Cost Routing with Waiting Costs",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "algorithmic",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "algo_02_versioned_segtree",
+      "axis": 3,
+      "axis_name": "LiveCodeBench Novel Algorithmic Synthesis",
+      "title": "VersionedSignalBuffer: Persistent Lazy Segment Tree with Dual Kadane & Branching Snapshots",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "algorithmic",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "algo_03_regex_nfa_compiler",
+      "axis": 3,
+      "axis_name": "LiveCodeBench Novel Algorithmic Synthesis",
+      "title": "ReDoS-Immune Linear-Time Thompson NFA / PikeVM Regex Engine",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "algorithmic",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "atlas_01_trace_auth_flow",
+      "axis": 4,
+      "axis_name": "SWE-Atlas Codebase Q&A",
+      "title": "Cross-service auth, TTL precedence & DLQ trace on 18-file monorepo",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "typescript",
+        "yaml",
+        "json",
+        "sql"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "citation_qa",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "atlas_02_impact_analysis",
+      "axis": 4,
+      "axis_name": "SWE-Atlas Codebase Q&A",
+      "title": "Breaking schema/HMAC protocol impact audit & zero-downtime rollout order",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "typescript",
+        "yaml",
+        "json",
+        "sql"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "citation_qa",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "atlas_03_long_repo_needle",
+      "axis": 4,
+      "axis_name": "SWE-Atlas Deep Codebase Navigation",
+      "title": "110-file polyglot monorepo production defect localization with 12 deprecated decoys",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "javascript"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "json_citation",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "bfcl_01_incident_orchestrator",
+      "axis": 5,
+      "axis_name": "BFCL v4 Tool-Calling & Abstention",
+      "title": "Multi-alert ops tool chaining + abstention on false-positive alert",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "sql"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "tool_state",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "bfcl_02_schema_compiler",
+      "axis": 5,
+      "axis_name": "BFCL v4 Tool-Calling & Abstention",
+      "title": "Paginated API + deterministic 429 retry + strict schema reconciliation",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "json"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "tool_state",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "refact_01_py_plugin_v2",
+      "axis": 6,
+      "axis_name": "Refactoring & Polyglot Migration",
+      "title": "Async ExecutionContext v2 plugin refactor + v1 DeprecationWarning shim",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "refactor",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "refact_02_polyglot_config_v2",
+      "axis": 6,
+      "axis_name": "Refactoring & Polyglot Migration",
+      "title": "Dual-language Python + Node.js v2 envelope migration & v1 dual-read",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "javascript"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "refactor",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "refact_03_ts_large_split",
+      "axis": 6,
+      "axis_name": "Large-Scale Refactoring & Polyglot Migration",
+      "title": "Split 22-file JS/ESM monolith into 4 domain modules, migrate 18 callers & preserve barrel",
+      "difficulty": "hard",
+      "languages": [
+        "javascript"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "refactor",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "heal_01_broken_py_pkg",
+      "axis": 7,
+      "axis_name": "Error Recovery & Self-Healing",
+      "title": "6-fault cascading broken Python financial package recovery",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "error_recovery",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "heal_02_broken_node_service",
+      "axis": 7,
+      "axis_name": "Error Recovery & Self-Healing",
+      "title": "5-fault cascading broken Node.js + Python subprocess bridge recovery",
+      "difficulty": "hard",
+      "languages": [
+        "javascript",
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "error_recovery",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "heal_03_win_crlf_lock",
+      "axis": 7,
+      "axis_name": "Error Recovery & Self-Healing",
+      "title": "5-fault Windows UTF-8 BOM, CRLF key leak, SQLite lock race & atomic export recovery",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "self_heal",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "resil_01_429_502_retry",
+      "axis": 11,
+      "axis_name": "Adversarial Harness Resilience & Fault Injection",
+      "title": "Token-bucket rate limiter fix under deterministic HTTP 429 & 502 fault injection",
+      "difficulty": "medium",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "resilience",
+      "fault_mode": "429_502",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "resil_02_sse_midstream_eof",
+      "axis": 11,
+      "axis_name": "Adversarial Harness Resilience & Fault Injection",
+      "title": "Crash-safe WAL log compactor fix under deterministic mid-stream SSE EOF truncation",
+      "difficulty": "medium",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "resilience",
+      "fault_mode": "sse_eof",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "resil_03_150kb_noisy_stdout",
+      "axis": 11,
+      "axis_name": "Adversarial Harness Resilience & Fault Injection",
+      "title": "Buried failure debugging inside 150 KB noisy test-runner diagnostic stdout",
+      "difficulty": "medium",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "resilience",
+      "fault_mode": null,
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    }
+  ]
+}

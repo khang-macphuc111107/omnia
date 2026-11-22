@@ -1,0 +1,14 @@
+{
+  "bond_id": "UST-2026-550",
+  "face_value": 1000.0,
+  "coupon_rate": 0.055,
+  "day_count": "ACT/ACT",
+  "valuation_date": "2024-05-15",
+  "accrual_start_date": "2024-02-28",
+  "payment_dates": [
+    "2024-08-31",
+    "2025-02-28",
+    "2025-08-31",
+    "2026-02-28"
+  ]
+}
