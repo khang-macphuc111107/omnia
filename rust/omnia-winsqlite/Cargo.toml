@@ -1,0 +1,10 @@
+[package]
+name = "omnia-winsqlite"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Safe RAII bindings to Windows system winsqlite3.lib and exclusive LockFileEx store ownership"
+
+[dependencies]
+thiserror.workspace = true
+windows-sys.workspace = true

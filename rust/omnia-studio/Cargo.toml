@@ -1,0 +1,30 @@
+[package]
+name = "omnia-studio"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Full Native Rust HTTP/JSON-RPC Flagship Studio server hosting ui/ and capability crates"
+
+[[bin]]
+name = "omnia-studio"
+path = "src/main.rs"
+
+[dependencies]
+futures-util.workspace = true
+omnia-connector-gateway = { path = "../omnia-connector-gateway" }
+omnia-core = { path = "../omnia-core" }
+omnia-graph = { path = "../omnia-graph" }
+omnia-harness = { path = "../omnia-harness" }
+omnia-media-capture = { path = "../omnia-media-capture" }
+omnia-remote-control = { path = "../omnia-remote-control" }
+omnia-routing = { path = "../omnia-routing" }
+omnia-storage = { path = "../omnia-storage" }
+omnia-workspace-ops = { path = "../omnia-workspace-ops" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+windows-sys.workspace = true

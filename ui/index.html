@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self';">
-  <title>Omnia Studio — Obsidian Kinetic Atelier (Native C++20)</title>
+  <title>Omnia Studio — Obsidian Kinetic Atelier (Omnia Full Native Rust)</title>
   <link rel="stylesheet" href="./styles/tokens.css">
   <link rel="stylesheet" href="./styles/themes.css">
   <link rel="stylesheet" href="./styles/layout.css">
@@ -31,15 +31,16 @@
             </svg>
           </span>
           <span class="brand-title">OMNIA</span>
-          <span class="brand-subtag">ATELIER C++20</span>
+          <span class="brand-subtag">ATELIER RUST</span>
         </div>
       </div>
 
       <div class="header-center-telemetry">
-        <button type="button" class="telemetry-pill" id="btnHealthTelemetryPill" title="Click to refresh live /api/health metrics from omnia-studio.exe">
+        <button type="button" class="telemetry-pill" id="btnHealthTelemetryPill" title="Click to refresh live /api/health metrics from Omnia Full Native Rust Studio (Tokio/Hyper)">
           <span class="pulse-dot" id="headerPulseDot" aria-hidden="true"></span>
-          <span class="telemetry-strong" id="headerTelemetryText">Native C++20 • MSVC 14.51 • 0 Rust</span>
-          <span class="header-telemetry-detail-extra muted" id="headerTelemetryExtra">• 8.3 MB • 388 KB • 6 Peers</span>
+          <span class="telemetry-strong" id="headerTelemetryText">Connecting to Omnia runtime…</span>
+          <span class="header-telemetry-detail-extra muted" id="headerTelemetryExtra">Metrics pending</span>
+          <span class="header-telemetry-detail-extra muted" id="headerHardwareNvidia">NVIDIA device query pending</span>
         </button>
       </div>
 
@@ -106,12 +107,12 @@
             <span class="kbd-hint rail-shortcut">Alt+3</span>
           </button>
 
-          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" data-nav-view="cpp-rag" title="Native C++20 Architecture & Proactive RAG (Alt+4)">
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" data-nav-view="rust-rag" title="Rust Workspace IDE, Code Graph & Proactive RAG (Alt+4)">
             <span class="rail-nav-left">
               <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <path d="M6 5.5L2.5 9 6 12.5M12 5.5L15.5 9 12 12.5M10 3.5l-2 11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
-              <span class="rail-label-text">C++20 &amp; RAG</span>
+              <span class="rail-label-text">Rust IDE &amp; RAG</span>
             </span>
             <span class="kbd-hint rail-shortcut">Alt+4</span>
           </button>
@@ -131,17 +132,18 @@
         <div class="rail-sessions-section">
           <div class="section-eyebrow">
             <span>SQLite Sessions</span>
-            <span class="badge badge-emerald" id="railLeaseBadge">WAL e14</span>
+            <span class="badge badge-cyan" id="railLeaseBadge">WAL pending</span>
           </div>
           <button type="button" class="btn btn-subtle" id="btnCreateSession" style="width:100%;justify-content:space-between;">
             <span>+ New WAL Session</span>
-            <span class="mono muted">C++20</span>
+            <span class="mono muted">Rust</span>
           </button>
           <div class="session-list" id="railSessionList" aria-label="Session List"></div>
         </div>
 
         <div class="rail-footer-meta mono muted" style="font-size:10.5px;">
           <div>Zero Electron • Zero Node</div>
+          <div>rustc 1.99.1 • 13 Cargo Crates</div>
           <div>WCAG 2.2 AA/AAA (&gt;= 5.12:1)</div>
         </div>
       </aside>
@@ -152,7 +154,55 @@
              ============================================================== -->
         <section class="studio-view view-chat-grid is-active" id="view-chat" data-view-panel="chat" role="tabpanel" aria-label="Studio Chat and Scientific Rich Composer">
           <div class="chat-primary-column">
-            <div class="chat-stream-scroll" id="chatTurnStream"></div>
+            <div class="chat-stream-scroll">
+              <section id="capabilitySurfaceSection" aria-label="Truthful Runtime Capability Surface">
+                <details class="capability-inspector-details" id="capabilityInspectorDetails" open>
+                  <summary class="capability-inspector-summary">
+                    <span class="section-eyebrow">Runtime Capability Surface</span>
+                    <span class="mono muted" style="font-size:11px;">Connectors • Media Capture • Remote Control</span>
+                  </summary>
+                  <div class="capability-inspector-body">
+                    <div class="row-between">
+                      <span class="mono muted" style="font-size:11px;">Live endpoint probes (zero fabricated connected devices)</span>
+                      <div class="row-wrap">
+                        <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 10px;font-size:11px;" id="btnValidateConnectors">Validate Connectors</button>
+                        <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 10px;font-size:11px;" id="btnRefreshCapabilityCards">Refresh All</button>
+                      </div>
+                    </div>
+                    <div class="capability-cards-grid">
+                      <div class="capability-card">
+                        <div class="capability-card-head">
+                          <span class="capability-card-title">Harness Connectors</span>
+                          <span class="badge badge-cyan" id="capConnectorsSummaryBadge">Probing</span>
+                        </div>
+                        <div class="cap-item-list" id="capConnectorsBody">
+                          <div class="muted mono" style="font-size:11px;">GET /api/connectors/status pending…</div>
+                        </div>
+                      </div>
+                      <div class="capability-card">
+                        <div class="capability-card-head">
+                          <span class="capability-card-title">Media Capture</span>
+                          <span class="badge badge-cyan" id="capMediaSummaryBadge">Probing</span>
+                        </div>
+                        <div class="cap-item-list" id="capMediaBody">
+                          <div class="muted mono" style="font-size:11px;">GET /api/media/capabilities pending…</div>
+                        </div>
+                      </div>
+                      <div class="capability-card">
+                        <div class="capability-card-head">
+                          <span class="capability-card-title">Remote Control</span>
+                          <span class="badge badge-cyan" id="capRemoteSummaryBadge">Probing</span>
+                        </div>
+                        <div class="cap-item-list" id="capRemoteBody">
+                          <div class="muted mono" style="font-size:11px;">GET /api/remote/status pending…</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+              </section>
+              <div id="chatTurnStream" class="stack-md"></div>
+            </div>
 
             <div class="chat-composer-dock">
               <div class="composer-toolbar" role="toolbar" aria-label="Rich Formatting and Scientific Equation Toolbar">
@@ -162,20 +212,20 @@
                   <button type="button" class="tool-btn" data-fmt="bold" title="Bold (**text**)"><strong>B</strong></button>
                   <button type="button" class="tool-btn" data-fmt="italic" title="Italic (*text*)"><em>I</em></button>
                   <button type="button" class="tool-btn" data-fmt="underline" title="Underline (__text__)"><u>U</u></button>
-                  <button type="button" class="tool-btn mono" data-fmt="code" title="Inline C++20 Code">&lt;/&gt;</button>
+                  <button type="button" class="tool-btn mono" data-fmt="code" title="Inline Rust Code">&lt;/&gt;</button>
                   <button type="button" class="tool-btn" data-fmt="checklist" title="Insert Verification Checklist">☑ List</button>
                   <button type="button" class="tool-btn" data-fmt="table" title="Insert Markdown Table">⊞ Table</button>
                 </div>
 
                 <div class="toolbar-group">
                   <button type="button" class="tool-btn" id="btnToggleSciPalette" aria-expanded="false" style="color:var(--accent-amber);border-color:var(--accent-amber-border);">
-                    <span>∑ ∫ ⇌ 15 Templates</span>
+                    <span>∑ ∫ ⇌ Templates</span>
                   </button>
-                  <button type="button" class="tool-btn" id="btnSimulatePaste" title="Open Accessible Inline-vs-Tray Paste Chooser (Esc = Zero Mutation)">
-                    <span>📋 Paste Chooser</span>
+                  <button type="button" class="tool-btn" id="btnSimulatePaste" title="Choose a real file for Inline or Attachment Tray placement (Esc = Zero Mutation)">
+                    <span>📋 Choose File Placement</span>
                   </button>
-                  <button type="button" class="tool-btn" id="btnAttachEncryptedSample" title="Test Honest ENCRYPTED_UNRESOLVED Archive Handling">
-                    <span>🔒 .7z Sample</span>
+                  <button type="button" class="tool-btn" id="btnAttachEncryptedSample" title="Choose a real encrypted archive; only ciphertext metadata and digest are recorded">
+                    <span>🔒 Encrypted File</span>
                   </button>
                   <button type="button" class="tool-btn" id="btnAttachLocalFile" title="Attach Local File">
                     <span>+ File</span>
@@ -190,12 +240,12 @@
               <!-- 15-Template Scientific Palette -->
               <div class="template-palette" id="scientificPaletteDrawer" hidden>
                 <div class="row-between">
-                  <span class="section-eyebrow">15 Zero-CDN Math / Physics / Chemistry Templates (Click to Insert)</span>
+                  <span class="section-eyebrow">Live Math / Physics / Chemistry Templates (Click to Insert)</span>
                   <div class="row-wrap">
-                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="All" aria-pressed="true">All (15)</button>
-                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Math" aria-pressed="false">Math (5)</button>
-                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Physics" aria-pressed="false">Physics (5)</button>
-                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Chemistry" aria-pressed="false">Chemistry (5)</button>
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="All" aria-pressed="true">All</button>
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Math" aria-pressed="false">Math</button>
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Physics" aria-pressed="false">Physics</button>
+                    <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;" data-tpl-cat="Chemistry" aria-pressed="false">Chemistry</button>
                   </div>
                 </div>
                 <div class="template-grid" id="scientificTemplateGrid"></div>
@@ -209,7 +259,7 @@
                   role="textbox"
                   aria-multiline="true"
                   aria-label="Edit"
-                  placeholder="Compose rich prompt, C++20 code, or LaTeX ($ \nabla \times \mathbf{E} $)... Press Ctrl+Enter to dispatch."></textarea>
+                  placeholder="Compose rich prompt, Rust code, or LaTeX ($ \nabla \times \mathbf{E} $)... Press Ctrl+Enter to dispatch."></textarea>
                 <div class="composer-live-preview" id="composerLivePreview" aria-live="polite" aria-label="Live Rendered Scientific Preview"></div>
               </div>
 
@@ -217,11 +267,11 @@
 
               <div class="composer-footer-row">
                 <div class="stack-xs">
-                  <span class="mono muted" style="font-size:11px;" id="composerDedupSummary">SHA-256 Content-Addressed Store Ready</span>
+                  <span class="mono muted" style="font-size:11px;" id="composerDedupSummary">No attachment payloads registered yet.</span>
                   <span class="mono" style="font-size:11px;color:var(--accent-cyan);" id="composerStatusToast">IME Safe • Esc Paste Cancel Guarantees Zero Draft Mutation</span>
                 </div>
                 <button type="button" class="btn btn-primary" id="btnDispatchPrompt">
-                  <span>Dispatch via C++20 Router</span>
+                  <span>Dispatch via Rust Router</span>
                   <span class="kbd-hint" style="background:rgba(0,0,0,0.2);color:inherit;border-color:transparent;">Ctrl+↵</span>
                 </button>
               </div>
@@ -232,12 +282,12 @@
           <aside class="chat-steer-dock" aria-label="Additive Steer Queue Dock">
             <div class="row-between">
               <span class="section-eyebrow">Additive Steer Queue</span>
-              <span class="badge badge-emerald" id="steerQueueCount">2 Active</span>
+              <span class="badge badge-cyan" id="steerQueueCount">Queue pending</span>
             </div>
 
             <div class="atelier-card-elevated stack-xs">
               <div class="row-between">
-                <span class="badge badge-amber">🔒 token_budget: NULL</span>
+                <span class="badge badge-amber" id="steerTokenBudgetBadge">🔒 token_budget: Unlimited (null)</span>
                 <span class="badge badge-cyan">ADDITIVE_INTAKE</span>
               </div>
               <div style="font-size:11.5px;color:var(--ink-secondary);line-height:1.45;">
@@ -277,12 +327,19 @@
             <div class="row-wrap">
               <label class="mono muted" for="graphTraverseEntity" style="font-size:11px;">BFS Root:</label>
               <select id="graphTraverseEntity" class="studio-select" style="width:auto;">
-                <option value="omnia-studio">omnia-studio.exe</option>
-                <option value="omnia_routing">omnia_routing</option>
-                <option value="omnia_storage">omnia_storage</option>
-                <option value="omnia_graph">omnia_graph</option>
-                <option value="omnia_harness">omnia_harness</option>
-                <option value="omnia-native">omnia-native.exe</option>
+                <option value="omnia-studio">omnia-studio</option>
+                <option value="omnia-runtime">omnia-runtime</option>
+                <option value="omnia-routing">omnia-routing</option>
+                <option value="omnia-storage">omnia-storage</option>
+                <option value="omnia-graph">omnia-graph</option>
+                <option value="omnia-harness">omnia-harness</option>
+                <option value="omnia-core">omnia-core</option>
+                <option value="omnia-winsqlite">omnia-winsqlite</option>
+                <option value="omnia-connector-gateway">omnia-connector-gateway</option>
+                <option value="omnia-workspace-ops">omnia-workspace-ops</option>
+                <option value="omnia-media-capture">omnia-media-capture</option>
+                <option value="omnia-remote-control">omnia-remote-control</option>
+                <option value="omnia-native">omnia-native</option>
                 <option value="DOD-14">DOD-14 Spec</option>
               </select>
               <select id="graphTraverseDirection" class="studio-select" style="width:auto;" aria-label="Traversal Direction">
@@ -318,7 +375,7 @@
                   <select id="peerSendFrom" class="studio-select">
                     <option value="ui-atelier">UI Atelier</option>
                     <option value="coordinator">Coordinator</option>
-                    <option value="cpp-core">C++ Core</option>
+                    <option value="rust-core">Rust Core</option>
                     <option value="win32-shell">Win32 Shell</option>
                     <option value="verifier">Verifier</option>
                   </select>
@@ -326,7 +383,7 @@
                 <label class="field-label">
                   <span>To Peer (A ⇄ B)</span>
                   <select id="peerSendTo" class="studio-select">
-                    <option value="cpp-core">C++ Core</option>
+                    <option value="rust-core">Rust Core</option>
                     <option value="verifier">Independent Verifier</option>
                     <option value="win32-shell">Win32 Shell</option>
                     <option value="coordinator">Coordinator</option>
@@ -356,7 +413,7 @@
               <label class="field-label">
                 <span>Task Class</span>
                 <select id="routerTaskClass" class="studio-select">
-                  <option value="code_generation">code_generation (C++20 / Systems)</option>
+                  <option value="code_generation">code_generation (Rust / Systems)</option>
                   <option value="architecture_synthesis">architecture_synthesis (RFC / Graph)</option>
                   <option value="math_derivation">math_derivation (Symbolic / Physics)</option>
                   <option value="multimodal_vision">multimodal_vision (UI Visual Audit)</option>
@@ -408,7 +465,7 @@
 
             <details class="reasoning-trace" open>
               <summary>
-                <span>▸ Secret-Redacted RouteDecisionReceipt JSON (omnia_routing)</span>
+                <span>▸ Secret-Redacted RouteDecisionReceipt JSON (omnia-routing)</span>
                 <span class="badge badge-cyan">Replayable Audit Receipt</span>
               </summary>
               <pre class="code-pre" id="routerReceiptJson"></pre>
@@ -417,47 +474,141 @@
         </section>
 
         <!-- ==============================================================
-             VIEW 4: NATIVE C++20 ARCHITECTURE & PROACTIVE RAG STUDIO
+             VIEW 4: OMNIA FULL NATIVE RUST IDE, CODE GRAPH & PROACTIVE RAG
              ============================================================== -->
-        <section class="studio-view view-cpp-rag-grid" id="view-cpp-rag" data-view-panel="cpp-rag" role="tabpanel" aria-label="Native C++20 Architecture and Proactive RAG Studio" hidden>
-          <div class="cpp-arch-pane">
+        <section class="studio-view view-rust-rag-grid" id="view-rust-rag" data-view-panel="rust-rag" role="tabpanel" aria-label="Omnia Full Native Rust IDE and Proactive RAG Studio" hidden>
+          <div class="rust-arch-pane">
             <div class="row-between">
               <div>
-                <div class="section-eyebrow">Full Native C++20 Target Graph</div>
-                <div style="font-size:1.05rem;font-weight:700;">7 Zero-Rust MSVC 14.51 Modules &amp; Executables</div>
+                <div class="section-eyebrow">Omnia Full Native Rust • 13 Cargo Crates</div>
+                <div style="font-size:1.05rem;font-weight:700;">Live Rust Workspace IDE &amp; Architecture Map</div>
               </div>
-              <span class="badge badge-emerald">0 .rs • /std:c++20 /W4 /WX</span>
+              <span class="badge badge-cyan">rustc 1.99.1 • winsqlite3 FFI • Direct2D/UIA • Tokio/Hyper</span>
             </div>
 
-            <div class="row-wrap" id="cppModuleSelectorList" role="group" aria-label="C++20 Module Targets"></div>
-            <div class="atelier-card stack-sm" id="cppModuleDetailCard"></div>
+            <div class="row-wrap" id="rustModuleSelectorList" role="group" aria-label="Rust Workspace Crates"></div>
+            <div class="atelier-card stack-sm" id="rustModuleDetailCard"></div>
+
+            <!-- Live Workspace Tree + Read-Only File Viewer -->
+            <div class="atelier-card stack-sm">
+              <div class="row-between">
+                <div>
+                  <div class="section-eyebrow">Live Workspace Explorer · /api/workspace/tree &amp; /file</div>
+                  <div class="mono muted" id="wsTreeMeta" style="font-size:11px;">Probing workspace tree…</div>
+                </div>
+                <div class="row-wrap">
+                  <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-ws-quick-tree=".">Root (.)</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-ws-quick-tree="rust">rust/</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-ws-quick-file="Cargo.toml">Cargo.toml</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-ws-quick-file="rust/omnia-studio/src/main.rs">omnia-studio/src/main.rs</button>
+                </div>
+              </div>
+
+              <div class="ide-workspace-split">
+                <div class="stack-xs">
+                  <form id="wsTreeForm" class="row-wrap">
+                    <input type="text" id="wsTreePathInput" class="studio-input" value="." placeholder="Relative path (.)" aria-label="Workspace tree relative path" style="flex:1;min-width:110px;">
+                    <select id="wsTreeMaxDepth" class="studio-select" aria-label="Max directory depth" style="width:auto;">
+                      <option value="2">Depth 2</option>
+                      <option value="3" selected>Depth 3</option>
+                      <option value="4">Depth 4</option>
+                    </select>
+                    <button type="submit" class="btn btn-subtle" style="min-height:32px;padding:0 10px;">List</button>
+                  </form>
+                  <div class="workspace-tree-box" id="wsTreeList" aria-label="Workspace directory tree"></div>
+                </div>
+
+                <div class="stack-xs">
+                  <form id="wsFileForm" class="row-wrap">
+                    <input type="text" id="wsFilePathInput" class="studio-input" value="Cargo.toml" placeholder="rust/<crate>/src/lib.rs" aria-label="Workspace file relative path" style="flex:1;min-width:140px;">
+                    <input type="number" id="wsFileStartLine" class="studio-input" value="1" min="1" placeholder="Start" aria-label="Start line" style="width:68px;">
+                    <input type="number" id="wsFileEndLine" class="studio-input" value="120" min="1" placeholder="End" aria-label="End line" style="width:68px;">
+                    <button type="submit" class="btn btn-primary" style="min-height:32px;padding:0 10px;">Read</button>
+                  </form>
+                  <div class="code-frame">
+                    <div class="code-frame-bar">
+                      <span class="truncate" id="wsFileHeaderMeta">Select a file from tree or enter path</span>
+                    </div>
+                    <pre class="workspace-code-lines" id="wsFileContentPre"></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Safe Read-Only Diff Previewer -->
+            <div class="atelier-card stack-sm">
+              <div class="row-between">
+                <div>
+                  <div class="section-eyebrow">Safe Read-Only Diff Preview · POST /api/workspace/diff</div>
+                  <div style="font-size:12.5px;font-weight:600;">Non-mutating unified diff computation across text snapshots</div>
+                </div>
+                <div class="row-wrap">
+                  <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" id="btnWsDiffLoadBefore">Loaded File → Before</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" id="btnWsDiffLoadAfter">Loaded File → After</button>
+                </div>
+              </div>
+              <form id="wsDiffForm" class="stack-xs">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                  <label class="field-label">
+                    <span>Before Text</span>
+                    <textarea id="wsDiffBefore" class="studio-textarea-sm" placeholder="Paste or load baseline snippet..."></textarea>
+                  </label>
+                  <label class="field-label">
+                    <span>After Text</span>
+                    <textarea id="wsDiffAfter" class="studio-textarea-sm" placeholder="Paste or load modified snippet..."></textarea>
+                  </label>
+                </div>
+                <div class="row-between">
+                  <label class="row-wrap mono muted" style="font-size:11px;">
+                    <span>Context lines:</span>
+                    <input type="number" id="wsDiffContextLines" class="studio-input" value="3" min="0" max="20" style="width:64px;">
+                  </label>
+                  <button type="submit" class="btn btn-primary">Preview Read-Only Diff</button>
+                </div>
+              </form>
+              <div id="wsDiffOutput"></div>
+            </div>
           </div>
 
           <div class="rag-studio-pane">
             <div class="row-between">
               <div>
                 <div class="section-eyebrow">Bilingual EN/VN ProactiveRag Engine</div>
-                <div style="font-size:1.05rem;font-weight:700;">Live Uncertainty &amp; Source Quarantine Analyzer</div>
+                <div style="font-size:1.05rem;font-weight:700;">Live Uncertainty, Code Graph &amp; Source Quarantine</div>
               </div>
               <span class="badge badge-amber">Zero "search" Keyword Needed</span>
             </div>
 
             <form id="ragAnalyzeForm" class="stack-sm">
               <label class="field-label">
-                <span>Enter Vietnamese or English Technical Prompt (POST /api/rag/plan)</span>
+                <span>Enter Vietnamese or English Technical Prompt (POST /api/rag/plan or /query)</span>
                 <textarea id="ragQueryInput" class="studio-textarea-sm" placeholder="Type any EN or VN technical question without the word 'search'..."></textarea>
               </label>
               <div class="row-between">
                 <div class="row-wrap">
-                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="Tại sao cửa sổ modal #32770 cần WH_CBT hook để UIA InvokePattern chạy nền ổn định?">VN: Modal #32770 UIA</button>
-                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="How does winsqlite3 WAL cooperative lease fencing recover after an unexpected PID crash?">EN: SQLite WAL Lease</button>
-                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="Giải thích cơ chế khử trùng lặp SHA-256 giữa inline chip và khay đính kèm">VN: SHA-256 Dedup</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="Tại sao omnia-native trên Rust vẫn giữ winsqlite3 FFI và Direct2D/UIA không dùng Electron?" title="Insert this query into the live RAG analyzer">Use query: VN Rust Direct2D/UIA</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="How does winsqlite3 WAL cooperative lease fencing recover after an unexpected PID crash?" title="Insert this query into the live RAG planner">Use query: EN SQLite WAL Lease</button>
+                  <button type="button" class="btn btn-subtle" style="min-height:28px;padding:0 8px;font-size:11px;" data-rag-sample="Giải thích cơ chế khử trùng lặp SHA-256 giữa inline chip và khay đính kèm" title="Insert this query into the live RAG planner">Use query: VN SHA-256 Dedup</button>
                 </div>
                 <button type="submit" class="btn btn-primary">Analyze Uncertainty</button>
               </div>
             </form>
 
             <div class="stack-md" id="ragAnalysisOutput"></div>
+
+            <div class="atelier-card stack-sm">
+              <div class="section-eyebrow">Live Workspace Code Graph · GET /api/graph/code</div>
+              <form id="codeGraphForm" class="row-wrap">
+                <input type="text" id="codeGraphEntityInput" class="studio-input" value="omnia-studio" placeholder="Crate or symbol (optional)" aria-label="Code graph entity" style="flex:1;min-width:130px;">
+                <select id="codeGraphDirSelect" class="studio-select" aria-label="Code graph direction" style="width:auto;">
+                  <option value="both" selected>both</option>
+                  <option value="forward">forward</option>
+                  <option value="reverse">reverse</option>
+                </select>
+                <button type="submit" class="btn btn-subtle" style="min-height:32px;padding:0 10px;">Query Code Graph</button>
+              </form>
+              <div id="codeGraphOutput"></div>
+            </div>
           </div>
         </section>
 
@@ -468,7 +619,7 @@
           <div class="memory-pane">
             <div class="row-between">
               <div>
-                <div class="section-eyebrow">Hierarchical MemoryGraph · omnia_harness</div>
+                <div class="section-eyebrow">Hierarchical MemoryGraph · omnia-harness</div>
                 <div style="font-size:1.05rem;font-weight:700;">Namespace Tree &amp; Cryptographic Erasure</div>
               </div>
               <div class="row-wrap">
@@ -479,10 +630,49 @@
               </div>
             </div>
 
+            <section class="atelier-card stack-sm" aria-labelledby="historyPanelTitle">
+              <div class="row-between">
+                <div>
+                  <div class="section-eyebrow">Redacted Cross-Host History</div>
+                  <div id="historyPanelTitle" style="font-size:1.05rem;font-weight:700;">Provenance &amp; Acquisition Watermark</div>
+                </div>
+                <div class="row-wrap">
+                  <span class="badge badge-cyan" id="historyStatusBadge">UNAVAILABLE</span>
+                  <span class="badge badge-cyan" id="historyAcquisitionBadge">ACQUISITION: UNAVAILABLE</span>
+                  <button type="button" class="btn btn-subtle" id="btnRefreshHistory" style="min-height:28px;padding:0 8px;">Refresh</button>
+                </div>
+              </div>
+              <form id="historySearchForm" class="row-wrap" role="search" style="gap:6px;">
+                <input id="historyQuery" class="studio-input" type="search" maxlength="2000"
+                  aria-label="Search redacted history"
+                  placeholder="Search title, source, or preview…" autocomplete="off"
+                  style="min-width:220px;flex:1;">
+                <button type="submit" class="btn btn-subtle" id="btnSearchHistory"
+                  style="min-height:28px;padding:0 8px;">Search</button>
+              </form>
+              <div id="historySummary" class="mono muted" style="font-size:10.5px;line-height:1.45;">
+                Waiting for the external redacted history manifest…
+              </div>
+              <div class="stack-xs" id="historyRecordsList"></div>
+              <div class="row-between" style="align-items:center;">
+                <span id="historyPageStatus" class="mono muted" style="font-size:10.5px;">0 records</span>
+                <div class="row-wrap" style="gap:5px;">
+                  <button type="button" class="btn btn-subtle" id="btnHistoryPrevious"
+                    style="min-height:26px;padding:0 8px;" disabled>Previous</button>
+                  <button type="button" class="btn btn-subtle" id="btnHistoryNext"
+                    style="min-height:26px;padding:0 8px;" disabled>Next</button>
+                </div>
+              </div>
+              <details>
+                <summary class="section-eyebrow" style="cursor:pointer;">Importer next actions</summary>
+                <ul id="historyNextActions" class="mono muted" style="font-size:10.5px;margin:6px 0 0 18px;"></ul>
+              </details>
+            </section>
+
             <form id="memoryUpsertForm" class="atelier-card stack-sm">
               <div class="section-eyebrow">Create / Upsert Memory Node · POST /api/memory/upsert</div>
               <div style="display:grid;grid-template-columns:1.2fr 1fr 0.8fr;gap:8px;">
-                <input type="text" id="memNamespaceInput" class="studio-input" value="architecture/cpp20-studio" placeholder="Namespace (no .. or \)" required>
+                <input type="text" id="memNamespaceInput" class="studio-input" value="architecture/rust-studio" placeholder="Namespace (no .. or \)" required>
                 <input type="text" id="memKeyInput" class="studio-input" placeholder="Key (e.g. origin-guard)" required>
                 <select id="memTierSelect" class="studio-select" aria-label="Memory Tier">
                   <option value="Durable">Durable</option>
@@ -508,14 +698,14 @@
                 <div class="section-eyebrow">4-Way Synchronized Skill Registry</div>
                 <div style="font-size:1.05rem;font-weight:700;">Curated Bilingual Skill Vault · GET /api/skills</div>
               </div>
-              <span class="badge badge-amber" id="skillVaultCountBadge">13 Curated Skills</span>
+              <span class="badge badge-cyan" id="skillVaultCountBadge">Skills pending</span>
             </div>
 
             <div class="stack-xs">
-              <input type="search" id="skillSearchInput" class="studio-input" placeholder="Instant search EN/VN skills (e.g. c++20, graph, steer, clean, tiếng việt)..." aria-label="Search Curated Skills">
+              <input type="search" id="skillSearchInput" class="studio-input" placeholder="Instant search EN/VN skills (e.g. rust, graph, steer, clean, tiếng việt)..." aria-label="Search Curated Skills">
               <div class="row-wrap">
                 <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="ALL">All</button>
-                <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="cpp">C++20 Native</button>
+                <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="rust">Rust Native</button>
                 <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="graph">Peer Graph</button>
                 <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="steer">Steer Queue</button>
                 <button type="button" class="btn btn-subtle" style="min-height:26px;padding:0 8px;font-size:11px;" data-skill-chip="tiếng việt">Tiếng Việt</button>
@@ -536,11 +726,12 @@
         <span class="footer-item"><span style="color:var(--status-emerald);">●</span> UIA ControlType.Edit: BOUND</span>
         <span class="footer-item" id="footerDraftRev">Rev #1</span>
         <span class="footer-item" id="footerDraftHash">FNV1a:00000000</span>
-        <span class="footer-item">token_budget: NULL</span>
+        <span class="footer-item" id="footerTokenBudget">token_budget: Unlimited (null)</span>
       </div>
       <div class="footer-segment">
         <span class="footer-item">Origin Guard: 127.0.0.1</span>
-        <span class="footer-item" style="color:var(--accent-amber);" id="footerConnectionMode">PROBING C++20 HOST…</span>
+        <span class="footer-item" style="color:var(--accent-amber);" id="footerConnectionMode">PROBING RUST HOST…</span>
+        <button type="button" class="footer-btn" id="footerCapabilityMode" title="Click to inspect Connectors, Media Capture, and Remote Control capabilities">CAPABILITIES PROBING…</button>
       </div>
     </footer>
   </div>
@@ -582,7 +773,7 @@
       <div class="cmd-results-list" id="cmdPaletteResults" role="listbox"></div>
       <div class="row-between mono muted" style="padding:6px 12px;border-top:1px solid var(--border-subtle);font-size:10.5px;">
         <span>↑↓ Navigate • Enter Execute • Esc Close</span>
-        <span>Obsidian Kinetic Atelier • C++20</span>
+        <span>Obsidian Kinetic Atelier • Omnia Full Native Rust</span>
       </div>
     </div>
   </div>
@@ -594,6 +785,7 @@
   <script defer src="./app/router-lab.js"></script>
   <script defer src="./app/ide-explorer.js"></script>
   <script defer src="./app/memory-vault.js"></script>
+  <script defer src="./app/history.js"></script>
   <script defer src="./app/command-palette.js"></script>
   <script defer src="./app/main.js"></script>
 </body>

@@ -65,7 +65,7 @@ function Resolve-OmniaQaExecutable {
         if (-not [IO.Path]::IsPathFullyQualified($targetRoot)) {
             throw 'OMNIA_NATIVE_BUILD_ROOT must be absolute for native QA; or pass -Executable.'
         }
-        $Executable = Join-Path $targetRoot "omnia-cpp-native-$Profile/omnia-native.exe"
+        $Executable = Join-Path $targetRoot "omnia-rust-native-$Profile/omnia-native.exe"
     }
     if (-not [IO.Path]::IsPathFullyQualified($Executable)) {
         throw 'Executable must be an absolute path.'

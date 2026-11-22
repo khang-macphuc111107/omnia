@@ -1,8 +1,8 @@
 # Dynamic provider and model routing requirements
 
-**Status:** `SPECIFICATION_ONLY`  
-**Owner:** `PRODUCT-CHAT` / provider-runtime owner  
-**Parent:** `OMNIA-ROOT-CLEAN-2026-11-11`  
+**Status:** `SPECIFICATION_ONLY`
+**Owner:** `PRODUCT-CHAT` / provider-runtime owner
+**Parent:** `OMNIA-ROOT-CLEAN-2026-11-11`
 **Evidence rule:** a configured provider, wrapper, mock, fixture or successful
 HTTP response does not qualify the runtime contract.
 

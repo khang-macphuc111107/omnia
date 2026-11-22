@@ -1,0 +1,13 @@
+[package]
+name = "omnia-storage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Omnia Studio SessionStore and Native HarnessStore/Sessions/SessionWorker persistence over winsqlite3"
+
+[dependencies]
+omnia-core = { path = "../omnia-core" }
+omnia-winsqlite = { path = "../omnia-winsqlite" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

@@ -9,9 +9,12 @@ import test from "node:test";
 const script = fileURLToPath(new URL("./stage-public-release.mjs", import.meta.url));
 const baseFiles = [
   ".gitattributes", ".gitignore", "AGENTS.md", "README.md",
-  "CMakeLists.txt", "CMakePresets.json",
-  "cpp/CMakeLists.txt", "cpp/src/main.cpp",
-  "native/CMakeLists.txt", "native/src/main.cpp",
+  "Cargo.toml", "Cargo.lock",
+  "rust/omnia-core/Cargo.toml", "rust/omnia-core/src/lib.rs",
+  "rust/omnia-studio/Cargo.toml", "rust/omnia-studio/src/main.rs",
+  "rust/omnia-native/Cargo.toml", "rust/omnia-native/src/bin/omnia_native.rs",
+  "rust/omnia-runtime/Cargo.toml", "rust/omnia-runtime/src/main.rs",
+  "native/app.manifest",
   "ui/index.html", "ui/app/main.js",
   "docs/storage-schema.sql", "docs/workspace/DECISIONS.md",
   "tools/maintained-scripts/stage-public-release.mjs",
@@ -85,8 +88,11 @@ test("exports committed native, skills, tooling and binary/Unicode paths", (t) =
   assert.equal(receipt.workingTreeIncluded, false);
   assert.equal(fs.readFileSync(path.join(f.destination, "README.md"), "utf8"), "fixture README.md\n");
   assert.deepEqual(fs.readFileSync(path.join(f.destination, "docs", path.basename(special))), binary);
-  assert.equal(fs.existsSync(path.join(f.destination, "native", "CMakeLists.txt")), true);
-  assert.equal(fs.existsSync(path.join(f.destination, "cpp", "CMakeLists.txt")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "Cargo.toml")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "Cargo.lock")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "rust", "omnia-studio", "Cargo.toml")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "rust", "omnia-native", "Cargo.toml")), true);
+  assert.equal(fs.existsSync(path.join(f.destination, "native", "app.manifest")), true);
   assert.equal(fs.existsSync(path.join(f.destination, "ui", "index.html")), true);
   assert.equal(fs.existsSync(path.join(f.destination, ".agents", "skills", "deep-cpp-native", "SKILL.md")), true);
   assert.equal(fs.existsSync(path.join(f.destination, ".git")), false);
@@ -174,8 +180,16 @@ test("refuses a reparse destination parent", (t) => {
   assert.equal(fs.existsSync(path.join(owned, "candidate")), false);
 });
 
-test("refuses retired Rust and Cargo files before creating output", (t) => {
-  for (const retired of ["native/src/legacy.rs", "native/Cargo.toml", "Cargo.lock"]) {
+test("refuses retired C++ and CMake build files before creating output", (t) => {
+  for (const retired of [
+    "native/src/legacy.cpp",
+    "cpp/include/legacy.hpp",
+    "native/src/legacy.cc",
+    "native/src/legacy.cxx",
+    "native/include/legacy.hxx",
+    "CMakeLists.txt",
+    "CMakePresets.json",
+  ]) {
     const f = fixture(t);
     const target = path.join(f.source, ...retired.split("/"));
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -183,7 +197,7 @@ test("refuses retired Rust and Cargo files before creating output", (t) => {
     commit(f.source);
     const result = run(f);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Retired Rust\/Cargo file is tracked/u);
+    assert.match(result.stderr, /Retired C\+\+\/CMake build file is tracked/u);
     assert.equal(fs.existsSync(f.destination), false);
   }
 });
@@ -217,8 +231,10 @@ test("exports live repository HEAD cleanly into external temp directory", (t) =>
   assert.equal(receipt.state, "EXPORTED");
   assert.equal(receipt.commit, expectedHead);
   assert.ok(receipt.fileCount >= 160);
-  assert.equal(fs.existsSync(path.join(destination, "CMakeLists.txt")), true);
-  assert.equal(fs.existsSync(path.join(destination, "cpp", "CMakeLists.txt")), true);
-  assert.equal(fs.existsSync(path.join(destination, "native", "CMakeLists.txt")), true);
+  assert.equal(fs.existsSync(path.join(destination, "Cargo.toml")), true);
+  assert.equal(fs.existsSync(path.join(destination, "Cargo.lock")), true);
+  assert.equal(fs.existsSync(path.join(destination, "rust", "omnia-studio", "Cargo.toml")), true);
+  assert.equal(fs.existsSync(path.join(destination, "rust", "omnia-native", "Cargo.toml")), true);
+  assert.equal(fs.existsSync(path.join(destination, "native", "app.manifest")), true);
   assert.equal(fs.existsSync(path.join(destination, "ui", "index.html")), true);
 });

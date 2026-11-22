@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Clean"
+  short_description: "Inventory, provenance, quarantine, and cleanup verification"
+  default_prompt: "Use $deep-clean to inventory a repository or artifact tree by provenance, quarantine stale outputs safely, and verify zero unintended deletions."

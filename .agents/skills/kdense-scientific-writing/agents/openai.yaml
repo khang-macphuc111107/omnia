@@ -1,0 +1,4 @@
+interface:
+  display_name: "K-Dense Scientific Writing"
+  short_description: "Evidence-grounded manuscripts, citations, and audits"
+  default_prompt: "Use $kdense-scientific-writing to draft, revise, or audit scientific manuscripts with explicit evidence provenance and guideline checks."

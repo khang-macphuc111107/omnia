@@ -1,0 +1,225 @@
+{
+  "schema": "omnia.platform.targets.v1",
+  "contract_id": "INT-09",
+  "title": "Omnia Multi-Platform Packaging & Toolchain Contract",
+  "out_of_source_policy": {
+    "build_root_env": "OMNIA_BUILD_ROOT",
+    "default_build_root_rel": "../OmniaData/build",
+    "qa_root_rel": "../OmniaData/qa",
+    "forbid_in_tree_build_artifacts": true,
+    "forbidden_in_tree_paths": [
+      "build",
+      "out",
+      "CMakeFiles",
+      "dist",
+      "target",
+      "__pycache__"
+    ]
+  },
+  "targets": [
+    {
+      "id": "windows-native",
+      "display_name": "Windows Full Native Rust Desktop Shell, Core & Studio Host",
+      "supported_hosts": [
+        "win32-x64"
+      ],
+      "required_source_inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust/omnia-core/Cargo.toml",
+        "rust/omnia-storage/Cargo.toml",
+        "rust/omnia-studio/Cargo.toml",
+        "rust/omnia-native/Cargo.toml",
+        "rust/omnia-runtime/Cargo.toml",
+        "native/app.manifest"
+      ],
+      "required_toolchains": [
+        "cargo",
+        "rustc",
+        "vswhere",
+        "msvc_link"
+      ],
+      "required_rust_targets": [
+        "x86_64-pc-windows-msvc"
+      ],
+      "expected_artifacts": [
+        {
+          "name": "omnia-native.exe",
+          "role": "Full Native Rust Win32 + DWM Mica + Direct2D + raw COM UIA desktop shell",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug",
+            "omnia-rust-native-release",
+            "omnia-rust-native-debug",
+            "omnia-full-rust/release",
+            "omnia-full-rust/debug"
+          ]
+        },
+        {
+          "name": "omnia-studio.exe",
+          "role": "Full Native Rust HTTP/JSON-RPC Flagship Studio host",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug",
+            "omnia-rust-native-release",
+            "omnia-rust-native-debug",
+            "omnia-full-rust/release",
+            "omnia-full-rust/debug"
+          ]
+        },
+        {
+          "name": "omnia-runtime.exe",
+          "role": "Full Native Rust async HTTP/SSE provider runtime",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug",
+            "omnia-rust-native-release",
+            "omnia-rust-native-debug",
+            "omnia-full-rust/release",
+            "omnia-full-rust/debug"
+          ]
+        }
+      ],
+      "lifecycle": {
+        "build": "cargo build --workspace --locked --release --target-dir ../OmniaData/build/omnia-rust-workspace",
+        "install": "Externalized portable binaries under ../OmniaData/build/omnia-rust-workspace/{release,debug} or ../OmniaData/build/omnia-rust-native-{release,debug} (no MSIX/MSI installer packaged yet)",
+        "launch": "<build_dir>/release/omnia-native.exe or <build_dir>/release/omnia-studio.exe --root . --port 8787",
+        "version": "0.1.0 (Omnia Full Native Rust Workspace)",
+        "capability": "Win32 COM UIA + Direct2D/DWM desktop shell, winsqlite3 WAL store, Rust PeerMesh/Graphify/DynamicRouter/MemoryGraph, loopback HTTP/JSON-RPC and async SSE runtime",
+        "recovery": "Cooperative LockFileEx store lease, external SQLite WAL recovery, clean external out-of-source Cargo rebuild"
+      }
+    },
+    {
+      "id": "web-studio",
+      "display_name": "Flagship Web Studio (Zero-Bundler ES2022 + Rust omnia-studio.exe + Edge Headless CDP)",
+      "supported_hosts": [
+        "win32-x64",
+        "browser-chromium-edge"
+      ],
+      "required_source_inputs": [
+        "ui/index.html",
+        "ui/styles/tokens.css",
+        "ui/styles/themes.css",
+        "ui/styles/layout.css",
+        "ui/styles/components.css",
+        "ui/app/api.js",
+        "ui/app/command-palette.js",
+        "ui/app/composer.js",
+        "ui/app/history.js",
+        "ui/app/ide-explorer.js",
+        "ui/app/main.js",
+        "ui/app/memory-vault.js",
+        "ui/app/peer-graph.js",
+        "ui/app/router-lab.js",
+        "Cargo.toml",
+        "rust/omnia-studio/Cargo.toml",
+        "rust/omnia-studio/src/lib.rs",
+        "rust/omnia-studio/src/main.rs"
+      ],
+      "syntax_check_globs": [
+        "ui/app/*.js"
+      ],
+      "required_toolchains": [
+        "node",
+        "msedge"
+      ],
+      "expected_artifacts": [
+        {
+          "name": "omnia-studio.exe",
+          "role": "Full Native Rust loopback HTTP/JSON-RPC host serving ui/ with 403 Origin/Host and traversal guards",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug",
+            "omnia-rust-native-release",
+            "omnia-rust-native-debug"
+          ]
+        }
+      ],
+      "lifecycle": {
+        "build": "Zero-bundler static ui/ ES2022/CSS validated with node --check ui/app/*.js; host built via cargo build --locked -p omnia-studio --release --target-dir ../OmniaData/build/omnia-rust-workspace",
+        "install": "Served directly from --root <repo> on 127.0.0.1 loopback (zero npm/webpack dependencies)",
+        "launch": "<build_dir>/release/omnia-studio.exe --root . --port 8787 (Edge --app or headless CDP QA)",
+        "version": "0.1.0 / 4.0.0 (Obsidian Kinetic Atelier)",
+        "capability": "Multi-pane Studio UI across 3 WCAG 2.2 themes, 12 /api/* endpoints, static ES2022 syntax gate, Edge headless CDP readiness",
+        "recovery": "Graceful HTTP error payloads on unavailable state; restartable stateless loopback listener"
+      }
+    },
+    {
+      "id": "android-apk",
+      "display_name": "Android APK Mobile Shell (Honest Toolchain & Wrapper Gate)",
+      "supported_hosts": [
+        "android-arm64-v8a",
+        "android-armeabi-v7a"
+      ],
+      "wrapper_roots": [
+        "platform/android",
+        "android"
+      ],
+      "required_wrapper_groups": [
+        {
+          "name": "settings_gradle",
+          "any_of": [
+            "settings.gradle.kts",
+            "settings.gradle"
+          ]
+        },
+        {
+          "name": "root_build_gradle",
+          "any_of": [
+            "build.gradle.kts",
+            "build.gradle"
+          ]
+        },
+        {
+          "name": "app_build_gradle",
+          "any_of": [
+            "app/build.gradle.kts",
+            "app/build.gradle"
+          ]
+        },
+        {
+          "name": "android_manifest",
+          "any_of": [
+            "app/src/main/AndroidManifest.xml"
+          ]
+        },
+        {
+          "name": "gradle_wrapper",
+          "any_of": [
+            "gradle/wrapper/gradle-wrapper.properties"
+          ]
+        }
+      ],
+      "required_toolchains": [
+        "android_home",
+        "sdkmanager",
+        "adb",
+        "android_ndk",
+        "gradle",
+        "java",
+        "cargo_ndk"
+      ],
+      "required_rust_targets": [
+        "aarch64-linux-android",
+        "armv7-linux-androideabi"
+      ],
+      "expected_artifacts": [
+        {
+          "name": "omnia-debug.apk",
+          "role": "Android APK deliverable in external build output root (never fabricated when unimplemented)",
+          "search_roots": [
+            "android-apk"
+          ]
+        }
+      ],
+      "lifecycle": {
+        "build": "UNIMPLEMENTED: requires Android SDK/NDK, Java, Gradle wrapper, cargo-ndk, and Android Rust targets",
+        "install": "UNIMPLEMENTED: adb install -r ../OmniaData/build/android-apk/omnia-debug.apk",
+        "launch": "UNIMPLEMENTED: adb shell am start -n com.omnia.studio/.MainActivity",
+        "version": "0.0.0-unimplemented",
+        "capability": "Blocked until Android SDK/NDK toolchain and platform/android wrapper project are implemented",
+        "recovery": "Clean external Gradle/NDK build root; zero in-tree APK or Gradle cache outputs"
+      }
+    }
+  ]
+}

@@ -100,7 +100,7 @@
   --shadow-panel: 0 1px 0 var(--border-specular) inset;
   --shadow-modal: 0 18px 42px rgba(0, 0, 0, 0.62), 0 1px 0 var(--border-specular) inset;
 
-  /* --- Syntax Highlighting Tokens (Zero-CDN C++20 Tokenizer) --- */
+  /* --- Syntax Highlighting Tokens (Zero-CDN Rust & Systems Tokenizer) --- */
   --syn-kw: #F0B44C;
   --syn-type: #38BDF8;
   --syn-str: #34D399;

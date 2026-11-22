@@ -21,7 +21,7 @@ required evidence.
 | `DOD-13` | Native capabilities are real | Packaged/live receipts for each claim | `PARTIAL` |
 | `DOD-14` | QA covers UI/security/performance/recovery | Independent negative/race/reload/resource evidence | `PARTIAL` |
 | `DOD-15` | Public delivery is reproducible | Authenticated account, pushed SHA, clone and secret scan | `PARTIAL` |
-| `DOD-16` | Follow-up chat starts with durable goal | Thread ID, prompt, activation receipt and checkpoint | `READY` |
+| `DOD-16` | Follow-up chat starts with durable goal | Thread ID, prompt, activation receipt and checkpoint | `PARTIAL` |
 
 ## Gate protocol
 
@@ -35,13 +35,8 @@ or contradiction resets the affected row and its consecutive-audit count.
 - **DOD-01:** Source is tracked at the actual root; README and AGENTS resolve
   to current files. Bulk archives, upstream clones and recovery data have
   deliberate external ownership. Ignoring a folder does not count as moving it.
-- **DOD-02:** Root and `native/` CMake C++20 closures and compile-time input files
-  resolve in an isolated clone/export using first-party MSVC + Windows 11 SDK
-  headers/libs (`0` external C++ package downloads; prior Rust closure archived on
-  tag `archive/pre-cpp-rust-snapshot-20261112`). Local caches are not repository inputs.
-- **DOD-03:** Match each claimed native behavior to an executed oracle.
-  Report fixtures, direct CTest/package tests, shared C++20 library integration and live
-  provider/packaged behavior separately.
+- **DOD-02:** Root [`Cargo.toml`](../../Cargo.toml) + [`Cargo.lock`](../../Cargo.lock) (13 Rust crates under `rust/`) resolve cleanly `--offline --locked` in an isolated clone/export using Windows 11 SDK (`winsqlite3`, `windows-sys`) with zero network downloads and external `CARGO_TARGET_DIR` (Wave 4 C++20 snapshot archived in `D:\OmniaData\backups\pre-full-rust-20261115\`; earlier pre-Wave-4 snapshot archived on tag `archive/pre-cpp-rust-snapshot-20261112`). Local developer caches are not repository inputs.
+- **DOD-03:** Match each claimed native behavior to an executed oracle. Report fixtures, `cargo test --workspace --offline --locked`, `pwsh -File native/qa-*.ps1`, and live provider/Studio/packaged behavior separately.
 - **DOD-04:** Reconciliation includes HEAD, staged, unstaged, renamed and
   untracked changes. Every retained unique product change has an owner,
   disposition, rationale, snapshot and review. Correct parsing precedes counts.
@@ -83,9 +78,7 @@ or contradiction resets the affected row and its consecutive-audit count.
   concrete template-detection pass. Unavailable web/social/video sources remain
   explicit gaps.
   Installation/projection is distinct from discovery, loading and invocation.
-- **DOD-13:** Cover all `PRODUCT-*` leaves in GOAL. Modern Native C++20 is the
-  canonical runtime per Wave 4 ADR; any external runtime exception requires a
-  recorded resource-backed reason. Complete composer and
+- **DOD-13:** Cover all `PRODUCT-*` leaves in GOAL. **Full Native Rust** (13-crate Cargo workspace under `Cargo.toml` / `rust/`, migrated from the archived Wave 4 C++20 snapshot under `Steer #14`) is the canonical active runtime; any external runtime exception requires a recorded resource-backed reason. Complete composer and
   attachment ordering/persistence/provider contracts. The provider route must
   bind capability, quota, cost, latency, privacy, authorization, reservation,
   reconciliation, retry/fallback and decision/outcome receipts under
@@ -326,3 +319,12 @@ Independent audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa\audits-2
 - **`DOD-12` / `DOD-15` / `DOD-16` (`13` Skills, Commit #5 Clean-Clone CTest & Session Admission `READY`):**
   - `13/13` curated skills (`deep-cpp-native` `sha256=b87fd5ca...`) synced 4-way (`39/39` `quick_validate.py` `rc=0`, `cpp-skill-sync-receipt.json` `sha256=27df8cf8...`); `SECRET_SCAN_VERIFICATION.json` (`sha256=a01b88f6...`, `leak_count=0`).
   - Commit #5 pushed to `https://github.com/khang-macphuc111107/omnia` and verified via fresh remote GitHub clone + out-of-source Release C++20 build + `35/35` `ctest --output-on-failure` in `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json` (temporary clone/build dirs immediately purged). [SESSION_ADMISSION.json](SESSION_ADMISSION.json) remains **`READY`**.
+
+## Wave 5 (`Steer #14`) Full Native Rust migration gating — 2026-11-15
+
+- Historical Wave 3 (`3/3` clean streak on `c3033728...`) and Wave 4 (`FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json` on archived C++20) remain preserved as snapshot-scoped historical evidence (`D:\OmniaData\backups\pre-full-rust-20261115\`). Per **Gate Protocol** above, the **`Steer #14` Full Native Rust** 13-crate Cargo migration resets the active clean-streak counter to `0` and holds [SESSION_ADMISSION.json](SESSION_ADMISSION.json) at **`DEFERRED`** until all of the following pass on the current frozen Rust tree:
+  1. Unified out-of-source Cargo verification (`CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`): `cargo check --workspace --offline --locked`, `cargo clippy --workspace --offline --locked`, `cargo test --workspace --offline --locked`, and `cargo build --workspace --release --offline --locked` (`0` `.cpp`/`.hpp`/`CMake*` files in active tree).
+  2. All **`7/7` PowerShell 7 (`pwsh -NoProfile -File native/qa-*.ps1`)** Win32 QA workflows passing against compiled Rust `omnia-native.exe` and `omnia_qa_seed.exe`.
+  3. Live Edge **`/browser` CDP UI verification** of [`../../ui/`](../../ui/) hosted by Rust `omnia-studio.exe` (`0 px` overflow, `0` console errors, live `/api/*` + `omnia-runtime` verification).
+  4. **`19/19` cross-host skill parity** (`python -B tools/omnia-skill-parity/validate_skills.py --strict-all-skills` -> `cross_host_drift_count: 0`) and **strict consolidated audit** (`python -B tools/omnia-consolidated-audit/audit.py --secret-scope all --strict --strict-scope full` -> `0` secrets, `0` trailing-space/CRLF/BOM, `0` ownership conflicts across `D:\OmniaData\coordination\master-bridge-01a1d643\DISJOINT_OWNERSHIP.json`).
+  5. **3 consecutive independent cleanroom audit rounds** on the frozen post-Wave-2 snapshot before advancing `SESSION_ADMISSION.json` to `READY`.

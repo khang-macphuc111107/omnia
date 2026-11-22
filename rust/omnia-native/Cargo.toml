@@ -1,0 +1,24 @@
+[package]
+name = "omnia-native"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Full Native Rust Win32 + DWM Mica + Direct2D + raw COM UIA desktop shell and QA fixture seeder"
+build = "build.rs"
+
+[[bin]]
+name = "omnia-native"
+path = "src/bin/omnia_native.rs"
+
+[[bin]]
+name = "omnia_qa_seed"
+path = "src/bin/omnia_qa_seed.rs"
+
+[dependencies]
+omnia-core = { path = "../omnia-core" }
+omnia-harness = { path = "../omnia-harness" }
+omnia-storage = { path = "../omnia-storage" }
+omnia-winsqlite = { path = "../omnia-winsqlite" }
+serde_json.workspace = true
+thiserror.workspace = true
+windows-sys.workspace = true

@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "rust/omnia-winsqlite",
+    "rust/omnia-core",
+    "rust/omnia-storage",
+    "rust/omnia-routing",
+    "rust/omnia-graph",
+    "rust/omnia-harness",
+    "rust/omnia-connector-gateway",
+    "rust/omnia-workspace-ops",
+    "rust/omnia-media-capture",
+    "rust/omnia-remote-control",
+    "rust/omnia-runtime",
+    "rust/omnia-studio",
+    "rust/omnia-native",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+base64 = "0.23"
+futures-util = "0.3"
+getrandom = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", default-features = false, features = ["std"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+url = "2"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

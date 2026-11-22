@@ -1,0 +1,4 @@
+interface:
+  display_name: "K-Dense Citation Management"
+  short_description: "Search academic metadata, verify DOIs, and format BibTeX"
+  default_prompt: "Use $kdense-citation-management to search scholarly databases, verify DOI metadata, and validate BibTeX citations."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "K-Dense Scientific Brainstorming"
+  short_description: "Evidence-aware research ideation and adversarial critique"
+  default_prompt: "Use $kdense-scientific-brainstorming to generate, challenge, and prioritize candidate scientific hypotheses with explicit assumptions."

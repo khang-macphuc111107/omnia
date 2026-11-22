@@ -1,18 +1,8 @@
-# Omnia Native C++20 Studio & Win32 Shell — out-of-source builds live in D:\OmniaData\build\.
-# C++20 / CMake / Ninja / MSVC build outputs & symbols
+# Omnia Full Native Rust (13-crate Cargo workspace) & Flagship Studio — out-of-source builds live in D:\OmniaData\build\.
+# Rust / Cargo & Windows SDK build outputs (never emitted in-tree)
+target/
 build/
 out/
-CMakeFiles/
-CMakeScripts/
-Testing/
-_deps/
-CMakeCache.txt
-cmake_install.cmake
-CTestTestfile.cmake
-compile_commands.json
-build.ninja
-.ninja_deps
-.ninja_log
 *.obj
 *.o
 *.pdb
@@ -22,9 +12,9 @@ build.ninja
 *.lib
 *.dll
 *.exe
-*.ipch
-*.iobj
-*.ipdb
+*.rlib
+*.rmeta
+*.d
 *.tlog
 
 # Project-owned reusable skills are tracked; live local agent state is not.
@@ -42,7 +32,6 @@ __pycache__/
 .pytest_cache/
 .cache/
 node_modules/
-target/
 dist/
 coverage/
 

@@ -7,6 +7,9 @@ metadata:
 
 # Deep C++20 Native Windows Engineering
 
+> [!NOTE]
+> **Omnia Historical / General C++20 Scope (`Steer #14`)**: `D:\Omnia` completed its **Full Native Rust** 13-crate Cargo migration (with historical CMake/C++20 `cpp/` and `native/` C++ files retired and backed up externally under `D:\OmniaData\backups\pre-full-rust-20261115\`). Keep this skill intact for general Windows 11 C++20/CMake/Win32 engineering and historical `Omnia` C++20 snapshot diagnostics (`D:\OmniaData\backups\pre-full-rust-20261115\`); for active `Omnia` workspace development, target the 13-crate Rust Cargo workspace (`CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`) instead.
+
 Design, build, and verify fast, memory-safe, zero-bloat Windows 11 C++20 systems using standard-library RAII and first-party Windows SDK libraries (`winsqlite3`, `bcrypt`, `dwmapi`, `d2d1`, `dwrite`, `uiautomationcore`, `ws2_32`) without Electron, Node, or heavy third-party dependency chains.
 
 For complete CMake/Ninja presets, RAII handle deleters, `winsqlite3` lease SQL, COM `WM_GETOBJECT` + `WH_CBT` `#32770` UIA patterns, and `Winsock2` `Origin` guards, read [references/windows-cpp20-win32-uia-and-cmake.md](references/windows-cpp20-win32-uia-and-cmake.md).

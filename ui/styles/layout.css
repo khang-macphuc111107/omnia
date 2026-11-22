@@ -288,15 +288,15 @@ pre,
   min-height: 0;
 }
 
-/* --- View 4: Native C++20 Architecture & Proactive RAG --- */
-.view-cpp-rag-grid {
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+/* --- View 4: Full Native Rust Architecture, Workspace IDE & Proactive RAG --- */
+.view-rust-rag-grid {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   height: 100%;
   min-width: 0;
   min-height: 0;
 }
 
-.cpp-arch-pane {
+.rust-arch-pane {
   border-right: 1px solid var(--border-subtle);
   overflow-y: auto;
   overflow-x: hidden;
@@ -306,6 +306,21 @@ pre,
   gap: var(--space-3);
   min-width: 0;
   min-height: 0;
+}
+
+.capability-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.ide-workspace-split {
+  display: grid;
+  grid-template-columns: minmax(200px, 0.43fr) minmax(0, 0.57fr);
+  gap: var(--space-3);
+  min-width: 0;
+  align-items: start;
 }
 
 .rag-studio-pane {
@@ -404,6 +419,14 @@ pre,
   .view-router-grid {
     grid-template-columns: 284px minmax(0, 1fr);
   }
+
+  .capability-cards-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .ide-workspace-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 1120px) {
@@ -439,7 +462,7 @@ pre,
   .view-chat-grid,
   .view-graph-grid,
   .view-router-grid,
-  .view-cpp-rag-grid,
+  .view-rust-rag-grid,
   .view-memory-grid {
     grid-template-columns: minmax(0, 1fr);
     overflow-y: auto;

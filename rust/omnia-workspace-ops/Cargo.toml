@@ -1,0 +1,12 @@
+[package]
+name = "omnia-workspace-ops"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Canonical workspace path containment, safe UTF-8 LF atomic file ops with external rollback, unified diff, and bounded subprocess execution for Omnia INT-06."
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["std"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"

@@ -23,7 +23,7 @@ try {
     $null = New-Item -ItemType Directory -Path $repo
     $env:OMNIA_DATA_ROOT = $data
     $env:OMNIA_NATIVE_BUILD_ROOT = $null
-    $release = Join-Path $data 'build/omnia-cpp-native-release/omnia-native.exe'
+    $release = Join-Path $data 'build/omnia-rust-native-release/omnia-native.exe'
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $release)
     Set-Content -LiteralPath $release -Value 'path fixture only; never executed'
     $result = Initialize-OmniaQaPaths -RepositoryRoot $repo
@@ -33,7 +33,7 @@ try {
     $next = Initialize-OmniaQaPaths -RepositoryRoot $repo
     Assert-Case ($next.OutputDirectory -ne $result.OutputDirectory) 'unique output for repeated invocation'
     $customTarget = Join-Path $fixtureRoot 'custom-target'
-    $debug = Join-Path $customTarget 'omnia-cpp-native-debug/omnia-native.exe'
+    $debug = Join-Path $customTarget 'omnia-rust-native-debug/omnia-native.exe'
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $debug)
     Set-Content -LiteralPath $debug -Value 'path fixture only; never executed'
     $env:OMNIA_NATIVE_BUILD_ROOT = $customTarget
@@ -63,7 +63,7 @@ try {
     $link = Join-Path $fixtureRoot 'alias'
     $null = New-Item -ItemType Junction -Path $link -Target $data
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable $release -OutputDirectory (Join-Path $link 'run') } 'reparse' 'junction output refused'
-    Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable (Join-Path $link 'build/omnia-cpp-native-release/omnia-native.exe') } 'reparse' 'junction executable refused'
+    Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $repo -Executable (Join-Path $link 'build/omnia-rust-native-release/omnia-native.exe') } 'reparse' 'junction executable refused'
     Assert-Refused { Initialize-OmniaQaPaths -RepositoryRoot $link -Executable $release } 'reparse' 'junction repository refused'
     Assert-Refused { Resolve-OmniaQaDatabase $repo 'relative.sqlite3' } 'absolute' 'relative database refused'
     Assert-Refused { Resolve-OmniaQaDatabase $repo (Join-Path $repo 'fixture.sqlite3') } 'must be external' 'source database refused'

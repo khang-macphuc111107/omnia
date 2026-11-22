@@ -1,35 +1,36 @@
-# Native C++20 Windows Shell (`omnia-native`)
+# Native Rust Windows Shell (`omnia-native`)
 
-`omnia-native.exe` is an independent Modern C++20 Win32 + DWM Mica + Direct2D +
-Server-Side UI Automation desktop shell. It links exclusively against first-party
-Windows 11 SDK system libraries (`winsqlite3`, `bcrypt`, `ws2_32`, `dwmapi`,
-`d2d1`, `dwrite`, `uiautomationcore`, `comctl32`, `uxtheme`, `gdi32`, `user32`,
-`ole32`, `oleaut32`) without a WebView, Electron, or Node runtime.
+`omnia-native.exe` is the Full Native Rust Win32 + DWM Mica + Direct2D + raw COM UI
+Automation desktop shell implemented in [`rust/omnia-native`](../rust/omnia-native/)
+with embedded application manifest [`native/app.manifest`](app.manifest). It links
+against Windows SDK system libraries (`d2d1`, `dwrite`, `uiautomationcore`, `dwmapi`,
+`uxtheme`, `comctl32`, `ole32`, `oleaut32`, `user32`, `gdi32`, `psapi`, and `winsqlite3`
+via `omnia-winsqlite`) without a WebView, Electron, or Node runtime.
 
-## Build and test out-of-source
+## Build, test, and stage out-of-source
 
-Always keep generated build artifacts strictly outside the repository worktree:
+Always keep Cargo target directories and staged binaries strictly outside the
+repository worktree (`D:\OmniaData\build\...`):
 
 ```powershell
-cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake -G Ninja -S D:\Omnia\native -B D:\OmniaData\build\omnia-cpp-native-release -DCMAKE_BUILD_TYPE=Release && cmake --build D:\OmniaData\build\omnia-cpp-native-release && ctest --test-dir D:\OmniaData\build\omnia-cpp-native-release --output-on-failure'
-cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake -G Ninja -S D:\Omnia\native -B D:\OmniaData\build\omnia-cpp-native-debug -DCMAKE_BUILD_TYPE=Debug && cmake --build D:\OmniaData\build\omnia-cpp-native-debug && ctest --test-dir D:\OmniaData\build\omnia-cpp-native-debug --output-on-failure'
+# Workspace build and crate tests into external target dir
+cargo test --locked -p omnia-native --target-dir D:\OmniaData\build\omnia-rust-workspace
+cargo build --locked -p omnia-native --target-dir D:\OmniaData\build\omnia-rust-workspace
+cargo build --locked --release -p omnia-native --target-dir D:\OmniaData\build\omnia-rust-workspace
+
+# Stage Debug/Release outputs for default qa-paths.ps1 resolution
+New-Item -ItemType Directory -Force -Path D:\OmniaData\build\omnia-rust-native-debug, D:\OmniaData\build\omnia-rust-native-release | Out-Null
+Copy-Item D:\OmniaData\build\omnia-rust-workspace\debug\omnia-native.exe, D:\OmniaData\build\omnia-rust-workspace\debug\omnia_qa_seed.exe -Destination D:\OmniaData\build\omnia-rust-native-debug -Force
+Copy-Item D:\OmniaData\build\omnia-rust-workspace\release\omnia-native.exe, D:\OmniaData\build\omnia-rust-workspace\release\omnia_qa_seed.exe -Destination D:\OmniaData\build\omnia-rust-native-release -Force
 ```
 
-`native/CMakeLists.txt` builds cleanly both standalone (`cmake -S D:\Omnia\native`)
-and via `add_subdirectory(native)` from the root `CMakeLists.txt`.
+## Targets and workspace crates
 
-## Targets
-
-- `omnia_native_lib`: Static C++20 library implementing `HarnessStore` (`winsqlite3.h` WAL +
-  kernel-backed `LockFileEx` `StoreOwnership`), `Sessions` & bounded `SessionWorker`,
-  `RichComposer` (15 Math/Physics/Chemistry symbols, SHA-256 deduplicated attachments,
-  paste chooser, drop zones, conversion states, atomic draft persistence), server-side
-  COM UI Automation (`IRawElementProviderSimple`, `IValueProvider`, `IInvokeProvider`,
-  thread-scoped `WH_CBT` `#32770` modal button subclassing), and the Win32 + DWM Mica +
-  Direct2D shell.
-- `omnia-native.exe`: Standalone `WIN32` desktop shell (`1220x820`).
-- `omnia_qa_seed.exe`: Disposable synthetic 125-row SQLite paging/guard fixture generator.
-- `omnia_native_tests.exe`: 29 C++20 `CTest` unit and integration tests.
+- `rust/omnia-native` (`[[bin]] omnia-native`): Standalone Win32 + DWM Mica + Direct2D +
+  COM UI Automation desktop shell embedding [`app.manifest`](app.manifest) via `build.rs`,
+  backed by `omnia-core`, `omnia-harness`, `omnia-storage`, and `omnia-winsqlite`.
+- `rust/omnia-native` (`[[bin]] omnia_qa_seed`): Disposable synthetic 125-row SQLite
+  paging/guard fixture generator for external QA runs.
 
 ## Runtime behavior
 
@@ -37,7 +38,7 @@ and via `add_subdirectory(native)` from the root `CMakeLists.txt`.
   preserving the Unicode scratch draft (`112`) and rich composer symbol toolbar (`114..118`).
 - Without `--session-db`, no personal database is opened automatically. Passing
   `--session-db <absolute isolated database path>` starts one bounded background
-  `SessionWorker` backed by `winsqlite3` WAL and kernel byte-range ownership locking.
+  `SessionWorker` backed by `winsqlite3` WAL and kernel `LockFileEx` byte-range ownership locking.
 - Keyset pagination (`limit 50`, `Previous page` `128`, `Next page` `129`, `Refresh sessions`
   `127`) binds the page, navigation snapshot, and off-page active metadata inside one read
   transaction.
@@ -57,10 +58,10 @@ and via `add_subdirectory(native)` from the root `CMakeLists.txt`.
 | `qa-ownership.ps1` | Multi-process `StoreOwnership` contention and successor reopen (6 cases) | Debug executable |
 
 `qa-paths.ps1` resolves `-Executable`, then `$env:OMNIA_NATIVE_BUILD_ROOT`, then
-`OMNIA_DATA_ROOT\build\omnia-cpp-native-{release,debug}\omnia-native.exe` (default sibling
+`OMNIA_DATA_ROOT\build\omnia-rust-native-{release,debug}\omnia-native.exe` (default sibling
 `OmniaData`). Seed disposable 125-row databases for `qa-paging.ps1` and `qa-guard.ps1` with:
 
 ```powershell
-D:\OmniaData\build\omnia-cpp-native-release\omnia_qa_seed.exe D:\OmniaData\qa\paging-fixture
+D:\OmniaData\build\omnia-rust-native-release\omnia_qa_seed.exe D:\OmniaData\qa\paging-fixture
 pwsh -NoProfile -File D:\Omnia\native\qa-paging.ps1 -Database D:\OmniaData\qa\paging-fixture\sessions.sqlite3
 ```

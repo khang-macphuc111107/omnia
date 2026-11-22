@@ -1,4 +1,26 @@
-# Omnia checkpoint — 2026-11-12, continuation revision 10 (Wave 4 Full Native C++20, Flagship Studio UI & C:/D: Deep Clean)
+# Omnia checkpoint — 2026-11-15, Wave 5 revision 12 (`Steer #14`: Full Native Rust 13-crate migration, 19-skill parity & governance alignment)
+
+## Current continuation watermark
+
+- Active checkout: `D:\Omnia`, branch `codex/omnia-context-integration`,
+  `HEAD=d5536ecd1381e45f16146406d70f13584fdf0d4f`; the working tree is in
+  active Wave 2 **Full Native Rust** (`Steer #14`) parallel integration across
+  strictly disjoint lanes (`D:\OmniaData\coordination\master-bridge-01a1d643\DISJOINT_OWNERSHIP.json`).
+- **Wave 4 C++20 external archival backup**: The `55` superseded Wave 4 C++20/CMake files (`CMakeLists.txt`, `CMakePresets.json`, `cpp/**`, `native/CMakeLists.txt`, `native/{include,src,tests}/**`) are preserved outside the tree under `D:\OmniaData\backups\pre-full-rust-20261115\manifest.sha256.json` (`patch_bytes: 361065`); `0` `.cpp`/`.hpp`/`CMake*` files remain in the active product tree.
+- **Active Full Native Rust target (`13` Cargo crates)**: `Cargo.toml`, `Cargo.lock`, and `rust/` (`omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-media-capture`, `omnia-remote-control`, `omnia-runtime`, `omnia-studio`, `omnia-native`), built out-of-source via `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`.
+- The Wave 4 C++20 and Flagship Studio entries below remain historical receipts
+  bound to their named snapshots; they do not substitute for Wave 2/3 verification
+  of the Full Native Rust workspace.
+- History acquisition remains `partial`: Codex and Antigravity metadata surfaces
+  are present, while complete transcript-body recovery is not proven. Raw/private
+  history remains outside the checkout.
+- Active Wave 2 -> Wave 3 executable sequence:
+  1. complete Wave 2 Rust implementations (`omnia-studio`, `omnia-native`), UI alignment, strict hygiene/whitespace cleanup, `19/19` 3-way skill parity, and doc/ownership ledger updates (`lane_f2_docs_hygiene_learn`);
+  2. serialize unified `cargo check/clippy/test/build --workspace --offline --locked` under external `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`;
+  3. execute `7/7` PowerShell 7 (`pwsh`) Win32 QA workflows (`native/qa-*.ps1`) and live Edge `/browser` CDP QA against Rust `omnia-studio.exe`;
+  4. pass `audit.py --secret-scope all --strict --strict-scope full` + `3` consecutive frozen-snapshot cleanroom audits before flipping `SESSION_ADMISSION.json` to `READY`.
+- Follow-up admission stays **`DEFERRED`** until all Wave 2/3 verification and
+  cleanroom audit gates above pass.
 
 ## Resume here
 
@@ -23,12 +45,15 @@
   tree `6198c676e8ef3e2ef055625d0126d7216b57fac1`, `2,039` tracked files on
   `https://github.com/khang-macphuc111107/omnia`, verified across **3/3 consecutive zero-defect audit rounds** (`round-{1,2,3}-v2-receipt.json`, `errors=0, warnings=0`).
 - Active Wave 4 Full Native C++20 + Flagship Studio UI + `C:`/`D:` Deep-Clean baseline (Commit #5 on `origin/master`): `0` `.rs` / `0` `Cargo.*` files, `35/35` unified CTest cases, `7/7` Win32 QA workflows (`90/90` `rc=0`), `45/45` Edge CDP UI states, `+778.15 GiB` freed on `D:` (`837.57 GiB` free) + `+166.14 GiB` freed on `C:` (`189.60 GiB` free), independently verified in `FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json` (`sha256=0e776c268a90fd712d390f3427a26bc503641438439cd69411c4221fd4ba47fc`) and remote clean-clone C++20 Release CTest receipt `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json`.
-- Session admission in [SESSION_ADMISSION.json](SESSION_ADMISSION.json) is now
-  **`READY`** (`SESSION-G01..G07` satisfied against `d8b456e357dde65d8ee314194743fb93655f5d6a`,
-  `promptSha256=d277af284a6e2d8716f9ccb77ef07a16326321d53b725520c4499015d8619cfb`; follow-up chat `threadId` not yet launched).
-  Three independent read-only final audit rounds against the pushed frozen
-  `HEAD === origin/master` snapshot record receipts externally under
-  `D:\OmniaData\qa\audits-20261112\final-streak-3\` without mutating tracked files.
+- Session admission in [SESSION_ADMISSION.json](SESSION_ADMISSION.json) is
+  **`DEFERRED` for the current dirty continuation**. The prior `READY` state
+  remains snapshot-scoped to the frozen Wave 3/4 evidence; the current
+  candidate is `d5536ecd1381e45f16146406d70f13584fdf0d4f` with a dirty working
+  tree. Rust runtime `cargo fmt --check`, `cargo check --locked` and
+  `cargo test --locked` passed (`12/12`) and are recorded in
+  `D:\OmniaData\qa\governance-rust-rebaseline-20261114\RUST_RUNTIME_REBASELINE_RECEIPT.json`.
+  Full admission gates must be rerun or explicitly rebound before follow-up
+  chat launch.
 
 ## Completed QA batch and current documentation ownership
 
@@ -571,3 +596,19 @@ Use [STATUS.md](STATUS.md) to jump directly to [PLAN.md](PLAN.md), [TASKS.md](TA
   - **13 Curated Skills & Handoff Suite**: `deep-cpp-native/SKILL.md` (`sha256=b87fd5ca3472223c84c9d4a55f6a3f8e4a892fa4c31204a22f2a530551920634`), `omni-bilingual-skill-router/SKILL.md` (`sha256=e65f88d0c566ffcc431319e42687f361da002aeb0076300b3cecb5c58e25b6c6`), `cpp-skill-sync-receipt.json` (`sha256=27df8cf8a51c6b2ecce1ade32136d3fff18234a1809c6472c8270596f530db33`); `COLLABORATOR_HANDOFF.md` (`sha256=50a191c0...`), `USER_PROMPT_REQUIREMENTS_MATRIX.md` (`sha256=0c29f1d9...`), `BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md` (`sha256=35c7f92d...`), `LESSONS_LEARNED_AND_ANTIPATTERNS.md` (`sha256=27f303ae...`), and `SECRET_SCAN_VERIFICATION.json` (`sha256=a01b88f620fa5ff70bdad9c068afefb5b9daca661f172717bcbc8043d84dd1ac`, `PASS_ZERO_LEAKS`).
   - **`D:\` & `C:\` Deep-Clean Audit Reports & Receipts (`+944.29 GiB` physical)**: `.gitignore` (`1,067 B`, `sha256=34b53acc61c5de712e3ac3ec94c37147be86d1ba02e716bf51995c43fcb60191`), [DEEP_CLEAN_AUDIT_D_DRIVE.md](DEEP_CLEAN_AUDIT_D_DRIVE.md) (`29,379 B`, `sha256=a51f017a02ecfc8c0e81bace752fcc99dd4876f764b7237b42c0ae7234882aed`), `D_DRIVE_DEEP_CLEAN_RECEIPT.json` (`63,685 B`, `sha256=70f2781df22d91d33bfe0559344041281ea55ea8cec7a9a3eb73a650bc3253af`, `+778.1512 GiB` physical -> `837.57 GiB` free), [DEEP_CLEAN_AUDIT_C_DRIVE.md](DEEP_CLEAN_AUDIT_C_DRIVE.md) (`29,828 B`, `sha256=1a88e1fe3ae9cafc2bd8a49b941f42c08b02aa15d8a9daadc57fa151f4922ac6`), and `C_DRIVE_DEEP_CLEAN_RECEIPT.json` (`48,134 B`, `sha256=ee08c5a0fdd87b67ff3e8b04630d6f62ca249e20fbd6b7af802440fd354060eb`, `+166.1357 GiB` physical -> `189.60 GiB` free).
   - **Commit #5 GitHub Push & Zero-Bloat Clean-Clone C++20 Receipt**: Bound externally in `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json` (`HEAD === origin/master`, unified Release CMake/Ninja build + `35/35` `ctest --output-on-failure` PASS, temporary clone and build directories immediately purged).
+
+## Wave 5 (`Steer #14`) Full Native Rust migration progress — 2026-11-15
+
+- **Pre-Full-Rust C++20 Backup (`D:\OmniaData\backups\pre-full-rust-20261115\`)**: Verified SHA-256 backup manifest `manifest.sha256.json` covering `55` superseded Wave 4 C++20/CMake files (`head: d5536ecd1381e45f16146406d70f13584fdf0d4f`, `branch: codex/omnia-context-integration`, `patch_bytes: 361065`). Active source tree contains **`0` `.cpp`/`.hpp`/`CMake*`** files.
+- **13-Crate Full Native Rust Cargo Workspace (`Cargo.toml`, `Cargo.lock`, `rust/*`)**:
+  - Core & subsystem crates: `omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-media-capture`, `omnia-remote-control` (compiled out-of-source via `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`; `serde = { version = "1", default-features = false, features = ["std"] }` manual `Serialize`/`Deserialize` offline).
+  - Binary & shell crates: `omnia-runtime` (`omnia-runtime.exe`, AdGuard RFC 9110 multi-`Cookie` coalescing + `30_000 ms` proxy budget), `omnia-studio` (`omnia-studio.exe`, active Wave 2 implementation wiring `/api/*` + [`../../ui/`](../../ui/)), and `omnia-native` (`omnia-native.exe` + `omnia_qa_seed.exe`, embedding [`../../native/app.manifest`](../../native/app.manifest), active Wave 2 implementation).
+- **Hygiene, 19-Skill Parity & Cross-Host `/learn` Sync (`lane_f2_docs_hygiene_learn`)**:
+  - Stripped `440` trailing-whitespace lines across `DYNAMIC_ROUTING_REQUIREMENTS.md` and `13` files under `kdense-citation-management` & `kdense-literature-review`; tightened `deep-cpp-native` (`short_description` <= 64 chars + Full Native Rust scope note preserving historical/general C++ diagnostics).
+  - Reached **`19/19` repository skills valid with `cross_host_drift_count: 0`** via `python -B tools/omnia-skill-parity/validate_skills.py --strict-all-skills` (`13` curated + `6` `kdense-*` projections across `D:\Omnia\.agents\skills`, `~/.codex/skills`, `~/.agents/skills`).
+  - Updated `DISJOINT_OWNERSHIP.json` (`schema_version: 5`) + synchronized cross-host `/learn` notes into `~/.gemini/GEMINI.md`, `~/.codex/AGENTS.md`, and `~/.codex/memories_v2/extensions/ad_hoc/notes/2026-11-15-omnia-full-native-rust-migration.md`.
+- **Remaining Wave 2 -> Wave 3 Verification Gates (blocking `SESSION_ADMISSION.json` `READY`)**:
+  1. Complete `rust/omnia-studio` and `rust/omnia-native` Wave 2 implementations + `ui/` alignment.
+  2. Run unified `cargo check --workspace --offline --locked`, `cargo clippy --workspace --offline --locked`, `cargo test --workspace --offline --locked`, `cargo build --workspace --release --offline --locked`.
+  3. Run all `7/7` PowerShell 7 (`pwsh -NoProfile -File native/qa-*.ps1`) Win32 QA workflows and live Edge `/browser` CDP QA against Rust `omnia-studio.exe`.
+  4. Run `python -B tools/omnia-consolidated-audit/audit.py --secret-scope all --strict --strict-scope full` and `3` consecutive frozen-snapshot cleanroom audit rounds before advancing `SESSION_ADMISSION.json` from `DEFERRED` to `READY`.

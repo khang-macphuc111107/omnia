@@ -1,0 +1,4 @@
+interface:
+  display_name: "Goal, Plan, Loop & DoD"
+  short_description: "Measurable goals, requirement ledgers, and DoD verification"
+  default_prompt: "Use $goal-plan-loop-dod to build a numbered requirement ledger, decompose disjoint execution lanes, and verify every DoD gate."

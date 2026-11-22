@@ -4,17 +4,39 @@
 **Status:** `ACTIVE`
 **Owner:** root integrator
 **Workspace:** `D:\Omnia`
-**Revision:** 13 — Wave 4 Full Native C++20 migration (`archive/pre-cpp-rust-snapshot-20261112`), Flagship Studio UI ("Obsidian Kinetic Atelier"), 13-skill parity (`deep-cpp-native`), exhaustive `D:`/`C:` reclamation (`+944.29 GiB` physical), and Commit #5 GitHub clean-clone CTest bound; full-product live provider/OS runtime and excluded preservation boundaries remain explicit, 2026-11-12
+**Revision:** 15 — **Steer #14 Full Native Rust** 13-crate Cargo migration (`D:\OmniaData\backups\pre-full-rust-20261115\` archives C++20 snapshot), `19/19` 3-way skill parity, Codex/Antigravity history acquisition, truthful runtime contracts, and deep Omnia integration; Wave 4 C++20 remains a historical verified snapshot, 2026-11-15
 **Persistent tool goal:** active in chat `01a1bce9-bcd9-75f3-b63a-28b855d6978f`
+
+## Current continuation objective — 2026-11-15 (`Steer #14`)
+
+This is the active objective for branch `codex/omnia-context-integration`
+at `D:\Omnia`. Older Wave 4 sections below remain historical evidence for the
+archived C++20 snapshot they name; they do not override this `Steer #14`
+**Full Native Rust** continuation.
+
+1. Execute the **Full Native Rust** 13-crate Cargo workspace migration (`Cargo.toml`, `Cargo.lock`, `rust/*`: `omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-media-capture`, `omnia-remote-control`, `omnia-runtime`, `omnia-studio`, `omnia-native`; out-of-source `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`; `0` `.cpp`/`.hpp`/`CMake*` in active tree; Wave 4 C++20 preserved externally in `D:\OmniaData\backups\pre-full-rust-20261115\`).
+2. Maintain `19/19` cross-host skill parity (`validate_skills.py --strict-all-skills` exit `0`, `0` drift), pure UTF-8 `LF` + zero-trailing-whitespace hygiene, and non-overlapping peer-mesh write ownership (`DISJOINT_OWNERSHIP.json`).
+3. Acquire and inventory technically readable Codex/Antigravity history surfaces into external manifests; materialize only redacted, secret-free summaries, contracts, and provenance into Omnia while keeping raw/private history outside the checkout.
+4. Remove fabricated runtime state from production paths (`ui/`, `omnia-studio`, `omnia-runtime`, `omnia-native`): every UI/API result must reflect live Rust runtime/storage data, an explicit `unavailable`/`error` state, or a clearly labeled test fixture outside production paths. Keep `token_budget` / `tokenBudget` unset (`NULL` / `null`).
+5. Verify the full workspace before closing `Steer #14` or flipping `SESSION_ADMISSION.json` (`DEFERRED`): unified `cargo check/clippy/test/build --workspace --offline --locked`, `7/7` PowerShell 7 (`pwsh -File native/qa-*.ps1`) Win32 QA workflows, live Edge `/browser` CDP UI QA, `audit.py --secret-scope all --strict --strict-scope full`, and 3 consecutive frozen-snapshot cleanroom audits.
+6. Keep the branch isolated from `main`/`master`. Stage, commit and push only reviewed source and governance changes after fresh checks; never publish credentials, cookies, browser profiles, raw transcripts, private records, or access-bearing URLs.
+
+### Current evidence watermark
+
+- **Verified:** external backup `D:\OmniaData\backups\pre-full-rust-20261115\manifest.sha256.json` (`55` C++20/CMake files, `patch_bytes: 361065`), `19/19` cross-host skill validation (`0` drift via `validate_skills.py --strict-all-skills`), Python unit suites (`agy-history-sync`, `omnia-consolidated-audit`, `omnia-skill-parity`, `omnia-history-import`, `omnia-connector-intake`, `omnia-runtime-compat`, `platform/validate_targets.py`), and scoped Wave 1 Rust crate tests (`10` core/subsystem crates + `omnia-runtime` under `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`).
+- **In Progress (Wave 2):** `omnia-studio` (`rust/omnia-studio/`) and `omnia-native` (`rust/omnia-native/`) full Rust parity implementations, `ui/` live Rust contract updates, trailing-whitespace/strict-audit fixes (`lane_f2_docs_hygiene_learn`), and packaging/release scripts.
+- **Pending Verification (Wave 2/3 -> Cleanroom Streak):** unified `--workspace --offline --locked` `check/clippy/test/build`, `7/7` `pwsh -File native/qa-*.ps1` Win32 QA runs on Rust `omnia-native.exe`, live `/browser` Edge CDP QA on Rust `omnia-studio.exe`, `audit.py --secret-scope all --strict --strict-scope full`, and 3 consecutive frozen-snapshot cleanroom audit rounds.
+- **Blocked:** follow-up `SESSION-01` chat launch stays **`DEFERRED`** in `SESSION_ADMISSION.json` until those Wave 2/3 verification and cleanroom audit gates pass.
 
 ## Outcome
 
 Deliver one discoverable, professional Omnia repository whose product source
-is directly under `D:\Omnia`, with Modern Native C++20 (`MSVC` + `CMake` + `Ninja` + Windows 11 SDK) as the canonical runtime (superseding the archived Rust baseline on tag `archive/pre-cpp-rust-snapshot-20261112`),
-reproducible build entrypoints, a compact handoff, and evidence-backed
-ownership for every retained or moved artifact. The workspace must be clean
-because each file has a deliberate owner and lifecycle, not because unknown
-work was hidden or deleted.
+is directly under `D:\Omnia`, with the historical Wave 4 C++20 runtime and the
+current selective Rust continuation each bound to explicit capability
+contracts, measured boundaries and reproducible build entrypoints. Keep a
+compact handoff and evidence-backed ownership for every retained or moved
+artifact. The workspace must be clean because each file has a deliberate owner
+and lifecycle, not because unknown work was hidden or deleted.
 
 ## Non-negotiable boundaries
 
@@ -23,7 +45,12 @@ work was hidden or deleted.
    and restore path exist.
 2. Never publish credentials, tokens, cookies, browser profiles, private chat
    bodies, personal records or access-bearing URLs.
-3. Modern Native C++20 (`MSVC` + `CMake` + `Ninja` + Windows 11 SDK) is the target runtime per explicit Wave 4 user mandate (prior Rust baseline archived on tag `archive/pre-cpp-rust-snapshot-20261112`). Zero `.rs`, `Cargo.*`, Electron, WebView, or Node bundler dependencies belong in the active product runtime.
+3. Wave 4 Modern Native C++20 (`MSVC` + `CMake` + `Ninja` + Windows 11 SDK)
+   is a historical verified snapshot, not a blanket prohibition on the
+   current Rust-first continuation. The active product may contain Rust
+   components when their owning contract, dependency boundary and runtime
+   receipt are current. Keep C++, WebView or Node only where a measured
+   capability boundary justifies them; record the boundary and migration path.
 4. A hash, enumeration, fixture, mock, preview or green structural check cannot
    prove semantic understanding, live integration, performance, security,
    feature parity or zero defects.
@@ -36,7 +63,7 @@ work was hidden or deleted.
 
 | ID | Task | State | Exit evidence |
 |---|---|---|---|
-| `ROOT-01` | Complete native C++20 core, Studio host and Win32 shell closure at root | `IN_PROGRESS` | Out-of-source CMake/Ninja build, 35/35 CTests and review |
+| `ROOT-01` | Complete **Full Native Rust** 13-crate Cargo workspace (`omnia-studio.exe`, `omnia-runtime.exe`, `omnia-native.exe`, `omnia_qa_seed.exe`), `ui/`, `native/qa-*.ps1`, and `platform/` closure at root (`Steer #14`) | `IN_PROGRESS` | Out-of-source `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace` build/clippy/test + `7/7` `pwsh` QA + live `/browser` CDP QA + review |
 | `ROOT-02` | Reconcile primary/release/rebuild/goal-control differences | `IN_PROGRESS` | Per-change incorporated/retained/superseded/unresolved ledger |
 | `ROOT-03` | Repair or retire nested Git/worktree ownership | `IN_PROGRESS` | Snapshot, path repair and restore drill |
 | `ROOT-04` | Refactor and organize code without behavior loss | `IN_PROGRESS` | Scoped diff, review, tests and explainable status |
@@ -51,7 +78,7 @@ work was hidden or deleted.
 | `PRODUCT-01` | Complete native shell, provider, editor, browser, IDE and harness | `IN_PROGRESS` | Runtime receipts for each claimed capability |
 | `QUALITY-01` | Run code, security, UI, performance, accessibility and recovery QA | `IN_PROGRESS` | Independent positive/negative/race/reload/resource results |
 | `DELIVERY-01` | Verify GitHub identity, publication and clone handoff | `PARTIAL` | Account receipt, pushed SHA and clean clone |
-| `SESSION-01` | Create follow-up Omnia chat only after handoff gates | `READY` | Thread ID, immediate goal activation and checkpoint |
+| `SESSION-01` | Create follow-up Omnia chat only after handoff gates | `DEFERRED` | Current dirty continuation requires gate reruns or explicit rebinding before thread ID, immediate goal activation and checkpoint |
 
 ## Evidence states
 
@@ -101,7 +128,7 @@ Current sequence:
 
 These are dependency boundaries, not a claim that the work is already done.
 Independent read-only review may run alongside an earlier step. Shared file
-mutations and resource-heavy native C++20 CMake/Ninja builds are serialized.
+mutations and workspace-wide Cargo builds (`CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`) are serialized.
 
 ## Task contracts
 
@@ -113,7 +140,7 @@ approval.
 
 | Parent | Required work and output | Prerequisite / acceptance |
 |---|---|---|
-| `ROOT-01` | Native C++20 packages (`cpp/`, `native/`), Flagship Studio UI (`ui/`), required assets, schema and Studio host at root | File provenance; CMake closure; formatting; scoped CTests; missing-input audit |
+| `ROOT-01` | **Full Native Rust** 13-crate Cargo workspace (`Cargo.toml`, `rust/`), Flagship Studio UI (`ui/`), manifest/QA scripts (`native/`), packaging (`platform/`), schema and Studio/runtime hosts at root | File provenance; `--offline --locked` Cargo closure (`0` `.cpp`/`.hpp`/`CMake*` in-tree); formatting/clippy; scoped unit & Win32 QA suites; missing-input audit |
 | `ROOT-02` | Compare primary, release, rebuild and goal-control HEADs **and** index, dirty and untracked bytes; classify every unique relevant change | Correct NUL/rename parsing, complete external records, semantic incorporated/retained/superseded/unresolved decisions |
 | `ROOT-03` | End with one product Git root; preserve old objects, refs, index, working bytes and linked worktrees outside it | Common-store topology, reparse/handle checks, restore drill and repaired consumers before metadata retirement |
 | `ROOT-04` | Improve names, modules, imports, formatting, dead code and error boundaries in reviewed components | Behavioral contract before edits; focused positive/negative tests; no unexplained diff |
@@ -176,7 +203,7 @@ These are required work families under `PRODUCT-01`, not implemented features:
 
 | Leaf | Scope | Observable completion |
 |---|---|---|
-| `PRODUCT-NATIVE` | Windows native C++20 shell (`native/`) and shared C++20 services (`cpp/`); minimal CPU/RAM/disk/GPU use | Native entrypoint, dependency/resource measurements, justified exceptions, startup/idle/interaction evidence |
+| `PRODUCT-NATIVE` | Windows native Rust Win32 shell (`rust/omnia-native/`, `native/app.manifest`) and shared Rust core/services (`rust/omnia-*`); minimal CPU/RAM/disk/GPU use | Native entrypoint, dependency/resource measurements, justified exceptions, startup/idle/interaction evidence (`pwsh` QA) |
 | `PRODUCT-COMPOSER` | Rich prompt editor, live Markdown/LaTeX, Word-like formatting, tables, rendered equation/symbol palettes | `COMPOSER_REQUIREMENTS.md` matrix including Unicode/IME, undo/restart, inline/tray caret placement and serialized provider order |
 | `PRODUCT-ATTACHMENTS` | Auto attachment, paste/drop, conversion and extraction | Original/derived provenance, stable IDs, progress/cancel/retry, unsupported/encrypted status, no silent omission |
 | `PRODUCT-CHAT` | Provider/API/model/settings, streaming, tool calls, profiles, sessions and transcript | Actual provider delivery, error/cancel/retry behavior, ordering, durable state and credential protection |
@@ -228,7 +255,7 @@ planning/goal/queue/steer/continue; clean Git/backup/rollback/recovery;
 architecture/refactor/code quality; research/source/citation/proof;
 memory/RAG/context; browser/computer/Windows/process capture and control;
 media/document/artifact workflows; modern quantitative UI/UX/QA;
-security and defensive adversarial evaluation; native C++20/toolchains (superseding archived Rust) and
+security and defensive adversarial evaluation; Full Native Rust/Cargo toolchains (`D:\OmniaData\backups\pre-full-rust-20261115\` archives Wave 4 C++20) and
 performance; academic curricula, tutoring, problem solving and communication.
 Synonyms and repeated “deep” names are aliases or additional scenarios, not
 automatic new skill folders. Merge only supported improvements into their

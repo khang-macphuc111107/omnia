@@ -70,7 +70,7 @@
   letter-spacing: 0.04em;
 }
 
-/* --- Live C++20 Engine Telemetry Header Pill --- */
+/* --- Live Rust Engine Telemetry Header Pill --- */
 .telemetry-pill {
   display: inline-flex;
   align-items: center;
@@ -1139,3 +1139,214 @@ button.badge-clickable:hover {
 .muted { color: var(--ink-muted); }
 .secondary { color: var(--ink-secondary); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- Truthful Capability Inspector Surface (Connectors, Media, Remote) --- */
+.capability-inspector-details {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  overflow: hidden;
+  margin-bottom: var(--space-3);
+}
+
+.capability-inspector-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 9px var(--space-3);
+  cursor: pointer;
+  list-style: none;
+  background: var(--bg-surface-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.capability-inspector-summary::-webkit-details-marker {
+  display: none;
+}
+
+.capability-inspector-body {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.capability-card {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.capability-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.capability-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-primary);
+  letter-spacing: 0.02em;
+}
+
+.cap-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cap-item-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+  min-width: 0;
+}
+
+.cap-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.cap-item-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cap-item-reason {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-secondary);
+  word-break: break-word;
+}
+
+/* --- Live Rust Workspace IDE Explorer & Diff Preview --- */
+.workspace-tree-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 360px;
+  overflow: auto;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+}
+
+.workspace-tree-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-primary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-tree-entry:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-subtle);
+}
+
+.workspace-tree-entry.active {
+  background: var(--bg-surface-elevated);
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
+.workspace-code-lines {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow: auto;
+  max-height: 360px;
+  background: var(--bg-canvas);
+  color: var(--ink-primary);
+  white-space: pre;
+  tab-size: 4;
+}
+
+.workspace-line-num {
+  display: inline-block;
+  min-width: 36px;
+  padding-right: 10px;
+  color: var(--ink-muted);
+  user-select: none;
+  text-align: right;
+}
+
+.diff-line-add {
+  display: block;
+  padding: 0 6px;
+  background: var(--accent-emerald-dim);
+  color: var(--accent-emerald);
+}
+
+.diff-line-del {
+  display: block;
+  padding: 0 6px;
+  background: var(--accent-coral-dim);
+  color: var(--accent-coral);
+}
+
+.diff-line-hunk {
+  display: block;
+  padding: 0 6px;
+  background: var(--accent-cyan-dim);
+  color: var(--accent-cyan);
+}
+
+.diff-line-ctx {
+  display: block;
+  padding: 0 6px;
+  color: var(--ink-secondary);
+}
+
+.footer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.footer-btn:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-subtle);
+}

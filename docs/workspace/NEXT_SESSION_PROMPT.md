@@ -84,8 +84,7 @@ into a claim of absolute understanding.
 ## Product and research
 
 Keep all `PRODUCT-*` leaves and earlier research/skills in GOAL's queue.
-Prioritize modern native C++20 (`cpp/`, `native/`) and Flagship Studio UI (`ui/`, per Wave 4 ADR in `DECISIONS.md`; prior Rust snapshot archived on tag `archive/pre-cpp-rust-snapshot-20261112`) and measured CPU/RAM/disk/GPU budgets; document any
-compatibility exception. Follow `COMPOSER_REQUIREMENTS.md` for live
+Build against the **Full Native Rust** 13-crate Cargo workspace (`Cargo.toml`, `rust/`, out-of-source `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`, `omnia-studio.exe`, `omnia-runtime.exe`, `omnia-native.exe`, `omnia_qa_seed.exe`), Flagship Studio UI (`ui/`, per `DECISIONS.md` Wave 5 ADR; Wave 4 C++20 snapshot backed up externally in `D:\OmniaData\backups\pre-full-rust-20261115\`, prior pre-Wave-4 snapshot archived on tag `archive/pre-cpp-rust-snapshot-20261112`), and measured CPU/RAM/disk/GPU budgets; document any compatibility exception. Follow `COMPOSER_REQUIREMENTS.md` for live
 Markdown/LaTeX, rich formatting, visual equations and inline/tray attachments
 at caret with correct provider order. Qualify goal CRUD/queue/steer/continue,
 general graphs, memory/RAG, provider execution, browser/computer/media use and

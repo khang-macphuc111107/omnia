@@ -2,62 +2,16 @@
 
 (function initComposerModule(global) {
   const Studio = (global.OmniaStudio = global.OmniaStudio || {});
-  const { sha256Hex, fnv1aHex, escapeHtml, formatBytes, highlightCpp20, renderLatexToHtml, renderRichMarkdown } = Studio.utils;
-
-  const INITIAL_TURNS = [
-    {
-      id: "turn-01",
-      role: "user",
-      author: "Lead Architect (VI/EN)",
-      timestamp: "20:24:12",
-      badges: [{ label: "SESSION: WAL#14", cls: "badge-amber" }],
-      markdown:
-        "Verify our C++20 `SessionStore` cooperative SQLite WAL lease alongside the Maxwell-Faraday induction identity:\n" +
-        "$$\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}, \\quad \\Delta G^\\circ = \\Delta H^\\circ - T\\Delta S^\\circ$$\n" +
-        "Ensure zero Rust runtime dependencies and strict `token_budget: NULL` continuity."
-    },
-    {
-      id: "turn-02",
-      role: "agent",
-      author: "Omnia Native C++20 Studio • gemini-3.1-pro",
-      timestamp: "20:24:14",
-      badges: [
-        { label: "EXTRACTED • omnia_storage", cls: "badge-extracted", jumpView: "cpp-rag", jumpTarget: "omnia_storage" },
-        { label: "EXTRACTED • omnia_routing", cls: "badge-extracted", jumpView: "router", jumpTarget: "google-gemini-3-1-pro" },
-        { label: "INFERRED • WAL Lease Parity", cls: "badge-inferred", jumpView: "graph", jumpTarget: "cpp-core" }
-      ],
-      reasoning: [
-        "1. GraphifyIndex::traverse('omnia_storage', Direction::Both, depth=2) -> 4 EXTRACTED edges, 1 INFERRED edge, 0 unquarantined AMBIGUOUS.",
-        "2. DynamicProviderRouter::decide(code_generation, 4096 tok, enterprise_zdr) -> selected google-gemini-3-1-pro (score 91, circuit Closed).",
-        "3. Verified winsqlite3.h RAII handle + cooperative PID/epoch lease heartbeat and zero-CDN LaTeX math AST."
-      ],
-      markdown:
-        "Both invariants hold under **MSVC 14.51 `/std:c++20 /W4 /WX`**. The `SessionStore` acquires an exclusive cooperative row lease inside `winsqlite3` WAL mode while preserving quantized electromagnetic & thermodynamic identities inline: $\\sum_{n=1}^{\\infty} \\frac{1}{n^2} = \\frac{\\pi^2}{6}$ and $\\mathrm{N}_2 + 3\\mathrm{H}_2 \\rightleftharpoons 2\\mathrm{NH}_3$.",
-      cppTitle: "cpp/include/omnia/storage/session_store.hpp • RAII winsqlite3 WAL Lease",
-      cppCode:
-        "struct SqliteCloser {\n" +
-        "  void operator()(sqlite3* db) const noexcept {\n" +
-        "    if (db != nullptr) sqlite3_close_v2(db);\n" +
-        "  }\n" +
-        "};\n\n" +
-        "class SessionStore final {\n" +
-        "public:\n" +
-        "  [[nodiscard]] bool acquire_lease(std::string_view holder_id, uint32_t pid, uint64_t epoch) noexcept;\n" +
-        "  [[nodiscard]] std::string content_digest(std::span<const uint8_t> payload) const;\n" +
-        "private:\n" +
-        "  std::unique_ptr<sqlite3, SqliteCloser> db_{nullptr};\n" +
-        "  mutable std::mutex io_mutex_{};\n" +
-        "};"
-    }
-  ];
+  const { sha256Hex, fnv1aHex, escapeHtml, formatBytes, highlightCode, renderLatexToHtml, renderRichMarkdown } = Studio.utils;
 
   const composerState = {
-    turns: INITIAL_TURNS.slice(),
+    turns: [],
     templates: [],
     activeCategory: "All",
     paletteOpen: false,
     previewVisible: true,
     imeComposing: false,
+    dispatchInFlight: false,
     draftRev: 1,
     draftChecksum: "00000000",
     // Content-addressed store keyed by sha256 -> { id, sha256, name, sizeBytes, mime, status, refs: Set<'inline'|'tray'> }
@@ -88,11 +42,27 @@
     return map;
   }
 
-  function registerAttachmentPayload(fileSpec, placement) {
-    const rawKey = fileSpec.encrypted
-      ? "ENCRYPTED_LOCKED:" + fileSpec.name + ":" + fileSpec.sizeBytes
-      : (fileSpec.content || fileSpec.name + ":" + fileSpec.sizeBytes);
-    const sha = sha256Hex(rawKey);
+  async function digestAttachmentBytes(file) {
+    if (!file || typeof file.arrayBuffer !== "function") return null;
+    if (!global.crypto || !global.crypto.subtle || typeof global.crypto.subtle.digest !== "function") return null;
+    const bytes = await file.arrayBuffer();
+    const digest = await global.crypto.subtle.digest("SHA-256", bytes);
+    return {
+      sha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+      sizeBytes: bytes.byteLength
+    };
+  }
+
+  async function registerAttachmentPayload(fileSpec, placement) {
+    let digest = null;
+    try {
+      digest = await digestAttachmentBytes(fileSpec && fileSpec.file);
+    } catch (_error) {
+      digest = null;
+    }
+    if (!digest) return { error: "attachment_content_digest_unavailable" };
+
+    const sha = digest.sha256;
     let rec = composerState.payloadBySha.get(sha);
     if (!rec) {
       const shortId = sha.slice(0, 8);
@@ -100,10 +70,10 @@
         id: shortId,
         sha256: sha,
         name: fileSpec.name,
-        sizeBytes: fileSpec.sizeBytes,
+        sizeBytes: digest.sizeBytes,
         mime: fileSpec.mime || "application/octet-stream",
         encrypted: Boolean(fileSpec.encrypted),
-        status: fileSpec.encrypted ? "ENCRYPTED_UNRESOLVED (0 B read)" : "VERIFIED_SHA256",
+        status: fileSpec.encrypted ? "VERIFIED_CIPHERTEXT_SHA256 (NOT_DECRYPTED)" : "VERIFIED_SHA256",
         refs: new Set()
       };
       composerState.payloadBySha.set(sha, rec);
@@ -158,23 +128,24 @@
 
       const reasoningHtml = Array.isArray(turn.reasoning) && turn.reasoning.length
         ? '<details class="reasoning-trace"><summary><span>▸ Execution & Provenance Trace (' +
-          turn.reasoning.length + ' verified steps)</span><span class="muted">C++20 Harness</span></summary>' +
+          turn.reasoning.length + ' verified steps)</span><span class="muted">Rust Harness</span></summary>' +
           '<div class="reasoning-steps">' +
           turn.reasoning.map((step) => "<div>" + escapeHtml(step) + "</div>").join("") +
           "</div></details>"
         : "";
 
+      const codeBody = turn.code ?? turn.rustCode ?? "";
       let codeHtml = "";
-      if (turn.cppCode) {
-        const codeId = "cpp-snippet-" + idx;
+      if (codeBody) {
+        const codeId = "rust-snippet-" + idx;
         codeHtml =
           '<div class="code-frame">' +
             '<div class="code-frame-bar">' +
-              '<span>' + escapeHtml(turn.cppTitle || "C++20 Snippet") + '</span>' +
-              '<button type="button" class="btn btn-subtle" style="min-height:24px;padding:0 8px;font-size:11px;" data-copy-code="' + codeId + '">Copy C++20</button>' +
+              '<span>' + escapeHtml(turn.codeTitle || turn.rustTitle || "Rust Snippet") + '</span>' +
+              '<button type="button" class="btn btn-subtle" style="min-height:24px;padding:0 8px;font-size:11px;" data-copy-code="' + codeId + '">Copy Code</button>' +
             '</div>' +
-            '<pre class="code-pre" id="' + codeId + '" data-raw-code="' + escapeHtml(turn.cppCode) + '">' +
-              highlightCpp20(turn.cppCode) +
+            '<pre class="code-pre" id="' + codeId + '" data-raw-code="' + escapeHtml(codeBody) + '">' +
+              highlightCode(codeBody) +
             "</pre>" +
           "</div>";
       }
@@ -214,7 +185,7 @@
 
     if (dedupEl) {
       dedupEl.textContent = payloads.length === 0
-        ? "0 payloads • SHA-256 Content-Addressed Store Ready"
+        ? "No attachment payloads registered yet."
         : payloads.length + " unique SHA-256 payload(s) • " + totalRefs + " ref(s) • 0 duplicate uploads";
     }
 
@@ -239,6 +210,19 @@
       (t) => composerState.activeCategory === "All" || t.category === composerState.activeCategory
     );
 
+    if (composerState.templates.state === "unavailable") {
+      grid.innerHTML = '<div class="atelier-card stack-xs">' +
+        '<span class="badge badge-coral">TEMPLATES UNAVAILABLE</span>' +
+        '<span class="mono muted" style="font-size:11px;">' +
+          escapeHtml(composerState.templates.error || "composer_templates_endpoint_unavailable") +
+        "</span></div>";
+      return;
+    }
+    if (filtered.length === 0) {
+      grid.innerHTML = '<div class="muted" style="font-size:12px;">Live endpoint returned no templates.</div>';
+      return;
+    }
+
     grid.innerHTML = filtered.map((tpl) => (
       '<button type="button" class="template-card-btn" data-insert-latex="' + escapeHtml(tpl.latex) + '">' +
         '<div class="row-between" style="width:100%;">' +
@@ -258,8 +242,23 @@
     const data = await Studio.api.getSteer();
     const listEl = document.getElementById("steerQueueList");
     const countEl = document.getElementById("steerQueueCount");
+    const budgetBadge = document.getElementById("steerTokenBudgetBadge");
+    const footerBudget = document.getElementById("footerTokenBudget");
+    const budget = data ? data.tokenBudget : null;
+    const budgetLabel = budget == null ? "Unlimited (null)" : String(budget);
+    if (budgetBadge) budgetBadge.textContent = "🔒 token_budget: " + budgetLabel;
+    if (footerBudget) footerBudget.textContent = "token_budget: " + budgetLabel;
     if (!listEl) return;
     const items = Array.isArray(data.items) ? data.items : [];
+    if (data.state === "unavailable") {
+      if (countEl) countEl.textContent = "Queue unavailable";
+      listEl.innerHTML = '<div class="atelier-card stack-xs">' +
+        '<span class="badge badge-coral">STEER QUEUE UNAVAILABLE</span>' +
+        '<span class="mono muted" style="font-size:11px;">' +
+          escapeHtml(data.error || "steer_endpoint_unavailable") +
+        "</span></div>";
+      return;
+    }
     if (countEl) countEl.textContent = items.length + " Active";
 
     listEl.innerHTML = items.map((item) => (
@@ -319,15 +318,20 @@
     }
   }
 
-  function commitPastePlacement(mode) {
+  async function commitPastePlacement(mode) {
     const modal = document.getElementById("pasteChooserModal");
     const textarea = document.getElementById("omniaComposerInput");
     const cand = composerState.pendingPasteCandidate;
     if (!cand || !textarea) return;
+    const rec = await registerAttachmentPayload(cand, mode);
+    if (!rec || rec.error) {
+      const notice = document.getElementById("composerStatusToast");
+      if (notice) notice.textContent = "Attachment content digest unavailable; no attachment was added.";
+      return;
+    }
     if (modal) modal.hidden = true;
     composerState.pendingPasteCandidate = null;
 
-    const rec = registerAttachmentPayload(cand, mode);
     if (mode === "inline") {
       textarea.setSelectionRange(composerState.savedCaret.start, composerState.savedCaret.end);
       insertAtCaret(textarea, "[[att:" + rec.id + "]]");
@@ -346,7 +350,9 @@
 
   async function dispatchComposerMessage() {
     const textarea = document.getElementById("omniaComposerInput");
-    if (!textarea || composerState.imeComposing) return;
+    if (!textarea || composerState.imeComposing || composerState.dispatchInFlight) return;
+    const sendBtn = document.getElementById("btnDispatchPrompt");
+    const notice = document.getElementById("composerStatusToast");
     const text = textarea.value.trim();
     if (!text) return;
 
@@ -355,58 +361,106 @@
       .map((n) => String(n).padStart(2, "0"))
       .join(":");
 
-    composerState.turns.push({
+    const userTurn = {
       id: "turn-u-" + Date.now(),
       role: "user",
       author: "Studio Operator",
       timestamp: ts,
       badges: [{ label: "REV #" + composerState.draftRev + " • FNV1a:" + composerState.draftChecksum, cls: "badge-amber" }],
       markdown: text
-    });
+    };
 
-    const routeRes = await Studio.api.decideRoute({
-      taskClass: /\\int|\\sum|\\nabla|\\Delta|matrix/i.test(text) ? "math_derivation" : "code_generation",
-      estimatedTokens: Math.max(1024, text.length * 6),
-      privacyTier: "enterprise_zdr",
-      requireStreaming: true
-    });
+    composerState.dispatchInFlight = true;
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.setAttribute("aria-busy", "true");
+      sendBtn.classList.add("is-busy");
+    }
+    if (notice) {
+      notice.textContent = "Routing prompt and awaiting verification...";
+    }
 
-    const selectedRoute = routeRes.selectedCandidateId || "local-cpp-llama-q8";
-    const receiptId = routeRes.receipt ? routeRes.receipt.receiptId : "rcpt-local";
+    try {
+      let routeRes = null;
+      try {
+        routeRes = await Studio.api.decideRoute({
+          taskClass: /\\int|\\sum|\\nabla|\\Delta|matrix/i.test(text) ? "math_derivation" : "code_generation",
+          estimatedTokens: Math.max(1024, text.length * 6),
+          privacyTier: "enterprise_zdr",
+          requireStreaming: true
+        });
+      } catch (_error) {
+        routeRes = { ok: false, state: "unavailable", status: "UNAVAILABLE", selectedCandidateId: null, receipt: null };
+      }
 
-    composerState.turns.push({
-      id: "turn-a-" + (Date.now() + 1),
-      role: "agent",
-      author: "Omnia Native C++20 • " + selectedRoute,
-      timestamp: ts,
-      badges: [
-        { label: "EXTRACTED • " + receiptId, cls: "badge-extracted", jumpView: "router", jumpTarget: selectedRoute },
-        { label: "DUPLEX SYNCED", cls: "badge-cyan", jumpView: "graph", jumpTarget: "cpp-core" }
-      ],
-      reasoning: [
-        "1. DynamicProviderRouter::decide -> selected '" + selectedRoute + "' (" + routeRes.status + ").",
-        "2. SteerQueue checked -> token_budget=NULL, 0 unfinished tasks dropped.",
-        "3. Payload store verified " + composerState.payloadBySha.size + " content-addressed SHA-256 attachment(s)."
-      ],
-      markdown:
-        "Dispatched deterministically through **" + selectedRoute + "** (`" + receiptId + "`). " +
-        "Verified equation & symbol continuity: $i\\hbar \\frac{\\partial \\Psi}{\\partial t} = \\hat{H}\\Psi$ with zero external runtime dependencies."
-    });
+      const selectedRoute = routeRes && routeRes.selectedCandidateId ? String(routeRes.selectedCandidateId) : "";
+      const receiptId = routeRes && routeRes.receipt && routeRes.receipt.receiptId
+        ? String(routeRes.receipt.receiptId)
+        : "";
+      if (receiptId) {
+        userTurn.badges.push({ label: "ROUTE • " + receiptId, cls: "badge-extracted", jumpView: "router", jumpTarget: selectedRoute });
+      }
 
-    textarea.value = "";
-    updateDraftIntegrity(textarea, true);
-    renderTurnStream();
-    renderLivePreview();
-    const stream = document.getElementById("chatTurnStream");
-    if (stream) stream.scrollTop = stream.scrollHeight;
+      const chatRes = await Studio.api.sendChatCompletion({
+        messages: [{ role: "user", content: text }],
+        route: selectedRoute || undefined,
+        receiptId: receiptId || undefined
+      }, { timeoutMs: 65000 });
+
+      if (!chatRes || chatRes.ok === false || chatRes.state === "unavailable") {
+        const errCode = (chatRes && (chatRes.code || chatRes.error)) || "chat_completion_unavailable";
+        const errMsg = (chatRes && chatRes.message) || "Chat service offline or returned error.";
+        if (notice) {
+          notice.textContent = "Error (" + errCode + "): " + errMsg + " (draft preserved)";
+        }
+        return;
+      }
+
+      composerState.turns.push(userTurn);
+      if (chatRes.message || chatRes.reply || chatRes.choices) {
+        const replyContent = chatRes.reply || (chatRes.choices && chatRes.choices[0] && chatRes.choices[0].message && chatRes.choices[0].message.content) || (typeof chatRes.message === "string" ? chatRes.message : "");
+        if (replyContent) {
+          composerState.turns.push({
+            id: "turn-a-" + Date.now(),
+            role: "assistant",
+            author: chatRes.model || selectedRoute || "Omnia Assistant",
+            timestamp: ts,
+            badges: [{ label: "COMPLETED", cls: "badge-blue" }],
+            markdown: replyContent
+          });
+        }
+      }
+
+      textarea.value = "";
+      updateDraftIntegrity(textarea, true);
+      if (notice) {
+        notice.textContent = "Dispatched via " + (selectedRoute || "router") + (receiptId ? " • " + receiptId : "");
+      }
+      renderTurnStream();
+      renderLivePreview();
+      const stream = document.getElementById("chatTurnStream");
+      if (stream) {
+        const scrollHost = stream.closest(".chat-stream-scroll") || stream;
+        scrollHost.scrollTop = scrollHost.scrollHeight;
+      }
+    } catch (err) {
+      if (notice) {
+        notice.textContent = "Dispatch failed: " + ((err && err.message) || String(err)) + " (draft preserved)";
+      }
+    } finally {
+      composerState.dispatchInFlight = false;
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.removeAttribute("aria-busy");
+        sendBtn.classList.remove("is-busy");
+      }
+    }
   }
 
   async function init() {
     const textarea = document.getElementById("omniaComposerInput");
     if (textarea) {
-      textarea.value =
-        "Derive the canonical partition relation and verify `winsqlite3` SHA-256 attachment deduplication:\n" +
-        "$$Z = \\sum_{s=1}^{N} e^{-\\beta E_s}, \\quad \\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}$$";
+      textarea.value = "";
       updateDraftIntegrity(textarea, false);
 
       textarea.addEventListener("compositionstart", () => { composerState.imeComposing = true; });
@@ -432,8 +486,9 @@
           e.preventDefault();
           const f = files[0];
           openPasteChooser({
+            file: f,
             name: f.name,
-            sizeBytes: f.size || 2048,
+            sizeBytes: f.size,
             mime: f.type || "application/octet-stream",
             encrypted: /\.7z$|\.enc$/i.test(f.name)
           });
@@ -441,11 +496,6 @@
       });
     }
 
-    // Seed one deduplicated inline+tray example and one honest ENCRYPTED_UNRESOLVED example
-    registerAttachmentPayload(
-      { name: "router_telemetry_snapshot.json", sizeBytes: 4820, mime: "application/json", content: '{"router":"cpp20","circuit":"Closed"}' },
-      "tray"
-    );
 
     composerState.templates = await Studio.api.getTemplates();
     renderTurnStream();
@@ -465,9 +515,9 @@
         else if (fmt === "bold") wrapSelection(ta, "**", "**", "bold text");
         else if (fmt === "italic") wrapSelection(ta, "*", "*", "italic");
         else if (fmt === "underline") wrapSelection(ta, "__", "__", "underlined");
-        else if (fmt === "code") wrapSelection(ta, "`", "`", "std::span<const uint8_t>");
-        else if (fmt === "checklist") insertAtCaret(ta, "\n- [x] Verified WCAG 2.2 AAA contrast\n- [ ] Run CTest suite\n");
-        else if (fmt === "table") insertAtCaret(ta, "\n| Module | Compiler | Warnings |\n|---|---|---|\n| omnia_core | MSVC 14.51 | 0 |\n");
+        else if (fmt === "code") wrapSelection(ta, "`", "`", "Result<(), OmniaError>");
+        else if (fmt === "checklist") insertAtCaret(ta, "\n- [x] Verified WCAG 2.2 AA/AAA contrast\n- [ ] Run cargo test workspace\n");
+        else if (fmt === "table") insertAtCaret(ta, "\n| Crate | Compiler | Warnings |\n|---|---|---|\n| omnia-core | rustc 1.99.1 | 0 |\n");
       });
     });
 
@@ -513,42 +563,43 @@
     const simPasteBtn = document.getElementById("btnSimulatePaste");
     if (simPasteBtn) {
       simPasteBtn.addEventListener("click", () => {
-        openPasteChooser({
-          name: "router_telemetry_snapshot.json",
-          sizeBytes: 4820,
-          mime: "application/json",
-          content: '{"router":"cpp20","circuit":"Closed"}'
-        });
+        const picker = document.getElementById("composerHiddenFileInput");
+        if (!picker) return;
+        picker.accept = "";
+        picker.click();
       });
     }
 
     const attachLockedBtn = document.getElementById("btnAttachEncryptedSample");
     if (attachLockedBtn) {
       attachLockedBtn.addEventListener("click", () => {
-        openPasteChooser({
-          name: "exam_solutions_locked.7z",
-          sizeBytes: 194560,
-          mime: "application/x-7z-compressed",
-          encrypted: true
-        });
+        const picker = document.getElementById("composerHiddenFileInput");
+        if (!picker) return;
+        picker.accept = ".7z,.enc,application/octet-stream";
+        picker.click();
       });
     }
 
     const fileInput = document.getElementById("composerHiddenFileInput");
     const attachRealBtn = document.getElementById("btnAttachLocalFile");
     if (attachRealBtn && fileInput) {
-      attachRealBtn.addEventListener("click", () => fileInput.click());
+      attachRealBtn.addEventListener("click", () => {
+        fileInput.accept = "";
+        fileInput.click();
+      });
       fileInput.addEventListener("change", () => {
         if (fileInput.files && fileInput.files[0]) {
           const f = fileInput.files[0];
           openPasteChooser({
+            file: f,
             name: f.name,
-            sizeBytes: f.size || 1024,
+            sizeBytes: f.size,
             mime: f.type || "application/octet-stream",
             encrypted: /\.7z$|\.enc$/i.test(f.name)
           });
           fileInput.value = "";
         }
+        fileInput.accept = "";
       });
     }
 
@@ -596,7 +647,7 @@
             // Clipboard permission restricted in headless sandbox; receipt still verified
           }
           copyBtn.textContent = "Copied • " + raw.length + " B • sha256:" + digest;
-          setTimeout(() => { copyBtn.textContent = "Copy C++20"; }, 2600);
+          setTimeout(() => { copyBtn.textContent = "Copy Code"; }, 2600);
           return;
         }
         const jumpBtn = e.target.closest("[data-jump-view]");

@@ -6,7 +6,7 @@
     name="Omnia.Native.Shell"
     type="win32"
   />
-  <description>Omnia Native C++20 Win32 Shell</description>
+  <description>Omnia Native Rust Win32 Shell</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity

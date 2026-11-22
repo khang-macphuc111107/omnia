@@ -107,34 +107,30 @@
   }
 
   /* ========================================================================
-     2. Zero-CDN C++20 Deterministic Syntax Highlighter
+     2. Zero-CDN Rust & Systems Deterministic Syntax Highlighter
      ======================================================================== */
-  const CPP_KEYWORDS = new Set([
-    "alignas", "auto", "bool", "break", "case", "catch", "class", "co_await",
-    "co_return", "co_yield", "concept", "const", "consteval", "constexpr",
-    "constinit", "continue", "default", "delete", "do", "double", "else",
-    "enum", "explicit", "export", "extern", "false", "final", "float", "for",
-    "friend", "if", "inline", "int", "long", "mutable", "namespace", "new",
-    "noexcept", "nullptr", "operator", "override", "private", "protected",
-    "public", "requires", "return", "short", "signed", "sizeof", "static",
-    "static_assert", "struct", "switch", "template", "this", "throw", "true",
-    "try", "typedef", "typename", "union", "unsigned", "using", "virtual",
-    "void", "volatile", "while"
+  const RUST_KEYWORDS = new Set([
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn",
+    "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in",
+    "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+    "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "macro_rules"
   ]);
 
-  const CPP_TYPES = new Set([
-    "std", "string", "string_view", "span", "vector", "unique_ptr", "shared_ptr",
-    "optional", "variant", "mutex", "lock_guard", "scoped_lock", "uint8_t",
-    "uint32_t", "uint64_t", "size_t", "int64_t", "sqlite3", "sqlite3_stmt",
-    "HRESULT", "HWND", "WPARAM", "LPARAM", "LRESULT", "BCRYPT_ALG_HANDLE",
-    "IRawElementProviderSimple", "IValueProvider", "IInvokeProvider",
-    "JsonValue", "SessionStore", "DynamicProviderRouter", "PeerMeshGraph",
-    "GraphifyIndex", "RouteDecisionReceipt", "ErasureReceipt"
+  const RUST_TYPES = new Set([
+    "String", "str", "Vec", "Option", "Result", "Some", "None", "Ok", "Err",
+    "Box", "Arc", "Mutex", "RwLock", "PathBuf", "Path", "HashMap", "BTreeMap",
+    "HashSet", "BTreeSet", "Duration", "Instant", "u8", "u16", "u32", "u64",
+    "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
+    "bool", "char", "HWND", "WPARAM", "LPARAM", "LRESULT", "sqlite3",
+    "SessionStore", "DynamicProviderRouter", "PeerMeshGraph", "GraphifyIndex",
+    "RouteDecisionReceipt", "ErasureReceipt", "ConnectorRegistry",
+    "WorkspaceOps", "CapabilityReport", "RemoteLeaseManager"
   ]);
 
-  function highlightCpp20(source) {
+  function highlightCode(source) {
     const text = String(source || "");
-    const tokenRe = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|#\s*[a-zA-Z_]+|\b0x[0-9a-fA-F]+\b|\b\d+(?:\.\d+)?\b|\b[a-zA-Z_]\w*\b)/g;
+    const tokenRe = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|#!?\[[^\n\]]*\]|\b0x[0-9a-fA-F_]+\b|\b\d[\d_]*(?:\.[\d_]+)?\b|\b[a-zA-Z_]\w*\b)/g;
     let out = "";
     let last = 0;
     let match;
@@ -149,9 +145,9 @@
         out += '<span class="syn-kw">' + escapeHtml(tok) + "</span>";
       } else if (/^\d|^0x/.test(tok)) {
         out += '<span class="syn-num">' + escapeHtml(tok) + "</span>";
-      } else if (CPP_KEYWORDS.has(tok)) {
+      } else if (RUST_KEYWORDS.has(tok)) {
         out += '<span class="syn-kw">' + escapeHtml(tok) + "</span>";
-      } else if (CPP_TYPES.has(tok)) {
+      } else if (RUST_TYPES.has(tok)) {
         out += '<span class="syn-type">' + escapeHtml(tok) + "</span>";
       } else {
         out += escapeHtml(tok);
@@ -412,7 +408,7 @@
           codeBuf = [];
         } else {
           inCode = false;
-          htmlParts.push('<pre class="code-pre">' + highlightCpp20(codeBuf.join("\n")) + "</pre>");
+          htmlParts.push('<pre class="code-pre">' + highlightCode(codeBuf.join("\n")) + "</pre>");
         }
         continue;
       }
@@ -438,161 +434,13 @@
       }
     }
     if (inCode && codeBuf.length) {
-      htmlParts.push('<pre class="code-pre">' + highlightCpp20(codeBuf.join("\n")) + "</pre>");
+      htmlParts.push('<pre class="code-pre">' + highlightCode(codeBuf.join("\n")) + "</pre>");
     }
-    return htmlParts.join("") || '<span class="muted">Live preview renders Markdown, C++20 code, and LaTeX equations automatically.</span>';
+    return htmlParts.join("") || '<span class="muted">Live preview renders Markdown, Rust code, and LaTeX equations automatically.</span>';
   }
 
   /* ========================================================================
-     4. Rich Standalone Atelier Fallback State (100% Parity with C++20 Host)
-     ======================================================================== */
-  const fallbackState = {
-    health: {
-      ok: true,
-      engine: "Omnia Native C++20",
-      compiler: "MSVC 14.51.36231",
-      cplusplus: 202002,
-      rustFiles: 0,
-      pid: 41280,
-      workingSetBytes: 8650752,
-      binaryBytes: 397312,
-      skillCount: 13,
-      peerCount: 6
-    },
-    sessions: [
-      { id: "sess-cpp20-atelier", title: "Wave 4 • Native C++20 Studio & UIA", modelId: "gemini-3.1-pro", effort: "high", updatedAt: "2026-11-12T20:26:00Z" },
-      { id: "sess-router-audit", title: "Dynamic Provider Router Fencing", modelId: "claude-opus-4.6", effort: "high", updatedAt: "2026-11-12T19:45:00Z" },
-      { id: "sess-phys-deriv", title: "Maxwell-Faraday & Electrochemistry", modelId: "gpt-5.4-thinking", effort: "medium", updatedAt: "2026-11-12T18:12:00Z" }
-    ],
-    activeLease: { ownerPid: 41280, leaseEpoch: 14, walMode: "WAL" },
-    steer: {
-      tokenBudget: null,
-      invariant: "ZERO_DROP_ADDITIVE",
-      items: [
-        {
-          id: "steer-01",
-          seq: 1,
-          text: "UI cần đẹp hết cỡ, Obsidian Kinetic Atelier 10/10, 0 Rust overhead.",
-          mode: "ADDITIVE_INTAKE",
-          status: "ACTIVE_ENFORCED",
-          createdAt: "2026-11-12T20:25:10Z"
-        },
-        {
-          id: "steer-02",
-          seq: 2,
-          text: "Preserve zero-mutation Escape on attachment paste and SHA-256 tray deduplication.",
-          mode: "ADDITIVE_INTAKE",
-          status: "QUEUED_CONTINUITY",
-          createdAt: "2026-11-12T20:26:09Z"
-        }
-      ]
-    },
-    templates: [
-      { id: "math-euler", category: "Math", title: "Riemann / Series Sum", symbol: "∑", latex: "\\sum_{k=1}^{n} \\frac{1}{k^2} = \\frac{\\pi^2}{6}", description: "Convergent Basel series identity" },
-      { id: "math-gauss", category: "Math", title: "Gaussian Integral", symbol: "∫", latex: "\\int_{0}^{\\infty} e^{-\\alpha x^2} \\, dx = \\frac{1}{2}\\sqrt{\\frac{\\pi}{\\alpha}}", description: "Half-line Gaussian integral" },
-      { id: "math-matrix", category: "Math", title: "2x2 Eigenvalue System", symbol: "[A]", latex: "\\begin{pmatrix} \\lambda - a & -b \\\\ -c & \\lambda - d \\end{pmatrix}", description: "Characteristic matrix block" },
-      { id: "math-fourier", category: "Math", title: "Fourier Transform", symbol: "ℱ", latex: "\\hat{f}(\\omega) = \\int_{-\\infty}^{\\infty} f(t) e^{-i\\omega t} \\, dt", description: "Continuous frequency projection" },
-      { id: "math-cauchy", category: "Math", title: "Contour Residue", symbol: "∮", latex: "\\oint_{\\Gamma} \\frac{f(z)}{z - z_0} \\, dz = 2\\pi i \\, f(z_0)", description: "Cauchy integral formula" },
-      { id: "phys-maxwell", category: "Physics", title: "Maxwell-Faraday Curl", symbol: "∇×E", latex: "\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}", description: "Electromagnetic induction law" },
-      { id: "phys-schrodinger", category: "Physics", title: "Schrodinger Evolution", symbol: "iℏ∂t", latex: "i\\hbar \\frac{\\partial \\Psi}{\\partial t} = -\\frac{\\hbar^2}{2m}\\nabla^2 \\Psi + V\\Psi", description: "Time-dependent wave equation" },
-      { id: "phys-partition", category: "Physics", title: "Canonical Partition", symbol: "Z", latex: "Z = \\sum_{s} e^{-\\beta E_s}, \\quad F = -k_B T \\ln Z", description: "Statistical mechanics free energy" },
-      { id: "phys-dirac", category: "Physics", title: "Relativistic Dispersion", symbol: "E²", latex: "E^2 = p^2 c^2 + m_0^2 c^4", description: "Energy-momentum invariant" },
-      { id: "phys-navier", category: "Physics", title: "Lorentz Force Law", symbol: "F=qE", latex: "\\mathbf{F} = q\\left(\\mathbf{E} + \\mathbf{v} \\times \\mathbf{B}\\right)", description: "Charged particle dynamics" },
-      { id: "chem-gibbs", category: "Chemistry", title: "Gibbs Free Energy", symbol: "ΔG°", latex: "\\Delta G^\\circ = \\Delta H^\\circ - T\\Delta S^\\circ = -RT \\ln K_{eq}", description: "Thermodynamic spontaneity" },
-      { id: "chem-equilibrium", category: "Chemistry", title: "Haber-Bosch Duplex", symbol: "⇌", latex: "\\mathrm{N}_2 + 3\\mathrm{H}_2 \\rightleftharpoons 2\\mathrm{NH}_3", description: "Reversible chemical equilibrium" },
-      { id: "chem-nernst", category: "Chemistry", title: "Nernst Cell Potential", symbol: "Ecell", latex: "E = E^\\circ - \\frac{RT}{nF} \\ln Q", description: "Electrochemical half-cell voltage" },
-      { id: "chem-arrhenius", category: "Chemistry", title: "Arrhenius Rate Law", symbol: "k(T)", latex: "k = A e^{-\\frac{E_a}{RT}}", description: "Activation energy barrier" },
-      { id: "chem-henderson", category: "Chemistry", title: "Buffer Equilibrium", symbol: "pH", latex: "\\mathrm{pH} = \\mathrm{p}K_a + \\log\\frac{[\\mathrm{A}^-]}{[\\mathrm{HA}]}", description: "Henderson-Hasselbalch relation" }
-    ],
-    graph: {
-      nodes: [
-        { id: "coordinator", label: "Coordinator", role: "Coordinator", state: "ACTIVE", epoch: 4, maxHops: 8, disjointPaths: ["docs/handoff/**"], incomingCount: 18, outgoingCount: 22, lastSeq: 76 },
-        { id: "cpp-core", label: "C++ Core", role: "Worker", state: "WORKING", epoch: 4, maxHops: 8, disjointPaths: ["CMakeLists.txt", "CMakePresets.json", "cpp/**"], incomingCount: 9, outgoingCount: 11, lastSeq: 76 },
-        { id: "win32-shell", label: "Win32 Shell", role: "Worker", state: "WORKING", epoch: 4, maxHops: 8, disjointPaths: ["native/**"], incomingCount: 7, outgoingCount: 8, lastSeq: 74 },
-        { id: "ui-atelier", label: "UI Atelier", role: "Specialist", state: "WORKING", epoch: 4, maxHops: 8, disjointPaths: ["ui/**", "docs/ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md"], incomingCount: 8, outgoingCount: 9, lastSeq: 76 },
-        { id: "deep-cleaner", label: "Deep Cleaner", role: "Worker", state: "WORKING", epoch: 4, maxHops: 8, disjointPaths: [".gitignore", "docs/workspace/DEEP_CLEAN_AUDIT_D_DRIVE.md"], incomingCount: 5, outgoingCount: 6, lastSeq: 74 },
-        { id: "verifier", label: "Independent Verifier", role: "Verifier", state: "READY", epoch: 4, maxHops: 8, disjointPaths: ["(read-only zero-repo-writes)"], incomingCount: 15, outgoingCount: 14, lastSeq: 74 }
-      ],
-      links: [
-        { from: "coordinator", to: "cpp-core", mode: "Duplex", label: "A <-> B Core" },
-        { from: "coordinator", to: "win32-shell", mode: "Duplex", label: "A <-> B UIA" },
-        { from: "coordinator", to: "ui-atelier", mode: "Duplex", label: "A <-> B Studio" },
-        { from: "coordinator", to: "deep-cleaner", mode: "Duplex", label: "A <-> B Clean" },
-        { from: "coordinator", to: "verifier", mode: "Duplex", label: "A <-> B Audit" },
-        { from: "cpp-core", to: "ui-atelier", mode: "Duplex", label: "/api/* JSON Contract" },
-        { from: "cpp-core", to: "win32-shell", mode: "Duplex", label: "SQLite WAL Lease" },
-        { from: "cpp-core", to: "verifier", mode: "Duplex", label: "CTest + Binary Audit" },
-        { from: "ui-atelier", to: "verifier", mode: "Duplex", label: "WCAG + Zero-Overflow QA" },
-        { from: "win32-shell", to: "verifier", mode: "Duplex", label: "7x Native UIA QA" },
-        { from: "deep-cleaner", to: "verifier", mode: "Duplex", label: "Reclamation Receipt" }
-      ],
-      messages: [
-        { seq: 73, from: "coordinator", to: "ui-atelier", text: "Build Obsidian Kinetic Atelier 10/10 Studio UI under ui/ with 3 live themes & 5 interactive workbenches.", epoch: 4, hop: 1, timestamp: "20:26:09" },
-        { seq: 75, from: "ui-atelier", to: "cpp-core", text: "Proposed 12-endpoint camelCase /api/* schema with loopback Origin guard & standalone parity.", epoch: 4, hop: 2, timestamp: "20:27:44" },
-        { seq: 76, from: "cpp-core", to: "ui-atelier", text: "Locked 1:1 on all 12 /api/* JSON contracts! Proceeding to MSVC 14.51 build & CTest.", epoch: 4, hop: 3, timestamp: "20:28:27" }
-      ],
-      graphifyNodes: [
-        { id: "omnia-studio", kind: "binary", label: "omnia-studio.exe", path: "cpp/apps/omnia_studio/main.cpp" },
-        { id: "omnia_core", kind: "module", label: "omnia_core", path: "cpp/include/omnia/core/" },
-        { id: "omnia_storage", kind: "module", label: "omnia_storage", path: "cpp/include/omnia/storage/" },
-        { id: "omnia_routing", kind: "module", label: "omnia_routing", path: "cpp/include/omnia/routing/" },
-        { id: "omnia_graph", kind: "module", label: "omnia_graph", path: "cpp/include/omnia/graph/" },
-        { id: "omnia_harness", kind: "module", label: "omnia_harness", path: "cpp/include/omnia/harness/" },
-        { id: "omnia-native", kind: "binary", label: "omnia-native.exe", path: "native/CMakeLists.txt" },
-        { id: "ui-atelier-bundle", kind: "ui", label: "Flagship Studio UI", path: "ui/index.html" },
-        { id: "DOD-14", kind: "spec", label: "DOD-14 Runtime Verification", path: "docs/workspace/DOD.md" }
-      ],
-      graphifyEdges: [
-        { from: "omnia-studio", to: "omnia_routing", relation: "calls", provenance: "EXTRACTED", note: "POST /api/router/decide -> DynamicProviderRouter" },
-        { from: "omnia-studio", to: "omnia_graph", relation: "calls", provenance: "EXTRACTED", note: "GET /api/graph & BFS traverse" },
-        { from: "omnia-studio", to: "omnia_harness", relation: "calls", provenance: "EXTRACTED", note: "MemoryGraph + ProactiveRag + SkillRegistry + SteerQueue" },
-        { from: "omnia-studio", to: "omnia_storage", relation: "calls", provenance: "EXTRACTED", note: "RAII winsqlite3 WAL SessionStore" },
-        { from: "omnia_storage", to: "omnia_core", relation: "depends_on", provenance: "EXTRACTED", note: "BCrypt SHA-256 + RFC-8259 JsonValue" },
-        { from: "omnia_routing", to: "omnia_core", relation: "depends_on", provenance: "EXTRACTED", note: "SecretRedactor + deterministic receipt serialization" },
-        { from: "ui-atelier-bundle", to: "omnia-studio", relation: "consumes_rpc", provenance: "EXTRACTED", note: "12 loopback JSON endpoints" },
-        { from: "omnia-native", to: "omnia_storage", relation: "shares_wal_schema", provenance: "INFERRED", note: "Shared cooperative SQLite session lease invariants" },
-        { from: "DOD-14", to: "omnia-native", relation: "verifies", provenance: "EXTRACTED", note: "7 PowerShell UIA + session + guard suites" },
-        { from: "DOD-14", to: "ui-atelier-bundle", relation: "candidate_match", provenance: "AMBIGUOUS", note: "Quarantined: multiple preview/studio surfaces reference DOD-14; requires explicit locator binding" }
-      ]
-    },
-    router: {
-      candidates: [
-        { id: "local-cpp-llama-q8", providerId: "omnia-local", modelId: "qwen3-coder-32b-q8", capabilities: ["code_generation", "architecture_synthesis", "fast_triage", "streaming"], privacyTier: "strict_local_zero_retention", circuit: "Closed", quotaState: "Known", remainingTokens: 480000, reserveTokens: 25000, ewmaMs: 142, p95Ms: 215, errorRate: 0.002 },
-        { id: "anthropic-opus-4-6", providerId: "anthropic-zdr", modelId: "claude-opus-4-6", capabilities: ["code_generation", "architecture_synthesis", "math_derivation", "multimodal_vision", "streaming"], privacyTier: "enterprise_zdr", circuit: "Closed", quotaState: "Known", remainingTokens: 310000, reserveTokens: 30000, ewmaMs: 390, p95Ms: 620, errorRate: 0.004 },
-        { id: "google-gemini-3-1-pro", providerId: "vertex-zdr", modelId: "gemini-3.1-pro", capabilities: ["code_generation", "architecture_synthesis", "math_derivation", "multimodal_vision", "fast_triage", "streaming"], privacyTier: "enterprise_zdr", circuit: "Closed", quotaState: "Known", remainingTokens: 920000, reserveTokens: 40000, ewmaMs: 265, p95Ms: 410, errorRate: 0.003 },
-        { id: "openai-gpt-5-4-thinking", providerId: "openai-enterprise", modelId: "gpt-5.4-thinking", capabilities: ["code_generation", "architecture_synthesis", "math_derivation", "streaming"], privacyTier: "enterprise_zdr", circuit: "HalfOpen", quotaState: "Stale", remainingTokens: 125000, reserveTokens: 20000, ewmaMs: 540, p95Ms: 890, errorRate: 0.028 },
-        { id: "cloud-fast-unverified", providerId: "public-gateway", modelId: "deepseek-r2-distill", capabilities: ["code_generation", "fast_triage", "streaming"], privacyTier: "standard_cloud", circuit: "Open", quotaState: "Unknown", remainingTokens: null, reserveTokens: 15000, ewmaMs: 980, p95Ms: 1640, errorRate: 0.145 }
-      ],
-      lastDecision: null
-    },
-    memory: {
-      entries: [
-        { id: "mem-01", namespace: "architecture/cpp20-core", key: "winsqlite3-wal-lease", content: "SessionStore uses RAII sqlite3 custom deleter + WAL synchronous=NORMAL + cooperative process lease heartbeat.", tier: "Durable", contentSha256: sha256Hex("SessionStore uses RAII sqlite3 custom deleter + WAL synchronous=NORMAL + cooperative process lease heartbeat."), updatedAt: "2026-11-12T20:15:00Z", links: ["architecture/win32-uia"] },
-        { id: "mem-02", namespace: "architecture/win32-uia", key: "modal-32770-cbt-hook", content: "Thread-scoped WH_CBT HCBT_ACTIVATE hook attaches IInvokeProvider to IDOK/IDCANCEL/IDYES/IDNO so background UIA Invoke succeeds.", tier: "Durable", contentSha256: sha256Hex("Thread-scoped WH_CBT HCBT_ACTIVATE hook attaches IInvokeProvider to IDOK/IDCANCEL/IDYES/IDNO so background UIA Invoke succeeds."), updatedAt: "2026-11-12T20:18:00Z", links: ["lessons/uia-background-focus"] },
-        { id: "mem-03", namespace: "workspace/ui-atelier", key: "obsidian-contrast-floor", content: "All 3 studio themes verify IEEE-754 WCAG 2.2 luminance >= 5.12:1 across canvas, rail, panel, and elevated surfaces.", tier: "Working", contentSha256: sha256Hex("All 3 studio themes verify IEEE-754 WCAG 2.2 luminance >= 5.12:1 across canvas, rail, panel, and elevated surfaces."), updatedAt: "2026-11-12T20:26:30Z", links: ["architecture/cpp20-core"] },
-        { id: "mem-04", namespace: "lessons/uia-background-focus", key: "zero-drop-steer-rule", content: "Mid-run user prompts enter SteerQueue as ADDITIVE_INTAKE with token_budget=NULL; never drop unfinished tasks.", tier: "Durable", contentSha256: sha256Hex("Mid-run user prompts enter SteerQueue as ADDITIVE_INTAKE with token_budget=NULL; never drop unfinished tasks."), updatedAt: "2026-11-12T19:50:00Z", links: [] }
-      ],
-      erasures: []
-    },
-    skills: [
-      { name: "deep-cpp-native", category: "Native C++20 & Win32", path: ".agents/skills/deep-cpp-native/SKILL.md", description: "Out-of-source CMake + Ninja + MSVC /std:c++20 /W4 /WX builds, RAII Win32/COM/winsqlite3 handles, Direct2D, server-side UIA, and loopback JSON-RPC.", score: 9.9 },
-      { name: "autonomous-power-continuity", category: "Swarm Orchestration", path: ".agents/skills/autonomous-power-continuity/SKILL.md", description: "Execute end-to-end engineering goals with Graphify bidirectional context, 2-way all-to-all peer-mesh swarms, and anti-overconfidence verification.", score: 9.6 },
-      { name: "deep-general-graph-orchestration", category: "Graph & Provenance", path: ".agents/skills/deep-general-graph-orchestration/SKILL.md", description: "Design, execute, and verify bidirectional A <-> B peer-mesh graphs and Graphify EXTRACTED/INFERRED/AMBIGUOUS code-knowledge graphs.", score: 9.5 },
-      { name: "omni-bilingual-skill-router", category: "Routing & Discovery", path: ".agents/skills/omni-bilingual-skill-router/SKILL.md", description: "Compose multi-skill execution pipelines across Vietnamese and English queries using fast BM25 ranking and SHA-256 lockfile health checks.", score: 9.4 },
-      { name: "additive-steer-queue", category: "Continuity & Steer", path: ".agents/skills/additive-steer-queue/SKILL.md", description: "Preserve all unfinished tasks on mid-run user steer messages via ADDITIVE_INTAKE queue intake with token_budget=NULL.", score: 9.3 },
-      { name: "deep-clean", category: "Workspace Hygiene", path: ".agents/skills/deep-clean/SKILL.md", description: "Clean repositories and drives via inventory, provenance classification, quarantine, and byte-accurate reclamation receipts.", score: 9.1 },
-      { name: "deep-proposal", category: "Architecture & RFC", path: ".agents/skills/deep-proposal/SKILL.md", description: "Author rigorous Engineering/RFC, Academic, and Product proposals with baseline evidence, trade-off matrices, and rollback gates.", score: 9.0 },
-      { name: "deep-steer", category: "Continuity & Steer", path: ".agents/skills/deep-steer/SKILL.md", description: "Steer active goals and general graphs via compare-and-swap mutations, supersession, and auditable control receipts.", score: 8.9 },
-      { name: "goal-plan-loop-dod", category: "Verification & DoD", path: ".agents/skills/goal-plan-loop-dod/SKILL.md", description: "Bind multi-requirement engineering goals to measurable execution loops and falsifiable Definition of Done gates.", score: 8.9 },
-      { name: "omnia-session-governance-handoff", category: "Governance", path: ".agents/skills/omnia-session-governance-handoff/SKILL.md", description: "Govern startup preflight, canonical workspace ledgers, and 6-state completion receipts separating inspected vs runtime-verified states.", score: 8.8 },
-      { name: "omni-deterministic-verifiers", category: "Verification & DoD", path: ".agents/skills/omni-deterministic-verifiers/SKILL.md", description: "Run deterministic structural, LF-hygiene, secret-redaction, and cross-artifact verification suites.", score: 8.8 },
-      { name: "vietnamese-typo-intent-inference", category: "Bilingual UX", path: ".agents/skills/vietnamese-typo-intent-inference/SKILL.md", description: "Infer bilingual Vietnamese-English intent across VNI/Telex slips and shorthand without mutating identifiers or paths.", score: 8.7 },
-      { name: "codex-mcp-namespace-diagnostics", category: "Diagnostics", path: ".agents/skills/codex-mcp-namespace-diagnostics/SKILL.md", description: "Diagnose MCP dispatch namespaces, SSE framing, V8 text execution, and Windows cold-start timeouts.", score: 8.5 }
-    ]
-  };
-
-  /* ========================================================================
-     5. Resilient HTTP Client + Normalization + Offline Engine
+     4. Live HTTP Client + Contract Normalization
      ======================================================================== */
   let connectionMode = "PROBING";
 
@@ -601,13 +449,26 @@
       (global.location.protocol === "http:" || global.location.protocol === "https:");
   }
 
-  async function requestJson(method, path, body) {
+  function resolveTimeoutMs(options, fallbackMs) {
+    return options && options.timeoutMs != null && Number.isFinite(Number(options.timeoutMs))
+      ? Math.max(100, Math.min(120000, Math.trunc(Number(options.timeoutMs))))
+      : fallbackMs;
+  }
+
+  async function requestJsonDetailed(method, path, body, options) {
+    const timeoutMs = resolveTimeoutMs(options, 2800);
     if (!canAttemptHttp()) {
       connectionMode = "STANDALONE_ATELIER";
-      return null;
+      return {
+        ok: false,
+        httpStatus: 0,
+        data: null,
+        error: "standalone_origin",
+        message: "Opened outside HTTP listener; live Studio endpoints are unreachable."
+      };
     }
     const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 2400) : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     try {
       const opts = {
         method,
@@ -620,10 +481,62 @@
       }
       const res = await fetch(path, opts);
       if (timer) clearTimeout(timer);
-      if (!res.ok) return null;
-      const data = await res.json();
-      connectionMode = "LIVE_CPP20";
-      return data;
+      connectionMode = "LIVE_RUST";
+      const data = await res.json().catch(() => null);
+      if (res.ok && data && typeof data === "object") {
+        return {
+          ok: data.ok !== false,
+          httpStatus: res.status,
+          data,
+          error: data.ok === false ? (data.error || data.code || "endpoint_error") : null,
+          message: data.message || data.reason || null
+        };
+      }
+      return {
+        ok: false,
+        httpStatus: res.status,
+        data: data && typeof data === "object" ? data : null,
+        error: (data && (data.error || data.code)) || ("http_" + res.status),
+        message: (data && (data.message || data.reason)) || ("HTTP " + res.status + " from " + path)
+      };
+    } catch (err) {
+      if (timer) clearTimeout(timer);
+      connectionMode = "STANDALONE_ATELIER";
+      return {
+        ok: false,
+        httpStatus: 0,
+        data: null,
+        error: err && err.name === "AbortError" ? "request_timeout" : "network_unreachable",
+        message: err && err.message ? err.message : "Failed to reach " + path
+      };
+    }
+  }
+
+  async function requestJson(method, path, body, options) {
+    const preserveErrorPayload = Boolean(options && options.preserveErrorPayload === true);
+    const timeoutMs = resolveTimeoutMs(options, 2400);
+    if (!canAttemptHttp()) {
+      connectionMode = "STANDALONE_ATELIER";
+      return null;
+    }
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+    try {
+      const opts = {
+        method,
+        headers: { Accept: "application/json" },
+        signal: ctrl ? ctrl.signal : undefined
+      };
+      if (body !== undefined) {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      if (timer) clearTimeout(timer);
+      connectionMode = "LIVE_RUST";
+      const data = await res.json().catch(() => null);
+      if (!res.ok && !preserveErrorPayload) return null;
+      return data && typeof data === "object" ? data : null;
     } catch (_err) {
       if (timer) clearTimeout(timer);
       connectionMode = "STANDALONE_ATELIER";
@@ -631,225 +544,20 @@
     }
   }
 
-  function computeFallbackRouterDecision(payload) {
-    const req = payload || {};
-    const taskClass = req.taskClass || "code_generation";
-    const estimatedTokens = Number(req.estimatedTokens) || 4096;
-    const privacyTier = req.privacyTier || "enterprise_zdr";
-    const requireStreaming = req.requireStreaming !== false;
-
-    if (req.tripCandidate) {
-      const c = fallbackState.router.candidates.find((x) => x.id === req.tripCandidate);
-      if (c) c.circuit = "Open";
-    }
-    if (req.resetCandidate) {
-      const c = fallbackState.router.candidates.find((x) => x.id === req.resetCandidate);
-      if (c) {
-        c.circuit = "Closed";
-        if (c.quotaState === "Stale") c.quotaState = "Known";
-      }
-    }
-
-    const privacyRank = {
-      strict_local_zero_retention: 3,
-      enterprise_zdr: 2,
-      standard_cloud: 1
-    };
-    const reqPriv = privacyRank[privacyTier] || 2;
-
-    const scores = fallbackState.router.candidates.map((cand) => {
-      const candPriv = privacyRank[cand.privacyTier] || 1;
-      const reasons = [];
-      if (cand.circuit === "Open") reasons.push("circuit_open_fenced");
-      if (candPriv < reqPriv) reasons.push("privacy_boundary_violation");
-      if (!cand.capabilities.includes(taskClass)) reasons.push("missing_capability:" + taskClass);
-      if (requireStreaming && !cand.capabilities.includes("streaming")) reasons.push("streaming_unsupported");
-      if (cand.quotaState === "Unknown") reasons.push("quota_unknown_never_coerced_to_zero");
-      if (cand.quotaState === "Stale") reasons.push("quota_stale_ttl_expired");
-      if (typeof cand.remainingTokens === "number" && cand.remainingTokens - cand.reserveTokens < estimatedTokens) {
-        reasons.push("emergency_reserve_floor");
-      }
-
-      const capabilityScore = cand.capabilities.includes(taskClass) ? 28 : 0;
-      const privacyScore = candPriv >= reqPriv ? (candPriv === 3 ? 24 : 20) : 0;
-      const quotaScore = cand.quotaState === "Known"
-        ? Math.min(20, Math.round(((cand.remainingTokens - cand.reserveTokens) / 50000) * 4))
-        : 0;
-      const latencyScore = Math.max(2, Math.round(18 - cand.p95Ms / 110));
-      const reliabilityScore = Math.max(0, Math.round((1 - cand.errorRate * 5) * 10));
-      const eligible = reasons.length === 0;
-      const totalScore = eligible
-        ? capabilityScore + privacyScore + quotaScore + latencyScore + reliabilityScore
-        : 0;
-
-      return {
-        candidateId: cand.id,
-        eligible,
-        totalScore,
-        capabilityScore,
-        privacyScore,
-        quotaScore,
-        latencyScore,
-        reliabilityScore,
-        rejectedReason: reasons.join(", ") || null
-      };
-    });
-
-    const eligibleSorted = scores
-      .filter((s) => s.eligible)
-      .sort((a, b) => (b.totalScore - a.totalScore) || a.candidateId.localeCompare(b.candidateId));
-
-    const winner = eligibleSorted[0] || null;
-    const policyHash = sha256Hex(JSON.stringify({ taskClass, estimatedTokens, privacyTier, requireStreaming })).slice(0, 16);
-    const receipt = {
-      receiptId: "rcpt-" + fnv1aHex(Date.now() + ":" + policyHash),
-      schemaVersion: "omnia.routing.v2.cpp20",
-      policyHash: "sha256:" + policyHash,
-      selectedRoute: winner ? winner.candidateId : null,
-      reservationId: winner ? "rsv-" + fnv1aHex(winner.candidateId + ":" + estimatedTokens) : null,
-      reservedTokens: winner ? estimatedTokens : 0,
-      promptRedacted: true,
-      secretsExposed: 0,
-      scores
-    };
-    fallbackState.router.lastDecision = receipt;
-    return {
-      ok: true,
-      selectedCandidateId: winner ? winner.candidateId : null,
-      status: winner ? "ROUTED_DETERMINISTIC" : "FENCED_OPERATOR_RECOVERY_REQUIRED",
-      receipt,
-      candidates: fallbackState.router.candidates
-    };
+  function unavailableResult(error, extra) {
+    return Object.assign({
+      ok: false,
+      state: "unavailable",
+      error: String(error || "endpoint_unavailable")
+    }, extra || {});
   }
 
-  function computeFallbackTraverse(entity, direction, maxDepth) {
-    const start = entity || "omnia-studio";
-    const dir = direction || "Both";
-    const depthCap = Math.max(1, Math.min(5, Number(maxDepth) || 3));
-    const visited = new Set([start]);
-    const frontier = [{ id: start, depth: 0 }];
-    const matchedEdges = [];
-    const quarantinedAmbiguous = [];
-
-    while (frontier.length > 0) {
-      const cur = frontier.shift();
-      if (cur.depth >= depthCap) continue;
-      for (const edge of fallbackState.graph.graphifyEdges) {
-        const forwardMatch = (dir === "Forward" || dir === "Both") && edge.from === cur.id;
-        const reverseMatch = (dir === "Reverse" || dir === "Both") && edge.to === cur.id;
-        if (!forwardMatch && !reverseMatch) continue;
-        const nextId = forwardMatch ? edge.to : edge.from;
-        const item = Object.assign({ depth: cur.depth + 1 }, edge);
-        if (edge.provenance === "AMBIGUOUS") {
-          quarantinedAmbiguous.push(item);
-          continue;
-        }
-        matchedEdges.push(item);
-        if (!visited.has(nextId)) {
-          visited.add(nextId);
-          frontier.push({ id: nextId, depth: cur.depth + 1 });
-        }
-      }
-    }
-
-    return {
-      entity: start,
-      direction: dir,
-      maxDepth: depthCap,
-      visited: Array.from(visited),
-      edges: matchedEdges,
-      quarantinedAmbiguous
-    };
-  }
-
-  function computeFallbackRagPlan(queryText) {
-    const q = String(queryText || "").trim();
-    const hasVn = /[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(q);
-    const hasEn = /\b(how|why|what|compare|explain|lease|circuit|quota|uia|sqlite|memory)\b/i.test(q);
-    const language = hasVn && hasEn ? "BILINGUAL_VI_EN" : (hasVn ? "VI" : "EN");
-    const triggers = ["ZERO_EXPLICIT_SEARCH_KEYWORD"];
-    let score = 0.42;
-
-    if (/\?|tại sao|như thế nào|làm sao|giải thích|how|why|compare/i.test(q)) {
-      triggers.push("CAUSAL_OR_COMPARATIVE_INQUIRY");
-      score += 0.22;
-    }
-    if (/32770|uia|winsqlite3|wal|sha-256|quota_stale|halfopen|graphify|lease/i.test(q)) {
-      triggers.push("DEEP_ARCHITECTURE_INVARIANT");
-      score += 0.24;
-    }
-    if (hasVn) {
-      triggers.push("VIETNAMESE_TECHNICAL_SEMANTICS");
-      score += 0.06;
-    }
-    const uncertaintyScore = Math.min(0.96, Number(score.toFixed(2)));
-    const shouldRetrieve = uncertaintyScore >= 0.55;
-
-    function clipWords(text, maxChars) {
-      if (text.length <= maxChars) return text;
-      const cut = text.slice(0, maxChars);
-      const sp = cut.lastIndexOf(" ");
-      return (sp > 20 ? cut.slice(0, sp) : cut) + "…";
-    }
-
-    const subQueries = [
-      { angle: "AST & Header Contract", query: "omnia C++20 header invariants for: " + clipWords(q, 76) },
-      { angle: "Governance & DoD Spec", query: "DIRECTION_DECISION & DYNAMIC_ROUTING_REQUIREMENTS rules for: " + clipWords(q, 68) },
-      { angle: "Reverse Graphify Provenance", query: "reverse dependents & verification tests covering: " + clipWords(q, 72) }
-    ];
-
-    const citedSources = [
-      {
-        id: "src-routing-spec",
-        title: "DYNAMIC_ROUTING_REQUIREMENTS.md",
-        locator: "docs/workspace/DYNAMIC_ROUTING_REQUIREMENTS.md#L37-L70",
-        snippet: "Unknown, stale or contradictory values must remain explicit. Do not silently convert unknown quota or usage to zero.",
-        provenance: "EXTRACTED",
-        score: 0.94
-      },
-      {
-        id: "src-graphify-spec",
-        title: "BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md",
-        locator: "docs/handoff/BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md#L49-L65",
-        snippet: "Explicit Three-Tier Edge Provenance: EXTRACTED, INFERRED, and quarantined AMBIGUOUS candidates.",
-        provenance: "EXTRACTED",
-        score: 0.91
-      },
-      {
-        id: "src-cpp-storage",
-        title: "omnia_storage::SessionStore (winsqlite3 WAL)",
-        locator: "cpp/include/omnia/storage/session_store.hpp#L1-L68",
-        snippet: "Cooperative SQLite WAL process ownership lease with acquire_lease, heartbeat, and PID/epoch recovery.",
-        provenance: "INFERRED",
-        score: 0.87
-      }
-    ];
-
-    const unusedSources = [
-      {
-        id: "unused-legacy-tauri",
-        title: "Archive Snapshot: pre-cpp-rust-snapshot-20261112",
-        locator: "git:archive/pre-cpp-rust-snapshot-20261112",
-        reason: "Excluded: superseded historical Rust/Tauri tree; active runtime is 100% Native C++20."
-      },
-      {
-        id: "unused-encrypted-7z",
-        title: "exam_solutions_locked.7z",
-        locator: "attachment://encrypted/exam_solutions_locked.7z",
-        reason: "Quarantined: ENCRYPTED_UNRESOLVED archive (0 bytes claimed read)."
-      }
-    ];
-
-    return {
-      query: q,
-      language,
-      uncertaintyScore,
-      shouldRetrieve,
-      triggers,
-      subQueries,
-      citedSources,
-      unusedSources
-    };
+  function unavailableArray(error) {
+    const result = [];
+    result.ok = false;
+    result.state = "unavailable";
+    result.error = String(error || "endpoint_unavailable");
+    return result;
   }
 
   const api = {
@@ -857,122 +565,264 @@
       return connectionMode;
     },
 
+    async getCapabilities() {
+      const live = await requestJson("GET", "/api/capabilities");
+      if (live && live.ok !== false) {
+        if (live.schema === "omnia.capabilities.v1" && Array.isArray(live.capabilities)) {
+          return live;
+        }
+        if (Array.isArray(live.capabilities)) {
+          return {
+            ok: true,
+            schema: live.schema || "omnia.capabilities.v1",
+            listener: live.listener ?? null,
+            capabilities: live.capabilities
+          };
+        }
+        if (live.capabilities && typeof live.capabilities === "object") {
+          return {
+            ok: true,
+            schema: live.schema || "omnia.capabilities.v1",
+            listener: live.listener ?? null,
+            capabilities: Object.entries(live.capabilities).map(([id, enabled]) => ({
+              id,
+              enabled: Boolean(enabled)
+            }))
+          };
+        }
+      }
+      return unavailableResult("capabilities_endpoint_unavailable", {
+        schema: "omnia.capabilities.v1",
+        listener: null,
+        capabilities: []
+      });
+    },
+
     async getHealth() {
       const live = await requestJson("GET", "/api/health");
       if (live && live.ok !== false) {
         return {
-          ok: true,
-          engine: live.engine || "Omnia Native C++20",
-          compiler: live.compiler || "MSVC 14.51",
-          cplusplus: live.cplusplus || 202002,
-          rustFiles: live.rustFiles ?? live.rust_files ?? 0,
-          pid: live.pid || 0,
-          workingSetBytes: live.workingSetBytes ?? live.working_set_bytes ?? 8388608,
-          binaryBytes: live.binaryBytes ?? live.binary_bytes ?? 393216,
-          skillCount: live.skillCount ?? live.skill_count ?? 13,
-          peerCount: live.peerCount ?? live.peer_count ?? 6
+          ok: live.ok !== false,
+          state: live.state || "ok",
+          engine: live.engine ?? null,
+          compiler: live.compiler ?? live.rustcVersion ?? live.rustc ?? null,
+          crateCount: live.crateCount ?? live.crate_count ?? null,
+          httpStack: live.httpStack ?? live.http_stack ?? null,
+          sqliteBackend: live.sqliteBackend ?? live.sqlite_backend ?? null,
+          rustRuntime: live.rustRuntime ?? live.rust_runtime ?? null,
+          rustFiles: live.rustFiles ?? live.rust_files ?? null,
+          pid: live.pid ?? null,
+          workingSetBytes: live.workingSetBytes ?? live.working_set_bytes ?? null,
+          binaryBytes: live.binaryBytes ?? live.binary_bytes ?? null,
+          skillCount: live.skillCount ?? live.skill_count ?? null,
+          peerCount: live.peerCount ?? live.peer_count ?? null
         };
       }
-      return Object.assign({}, fallbackState.health);
+      return unavailableResult("health_endpoint_unavailable", {
+        engine: null,
+        compiler: null,
+        crateCount: null,
+        httpStack: null,
+        sqliteBackend: null,
+        rustRuntime: null,
+        rustFiles: null,
+        pid: null,
+        workingSetBytes: null,
+        binaryBytes: null,
+        skillCount: null,
+        peerCount: null
+      });
+    },
+
+
+    async getRuntimeStatus() {
+      const live = await requestJson("GET", "/api/runtime/status", undefined, {
+        preserveErrorPayload: true,
+        timeoutMs: 5000
+      });
+      if (live && live.ok !== false && live.state !== "unavailable") {
+        return live;
+      }
+      if (live && (live.error || live.code || live.message)) {
+        return {
+          ok: false,
+          state: "unavailable",
+          code: live.code || live.error || "runtime_status_unavailable",
+          error: live.error || live.code || "runtime_status_unavailable",
+          message: live.message || "Omnia runtime status unavailable."
+        };
+      }
+      return unavailableResult("runtime_status_unavailable", {
+        code: "runtime_status_unavailable",
+        message: "Omnia runtime status endpoint unavailable."
+      });
+    },
+    async getNvidiaHardware() {
+      const live = await requestJson("GET", "/api/hardware/nvidia", undefined, {
+        preserveErrorPayload: true,
+        timeoutMs: 3200
+      });
+      if (live && live.schema === "omnia.hardware.nvidia.v1" &&
+          ["ready", "unavailable", "error"].includes(String(live.state || ""))) {
+        return live;
+      }
+      return unavailableResult("nvidia_runtime_unavailable", {
+        schema: "omnia.hardware.nvidia.v1",
+        backend: "nvidia-smi",
+        evidenceScope: "device_query_only",
+        workloads: { cuda: "unverified", tensorrt: "unverified", nvenc: "unverified" },
+        gpus: []
+      });
     },
 
     async getSessions() {
       const live = await requestJson("GET", "/api/sessions");
       if (live && Array.isArray(live.sessions)) return live;
-      return { sessions: fallbackState.sessions.slice(), activeLease: fallbackState.activeLease };
+      return unavailableResult("sessions_endpoint_unavailable", {
+        sessions: [],
+        activeLease: null
+      });
+    },
+
+    async getHistory(query, limit, offset) {
+      const params = new URLSearchParams();
+      const cleanQuery = String(query || "").trim();
+      if (cleanQuery) params.set("query", cleanQuery);
+      if (Number.isFinite(Number(limit))) params.set("limit", String(Math.max(1, Math.min(200, Math.trunc(Number(limit))))));
+      if (Number.isFinite(Number(offset))) params.set("offset", String(Math.max(0, Math.min(1000000, Math.trunc(Number(offset))))));
+      const suffix = params.toString() ? "?" + params.toString() : "";
+      const live = await requestJson("GET", "/api/history" + suffix);
+      if (live && live.schema === "omnia.history-manifest.v2") return live;
+      return {
+        ok: false,
+        schema: "omnia.history-manifest.v2",
+        state: "unavailable",
+        acquisitionState: "unavailable",
+        error: "history_endpoint_unavailable",
+        manifestPath: "",
+        records: [],
+        counts: {
+          records: 0,
+          verified: 0,
+          partial: 0,
+          blocked: 0,
+          transcriptAvailable: 0
+        },
+        completion: {
+          verified: [],
+          partial: [],
+          blocked: [],
+          next: []
+        }
+      };
+    },
+
+    async getHistoryMessages(recordId, limit, offset) {
+      const params = new URLSearchParams();
+      const cleanId = String(recordId || "").trim();
+      if (cleanId) params.set("record_id", cleanId);
+      if (Number.isFinite(Number(limit))) {
+        params.set("limit", String(Math.max(1, Math.min(200, Math.trunc(Number(limit))))));
+      }
+      if (Number.isFinite(Number(offset))) {
+        params.set("offset", String(Math.max(0, Math.min(1000000, Math.trunc(Number(offset))))));
+      }
+      const suffix = params.toString() ? "?" + params.toString() : "";
+      const live = await requestJson("GET", "/api/history/messages" + suffix);
+      if (live && live.schema === "omnia.history-messages.v1") return live;
+      return {
+        ok: false,
+        schema: "omnia.history-messages.v1",
+        recordId: cleanId,
+        state: "unavailable",
+        error: "history_messages_endpoint_unavailable",
+        messages: [],
+        totalMatched: 0,
+        limit: Number.isFinite(Number(limit)) ? Math.max(1, Math.min(200, Math.trunc(Number(limit)))) : 20,
+        offset: Number.isFinite(Number(offset)) ? Math.max(0, Math.min(1000000, Math.trunc(Number(offset)))) : 0
+      };
     },
 
     async createSession(payload) {
       const live = await requestJson("POST", "/api/sessions/create", payload);
       if (live && (live.sessions || live.session)) {
-        if (live.session && !live.sessions) {
-          fallbackState.sessions.unshift(live.session);
-          return { sessions: fallbackState.sessions.slice(), session: live.session };
-        }
-        return live;
+        return Object.assign({ sessions: [] }, live);
       }
-      const created = {
-        id: "sess-" + fnv1aHex(Date.now() + ":" + (payload.title || "studio")),
-        title: payload.title || "New Studio Session",
-        modelId: payload.modelId || "gemini-3.1-pro",
-        effort: payload.effort || "high",
-        updatedAt: new Date().toISOString()
-      };
-      fallbackState.sessions.unshift(created);
-      return { ok: true, session: created, sessions: fallbackState.sessions.slice() };
+      return unavailableResult("sessions_create_endpoint_unavailable", {
+        session: null,
+        sessions: []
+      });
     },
 
     async getSteer() {
       const live = await requestJson("GET", "/api/steer");
-      if (live && Array.isArray(live.items)) return live;
-      return {
+      if (live && Array.isArray(live.items)) {
+        return Object.assign({}, live, {
+          tokenBudget: live.tokenBudget ?? live.token_budget ?? null
+        });
+      }
+      return unavailableResult("steer_endpoint_unavailable", {
         tokenBudget: null,
-        invariant: fallbackState.steer.invariant,
-        items: fallbackState.steer.items.slice()
-      };
+        invariant: null,
+        items: []
+      });
     },
 
     async enqueueSteer(text) {
       const clean = String(text || "").trim();
       if (!clean) return this.getSteer();
       const live = await requestJson("POST", "/api/steer/enqueue", { text: clean });
-      if (live && (live.item || Array.isArray(live.items))) return live;
-      const seq = fallbackState.steer.items.length + 1;
-      const item = {
-        id: "steer-0" + seq,
-        seq,
-        text: clean,
-        mode: "ADDITIVE_INTAKE",
-        status: "QUEUED_CONTINUITY",
-        createdAt: new Date().toISOString()
-      };
-      fallbackState.steer.items.push(item);
-      return { ok: true, tokenBudget: null, item, items: fallbackState.steer.items.slice() };
+      if (live && (live.item || Array.isArray(live.items))) {
+        return Object.assign({}, live, {
+          tokenBudget: live.tokenBudget ?? live.token_budget ?? null
+        });
+      }
+      return unavailableResult("steer_enqueue_endpoint_unavailable", {
+        tokenBudget: null,
+        item: null,
+        items: []
+      });
     },
 
     async getTemplates() {
       const live = await requestJson("GET", "/api/composer/templates");
-      if (live && Array.isArray(live.templates) && live.templates.length > 0) return live.templates;
-      return fallbackState.templates.slice();
+      if (live && Array.isArray(live.templates)) return live.templates;
+      return unavailableArray("composer_templates_endpoint_unavailable");
     },
 
     async getGraph() {
       const live = await requestJson("GET", "/api/graph");
-      if (live && Array.isArray(live.nodes) && live.nodes.length > 0) {
+      if (live && Array.isArray(live.nodes)) {
         return {
+          ok: live.ok !== false,
+          state: live.state || "ok",
           nodes: live.nodes,
-          links: live.links || fallbackState.graph.links,
-          messages: live.messages || fallbackState.graph.messages,
-          graphifyNodes: live.graphifyNodes || live.graphify_nodes || fallbackState.graph.graphifyNodes,
-          graphifyEdges: live.graphifyEdges || live.graphify_edges || fallbackState.graph.graphifyEdges
+          links: Array.isArray(live.links) ? live.links : [],
+          messages: Array.isArray(live.messages) ? live.messages : [],
+          graphifyNodes: Array.isArray(live.graphifyNodes)
+            ? live.graphifyNodes
+            : (Array.isArray(live.graphify_nodes) ? live.graphify_nodes : []),
+          graphifyEdges: Array.isArray(live.graphifyEdges)
+            ? live.graphifyEdges
+            : (Array.isArray(live.graphify_edges) ? live.graphify_edges : [])
         };
       }
-      return JSON.parse(JSON.stringify(fallbackState.graph));
+      return unavailableResult("graph_endpoint_unavailable", {
+        nodes: [],
+        links: [],
+        messages: [],
+        graphifyNodes: [],
+        graphifyEdges: []
+      });
     },
 
     async sendGraphMessage(payload) {
       const live = await requestJson("POST", "/api/graph/send", payload);
       if (live && live.ok !== false) return live;
-      const nextSeq = (fallbackState.graph.messages.reduce((m, x) => Math.max(m, x.seq || 0), 76)) + 1;
-      const now = new Date();
-      const ts = [now.getHours(), now.getMinutes(), now.getSeconds()]
-        .map((n) => String(n).padStart(2, "0"))
-        .join(":");
-      const msg = {
-        seq: nextSeq,
-        from: payload.from || "ui-atelier",
-        to: payload.broadcast ? "@all" : (payload.to || "cpp-core"),
-        text: payload.text || "Duplex heartbeat sync",
-        epoch: 4,
-        hop: 1,
-        timestamp: ts
-      };
-      fallbackState.graph.messages.push(msg);
-      for (const n of fallbackState.graph.nodes) {
-        if (n.id === msg.from) { n.outgoingCount++; n.lastSeq = nextSeq; }
-        if (payload.broadcast || n.id === msg.to) { n.incomingCount++; n.lastSeq = nextSeq; }
-      }
-      return { ok: true, message: msg, messages: fallbackState.graph.messages.slice() };
+      return unavailableResult("graph_send_endpoint_unavailable", {
+        message: null,
+        messages: []
+      });
     },
 
     async traverseGraph(entity, direction, maxDepth) {
@@ -981,48 +831,421 @@
         "&maxDepth=" + encodeURIComponent(maxDepth);
       const live = await requestJson("GET", "/api/graph/traverse" + qs);
       if (live && (Array.isArray(live.edges) || Array.isArray(live.visited))) return live;
-      return computeFallbackTraverse(entity, direction, maxDepth);
+      return unavailableResult("graph_traverse_endpoint_unavailable", {
+        entity: entity || null,
+        direction: direction || null,
+        maxDepth: Number.isFinite(Number(maxDepth)) ? Number(maxDepth) : null,
+        visited: [],
+        edges: [],
+        quarantinedAmbiguous: []
+      });
     },
 
     async getRouterState() {
       const live = await requestJson("GET", "/api/router/state");
-      if (live && Array.isArray(live.candidates) && live.candidates.length > 0) return live;
-      return {
-        candidates: JSON.parse(JSON.stringify(fallbackState.router.candidates)),
-        recentReceipts: fallbackState.router.lastDecision ? [fallbackState.router.lastDecision] : []
-      };
+      if (live && Array.isArray(live.candidates)) return live;
+      return unavailableResult("router_state_endpoint_unavailable", {
+        candidates: [],
+        recentReceipts: []
+      });
     },
 
+
+    async sendChatCompletion(payload, options) {
+      const timeout = options && options.timeoutMs != null && Number.isFinite(Number(options.timeoutMs))
+        ? Math.max(100, Math.min(120000, Math.trunc(Number(options.timeoutMs))))
+        : 65000;
+      const live = await requestJson("POST", "/api/chat", payload, {
+        preserveErrorPayload: true,
+        timeoutMs: timeout
+      });
+      if (live && live.ok !== false && live.state !== "unavailable") {
+        return live;
+      }
+      if (live && typeof live === "object") {
+        return {
+          ok: false,
+          state: "unavailable",
+          status: live.status || "UNAVAILABLE",
+          code: live.code || live.error || "chat_completion_failed",
+          error: live.error || live.code || "chat_completion_failed",
+          message: live.message || "Chat completion endpoint returned an error response.",
+          details: live
+        };
+      }
+      return unavailableResult("chat_completion_unavailable", {
+        status: "UNAVAILABLE",
+        code: "chat_completion_unavailable",
+        message: "Chat completion endpoint (/api/chat) is currently offline or unreachable.",
+        details: null
+      });
+    },
     async decideRoute(payload) {
       const live = await requestJson("POST", "/api/router/decide", payload);
-      if (live && live.receipt) return live;
-      return computeFallbackRouterDecision(payload);
+      if (live) return live;
+      return unavailableResult("router_decide_endpoint_unavailable", {
+        selectedCandidateId: null,
+        status: "UNAVAILABLE",
+        receipt: null,
+        candidates: []
+      });
+    },
+
+    async queryRag(query) {
+      const res = await requestJsonDetailed("POST", "/api/rag/query", { query });
+      const live = res.data;
+      if (res.ok && live) {
+        return {
+          ok: live.ok !== false,
+          state: live.state || "ok",
+          query: live.query || query,
+          language: live.language ?? null,
+          uncertaintyScore: live.uncertaintyScore ?? live.uncertainty_score ?? null,
+          shouldRetrieve: live.shouldRetrieve ?? live.should_retrieve ?? null,
+          triggers: live.triggers || [],
+          subQueries: live.subQueries || live.sub_queries || [],
+          citedSources: live.citedSources || live.cited_sources || live.citations || [],
+          unusedSources: live.unusedSources || live.unused_sources || [],
+          hits: Array.isArray(live.hits) ? live.hits : (Array.isArray(live.results) ? live.results : []),
+          answer: live.answer ?? live.summary ?? null
+        };
+      }
+      return unavailableResult(res.error || "rag_query_endpoint_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        query: String(query || ""),
+        language: null,
+        uncertaintyScore: null,
+        shouldRetrieve: null,
+        triggers: [],
+        subQueries: [],
+        citedSources: [],
+        unusedSources: [],
+        hits: [],
+        answer: null
+      });
     },
 
     async planRag(query) {
-      const live = await requestJson("POST", "/api/rag/plan", { query });
-      if (live && (live.subQueries || live.sub_queries || live.uncertaintyScore !== undefined)) {
+      let res = await requestJsonDetailed("POST", "/api/rag/plan", { query });
+      if (!res.ok && res.httpStatus === 404) {
+        res = await requestJsonDetailed("POST", "/api/rag/query", { query });
+      }
+      const live = res.data;
+      if (res.ok && live && (live.subQueries || live.sub_queries || live.uncertaintyScore !== undefined || live.hits || live.results)) {
         return {
+          ok: live.ok !== false,
+          state: live.state || "ok",
           query: live.query || query,
-          language: live.language || "EN",
-          uncertaintyScore: live.uncertaintyScore ?? live.uncertainty_score ?? 0.65,
-          shouldRetrieve: live.shouldRetrieve ?? live.should_retrieve ?? true,
+          language: live.language ?? null,
+          uncertaintyScore: live.uncertaintyScore ?? live.uncertainty_score ?? null,
+          shouldRetrieve: live.shouldRetrieve ?? live.should_retrieve ?? null,
           triggers: live.triggers || [],
           subQueries: live.subQueries || live.sub_queries || [],
-          citedSources: live.citedSources || live.cited_sources || [],
-          unusedSources: live.unusedSources || live.unused_sources || []
+          citedSources: live.citedSources || live.cited_sources || live.citations || [],
+          unusedSources: live.unusedSources || live.unused_sources || [],
+          hits: Array.isArray(live.hits) ? live.hits : (Array.isArray(live.results) ? live.results : []),
+          answer: live.answer ?? live.summary ?? null
         };
       }
-      return computeFallbackRagPlan(query);
+      return unavailableResult(res.error || "rag_plan_endpoint_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        query: String(query || ""),
+        language: null,
+        uncertaintyScore: null,
+        shouldRetrieve: null,
+        triggers: [],
+        subQueries: [],
+        citedSources: [],
+        unusedSources: [],
+        hits: [],
+        answer: null
+      });
+    },
+
+    async getWorkspaceTree(relPath, maxDepth) {
+      const cleanPath = String(relPath == null ? "." : relPath).trim() || ".";
+      const depthNum = maxDepth != null && Number.isFinite(Number(maxDepth))
+        ? Math.max(1, Math.min(8, Math.trunc(Number(maxDepth))))
+        : 3;
+      const url = "/api/workspace/tree?path=" + encodeURIComponent(cleanPath) +
+        "&max_depth=" + encodeURIComponent(String(depthNum));
+      const res = await requestJsonDetailed("GET", url);
+      const live = res.data;
+      if (res.ok && live && Array.isArray(live.entries)) {
+        return {
+          ok: true,
+          state: "ok",
+          root: live.root ?? cleanPath,
+          path: cleanPath,
+          entries: live.entries.map((entry) => ({
+            path: String(entry.path || entry.relativePath || entry.name || ""),
+            kind: entry.kind === "dir" || entry.type === "dir" ? "dir" : "file",
+            bytes: Number(entry.bytes ?? entry.sizeBytes ?? entry.size ?? 0)
+          }))
+        };
+      }
+      return unavailableResult(res.error || "workspace_tree_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        root: null,
+        path: cleanPath,
+        entries: []
+      });
+    },
+
+    async getWorkspaceFile(relPath, startLine, endLine) {
+      const cleanPath = String(relPath || "").trim();
+      if (!cleanPath) {
+        return unavailableResult("workspace_path_required", {
+          httpStatus: 0,
+          message: "Specify a relative file path (for example Cargo.toml).",
+          relativePath: "",
+          content: null,
+          sha256: null,
+          lineCount: 0,
+          lines: []
+        });
+      }
+      const params = ["path=" + encodeURIComponent(cleanPath)];
+      if (startLine != null && Number.isFinite(Number(startLine)) && Number(startLine) > 0) {
+        params.push("start_line=" + encodeURIComponent(String(Math.trunc(Number(startLine)))));
+      }
+      if (endLine != null && Number.isFinite(Number(endLine)) && Number(endLine) > 0) {
+        params.push("end_line=" + encodeURIComponent(String(Math.trunc(Number(endLine)))));
+      }
+      const res = await requestJsonDetailed("GET", "/api/workspace/file?" + params.join("&"));
+      const live = res.data;
+      if (res.ok && live && (typeof live.content === "string" || Array.isArray(live.lines))) {
+        const baseStart = startLine != null && Number(startLine) > 0 ? Math.trunc(Number(startLine)) : 1;
+        const rawLines = Array.isArray(live.lines)
+          ? live.lines.map((row, i) => ({
+            lineNumber: Number(row.lineNumber ?? row.line_number ?? (baseStart + i)),
+            text: String(row.text ?? row.content ?? "")
+          }))
+          : String(live.content || "").split(/\r?\n/).map((text, i) => ({
+            lineNumber: baseStart + i,
+            text
+          }));
+        const content = typeof live.content === "string"
+          ? live.content
+          : rawLines.map((row) => row.text).join("\n");
+        return {
+          ok: true,
+          state: "ok",
+          relativePath: live.relativePath || live.relative_path || live.path || cleanPath,
+          content,
+          sha256: live.sha256 ?? null,
+          lineCount: Number(live.lineCount ?? live.line_count ?? rawLines.length),
+          lines: rawLines
+        };
+      }
+      return unavailableResult(res.error || "workspace_file_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        relativePath: cleanPath,
+        content: null,
+        sha256: null,
+        lineCount: 0,
+        lines: []
+      });
+    },
+
+    async diffWorkspace(beforeText, afterText, contextLines) {
+      const ctx = contextLines != null && Number.isFinite(Number(contextLines))
+        ? Math.max(0, Math.min(20, Math.trunc(Number(contextLines))))
+        : 3;
+      const res = await requestJsonDetailed("POST", "/api/workspace/diff", {
+        beforeText: String(beforeText == null ? "" : beforeText),
+        afterText: String(afterText == null ? "" : afterText),
+        contextLines: ctx
+      });
+      const live = res.data;
+      if (res.ok && live && typeof live.unifiedDiff === "string") {
+        return {
+          ok: true,
+          state: "ok",
+          additions: Number(live.additions ?? 0),
+          deletions: Number(live.deletions ?? 0),
+          hunks: Number(live.hunks ?? 0),
+          unifiedDiff: live.unifiedDiff
+        };
+      }
+      return unavailableResult(res.error || "workspace_diff_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        additions: 0,
+        deletions: 0,
+        hunks: 0,
+        unifiedDiff: null
+      });
+    },
+
+    async getGraphCode(entity, direction, maxDepth) {
+      const params = [];
+      if (entity && String(entity).trim()) {
+        params.push("entity=" + encodeURIComponent(String(entity).trim()));
+      }
+      if (direction && String(direction).trim()) {
+        params.push("direction=" + encodeURIComponent(String(direction).trim()));
+      }
+      if (maxDepth != null && Number.isFinite(Number(maxDepth))) {
+        params.push("max_depth=" + encodeURIComponent(String(Math.max(1, Math.min(6, Math.trunc(Number(maxDepth)))))));
+      }
+      const query = params.length ? "?" + params.join("&") : "";
+      const res = await requestJsonDetailed("GET", "/api/graph/code" + query);
+      const live = res.data;
+      if (res.ok && live) {
+        return {
+          ok: true,
+          state: "ok",
+          entity: live.entity ?? (entity || null),
+          nodes: Array.isArray(live.nodes) ? live.nodes : [],
+          edges: Array.isArray(live.edges) ? live.edges : [],
+          matches: Array.isArray(live.matches) ? live.matches : [],
+          summary: live.summary ?? null
+        };
+      }
+      return unavailableResult(res.error || "graph_code_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        entity: entity || null,
+        nodes: [],
+        edges: [],
+        matches: [],
+        summary: null
+      });
+    },
+
+    async getConnectorsStatus() {
+      const res = await requestJsonDetailed("GET", "/api/connectors/status");
+      const live = res.data;
+      if (res.ok && live) {
+        const rawList = Array.isArray(live.connectors)
+          ? live.connectors
+          : (Array.isArray(live) ? live : []);
+        return {
+          ok: true,
+          state: "ok",
+          checkedAt: live.checkedAt ?? live.checked_at ?? null,
+          connectors: rawList.map((item) => ({
+            id: String(item.id || item.name || "unknown"),
+            name: String(item.name || item.id || "Unknown Connector"),
+            status: String(item.status || "unavailable"),
+            reason: item.reason ?? item.reasonCode ?? item.reason_code ?? item.detail ?? null,
+            detail: item.detail ?? item.message ?? null,
+            endpoint: item.endpoint ?? item.binaryPath ?? item.binary_path ?? null
+          }))
+        };
+      }
+      return unavailableResult(res.error || "connectors_status_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        checkedAt: null,
+        connectors: []
+      });
+    },
+
+    async validateConnectors(payload) {
+      const res = await requestJsonDetailed("POST", "/api/connectors/validate", payload || {}, { timeoutMs: 8000 });
+      const live = res.data;
+      if (res.ok && live) {
+        const rawList = Array.isArray(live.connectors)
+          ? live.connectors
+          : (Array.isArray(live.results) ? live.results : []);
+        return {
+          ok: true,
+          state: "ok",
+          checkedAt: live.checkedAt ?? live.checked_at ?? null,
+          connectors: rawList.map((item) => ({
+            id: String(item.id || item.name || "unknown"),
+            name: String(item.name || item.id || "Unknown Connector"),
+            status: String(item.status || "unavailable"),
+            reason: item.reason ?? item.reasonCode ?? item.reason_code ?? item.detail ?? null,
+            detail: item.detail ?? item.message ?? null,
+            endpoint: item.endpoint ?? item.binaryPath ?? item.binary_path ?? null
+          }))
+        };
+      }
+      return unavailableResult(res.error || "connectors_validate_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        checkedAt: null,
+        connectors: []
+      });
+    },
+
+    async getMediaCapabilities() {
+      const res = await requestJsonDetailed("GET", "/api/media/capabilities");
+      const live = res.data;
+      if (res.ok && live) {
+        let rawList = [];
+        if (Array.isArray(live.capabilities)) rawList = live.capabilities;
+        else if (Array.isArray(live.adapters)) rawList = live.adapters;
+        else if (live.capabilities && typeof live.capabilities === "object") {
+          rawList = Object.entries(live.capabilities).map(([key, val]) =>
+            Object.assign({ adapter: key }, val && typeof val === "object" ? val : { status: String(val) })
+          );
+        }
+        return {
+          ok: true,
+          state: "ok",
+          capabilities: rawList.map((item) => ({
+            adapter: String(item.adapter || item.id || item.name || "unknown"),
+            name: String(item.name || item.adapter || item.id || "Unknown Adapter"),
+            status: String(item.status || "unavailable"),
+            reasonCode: item.reasonCode ?? item.reason_code ?? item.reason ?? null,
+            detail: item.detail ?? item.message ?? item.reason ?? null,
+            sourceVerified: item.sourceVerified ?? item.source_verified ?? null,
+            endpointOrigin: item.endpointOrigin ?? item.endpoint_origin ?? null,
+            latencyMs: item.latencyMs ?? item.latency_ms ?? null
+          }))
+        };
+      }
+      return unavailableResult(res.error || "media_capabilities_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        capabilities: []
+      });
+    },
+
+    async getRemoteStatus() {
+      const res = await requestJsonDetailed("GET", "/api/remote/status");
+      const live = res.data;
+      if (res.ok && live) {
+        return {
+          ok: true,
+          state: "ok",
+          status: String(live.status || "unavailable"),
+          reason: live.reason ?? live.reasonCode ?? live.reason_code ?? live.detail ?? null,
+          protocol: live.protocol ?? live.schema ?? null,
+          pairing: live.pairing ?? null,
+          activeLeases: Number(live.activeLeases ?? live.active_leases ?? (Array.isArray(live.leases) ? live.leases.length : 0)),
+          leases: Array.isArray(live.leases) ? live.leases : [],
+          replayWindow: live.replayWindow ?? live.replay_window ?? null
+        };
+      }
+      return unavailableResult(res.error || "remote_status_unavailable", {
+        httpStatus: res.httpStatus,
+        message: res.message,
+        status: "unavailable",
+        reason: res.message || res.error || "remote_status_unavailable",
+        protocol: null,
+        pairing: null,
+        activeLeases: 0,
+        leases: [],
+        replayWindow: null
+      });
     },
 
     async getMemory() {
       const live = await requestJson("GET", "/api/memory");
       if (live && Array.isArray(live.entries)) return live;
-      return {
-        entries: fallbackState.memory.entries.slice(),
-        erasures: fallbackState.memory.erasures.slice()
-      };
+      return unavailableResult("memory_endpoint_unavailable", {
+        entries: [],
+        erasures: []
+      });
     },
 
     async upsertMemory(payload) {
@@ -1032,66 +1255,28 @@
       }
       const live = await requestJson("POST", "/api/memory/upsert", payload);
       if (live && live.ok !== false && live.entry) return live;
-      const content = String(payload.content || "").trim();
-      const digest = sha256Hex(content);
-      const existing = fallbackState.memory.entries.find((e) => e.namespace === ns && e.key === payload.key);
-      if (existing) {
-        existing.content = content;
-        existing.tier = payload.tier || existing.tier;
-        existing.contentSha256 = digest;
-        existing.updatedAt = new Date().toISOString();
-        return { ok: true, entry: existing };
-      }
-      const entry = {
-        id: "mem-0" + (fallbackState.memory.entries.length + 1),
-        namespace: ns,
-        key: String(payload.key || "note").trim(),
-        content,
-        tier: payload.tier || "Durable",
-        contentSha256: digest,
-        updatedAt: new Date().toISOString(),
-        links: []
-      };
-      fallbackState.memory.entries.unshift(entry);
-      return { ok: true, entry };
+      return unavailableResult("memory_upsert_endpoint_unavailable", {
+        entry: null
+      });
     },
 
     async eraseMemory(target) {
       const live = await requestJson("POST", "/api/memory/erase", target);
       if (live && live.receipt) return live;
-      const idx = fallbackState.memory.entries.findIndex((e) => e.id === target.id);
-      const removed = idx >= 0 ? fallbackState.memory.entries.splice(idx, 1)[0] : null;
-      const receipt = {
-        receiptId: "erase-" + sha256Hex(Date.now() + ":" + (target.id || "")).slice(0, 12),
-        erasedId: target.id,
-        namespace: removed ? removed.namespace : (target.namespace || "unknown"),
-        previousDigestSha256: removed ? removed.contentSha256 : sha256Hex(String(target.id)),
-        erasedAt: new Date().toISOString(),
-        verifiedPlaintextFree: true
-      };
-      fallbackState.memory.erasures.unshift(receipt);
-      return { ok: true, receipt };
+      return unavailableResult("memory_erase_endpoint_unavailable", {
+        receipt: null
+      });
     },
 
     async searchSkills(query) {
       const q = String(query || "").trim();
       const live = await requestJson("GET", "/api/skills?q=" + encodeURIComponent(q));
       if (live && Array.isArray(live.skills)) return live;
-      const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-      const matched = fallbackState.skills
-        .map((sk) => {
-          if (!terms.length) return sk;
-          const hay = (sk.name + " " + sk.category + " " + sk.description).toLowerCase();
-          let hits = 0;
-          for (const t of terms) {
-            if (hay.includes(t)) hits += (sk.name.includes(t) ? 3 : 1.5);
-          }
-          if (hits === 0 && q.toLowerCase().includes("tiếng việt") && sk.name.includes("vietnamese")) hits = 3.5;
-          return hits > 0 ? Object.assign({}, sk, { score: Number((sk.score + hits).toFixed(1)) }) : null;
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.score - a.score);
-      return { query: q, total: matched.length, skills: matched };
+      return unavailableResult("skills_endpoint_unavailable", {
+        query: q,
+        total: 0,
+        skills: []
+      });
     }
   };
 
@@ -1100,7 +1285,7 @@
     fnv1aHex,
     escapeHtml,
     formatBytes,
-    highlightCpp20,
+    highlightCode,
     renderLatexToHtml,
     renderRichMarkdown
   };

@@ -23,7 +23,7 @@ Verify inline/tray paste and drop; start/middle/end caret; multi-file batches; i
 
 Native-first requirement remains in force. Quoted collaborator conversation mentions C++; this is historical design input, not a command replacing directly requested native Rust. Record an architecture decision and measured resource budgets before selecting rich text/math rendering dependencies. Existing web compatibility implementations are not proof of native parity.
 
-- **Wave 4 architectural supersession (2026-11-12, `Steer #9`, [DECISIONS.md](DECISIONS.md))**: By explicit user mandate, the pre-Wave-4 Rust/Tauri runtime was archived on tag `archive/pre-cpp-rust-snapshot-20261112` and superseded across `D:\Omnia` by Modern Native C++20 (`cpp/`, `native/`) and the Flagship Studio UI (`ui/`). All composer, attachment, and rendering implementations now target native C++20 (`native/src/composer.cpp`, `cpp/src/harness/composer_steer.cpp`) and `ui/app/composer.js`.
+- **Wave 4 & Wave 5 (`Steer #14`) architectural timeline ([DECISIONS.md](DECISIONS.md))**: Historical Wave 4 C++20 files were backed up externally under `D:\OmniaData\backups\pre-full-rust-20261115\`, and all composer, dual-mode attachment, and Studio rendering implementations now target the **Full Native Rust** workspace (`rust/omnia-harness/src/rich_composer.rs`, `rust/omnia-harness/src/composer_model.rs`, `rust/omnia-native/`) paired with `ui/app/composer.js`.
 
 ## Open decisions
 

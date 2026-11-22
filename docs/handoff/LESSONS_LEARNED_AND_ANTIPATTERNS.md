@@ -1,6 +1,6 @@
 # Omnia — Lessons Learned & Engineering Anti-Patterns
 
-This postmortem handbook distills **15 costly failure modes and architectural lessons caught across Omnia's Codex, Antigravity (App, IDE & CLI), and Claude histories** into concrete, enforceable rules so collaborator **HTMusTC** and future AI agents never repeat them.
+This postmortem handbook distills **16 costly failure modes and architectural lessons caught across Omnia's Codex, Antigravity (App, IDE & CLI), and Claude histories (including Wave 5 Full Native Rust migration)** into concrete, enforceable rules so collaborator **HTMusTC** and future AI agents never repeat them.
 
 ---
 
@@ -8,62 +8,63 @@ This postmortem handbook distills **15 costly failure modes and architectural le
 
 | # | Anti-Pattern | Permanent Guardrail |
 |---|---|---|
-| 1 | Polluting `D:\Omnia` with `build/`, `CMakeFiles/`, `.obj`/`.exe`, `.tmp-*`, screenshots, or nested worktrees | Configure CMake out-of-source into `D:\OmniaData\build\*` ([CMakePresets.json](../../CMakePresets.json)); route all runtime/QA/research/worktrees to `D:\OmniaData\*`. |
-| 2 | Shipping template "AI slop" UI without preview candidates, DPI/resize checks, or server-side UIA | Enforce anti-slop tokens (`0` gradients/blur/`9999px` pills), WCAG 2.2 contrast, cropped captures, and COM `WM_GETOBJECT` + `WH_CBT` `#32770` UIA (`uia_provider.cpp`). |
-| 3 | Proliferating overlapping `deep-*` stub skills & >300-char frontmatter truncation | Keep curated repo skills orthogonal (`13` skills in `.agents/skills/`, `0` synthetic stubs) with front-loaded trigger descriptions (`skill_registry.cpp`). |
-| 4 | Treating mid-run `steer` as "replace & forget" or setting silent `token_budget` caps | Treat every steer as `ADDITIVE_INTAKE` (`SteerQueue`); reconcile conflicts, resume all unfinished backlog, and keep `token_budget = NULL` unless user-specified. |
+| 1 | Polluting `D:\Omnia` with `target/`, `build/`, `.exe`, `.tmp-*`, `__pycache__/`, screenshots, or nested worktrees | Set `$env:CARGO_TARGET_DIR = 'D:\OmniaData\build\omnia-rust-workspace'`, run Python via `python -B`, and route runtime/QA/research/worktrees to `D:\OmniaData\*`. |
+| 2 | Shipping template "AI slop" UI without preview candidates, DPI/resize checks, or server-side UIA | Enforce anti-slop tokens (`0` gradients/blur/`9999px` pills), WCAG 2.2 contrast, cropped DPI-clamped (`8192`) captures, and split `Edit` vs `Document` UIA + `WH_CBT` `#32770`. |
+| 3 | Proliferating overlapping `deep-*` stub skills & >300-char frontmatter truncation | Keep repo skills concise (`13` curated + `6` `kdense-*` projections, `0` synthetic stubs) with `short_description` in `25..64` chars and `1024`-char capped `SkillRegistry`. |
+| 4 | Treating mid-run `steer` as "replace & forget" or setting silent `token_budget` caps | Treat every steer as `ADDITIVE_INTAKE` (`SteerQueue` in `rust/omnia-harness/src/steer_queue.rs`); resume all unfinished backlog and keep `token_budget = NULL` / `tokenBudget: null`. |
 | 5 | Globbing only `*.jsonl` (missing 103 `.jsonl.zst` rollouts) or ignoring SQLite `.db` protobufs | Always inventory compressed archives (`.jsonl.zst`) and SQLite wire-format `.db` steps (`step_type=17` 429 errors); never claim semantic coverage from hashes alone. |
-| 6 | PowerShell double-quoted here-string (`@"..."@`) interpolation corrupting Markdown & code | Always use single-quoted literal here-strings (`@'...'@`) or Python UTF-8 file writers (`\n`), followed by `git diff --check`. |
+| 6 | PowerShell double-quoted here-string (`@"..."@`) interpolation corrupting Markdown & code | Always use single-quoted literal here-strings (`@'...'@`) or Python UTF-8 `LF` writers (`\n`), followed by `git diff --check`. |
 | 7 | Misreporting same-drive quarantine moves (`D:\` -> `D:\`) as freed disk space | Verify actual volume free bytes (`Get-PSDrive`) before and after cleanup; same-volume moves relocate clutter (`0 B` freed), not reclaim space. |
-| 8 | Hijacking physical mouse/keyboard focus during `computer-use` / browser QA | Default to headless Edge CDP, `PrintWindow` (`qa-capture.ps1`), and server-side COM UIA—never steal physical cursor focus unprompted. |
+| 8 | Hijacking physical mouse/keyboard focus during `computer-use` / browser QA | Default to headless Edge CDP, `PrintWindow` (`pwsh -File native/qa-capture.ps1`), and server-side COM UIA—never steal physical cursor focus unprompted. |
 | 9 | Mutating source Git trees during "read-only" checks or pushing unauthorized side branches | Never run side-effecting `git` commands on reference trees; open SQLite with `?mode=ro` / `?immutable=1` (and check `wal.st_size > 0`); verify `khang-macphuc111107`. |
-| 10 | Hardcoding models, regex-blocking `gpt` model IDs, or stalling on HTTP 429 walls | Route through C++20 `DynamicProviderRouter` (`dynamic_router.hpp`) with explicit `QuotaState`, `std::mutex` reservations, emergency reserve, and circuit breakers. |
-| 11 | Mixing inline paste and attachment-tray semantics or duplicating binary blobs | Preserve dual-mode semantics (`inline-at-caret` vs `tray`, `Esc` -> `PasteDestination::Cancel` zero-mutation) backed by one BCrypt SHA-256 `payload_id`. |
-| 12 | Allowing transient chat credentials, browser cookies, or API keys near exports/repos | Scrub via `SecretRedactor` (`redactor.hpp`) + `verify_zero_secrets.py` (`PASS_ZERO_LEAKS`), never store plaintext keys on disk, and push via OS Git Credential Manager. |
-| 13 | In-tree C++ builds or parallel subproject lock collisions (`CMakeFiles/`, `.pdb` locks) | Build strictly out-of-source in disjoint `D:\OmniaData\build\omnia-cpp-*` roots with `/std:c++20 /utf-8 /W4 /WX` and gate subprojects via `OMNIA_BUILD_NATIVE_SHELL`. |
+| 10 | Hardcoding models, regex-blocking `gpt` model IDs, or stalling on HTTP 429 walls | Route through Rust `DynamicProviderRouter` (`rust/omnia-routing/src/lib.rs`) with explicit `QuotaState`, atomic reservations, emergency reserve, and circuit breakers. |
+| 11 | Mixing inline paste and attachment-tray semantics or duplicating binary blobs | Preserve dual-mode semantics (`inline-at-caret` vs `tray`, `Esc` -> cancel zero-mutation in `rich_composer.rs`) backed by one SHA-256 `payload_id`. |
+| 12 | Allowing transient chat credentials, browser cookies, or API keys near exports/repos or realistic test tokens failing scanners | Scrub via `rust/omnia-core/src/redactor.rs` + `audit.py --secret-scope all`; use unmistakable dummy/RFC-2606 hosts/tokens in fixtures; push via OS Git Credential Manager. |
+| 13 | In-tree builds or parallel compiler lock collisions (`target/`, shared build locks) | Build strictly out-of-source (`D:\OmniaData\build\omnia-rust-workspace`) and serialize workspace-wide `cargo` invocations across disjoint-ownership lanes. |
 | 14 | Traversing NTFS junctions during disk audits or stalling for 20+ min deleting millions of cached files | Check `FILE_ATTRIBUTE_REPARSE_POINT (0x400)` before recursing, and purge multi-million-file cache/backup dirs via `robocopy <empty> <dir> /MIR /XJ /MT:32` + `rd /s /q`. |
-| 15 | Cross-host skill drift (`$HOME` quirk on Windows Antigravity or mid-audit `/learn` edits) | Keep all `13` curated skills byte-identical across Omnia, Codex, and `~/.agents`, use drive-absolute forward-slash paths in Windows `~/.gemini/config/skills.json`, and serialize commits. |
+| 15 | Cross-host skill drift (`$HOME` quirk on Windows Antigravity, trailing whitespace, or mid-audit `/learn` edits) | Keep all `19` repo skills (`13` curated + `6` `kdense-*`) byte-identical (`LF`, `0` trailing spaces) across Omnia, Codex, and `~/.agents` (`validate_skills.py --strict-all-skills` exit `0`). |
+| 16 | Running `qa-*.ps1` under PS 5.1, breaking offline `serde_derive`, stripping AdGuard cookies naively, or mixing short probe vs chat timeouts | Always run QA under PowerShell 7 (`pwsh`); implement manual `Serialize`/`Deserialize` when `serde_derive` is absent offline; coalesce RFC 9110 multi-`Cookie` headers cleanly (`; `) while preserving smuggling checks; keep short `~3s` probes separate from `65,000 ms` chat timeouts. |
 
 ---
 
 ## Detailed Postmortems
 
 ### 1. Repository Root Pollution (`ROOT-01`..`ROOT-06`)
-- **Provenance**: Codex `01a1bce9` Prompts `#2`, `#21`, `#94`–`#100`, `#115`, `#121`; Claude `be2beaab`, `308b37b9`; Wave 4 `#74`.
-- **What Went Wrong**: Parallel agents previously dumped build directories, `.tmp-*` probe scripts, full-screen PNG captures, beside-source `.bak`/copy files, `.claude`/`.agents` scratchpads, and nested worktree clones directly inside `D:\Omnia`. This bloated `D:\`, slowed IDE indexing/ripgrep, and risked staging scratch artifacts to GitHub.
+- **Provenance**: Codex `01a1bce9` Prompts `#2`, `#21`, `#94`–`#100`, `#115`, `#121`; Claude `be2beaab`, `308b37b9`; Wave 4 `#74`; Wave 5 `Steer #14`.
+- **What Went Wrong**: Parallel agents previously dumped build directories, `.tmp-*` probe scripts, `__pycache__/`, screenshots, beside-source `.bak`/copy files, and nested worktree clones directly inside `D:\Omnia`.
 - **Permanent Rule**:
-  1. `D:\Omnia` is **strictly** for tracked C++20/UI/tool source, `CMakeLists.txt` / `CMakePresets.json`, `13` curated `.agents/skills/*`, and canonical docs (`docs/{workspace,ui-direction,handoff}`).
-  2. Configure all CMake builds into `D:\OmniaData\build\...`—never inside `D:\Omnia`.
-  3. Store all runtime DBs, QA screenshots, UI candidate bundles, research clones, and worktrees under `D:\OmniaData\`.
+  1. `D:\Omnia` is **strictly** for tracked Rust/UI/tool/packaging source, `Cargo.toml` / `Cargo.lock`, `19` `.agents/skills/*`, and canonical docs (`docs/{workspace,ui-direction,handoff}`).
+  2. Set `$env:CARGO_TARGET_DIR = 'D:\OmniaData\build\omnia-rust-workspace'` and always run Python with `python -B` (`0` `__pycache__`).
+  3. Store all runtime DBs, QA screenshots, UI candidate bundles, backups (`pre-full-rust-20261115/`), research clones, and worktrees under `D:\OmniaData\`.
 
 ---
 
-### 2. Blind UI Implementation, Status-Panel Clipping & Missing UIA Controls
-- **Provenance**: Codex `01a1bce9` Prompts `#5`, `#23`, `#109`, `#110`, `#113`; Antigravity CLI `c2cc6103`; Wave 2 `#46`/`#49` & Wave 4 `#72`/`#73`/`#81`/`#86`.
+### 2. Blind UI Implementation, Status-Panel Clipping, DPI Scaling & Split UIA Controls
+- **Provenance**: Codex `01a1bce9` Prompts `#5`, `#23`, `#109`, `#110`, `#113`; Wave 2–4 `#46`/`#49`/`#72`; Wave 5 `qa-capture.ps1` / `qa-smoke.ps1` / `qa-session.ps1`.
 - **What Went Wrong**:
-  - Earlier web iterations produced generic dark-gradient "AI slop" cards with low-contrast muted text and overflowing containers.
-  - Early Win32 builds hid three subtle UX/automation defects caught only by region-cropped capture + UI Automation (`UIA`) inspection: (a) right/bottom status-panel text clipping at `1220x820`, (b) custom composer controls missing a server-side `UIA Edit` provider (`Missing UIA control: Edit`), and (c) background UIA `InvokePattern.Invoke()` failing on standard Win32 `#32770` `MessageBoxW` modal buttons when unfocused.
+  - Earlier web iterations produced low-contrast gradient cards and overflowing containers.
+  - Early Win32 builds hid status-panel clipping, missing `ControlType.Edit` UIA providers, background `#32770` modal button failures, or stale process DPI context if capture crashed before restoring DPI awareness.
 - **Permanent Rule**:
-  1. Enforce the anti-AI-slop specification ([FLAGSHIP_STUDIO_UI_SPEC.md](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md) & [DIRECTION_DECISION.md](../ui-direction/DIRECTION_DECISION.md)): `0` gradients, `0` blur, `0` `9999px` pills, WCAG 2.2 verified across every theme (`Obsidian`, `Alabaster`, `Blueprint`), and `0 px` horizontal overflow across `45` Edge CDP states.
-  2. In Win32 C++20 ([uia_provider.cpp](../../native/src/uia_provider.cpp)), expose server-side COM `IRawElementProviderSimple` + `IValueProvider` / `IInvokeProvider` via `WM_GETOBJECT` and wrap modal `MessageBoxW` calls with a thread-scoped `WH_CBT` (`HCBT_ACTIVATE`) `#32770` button provider (`GetPropW` duplicate-subclass guard + `SetActiveWindow(GetAncestor(hwnd, GA_ROOT))` before `BM_CLICK`).
+  1. Enforce the anti-AI-slop specification ([FLAGSHIP_STUDIO_UI_SPEC.md](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md)): `0` gradients, `0` blur, `0` `9999px` pills, WCAG 2.2 contrast across all 3 themes, and `0 px` horizontal overflow.
+  2. In `rust/omnia-native/`, expose server-side COM `IRawElementProviderSimple` + `IValueProvider` / `IInvokeProvider` with distinct single-line `ControlType.Edit` (`qa-smoke.ps1`) vs multiline `ControlType.Document` (`TextPattern`, `qa-session.ps1`) and thread-scoped `WH_CBT` `#32770` modal button providers. In `qa-capture.ps1`, clamp captures (`MaximumDimension = 8192`) and always restore DPI awareness in `finally`.
 
 ---
 
-### 3. Skill Catalog Explosion & Frontmatter Truncation
-- **Provenance**: Collaborator spec chat (`6e51d544` `Pasted text.txt` L15–L19); Codex `01a1bce9` Prompts `#2`, `#114`, `#124`; Wave 2 `#42` & Wave 4 `#83` ([skill_registry.hpp](../../cpp/include/omnia/harness/skill_registry.hpp)).
-- **What Went Wrong**: Dumping hundreds of overlapping `deep-*` stub folders into a repository bloats prompt indexes, truncates trailing trigger clauses, and causes LLM skill-selection hallucination.
+### 3. Skill Catalog Explosion & Frontmatter Validation Limits
+- **Provenance**: Collaborator spec chat (`6e51d544` `Pasted text.txt` L15–L19); Codex `01a1bce9` Prompts `#2`, `#114`, `#124`; Wave 2 `#42` & Wave 5 `validate_skills.py`.
+- **What Went Wrong**: Dumping hundreds of overlapping `deep-*` stub folders into a repository bloats prompt indexes, while >64-char `interface.short_description` in `agents/openai.yaml` or trailing whitespace triggers strict validation warnings/errors.
 - **Permanent Rule**:
   1. Keep external 1,000-spec domain taxonomies in structured research catalogs (`D:\OmniaData\research\omnia-clean-2026-11-12\omni-deep-1000-catalog.json`)—**never** dump synthetic stub folders into `.agents/skills/`.
-  2. Maintain concise, front-loaded YAML `description` fields (`<= 1024` chars, UTF-8 codepoint-boundary safe in `SkillRegistry`) with explicit trigger actions and boundaries.
+  2. Maintain concise YAML `description` fields (`<= 1024` chars, UTF-8 codepoint-boundary safe in `rust/omnia-harness/src/skill_registry.rs`), `interface.short_description` within `25..64` chars, and pure `LF` with zero trailing whitespace.
 
 ---
 
 ### 4. Dropping Unfinished Backlog on Mid-Run `Steer` & Unauthorized `token_budget` Caps
-- **Provenance**: Codex `01a1bce9` Prompts `#20`, `#98`, `#102`, `#114`; `goals_1.sqlite` history; [composer_steer.hpp](../../cpp/include/omnia/harness/composer_steer.hpp).
+- **Provenance**: Codex `01a1bce9` Prompts `#20`, `#98`, `#102`, `#114`; `goals_1.sqlite` history; [steer_queue.rs](../../rust/omnia-harness/src/steer_queue.rs).
 - **What Went Wrong**: Agents previously treated mid-run user steers as replacements that dropped prior unfinished tasks, or set finite `token_budget` caps that halted long-running goals prematurely.
 - **Permanent Rule**:
   1. **Additive Steer Invariant (`ADDITIVE_INTAKE`)**: Push every mid-run steer onto [STEER_QUEUE.md](../workspace/STEER_QUEUE.md) / `SteerQueue`, reconcile conflicts against completed/in-progress items, and resume all remaining unfinished tasks until every DoD gate passes.
-  2. **Unlimited Default Budget**: Keep `token_budget = NULL` unless the user explicitly requests a cap.
+  2. **Unlimited Default Budget**: Keep `token_budget = NULL` / `tokenBudget: null` unless the user explicitly requests a cap.
 
 ---
 
@@ -99,7 +100,7 @@ This postmortem handbook distills **15 costly failure modes and architectural le
 - **Provenance**: Codex `01a19808`, `01a1bb7b`, `01a1bce9` Prompts `#5`, `#23`; Antigravity `061ffa08`; Claude `6f2d773c`.
 - **What Went Wrong**: Foreground `pyautogui` / `SetCursorPos` scripts hijacked the user's cursor and focus mid-work.
 - **Permanent Rule**:
-  - Use headless Edge CDP for studio/web QA and `PrintWindow` ([qa-capture.ps1](../../native/qa-capture.ps1)) + server-side COM `WM_GETOBJECT` UIA ([uia_provider.cpp](../../native/src/uia_provider.cpp)) for Win32 QA—never move the physical OS cursor unprompted.
+  - Use headless Edge CDP for studio/web QA and `PrintWindow` ([qa-capture.ps1](../../native/qa-capture.ps1)) + server-side COM `WM_GETOBJECT` UIA (`rust/omnia-native/`) for Win32 QA—never move the physical OS cursor unprompted.
 
 ---
 
@@ -115,7 +116,7 @@ This postmortem handbook distills **15 costly failure modes and architectural le
 - **Provenance**: Claude `9659b2b4`, `25b55b68`; Antigravity `.db` `step_type=17`; Codex `01a1bce9` Prompts `#108`, `#122`.
 - **What Went Wrong**: Prefix regexes blocked valid proxy models (`htmustc-proxy`), and coercing missing quota headers to `0` starved healthy accounts or hid stale telemetry.
 - **Permanent Rule**:
-  - Route through C++20 `DynamicProviderRouter` ([dynamic_router.hpp](../../cpp/include/omnia/routing/dynamic_router.hpp)) with explicit `QuotaState::{Known,Unknown,Stale,Contradictory}`, idempotent `std::mutex` reservations, interactive emergency reserve, and `Closed`/`Open`/`HalfOpen` circuit breakers.
+  - Route through Rust `DynamicProviderRouter` ([rust/omnia-routing/src/lib.rs](../../rust/omnia-routing/src/lib.rs)) with explicit `QuotaState::{Known,Unknown,Stale,Contradictory}`, idempotent reservations, interactive emergency reserve, and `Closed`/`Open`/`HalfOpen` circuit breakers.
 
 ---
 
@@ -123,25 +124,26 @@ This postmortem handbook distills **15 costly failure modes and architectural le
 - **Provenance**: Codex `01a1bce9` Prompt `#97`; [COMPOSER_REQUIREMENTS.md](../workspace/COMPOSER_REQUIREMENTS.md).
 - **What Went Wrong**: Dumping every pasted image into a bottom strip destroyed inline positional meaning, whereas duplicating bytes across inline + tray wasted storage.
 - **Permanent Rule**:
-  - Preserve dual-mode paste (`inline-at-caret` vs `tray`, `Esc` -> `PasteDestination::Cancel` zero-mutation) backed by a single BCrypt SHA-256 `payload_id` ([sha256.hpp](../../cpp/include/omnia/core/sha256.hpp), [composer_steer.hpp](../../cpp/include/omnia/harness/composer_steer.hpp)).
+  - Preserve dual-mode paste (`inline-at-caret` vs `tray`, `Esc` zero-mutation cancel) backed by a single SHA-256 `payload_id` ([rich_composer.rs](../../rust/omnia-harness/src/rich_composer.rs), [composer_model.rs](../../rust/omnia-harness/src/composer_model.rs)).
 
 ---
 
-### 12. Plaintext Credentials, Session Cookies & Unscrubbed Backup Freelists
-- **Provenance**: Codex `01a1bce9` Prompt `#119`; Wave 2 `#39` SQLite `.backup()` FTS scrub + `VACUUM`.
-- **What Went Wrong**: Plaintext passwords shared in historical chat prompts appeared inside FTS5 shadow tables when raw `conversation_summaries.db` files were snapshotted; deleting rows without `VACUUM` leaves plaintext bytes in SQLite freelist pages!
+### 12. Plaintext Credentials, Unscrubbed Backup Freelists & Realistic Test Tokens Tripping Scanners
+- **Provenance**: Codex `01a1bce9` Prompt `#119`; Wave 2 `#39` SQLite `.backup()` FTS scrub + `VACUUM`; Wave 5 `audit.py --secret-scope all`.
+- **What Went Wrong**: Plaintext passwords shared in historical chat prompts appeared inside FTS5 shadow tables without `VACUUM;`, and test fixtures using realistic key/token shapes with words like `"test"`/`"sample"` triggered `audit.py --secret-scope all`.
 - **Permanent Rule**:
-  1. Scrub sensitive tokens via [redactor.hpp](../../cpp/include/omnia/core/redactor.hpp) / `sanitize_index_text`, and **always run `VACUUM;`** after deleting sensitive rows from exported SQLite backup copies.
-  2. Verify every export and repo path with `verify_zero_secrets.py` (`PASS_ZERO_LEAKS`, `leak_count = 0`).
+  1. Scrub sensitive tokens via [redactor.rs](../../rust/omnia-core/src/redactor.rs), and **always run `VACUUM;`** after deleting sensitive rows from exported SQLite backup copies.
+  2. Use unmistakable dummy/sequential placeholders or RFC-2606 `example.com` / loopback hosts in unit-test fixtures so `audit.py --secret-scope all` passes with `0` findings (`PASS_ZERO_LEAKS`, `leak_count = 0`).
 
 ---
 
-### 13. C++20 Out-of-Source `CMake` + `Ninja` Build Roots & Subproject Lock Isolation
-- **Provenance**: Wave 4 `#71`, `#72`, `#83`, `#86`; [CMakeLists.txt](../../CMakeLists.txt), [CMakePresets.json](../../CMakePresets.json), [deep-cpp-native](../../.agents/skills/deep-cpp-native/SKILL.md).
-- **What Went Wrong**: In multi-agent C++ workspaces, running `cmake` in-tree pollutes git status with `CMakeFiles/`, `CMakeCache.txt`, `.ninja_log`, `.obj`, and `.pdb` files, while two agents building overlapping targets into one shared binary directory collide on MSVC `.pdb` / Ninja lockfiles (and earlier shared debug `.exe` relinking invalidated captured SHA-256 digests mid-audit in `#60` `WARN-R1-02`).
+### 13. Out-of-Source `CARGO_TARGET_DIR`, Offline `serde`, `pwsh` QA & AdGuard Loopback Hardening
+- **Provenance**: Wave 4 `#71`–`#86`; Wave 5 `Steer #14` (`Cargo.toml`, `rust/omnia-runtime/src/main.rs`, `rust/omnia-connector-gateway/`, `ui/app/api.js`, `native/qa-*.ps1`).
+- **What Went Wrong**: Building Cargo inside `D:\Omnia` dirties `target/`; assuming `serde_derive` fails in offline `--locked` builds; running `native/qa-*.ps1` on PowerShell 5.1 fails PowerShell 7 checks; AdGuard for Windows injects extra spaces in HTTP request lines and up to 15 `Cookie:` headers while short probe timeouts collide with chat timeouts if shared.
 - **Permanent Rule**:
-  1. Configure every CMake build strictly out-of-source under disjoint directories in `D:\OmniaData\build\` (`omnia-cpp-core-{release,debug}`, `omnia-cpp-native-{release,debug}`, `omnia-full-release`).
-  2. Gate parallel subprojects cleanly in root `CMakeLists.txt` (`option(OMNIA_BUILD_NATIVE_SHELL "Build Win32 shell" ON)`) under `/std:c++20 /utf-8 /EHsc /W4 /WX /Zc:__cplusplus /permissive-` (`0` warnings), and never recompile into an audited binary directory while frozen hash verification is in flight.
+  1. Configure every Cargo build out-of-source via `$env:CARGO_TARGET_DIR = 'D:\OmniaData\build\omnia-rust-workspace'` (`--offline --locked`) and implement manual `Serialize`/`Deserialize` when `serde_derive` is absent offline.
+  2. Invoke all `native/qa-*.ps1` suites explicitly via PowerShell 7 (`pwsh -NoProfile -File ...`).
+  3. Tolerate extra HTTP request-line whitespace and coalesce RFC 9110 §5.3 multi-`Cookie` headers (`; `) while preserving strict request-smuggling rejection (`parse_adguard_tolerant_http_head` in `rust/omnia-connector-gateway/src/lib.rs`), and keep short probe timeouts (`2400–3200 ms`, `resolveTimeoutMs` `[100, 120000] ms`) separate from `65,000 ms` chat/forwarding timeouts.
 
 ---
 
@@ -157,11 +159,11 @@ This postmortem handbook distills **15 costly failure modes and architectural le
 
 ---
 
-### 15. `deep-cpp-native` & 4-Way Cross-Host Skill Parity (`13` Curated Skills, Windows `skills.json` Paths)
-- **Provenance**: Wave 2 `#44`/`#48`, Final Audit `#60` (`ERR-R1-01`), Wave 4 `#74`/`#77`/`#78`.
+### 15. `19`-Skill 3-Way Cross-Host Parity (`validate_skills.py --strict-all-skills` & Windows `skills.json`)
+- **Provenance**: Wave 2 `#44`/`#48`, Final Audit `#60` (`ERR-R1-01`), Wave 4 `#74`/`#77`/`#78`, Wave 5 `Steer #14` (`validate_skills.py --strict-all-skills`).
 - **What Went Wrong**:
   1. On Windows, Antigravity's `~/.gemini/config/skills.json` did not expand `~` or `$HOME` reliably when resolving multi-root skill directories, initially hiding `.codex/skills` and `D:/Omnia/.agents/skills` from live `<skills>` discovery until drive-absolute forward-slash paths (`C:/Users/...`, `D:/Omnia/.agents/skills`) were configured.
-  2. An external `/learn` sync updated `.agents/skills/omni-deterministic-verifiers/SKILL.md` 4 minutes after a clean `git push`, dirtying the working tree mid-audit.
+  2. Trailing whitespace in `kdense-*` reference/script files and `interface.short_description` > 64 chars broke strict audit / skill parity checks across hosts.
 - **Permanent Rule**:
-  1. Maintain **4-way byte-for-byte pure UTF-8 `LF` parity** across `D:\Omnia\.agents\skills`, `~/.codex/skills`, `~/.agents/skills`, and Windows drive-absolute `~/.gemini/config/skills.json` across all **`13` curated skills** (including [deep-cpp-native](../../.agents/skills/deep-cpp-native/SKILL.md) and [deep-proposal](../../.agents/skills/deep-proposal/SKILL.md)), validated with `python -B quick_validate.py` (`0` `__pycache__`).
-  2. Freeze external `/learn` writes into `D:\Omnia\.agents\skills` while an immutable git commit/audit streak is running, staging skill updates through serialized commits.
+  1. Maintain **3-way byte-for-byte pure UTF-8 `LF` parity** across `D:\Omnia\.agents\skills`, `~/.codex/skills`, and `~/.agents/skills` for all **`19` repository skills** (`13` curated workflows + `6` `kdense-*` research projections, with `deep-cpp-native` preserved for general/historical C++ diagnostics), validated with `python -B tools/omnia-skill-parity/validate_skills.py --strict-all-skills` (`0` cross-host drift, `0` `__pycache__`) and Windows drive-absolute `~/.gemini/config/skills.json`.
+  2. Strip trailing whitespace (`git diff --check`) before committing or running `--strict --strict-scope full`, and serialize skill writes across commits.

@@ -154,6 +154,25 @@
     }
     ctx.stroke();
 
+    const activeNodes = graphState.layerMode === "peer-mesh"
+      ? graphState.data.nodes
+      : graphState.data.graphifyNodes;
+    if (!activeNodes.length) {
+      ctx.fillStyle = cssVar("--ink-muted", "#8E9BB2");
+      ctx.font = "600 13px 'Segoe UI Variable Text', 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(
+        graphState.data.state === "unavailable"
+          ? (graphState.data.error || "graph_endpoint_unavailable")
+          : "Live graph returned no nodes.",
+        w / 2,
+        h / 2
+      );
+      ctx.restore();
+      return;
+    }
+
     const arcBase = cssVar("--graph-arc", "rgba(195,205,222,0.24)");
     const arcActive = cssVar("--graph-arc-active", "#38BDF8");
     const amber = cssVar("--accent-amber", "#F0B44C");
@@ -292,18 +311,27 @@
       : graphState.data.graphifyNodes;
 
     if (strip) {
-      strip.innerHTML = activeNodes.map((n) => (
-        '<button type="button" class="btn ' + (n.id === graphState.selectedNodeId ? "btn-primary" : "btn-subtle") +
-          '" style="min-height:28px;padding:0 9px;" data-select-node="' + escapeHtml(n.id) + '">' +
-          escapeHtml(n.label) +
-        "</button>"
-      )).join("");
+      strip.innerHTML = activeNodes.length
+        ? activeNodes.map((n) => (
+          '<button type="button" class="btn ' + (n.id === graphState.selectedNodeId ? "btn-primary" : "btn-subtle") +
+            '" style="min-height:28px;padding:0 9px;" data-select-node="' + escapeHtml(n.id) + '">' +
+            escapeHtml(n.label) +
+          "</button>"
+        )).join("")
+        : '<span class="muted" style="font-size:11.5px;">' +
+          escapeHtml(graphState.data.error || "No live graph nodes available.") + "</span>";
     }
 
     if (inspector) {
       const peerNode = graphState.data.nodes.find((n) => n.id === graphState.selectedNodeId);
       const gNode = graphState.data.graphifyNodes.find((n) => n.id === graphState.selectedNodeId);
-      if (peerNode) {
+      if (graphState.data.state === "unavailable") {
+        inspector.innerHTML = '<div class="stack-xs">' +
+          '<span class="badge badge-coral">GRAPH UNAVAILABLE</span>' +
+          '<span class="mono muted" style="font-size:11px;">' +
+            escapeHtml(graphState.data.error || "graph_endpoint_unavailable") +
+          "</span></div>";
+      } else if (peerNode) {
         inspector.innerHTML =
           '<div class="row-between">' +
             '<strong>' + escapeHtml(peerNode.label) + '</strong>' +
@@ -349,6 +377,11 @@
     const out = document.getElementById("graphTraversalOutput");
     if (!out || !graphState.traversalResult) return;
     const res = graphState.traversalResult;
+    if (res.state === "unavailable") {
+      out.innerHTML = '<span class="badge badge-coral">GRAPH TRAVERSAL UNAVAILABLE</span> ' +
+        '<span class="mono muted">' + escapeHtml(res.error || "graph_traverse_endpoint_unavailable") + "</span>";
+      return;
+    }
     const edgesHtml = (res.edges || []).map((e) => {
       const cls = e.provenance === "EXTRACTED" ? "badge-extracted" : "badge-inferred";
       return (
@@ -460,8 +493,16 @@
         const toEl = document.getElementById("peerSendTo");
         const txtEl = document.getElementById("peerSendText");
         const from = fromEl ? fromEl.value : "ui-atelier";
-        const to = toEl ? toEl.value : "cpp-core";
-        const text = txtEl && txtEl.value.trim() ? txtEl.value.trim() : "Duplex verification ping";
+        const to = toEl ? toEl.value : "rust-core";
+        const text = txtEl ? txtEl.value.trim() : "";
+        if (!text) {
+          const inspector = document.getElementById("graphNodeInspector");
+          if (inspector) {
+            inspector.innerHTML = '<span class="badge badge-coral">MESSAGE NOT SENT</span> ' +
+              '<span class="mono muted">Operator message required.</span>';
+          }
+          return;
+        }
 
         const resp = await Studio.api.sendGraphMessage({
           from,
@@ -499,10 +540,19 @@
       renderCanvasFrame();
     },
     async broadcastPulse(messageText) {
+      const text = String(messageText || "").trim();
+      if (!text) {
+        const inspector = document.getElementById("graphNodeInspector");
+        if (inspector) {
+          inspector.innerHTML = '<span class="badge badge-coral">BROADCAST NOT SENT</span> ' +
+            '<span class="mono muted">Operator message required.</span>';
+        }
+        return;
+      }
       await Studio.api.sendGraphMessage({
         from: "coordinator",
         to: "@all",
-        text: messageText || "Global duplex convergence check across all 6 peers.",
+        text,
         broadcast: true
       });
       graphState.data = await Studio.api.getGraph();

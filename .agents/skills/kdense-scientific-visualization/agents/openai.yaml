@@ -1,0 +1,4 @@
+interface:
+  display_name: "K-Dense Scientific Visualization"
+  short_description: "Truthful, accessible scientific plots and journal figures"
+  default_prompt: "Use $kdense-scientific-visualization to design or audit truthful, accessible publication figures while preserving raw data provenance."

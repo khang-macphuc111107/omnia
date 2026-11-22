@@ -1,0 +1,4 @@
+interface:
+  display_name: "K-Dense Literature Review"
+  short_description: "Systematic literature search, screening, and synthesis"
+  default_prompt: "Use $kdense-literature-review to plan and synthesize a systematic or scoping literature review with explicit coverage tracking."

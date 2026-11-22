@@ -1,0 +1,13 @@
+[package]
+name = "omnia-connector-gateway"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Typed connector gateway contracts for OpenCode SSE/permissions, CodexPatched rollout/goal/queue ledgers, deterministic proxy failover routing, and Gemini Notebook / Google Drive artifact intake."
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["std"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+url = "2"

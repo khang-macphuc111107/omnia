@@ -1,0 +1,4 @@
+interface:
+  display_name: "K-Dense Scientific Critical Thinking"
+  short_description: "Evaluate study validity, bias, statistics, and GRADE level"
+  default_prompt: "Use $kdense-scientific-critical-thinking to evaluate experimental design, bias, confounders, statistical claims, and evidence quality."

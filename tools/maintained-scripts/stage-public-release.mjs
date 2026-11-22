@@ -6,15 +6,20 @@ import { fileURLToPath } from "node:url";
 
 const requiredFiles = [
   ".gitattributes", ".gitignore", "AGENTS.md", "README.md",
-  "CMakeLists.txt", "CMakePresets.json",
-  "cpp/CMakeLists.txt", "native/CMakeLists.txt", "ui/index.html",
+  "Cargo.toml", "Cargo.lock",
+  "rust/omnia-core/Cargo.toml",
+  "rust/omnia-studio/Cargo.toml",
+  "rust/omnia-native/Cargo.toml",
+  "rust/omnia-runtime/Cargo.toml",
+  "native/app.manifest",
+  "ui/index.html",
   "docs/storage-schema.sql", "docs/workspace/DECISIONS.md",
   "tools/maintained-scripts/stage-public-release.mjs",
   ".agents/skills/goal-plan-loop-dod/SKILL.md",
   ".agents/skills/deep-steer/SKILL.md",
   ".agents/skills/deep-cpp-native/SKILL.md",
 ];
-const requiredDirectories = ["cpp", "native", "ui", "docs", "tools", ".agents/skills"];
+const requiredDirectories = ["rust", "native", "ui", "docs", "tools", ".agents/skills"];
 const forbiddenDirectories = new Set([
   ".git", "node_modules", "target", "build", "dist", "backups", "quarantine",
   "repos", "publish-worktree", "localappdata", "roaming", "cursorapp",
@@ -75,8 +80,16 @@ function validateName(name) {
   if (basename === ".env" || (basename.startsWith(".env.") && basename !== ".env.example")) {
     throw new Error(`Private environment file is tracked: ${name}`);
   }
-  if (basename.endsWith(".rs") || basename === "cargo.toml" || basename === "cargo.lock") {
-    throw new Error(`Retired Rust/Cargo file is tracked: ${name}`);
+  if (
+    basename.endsWith(".cpp") ||
+    basename.endsWith(".cc") ||
+    basename.endsWith(".cxx") ||
+    basename.endsWith(".hpp") ||
+    basename.endsWith(".hxx") ||
+    basename === "cmakelists.txt" ||
+    basename === "cmakepresets.json"
+  ) {
+    throw new Error(`Retired C++/CMake build file is tracked: ${name}`);
   }
 }
 

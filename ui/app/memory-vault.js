@@ -9,13 +9,26 @@
     erasures: [],
     namespacePrefix: "ALL",
     skills: [],
-    selectedSkill: null
+    selectedSkill: null,
+    memoryStatus: "unknown",
+    memoryError: null,
+    skillsStatus: "unknown",
+    skillsError: null
   };
 
   function renderMemoryList() {
     const listEl = document.getElementById("memoryEntriesList");
     const erasureEl = document.getElementById("memoryErasureReceipts");
     if (!listEl) return;
+    if (vaultState.memoryStatus === "unavailable") {
+      listEl.innerHTML = '<div class="atelier-card stack-xs">' +
+        '<span class="badge badge-coral">MEMORY UNAVAILABLE</span>' +
+        '<span class="mono muted" style="font-size:11px;">' +
+          escapeHtml(vaultState.memoryError || "memory_endpoint_unavailable") +
+        "</span></div>";
+      if (erasureEl) erasureEl.innerHTML = "";
+      return;
+    }
 
     const filtered = vaultState.entries.filter((e) => {
       if (vaultState.namespacePrefix === "ALL") return true;
@@ -59,21 +72,34 @@
     const countEl = document.getElementById("skillVaultCountBadge");
     const listEl = document.getElementById("skillVaultResults");
     if (!listEl) return;
+    if (vaultState.skillsStatus === "unavailable") {
+      if (countEl) countEl.textContent = "Skills unavailable";
+      listEl.innerHTML = '<div class="atelier-card stack-xs">' +
+        '<span class="badge badge-coral">SKILLS UNAVAILABLE</span>' +
+        '<span class="mono muted" style="font-size:11px;">' +
+          escapeHtml(vaultState.skillsError || "skills_endpoint_unavailable") +
+        "</span></div>";
+      return;
+    }
     if (countEl) countEl.textContent = vaultState.skills.length + " Curated Skills";
 
     listEl.innerHTML = vaultState.skills.map((sk) => {
       const isOpen = vaultState.selectedSkill === sk.name;
+      const score = sk.score ?? null;
       return (
         '<div class="atelier-card stack-xs" style="cursor:pointer;" data-skill-card="' + escapeHtml(sk.name) + '">' +
           '<div class="row-between">' +
             '<strong class="mono" style="font-size:12.5px;color:var(--accent-amber);">' + escapeHtml(sk.name) + "</strong>" +
             '<div class="row-wrap">' +
               '<span class="badge">' + escapeHtml(sk.category || "Omnia Skill") + "</span>" +
-              '<span class="badge badge-emerald">BM25 ' + escapeHtml(sk.score ?? 9.0) + "</span>" +
+              '<span class="badge ' + (score === null ? "badge-cyan" : "badge-emerald") + '">BM25 ' +
+                escapeHtml(score === null ? "unavailable" : score) + "</span>" +
             "</div>" +
           "</div>" +
           '<div style="font-size:12.5px;color:var(--ink-secondary);line-height:1.45;">' + escapeHtml(sk.description) + "</div>" +
-          '<div class="mono muted" style="font-size:10.5px;">Locator: ' + escapeHtml(sk.path || (".agents/skills/" + sk.name + "/SKILL.md")) + " • Synced: Omnia ⇄ Codex ⇄ Antigravity</div>" +
+          '<div class="mono muted" style="font-size:10.5px;">Locator: ' + escapeHtml(sk.path || "unavailable") +
+            (sk.sync || sk.synchronizedBy ? " • Synced: " + escapeHtml(sk.sync || sk.synchronizedBy) : "") +
+          "</div>" +
           (isOpen
             ? '<div class="code-frame" style="margin-top:4px;"><pre class="code-pre" style="padding:8px;">python .agents/skills/omni-bilingual-skill-router/scripts/skill_router.py --skill ' + escapeHtml(sk.name) + "</pre></div>"
             : "") +
@@ -84,6 +110,8 @@
 
   async function refreshMemory() {
     const data = await Studio.api.getMemory();
+    vaultState.memoryStatus = data.state || (data.ok === false ? "unavailable" : "ok");
+    vaultState.memoryError = data.error || null;
     vaultState.entries = data.entries || [];
     vaultState.erasures = data.erasures || [];
     renderMemoryList();
@@ -91,6 +119,8 @@
 
   async function runSkillSearch(q) {
     const res = await Studio.api.searchSkills(q || "");
+    vaultState.skillsStatus = res.state || (res.ok === false ? "unavailable" : "ok");
+    vaultState.skillsError = res.error || null;
     vaultState.skills = res.skills || [];
     renderSkillVault();
   }

@@ -25,13 +25,15 @@ Model multi-agent collaboration as a **2-way general peer graph (`PeerMeshGraph`
 2. **Bounded Cyclic Negotiation**: Permit intentional feedback cycles (such as `author <-> verifier` or `architect <-> specialist` refinement loops) governed by explicit `max_hops`, `epoch`, and measurable convergence predicates.
 3. **Disjoint Owned Paths (`disjoint_paths`)**: Give every peer an explicit allowlist of owned files/directories and reject overlapping concurrent write scopes so two linked peers never mutate the same file simultaneously.
 4. **Serialized Shared Locks & Targeted Wakeups**: Route workspace-wide compiler/package locks (such as Cargo with externalized `CARGO_TARGET_DIR`) through a single designated runner, wake only the next acting peer(s) on peer-to-peer handoffs, and wake `@coordinator` only on final verified deliverables or cross-lane blockers.
+5. **Concurrent Multi-Session Workspace Isolation**: When multiple top-level sessions operate concurrently on the same repository, exchange explicit `disjoint_paths` ledgers (`.agents/PEER_MESH_COORDINATION.md` + peer messaging), wire shared entrypoints via fault-tolerant lazy auto-mount bridges (dual-callable middleware + factory exports), and isolate config files, browser profiles, and ports (`127.0.0.1:0` + `os.tmpdir()` env overrides) so parallel test harnesses never clobber shared state.
 
-## 3. Live Runtime / Browser QA & Anti-Overconfidence Audit
+## 3. Live Runtime / Browser QA, Fuzz Hardening & Anti-Overconfidence Audit
 
 Treat "it compiled" or "the file was written" as an intermediate checkpoint, never as Definition of Done:
-- **Focused + Broad Automated Checks**: Run unit tests, integration suites, schema/frontmatter validators (`quick_validate.py`), formatting checks (`rustfmt --check`), and whitespace/EOL hygiene (`git diff --check`, pure UTF-8 `LF`).
+- **Focused + Broad Automated Checks & Seeded PRNG Fuzzing**: Run unit tests, integration suites, seeded Mulberry32 PRNG property/chaos/malformed-input trials across multiple distinct seeds, schema/frontmatter validators (`quick_validate.py`), and whitespace/EOL hygiene (`git diff --check`, pure UTF-8 `LF`).
+- **Parser, Allocation & Prototype Hardening Invariants**: Never mix Unicode code-point indexing (`Array.from(str)`) with UTF-16 code-unit `RegExp.exec().index` spans; enforce explicit header count caps and `payload.byteLength` bounds **before** allocating descriptor arrays in binary decoders; and guard dynamic untrusted dictionary keys via `Object.create(null)` or `Object.defineProperty` (`__proto__`, `constructor`, `prototype`).
 - **Live Surface Verification**: For UI, desktop, CLI, or web deliverables, execute real runtime/window/UIA/browser checks (accessibility controls, layout clipping/DPI geometry, interactive state transitions, offline asset integrity).
-- **Independent Read-Only Verifier Pass**: Route completed slices through a separate read-only auditor mandated to hunt for missing requirements, edge-case regressions, broken links, PowerShell/shell escape artifacts, and secret/credential leaks before signing off.
+- **Independent Read-Only Verifier & Multi-Round Cleanroom Streak**: Route completed slices through a separate read-only adversarial auditor and execute consecutive independent cleanroom verification rounds (varying temp sandboxes, PRNG seeds, and suite ordering) before signing off.
 
 ## 4. Continuous Learning & Three-Way Skill Parity
 

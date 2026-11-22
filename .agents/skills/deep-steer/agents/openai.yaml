@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Steer"
+  short_description: "CAS mutations, supersession, and receipts for active goals"
+  default_prompt: "Use $deep-steer to classify additive steer intake or execute CAS-guarded goal, task, and graph mutations with auditable control receipts."
