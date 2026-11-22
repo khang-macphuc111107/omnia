@@ -1258,7 +1258,7 @@ mod tests {
         );
         assert_eq!(
             WireApiMode::Auto.resolve_api_kind("gpt-6.2-sol", "openai-completions"),
-            "openai-completions"
+            "openai-responses"
         );
         assert_eq!(
             WireApiMode::Responses.resolve_api_kind("gpt-6.2-sol", "openai-completions"),

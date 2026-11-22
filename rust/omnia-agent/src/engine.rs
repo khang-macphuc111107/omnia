@@ -97,7 +97,9 @@ impl WireApiMode {
                     || m.contains("/gemini")
                 {
                     "anthropic-messages"
-                } else if configured_api == "openai-responses" {
+                } else if configured_api == "openai-responses"
+                    || is_openai_responses_family(&m)
+                {
                     "openai-responses"
                 } else if configured_api == "google-gemini" {
                     "google-gemini"
@@ -107,6 +109,17 @@ impl WireApiMode {
             }
         }
     }
+}
+
+/// OpenAI families served best by the native stateless Responses API on htmustc
+/// (Codex CLI reached 5/7 + 3/3 Axis 11 on `gpt-6.2-sol` over `/v1/responses`).
+fn is_openai_responses_family(model_lower: &str) -> bool {
+    let bare = model_lower.rsplit('/').next().unwrap_or(model_lower);
+    bare.starts_with("gpt-")
+        || bare.starts_with("o1")
+        || bare.starts_with("o3")
+        || bare.starts_with("o4")
+        || bare.starts_with("codex")
 }
 
 #[derive(Debug, Clone)]
@@ -733,6 +746,7 @@ pub struct NativeSuperEngine {
     pub endpoint: ResolvedModelEndpoint,
     pub wire_api_mode: WireApiMode,
     pub anthropic_fallback_to_openai: bool,
+    pub responses_fallback_to_chat: bool,
     pub edit_affinity: ModelEditAffinity,
     pub thinking_level: Option<String>,
     pub plugins: PluginRegistry,
@@ -866,6 +880,7 @@ impl NativeSuperEngine {
             endpoint,
             wire_api_mode,
             anthropic_fallback_to_openai: false,
+            responses_fallback_to_chat: false,
             edit_affinity,
             thinking_level,
             plugins,
@@ -918,7 +933,9 @@ impl NativeSuperEngine {
         let resolved = self
             .wire_api_mode
             .resolve_api_kind(&self.endpoint.model_id, &self.endpoint.api);
-        if resolved == "anthropic-messages" && self.anthropic_fallback_to_openai {
+        if (resolved == "anthropic-messages" && self.anthropic_fallback_to_openai)
+            || (resolved == "openai-responses" && self.responses_fallback_to_chat)
+        {
             "openai-completions"
         } else {
             resolved
@@ -2113,6 +2130,16 @@ impl NativeSuperEngine {
                     compat_bounces += 1;
                     continue;
                 }
+                Err(StreamTurnError::EndpointUnsupported(detail))
+                    if api_kind == "openai-responses" && !self.responses_fallback_to_chat =>
+                {
+                    tracing::warn!(
+                        "OpenAI /v1/responses unsupported ({detail}); falling back to /v1/chat/completions"
+                    );
+                    self.responses_fallback_to_chat = true;
+                    compat_bounces += 1;
+                    continue;
+                }
                 Err(StreamTurnError::BadStreamOptions)
                     if include_stream_options && compat_bounces < 4 =>
                 {
@@ -2777,6 +2804,7 @@ impl NativeSuperEngine {
             "instructions": self.system_prompt,
             "input": input_items,
             "stream": true,
+            "store": false,
             "max_output_tokens": self.endpoint.max_tokens,
         });
         if !resp_tools.is_empty() {
@@ -2833,6 +2861,20 @@ impl NativeSuperEngine {
         if !status.is_success() {
             let err_body = resp.text().await.unwrap_or_default();
             let snippet: String = err_body.chars().take(400).collect();
+            if self.wire_api_mode == WireApiMode::Auto
+                && matches!(
+                    status,
+                    StatusCode::BAD_REQUEST
+                        | StatusCode::NOT_FOUND
+                        | StatusCode::METHOD_NOT_ALLOWED
+                        | StatusCode::UNPROCESSABLE_ENTITY
+                        | StatusCode::NOT_IMPLEMENTED
+                )
+            {
+                return Err(StreamTurnError::EndpointUnsupported(format!(
+                    "Responses HTTP {status}: {snippet}"
+                )));
+            }
             if is_retryable_status(status) {
                 return Err(StreamTurnError::Retryable {
                     status: Some(status),
@@ -3005,19 +3047,76 @@ impl NativeSuperEngine {
                             }
                         }
                     }
-                    "response.completed" => {
+                    "response.output_item.done" => {
+                        // Authoritative final arguments (covers proxies that skip arg deltas).
+                        if let Some(item) = val.get("item") {
+                            if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                                let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let final_args = item
+                                    .get("arguments")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let idx_opt = tool_by_item_id.get(item_id).copied().or_else(|| {
+                                    let cid = item.get("call_id").and_then(|v| v.as_str())?;
+                                    tool_calls.iter().position(|t| t.id == cid)
+                                });
+                                match idx_opt {
+                                    Some(idx) => {
+                                        if !final_args.is_empty() {
+                                            tool_calls[idx].arguments = final_args.to_string();
+                                        }
+                                    }
+                                    None => {
+                                        stamp_token();
+                                        let call_id = item
+                                            .get("call_id")
+                                            .and_then(|v| v.as_str())
+                                            .filter(|s| !s.is_empty())
+                                            .map(String::from)
+                                            .unwrap_or_else(|| format!("call_{msg_id}_{}", tool_calls.len()));
+                                        tool_calls.push(ToolCallRecord {
+                                            id: call_id,
+                                            name: item
+                                                .get("name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string(),
+                                            arguments: final_args.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "response.completed" | "response.incomplete" => {
                         saw_completed = true;
-                        finish_reason = Some(
-                            if tool_calls.is_empty() {
-                                "stop".into()
-                            } else {
-                                "tool_calls".into()
-                            },
-                        );
+                        finish_reason = Some(if ev_type == "response.incomplete" {
+                            "length".into()
+                        } else if tool_calls.is_empty() {
+                            "stop".into()
+                        } else {
+                            "tool_calls".into()
+                        });
                         if let Some(u) = val.pointer("/response/usage") {
                             parse_openai_usage(u, &mut usage);
                         }
                         break 'resp_sse;
+                    }
+                    "response.failed" | "error" => {
+                        let msg = val
+                            .pointer("/response/error/message")
+                            .or_else(|| val.pointer("/error/message"))
+                            .or_else(|| val.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("response.failed");
+                        return Err(StreamTurnError::Retryable {
+                            status: None,
+                            retry_after_secs: None,
+                            kind: RetryKind::TruncatedStream,
+                            detail: crate::sanitizer::redact_secrets(&format!(
+                                "OpenAI Responses stream failed: {msg}"
+                            )),
+                        });
                     }
                     _ => {}
                 }
@@ -6002,6 +6101,111 @@ data: {\"type\":\"message_stop\"}\n\n".to_string();
         let reqs = captured.lock().unwrap();
         assert_eq!(reqs.len(), 4);
         assert!(reqs[3].contains("[Final Review Gate]"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn gpt_auto_routes_to_responses_with_stable_prefix_and_falls_back_to_chat_on_404() {
+        // Part A: gpt-6.2-sol auto -> /v1/responses, store=false, prefix-stable across turns 1..3
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let raws = Arc::new(Mutex::new(Vec::<String>::new()));
+        let raws_bg = Arc::clone(&raws);
+        let srv = tokio::spawn(async move {
+            let fc = |id: &str, call: &str, path: &str| {
+                format!(
+                    "data: {{\"type\":\"response.output_item.added\",\"item\":{{\"id\":\"{id}\",\"type\":\"function_call\",\"call_id\":\"{call}\",\"name\":\"read_file\"}}}}\n\n\
+data: {{\"type\":\"response.output_item.done\",\"item\":{{\"id\":\"{id}\",\"type\":\"function_call\",\"call_id\":\"{call}\",\"name\":\"read_file\",\"arguments\":\"{{\\\"path\\\":\\\"{path}\\\"}}\"}}}}\n\n\
+data: {{\"type\":\"response.completed\",\"response\":{{\"usage\":{{\"input_tokens\":100,\"output_tokens\":9,\"input_tokens_details\":{{\"cached_tokens\":64}}}}}}}}\n\n"
+                )
+            };
+            let done = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"RESPONSES_AUTO_OK\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":150,\"output_tokens\":3}}}\n\n".to_string();
+            for body in [fc("i1", "c1", "a.py"), fc("i2", "c2", "b.py"), done] {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut sock).await;
+                raws_bg.lock().unwrap().push(req);
+                let frame = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = sock.write_all(frame.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_eng_respauto_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), "A = 1\n").unwrap();
+        std::fs::write(tmp.join("b.py"), "B = 2\n").unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "gpt-6.2-sol".into();
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        assert_eq!(eng.active_wire_dialect(), "openai-responses");
+        let sum = eng.run_prompt("read a then b", 6, 30, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "RESPONSES_AUTO_OK");
+        assert_eq!(eng.total_tool_calls, 2);
+
+        let raw = raws.lock().unwrap().clone();
+        assert!(raw.iter().all(|r| r.starts_with("POST /v1/responses")));
+        let reqs: Vec<Value> = raw.iter().map(|r| http_body_json(r)).collect();
+        for w in reqs.windows(2) {
+            let (prev, cur) = (&w[0], &w[1]);
+            assert_eq!(cur["store"], json!(false));
+            assert!(cur.get("temperature").is_none());
+            assert_eq!(prev["instructions"], cur["instructions"]);
+            assert_eq!(prev["tools"], cur["tools"]);
+            assert_eq!(prev["prompt_cache_key"], cur["prompt_cache_key"]);
+            let pi = prev["input"].as_array().unwrap();
+            let ci = cur["input"].as_array().unwrap();
+            assert!(ci.len() > pi.len());
+            assert_eq!(&ci[..pi.len()], &pi[..], "Responses input must stay append-only");
+        }
+        // Every function_call has a matching function_call_output (zero orphaned IDs)
+        let last_input = reqs[2]["input"].as_array().unwrap();
+        for item in last_input.iter().filter(|i| i["type"] == "function_call") {
+            let cid = item["call_id"].as_str().unwrap();
+            assert!(last_input
+                .iter()
+                .any(|o| o["type"] == "function_call_output" && o["call_id"] == cid));
+        }
+
+        // Part B: /v1/responses 404 -> seamless fallback to /v1/chat/completions
+        let listener_b = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_b = listener_b.local_addr().unwrap();
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let paths_bg = Arc::clone(&paths);
+        let srv_b = tokio::spawn(async move {
+            let (mut s1, _) = listener_b.accept().await.unwrap();
+            let r1 = read_http_request(&mut s1).await;
+            paths_bg.lock().unwrap().push(r1.lines().next().unwrap_or("").to_string());
+            let _ = s1
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"no\"}")
+                .await;
+            let _ = s1.shutdown().await;
+            let (mut s2, _) = listener_b.accept().await.unwrap();
+            let r2 = read_http_request(&mut s2).await;
+            paths_bg.lock().unwrap().push(r2.lines().next().unwrap_or("").to_string());
+            let ok = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"CHAT_FALLBACK_OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":3}}\n\n\
+data: [DONE]\n\n";
+            let _ = s2.write_all(ok.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+        let mut eng_b = make_test_engine(&tmp, format!("http://{addr_b}/v1"));
+        eng_b.endpoint.model_id = "gpt-6.2-sol".into();
+        eng_b.wire_api_mode = WireApiMode::Auto;
+        eng_b.stream_budget.header_timeout = Duration::from_secs(5);
+        eng_b.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        let sum_b = eng_b.run_prompt("hi", 4, 20, None).await.unwrap();
+        srv_b.await.unwrap();
+        assert_eq!(sum_b.final_text, "CHAT_FALLBACK_OK");
+        assert!(eng_b.responses_fallback_to_chat);
+        let p = paths.lock().unwrap();
+        assert!(p[0].contains("POST /v1/responses"));
+        assert!(p[1].contains("POST /v1/chat/completions"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
