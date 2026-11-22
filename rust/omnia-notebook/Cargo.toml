@@ -5,16 +5,34 @@ edition.workspace = true
 publish.workspace = true
 description = "Full Native Rust Gemini Notebook & Atelier Research Studio engine"
 
+[features]
+default = []
+# Non-default test-only feature gating loopback HTTP overrides in `PublicShareImporter`.
+test-loopback = []
+
 [dependencies]
 blake3.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+ignore.workspace = true
 omnia-connector-gateway.workspace = true
 omnia-core.workspace = true
 omnia-graph.workspace = true
 omnia-harness.workspace = true
-omnia-storage.workspace = true
+omnia-winsqlite.workspace = true
 omnia-workspace-ops.workspace = true
+parking_lot.workspace = true
+quick-xml.workspace = true
+regex.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+omnia-notebook = { path = ".", features = ["test-loopback"] }

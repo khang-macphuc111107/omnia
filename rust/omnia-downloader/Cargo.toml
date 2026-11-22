@@ -6,17 +6,23 @@ publish.workspace = true
 description = "Full Native Rust multi-stream segmented HTTP & Google Drive downloader (OmniDownloader Pro)"
 
 [dependencies]
+aes.workspace = true
 bytes.workspace = true
+cbc.workspace = true
+chrono.workspace = true
+crc32fast.workspace = true
 futures-util.workspace = true
 omnia-connector-gateway.workspace = true
 omnia-core.workspace = true
-omnia-storage.workspace = true
+omnia-winsqlite.workspace = true
 omnia-workspace-ops.workspace = true
 parking_lot.workspace = true
+quick-xml.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 url.workspace = true
