@@ -4,12 +4,17 @@
 //! and `omnia-native` (`HarnessStore`, `Sessions`, `SessionWorker`, `ProviderProfileRepository`,
 //! `RunRegistry`, `RunCoordinator`).
 
+mod agent_cache;
 mod error;
 mod native_store;
 mod native_types;
 mod session_store;
 mod sessions;
 
+pub use agent_cache::{
+    AcePlaybookEntry, AgentCacheStore, MerkleAstCacheEntry, WireTelemetryRecord,
+    WireTelemetrySummary, AGENT_CACHE_SCHEMA_SQL,
+};
 pub use error::StoreError;
 pub use native_store::HarnessStore;
 pub use native_types::{

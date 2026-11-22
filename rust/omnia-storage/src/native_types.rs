@@ -12,7 +12,8 @@ pub const MAX_AGENT_SESSION_ID_CHARS: usize = 256;
 pub const MAX_AGENT_SESSION_PAGE_LIMIT: usize = 100;
 pub const DEFAULT_AGENT_SESSION_PAGE_LIMIT: usize = 50;
 pub const MAX_NAVIGATION_OPEN_SESSION_IDS: usize = 64;
-pub const DEFAULT_TOKEN_BUDGET: i64 = 128_000;
+/// Uncapped by default (`None` / JSON `null`) per Omnia `ADDITIVE_INTAKE` continuity contract.
+pub const DEFAULT_TOKEN_BUDGET: Option<i64> = None;
 
 /// Execution environment associated with an Omnia native harness session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -116,7 +117,7 @@ pub struct AgentSessionSummary {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub revision: i64,
-    pub token_budget: i64,
+    pub token_budget: Option<i64>,
     pub tokens_used: i64,
     pub message_count: i64,
 }
@@ -169,13 +170,12 @@ impl AgentSessionSummary {
                 "Stored session summary revision must be positive.",
             ));
         }
-        let token_budget =
-            opt_i64(obj, &["tokenBudget", "token_budget"]).unwrap_or(DEFAULT_TOKEN_BUDGET);
+        let token_budget = opt_i64(obj, &["tokenBudget", "token_budget"]);
         let tokens_used = opt_i64(obj, &["tokensUsed", "tokens_used"]).unwrap_or(0);
         let message_count = opt_i64(obj, &["messageCount", "message_count"]).unwrap_or(0);
         if created_at_ms < 0
             || updated_at_ms < 0
-            || token_budget < 0
+            || token_budget.is_some_and(|v| v < 0)
             || tokens_used < 0
             || message_count < 0
         {
@@ -395,7 +395,7 @@ pub struct CreateAgentSessionRequest {
     pub cwd: String,
     pub environment: HarnessEnvironment,
     pub model: String,
-    pub token_budget: i64,
+    pub token_budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

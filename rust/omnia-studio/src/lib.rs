@@ -6,7 +6,9 @@ pub mod config;
 pub mod history;
 pub mod http;
 pub mod routes_capabilities;
+pub mod routes_downloads;
 pub mod routes_legacy;
+pub mod routes_notebooks;
 pub mod runtime_proxy;
 pub mod telemetry;
 

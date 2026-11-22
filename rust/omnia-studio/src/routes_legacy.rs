@@ -6,12 +6,15 @@ use crate::http::{serve_static_asset, HttpRequest, HttpResponse};
 use crate::routes_capabilities::{
     dispatch_capability_route, ConnectorConfigRecord, RemoteControlState,
 };
+use crate::routes_downloads::dispatch_download_route;
+use crate::routes_notebooks::dispatch_notebook_route;
 use crate::runtime_proxy::RuntimeProxy;
 use crate::telemetry::{
     count_rust_files, discover_crate_count, is_reparse_or_symlink, query_current_binary_bytes,
     query_working_set_bytes, RUSTC_VERSION_LABEL,
 };
 use omnia_core::{now_epoch_ms, SecretRedactor};
+use omnia_downloader::{validate_safe_local_path, DownloadConfig, DownloadManager};
 use omnia_graph::{
     AgentGraphError, AgentRole, GraphifyEdge, GraphifyEntity, GraphifyEntityKind, GraphifyIndex,
     GraphifyProvenance, PeerMeshGraph, TraversalDirection,
@@ -24,6 +27,7 @@ use omnia_harness::{
     skill_registry::SkillRegistry,
     steer_queue::{SteerMode, SteerQueue},
 };
+use omnia_notebook::NotebookEngine;
 use omnia_routing::{
     CandidateResourceState, CandidateScoreBreakdown, CandidateSnapshot, CircuitState,
     DecisionResult, DynamicProviderRouter, ModelCapabilities, PrivacyTier, QuotaState,
@@ -33,7 +37,7 @@ use omnia_storage::{SessionCursor, SessionMessageRecord, SessionStore};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 const MAX_SKILL_CONTENT_CHARS: usize = 1024;
@@ -54,6 +58,9 @@ pub struct StudioState {
     pub composer: Mutex<RichComposer>,
     pub connectors: Mutex<Vec<ConnectorConfigRecord>>,
     pub remote: Mutex<RemoteControlState>,
+    pub downloads: Arc<DownloadManager>,
+    pub downloads_staging_dir: PathBuf,
+    pub notebooks: Arc<NotebookEngine>,
     pub rust_files: usize,
     pub crate_count: usize,
     pub binary_bytes: u64,
@@ -113,6 +120,63 @@ impl StudioState {
         let connectors = Mutex::new(crate::routes_capabilities::default_connector_configs());
         let remote = Mutex::new(RemoteControlState::default());
 
+        let downloads_db_path = validate_safe_local_path(
+            &config.downloads_db_path(),
+            Some(&config.workspace_root),
+        )
+        .map_err(|err| format!("Invalid downloader DB path (must be outside workspace): {err}"))?;
+        if let Some(parent) = downloads_db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|err| {
+                    format!(
+                        "Failed creating downloader DB directory '{}': {err}",
+                        parent.display()
+                    )
+                })?;
+            }
+        }
+        let downloads_staging_dir = validate_safe_local_path(
+            &config.downloads_staging_dir(),
+            Some(&config.workspace_root),
+        )
+        .map_err(|err| {
+            format!("Invalid external downloads staging directory (must be outside workspace): {err}")
+        })?;
+        fs::create_dir_all(&downloads_staging_dir).map_err(|err| {
+            format!(
+                "Failed creating external downloads staging directory '{}': {err}",
+                downloads_staging_dir.display()
+            )
+        })?;
+        let downloads = Arc::new(
+            DownloadManager::open(
+                &downloads_db_path,
+                Some(&config.workspace_root),
+                DownloadConfig::default(),
+            )
+            .map_err(|err| format!("Failed opening DownloadManager WAL store: {err}"))?,
+        );
+
+        let notebooks_db_path = validate_safe_local_path(
+            &config.notebooks_db_path(),
+            Some(&config.workspace_root),
+        )
+        .map_err(|err| format!("Invalid notebook DB path (must be outside workspace): {err}"))?;
+        if let Some(parent) = notebooks_db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|err| {
+                    format!(
+                        "Failed creating notebook DB directory '{}': {err}",
+                        parent.display()
+                    )
+                })?;
+            }
+        }
+        let notebooks = Arc::new(
+            NotebookEngine::open(&notebooks_db_path)
+                .map_err(|err| format!("Failed opening NotebookEngine WAL store: {err}"))?,
+        );
+
         let rust_files = count_rust_files(&config.workspace_root);
         let crate_count = discover_crate_count(&config.workspace_root);
         let binary_bytes = query_current_binary_bytes();
@@ -131,6 +195,9 @@ impl StudioState {
             composer,
             connectors,
             remote,
+            downloads,
+            downloads_staging_dir,
+            notebooks,
             rust_files,
             crate_count,
             binary_bytes,
@@ -141,6 +208,12 @@ impl StudioState {
 
 /// Top-level HTTP route dispatcher for Flagship Studio static UI and `/api/*`.
 pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> HttpResponse {
+    if let Some(dl_resp) = dispatch_download_route(&state, &req).await {
+        return dl_resp;
+    }
+    if let Some(nb_resp) = dispatch_notebook_route(&state, &req).await {
+        return nb_resp;
+    }
     if let Some(cap_resp) = dispatch_capability_route(&state, &req).await {
         return cap_resp;
     }

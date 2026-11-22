@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omnia_storage::{
-    build_provider, prepare_session_config, provider_selection, upsert_profile_on,
+    build_provider, prepare_session_config, provider_selection, upsert_profile_on, AgentCacheStore,
     AgentRunStateRecord, AgentRunStatus, AgentSessionSummary, CreateAgentSessionRequest,
-    HarnessEnvironment, HarnessStore, MapSecretBroker, ProviderProfileInput,
+    HarnessEnvironment, HarnessStore, MapSecretBroker, MerkleAstCacheEntry, ProviderProfileInput,
     ProviderProfileRepository, RunCoordinator, RunRegistry, SaveAgentSessionNavigationRequest,
     SessionCommand, SessionWorker, Sessions, UpdateAgentSessionSettingsRequest,
-    DEFAULT_TOKEN_BUDGET,
+    WireTelemetryRecord, DEFAULT_TOKEN_BUDGET,
 };
 use omnia_winsqlite::Connection;
 use serde_json::json;
@@ -728,4 +728,138 @@ fn session_worker_enforces_bounded_queue_and_executes_async_commands() {
     assert_eq!(after_turn.tokens_used, 42);
 
     worker.stop_and_wait();
+}
+
+#[test]
+fn default_token_budget_is_none_and_agent_cache_persists_wal_tables() {
+    assert_eq!(DEFAULT_TOKEN_BUDGET, None);
+
+    let mut store = HarnessStore::open_in_memory().expect("open memory store");
+    let default_sess = store
+        .create_agent_session(
+            CreateAgentSessionRequest {
+                id: Some("sess-null-budget".to_owned()),
+                title: "Uncapped Default".to_owned(),
+                cwd: "D:\\Omnia".to_owned(),
+                environment: HarnessEnvironment::WindowsNative,
+                model: "gpt-5.4".to_owned(),
+                token_budget: DEFAULT_TOKEN_BUDGET,
+            },
+            1_000,
+        )
+        .expect("create uncapped session");
+    assert_eq!(default_sess.token_budget, None);
+    let default_json = default_sess.to_json();
+    assert!(default_json["tokenBudget"].is_null());
+    let parsed_null = AgentSessionSummary::from_json(&default_json).expect("parse null budget");
+    assert_eq!(parsed_null.token_budget, None);
+
+    let loaded_null = store
+        .get_agent_session("sess-null-budget")
+        .expect("load session")
+        .expect("exists");
+    assert_eq!(loaded_null.token_budget, None);
+
+    let explicit_sess = store
+        .create_agent_session(
+            CreateAgentSessionRequest {
+                id: Some("sess-explicit-budget".to_owned()),
+                title: "Explicit Opt-In".to_owned(),
+                cwd: "D:\\Omnia".to_owned(),
+                environment: HarnessEnvironment::WindowsNative,
+                model: "gpt-5.4".to_owned(),
+                token_budget: Some(64_000),
+            },
+            1_050,
+        )
+        .expect("create explicit session");
+    assert_eq!(explicit_sess.token_budget, Some(64_000));
+    assert_eq!(explicit_sess.to_json()["tokenBudget"], json!(64_000));
+
+    let mut bad_json = explicit_sess.to_json();
+    bad_json["tokenBudget"] = json!(-10);
+    assert_eq!(
+        AgentSessionSummary::from_json(&bad_json)
+            .expect_err("negative tokenBudget must fail")
+            .code,
+        "harness_storage_failed"
+    );
+
+    // Verify on-disk WAL persistence of merkle_ast_cache, ace_playbook, and wire_telemetry.
+    let temp = TempDirGuard::new("agent-cache");
+    let cache_db = temp.path.join("agent_cache.db");
+    let synth_secret = ["sk", "proj", "fixtureSecret9876543210"].join("-");
+
+    {
+        let cache = AgentCacheStore::open(&cache_db).expect("open cache store");
+        cache
+            .upsert_merkle_ast(&MerkleAstCacheEntry {
+                path: "rust/omnia-storage/src/agent_cache.rs".to_owned(),
+                blake3_hex: "deadbeef00112233".to_owned(),
+                size_bytes: 8192,
+                mtime_ms: 1_900,
+                language: "rust".to_owned(),
+                ast_symbols_json: json!([{"name": "AgentCacheStore", "kind": "struct"}])
+                    .to_string(),
+                updated_at_ms: 2_000,
+            })
+            .expect("upsert merkle");
+        cache
+            .record_playbook_entry(
+                "ace-wal-1",
+                "omnia-runtime",
+                "err:http_502_keepalive",
+                "upstream stalled after keepalive reuse",
+                &format!("Retry with Connection: close (never leak {synth_secret})"),
+                true,
+                2_050,
+            )
+            .expect("record playbook");
+        cache
+            .record_wire_telemetry(&WireTelemetryRecord {
+                id: None,
+                session_id: "sess-null-budget".to_owned(),
+                turn_index: 1,
+                provider_id: "htmustc".to_owned(),
+                model_id: "gpt-5.4".to_owned(),
+                wire_dialect: "openai_responses".to_owned(),
+                ttft_ms: 400.0,
+                active_decode_ms: 3_000.0,
+                total_turn_ms: 3_400.0,
+                active_decode_tps: 100.0,
+                e2e_tps: 300.0 / 3.4,
+                input_tokens: 300,
+                output_tokens: 300,
+                reasoning_tokens: 0,
+                cache_read_tokens: 900,
+                cache_write_tokens: 0,
+                retries: 0,
+                burst_flush: false,
+                finish_reason: Some("stop".to_owned()),
+                created_at_ms: 2_100,
+            })
+            .expect("record wire telemetry");
+    }
+
+    let reopened = AgentCacheStore::open(&cache_db).expect("reopen cache store");
+    let ast = reopened
+        .get_merkle_ast("rust/omnia-storage/src/agent_cache.rs")
+        .expect("read merkle")
+        .expect("entry persisted");
+    assert_eq!(ast.blake3_hex, "deadbeef00112233");
+
+    let playbooks = reopened
+        .lookup_playbook_by_fingerprint("omnia-runtime", "err:http_502_keepalive", 5)
+        .expect("lookup playbook");
+    assert_eq!(playbooks.len(), 1);
+    assert!(!playbooks[0].remediation.contains(&synth_secret));
+    assert!(playbooks[0].remediation.contains("[REDACTED]"));
+
+    let summary = reopened
+        .summarize_wire_telemetry(Some("sess-null-budget"))
+        .expect("summarize wire telemetry");
+    assert_eq!(summary.total_turns, 1);
+    assert!((summary.cache_hit_pct - 75.0).abs() < 0.01);
+    assert!((summary.mean_active_decode_tps - 100.0).abs() < 0.01);
+    assert!((summary.mean_e2e_tps - (300.0 / 3.4)).abs() < 0.1);
 }

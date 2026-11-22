@@ -1,7 +1,9 @@
-//! Bounded 3,000 ms upstream `omnia-runtime` HTTP proxy & NVIDIA probe normalization.
+//! Upstream `omnia-runtime` HTTP proxy: bounded 3,000 ms health/status probes and
+//! non-clamped split-budget chunked SSE pass-through for `/api/chat`.
 
 use crate::config::validate_loopback_runtime_url;
 use crate::http::{HttpRequest, HttpResponse};
+use futures_util::StreamExt;
 use omnia_core::{now_epoch_ms, SecretRedactor};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
@@ -9,13 +11,22 @@ use std::time::Duration;
 use tokio::time;
 
 const MAX_UPSTREAM_BODY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CHAT_BODY_BYTES: usize = 16 * 1024 * 1024;
 const ALLOWED_CHAT_MODEL_MAX_LEN: usize = 256;
+const DEFAULT_CHAT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_CHAT_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_CHAT_CHUNK_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Stateless upstream HTTP proxy targeting `omnia-runtime` with a hard 3,000 ms timeout.
+/// Upstream HTTP proxy targeting `omnia-runtime`:
+/// - `client`: hard 3,000 ms clamp strictly for fast health/models/providers/hardware probes.
+/// - `chat_client`: split-budget streaming client (no total wall-clock clamp) for `/api/chat`.
 #[derive(Clone, Debug)]
 pub struct RuntimeProxy {
     client: Client,
     timeout: Duration,
+    chat_client: Client,
+    chat_header_timeout: Duration,
+    chat_chunk_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -27,7 +38,8 @@ enum ProxyFailure {
 }
 
 impl RuntimeProxy {
-    /// Creates a loopback-only HTTP proxy enforcing `timeout` per upstream call.
+    /// Creates a loopback-only HTTP proxy with a 3,000 ms clamp for status probes and
+    /// split-budget (non-clamped) streaming timeouts for `/api/chat`.
     pub fn new(timeout: Duration) -> Result<Self, String> {
         let clamped = if timeout.is_zero() {
             Duration::from_millis(3_000)
@@ -41,10 +53,33 @@ impl RuntimeProxy {
             .timeout(clamped)
             .build()
             .map_err(|err| format!("Failed to construct RuntimeProxy HTTP client: {err}"))?;
+        let chat_client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(DEFAULT_CHAT_CONNECT_TIMEOUT)
+            .tcp_nodelay(true)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|err| format!("Failed to construct RuntimeProxy chat HTTP client: {err}"))?;
         Ok(Self {
             client,
             timeout: clamped,
+            chat_client,
+            chat_header_timeout: DEFAULT_CHAT_HEADER_TIMEOUT,
+            chat_chunk_timeout: DEFAULT_CHAT_CHUNK_TIMEOUT,
         })
+    }
+
+    /// Overrides the split-budget header and per-chunk timeouts used by `/api/chat`.
+    #[must_use]
+    pub const fn with_chat_timeouts(
+        mut self,
+        header_timeout: Duration,
+        chunk_timeout: Duration,
+    ) -> Self {
+        self.chat_header_timeout = header_timeout;
+        self.chat_chunk_timeout = chunk_timeout;
+        self
     }
 
     /// Probes `<runtime_url>/api/health` within the 3,000 ms budget for `/api/health` and `/api/overview`.
@@ -230,6 +265,9 @@ impl RuntimeProxy {
     }
 
     /// `POST /api/chat` and `POST /api/chat/completions`
+    ///
+    /// Uses split-budget streaming timeouts (NEVER clamped to the 3,000 ms status probe cap)
+    /// and forwards SSE responses chunk-by-chunk with zero full-body buffering.
     pub async fn handle_chat(&self, runtime_url: Option<&str>, req: &HttpRequest) -> HttpResponse {
         let Ok(mut payload) = serde_json::from_slice::<Value>(&req.body) else {
             return HttpResponse::error(400, "invalid_json", "Request body must be valid JSON.");
@@ -250,6 +288,11 @@ impl RuntimeProxy {
                 );
             }
         }
+        let wants_stream = obj.get("stream").and_then(Value::as_bool).unwrap_or(false)
+            || req
+                .header("accept")
+                .map(|a| a.to_ascii_lowercase().contains("text/event-stream"))
+                .unwrap_or(false);
         // Strip accidental client-supplied raw secrets before forwarding upstream.
         for key in ["apiKey", "api_key", "authorization", "token", "secret"] {
             obj.remove(key);
@@ -258,17 +301,46 @@ impl RuntimeProxy {
             return HttpResponse::error(400, "invalid_json", "Failed to serialize chat payload.");
         };
 
-        match self
-            .send_bounded(
-                runtime_url,
-                Method::POST,
-                "/api/chat",
-                Some(&serialized),
-                "application/json",
-            )
+        let accept_header = if wants_stream {
+            "text/event-stream"
+        } else {
+            "application/json"
+        };
+
+        let resp = match self
+            .send_chat_request(runtime_url, "/api/chat", &serialized, accept_header)
             .await
         {
-            Ok((status, content_type, body)) => {
+            Ok(resp) => resp,
+            Err(failure) => return chat_failure_response(&failure),
+        };
+
+        let status = resp.status().as_u16();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(if wants_stream {
+                "text/event-stream"
+            } else {
+                "application/json; charset=utf-8"
+            })
+            .to_string();
+
+        if (200..300).contains(&status)
+            && (wants_stream || content_type.to_ascii_lowercase().contains("text/event-stream"))
+        {
+            return HttpResponse::stream(
+                status,
+                &content_type,
+                resp,
+                self.chat_chunk_timeout,
+                MAX_CHAT_BODY_BYTES,
+            );
+        }
+
+        match self.collect_chat_body(resp).await {
+            Ok(body) => {
                 if content_type.contains("application/json") {
                     if let Ok(parsed) = serde_json::from_slice::<Value>(&body) {
                         return HttpResponse::json(status, SecretRedactor::redact_json(&parsed));
@@ -276,22 +348,69 @@ impl RuntimeProxy {
                 }
                 HttpResponse::bytes(status, &content_type, body)
             }
-            Err(failure) => {
-                let (code, detail, http_status) = failure_fields(&failure);
-                HttpResponse::json(
-                    http_status,
-                    json!({
-                        "ok": false,
-                        "state": "unavailable",
-                        "status": "UNAVAILABLE",
-                        "code": code,
-                        "error": code,
-                        "message": detail,
-                        "detail": detail,
-                    }),
-                )
-            }
+            Err(failure) => chat_failure_response(&failure),
         }
+    }
+
+    async fn send_chat_request(
+        &self,
+        runtime_url: Option<&str>,
+        path: &str,
+        body: &[u8],
+        accept: &str,
+    ) -> Result<reqwest::Response, ProxyFailure> {
+        let Some(raw_base) = runtime_url.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(ProxyFailure::Unconfigured(
+                "omnia-runtime URL is not configured",
+            ));
+        };
+        let base = validate_loopback_runtime_url(raw_base).map_err(ProxyFailure::InvalidConfig)?;
+        let target = base
+            .join(path.trim_start_matches('/'))
+            .map_err(|err| ProxyFailure::InvalidConfig(err.to_string()))?;
+
+        let header_timeout = self.chat_header_timeout;
+        let fut = self
+            .chat_client
+            .request(Method::POST, target)
+            .header("Accept", accept)
+            .header("Content-Type", "application/json")
+            .body(body.to_vec())
+            .send();
+
+        match time::timeout(header_timeout, fut).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(err)) => Err(classify_reqwest_error(&err, header_timeout)),
+            Err(_) => Err(ProxyFailure::Timeout(format!(
+                "Upstream runtime chat headers timed out after {} ms.",
+                header_timeout.as_millis()
+            ))),
+        }
+    }
+
+    async fn collect_chat_body(&self, resp: reqwest::Response) -> Result<Vec<u8>, ProxyFailure> {
+        let mut out = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(next) = time::timeout(self.chat_chunk_timeout, stream.next())
+            .await
+            .map_err(|_| {
+                ProxyFailure::Timeout(format!(
+                    "Upstream runtime chat chunk timed out after {} ms.",
+                    self.chat_chunk_timeout.as_millis()
+                ))
+            })?
+        {
+            let chunk = next
+                .map_err(|err| classify_reqwest_error(&err, self.chat_chunk_timeout))?;
+            if out.len().saturating_add(chunk.len()) > MAX_CHAT_BODY_BYTES {
+                return Err(ProxyFailure::Unreachable(format!(
+                    "Upstream chat response exceeded {} byte limit.",
+                    MAX_CHAT_BODY_BYTES
+                )));
+            }
+            out.extend_from_slice(&chunk);
+        }
+        Ok(out)
     }
 
     /// `GET /api/hardware/nvidia`
@@ -393,17 +512,19 @@ impl RuntimeProxy {
                 .unwrap_or("application/json; charset=utf-8")
                 .to_string();
 
-            let raw_bytes = resp
-                .bytes()
-                .await
-                .map_err(|err| classify_reqwest_error(&err, timeout))?;
-            if raw_bytes.len() > MAX_UPSTREAM_BODY_BYTES {
-                return Err(ProxyFailure::Unreachable(format!(
-                    "Upstream response exceeded {} byte limit.",
-                    MAX_UPSTREAM_BODY_BYTES
-                )));
+            let mut raw_bytes = Vec::new();
+            let mut stream = resp.bytes_stream();
+            while let Some(next) = stream.next().await {
+                let chunk = next.map_err(|err| classify_reqwest_error(&err, timeout))?;
+                if raw_bytes.len().saturating_add(chunk.len()) > MAX_UPSTREAM_BODY_BYTES {
+                    return Err(ProxyFailure::Unreachable(format!(
+                        "Upstream response exceeded {} byte limit.",
+                        MAX_UPSTREAM_BODY_BYTES
+                    )));
+                }
+                raw_bytes.extend_from_slice(&chunk);
             }
-            Ok((status, content_type, raw_bytes.to_vec()))
+            Ok((status, content_type, raw_bytes))
         };
 
         match time::timeout(timeout, fut).await {
@@ -434,6 +555,22 @@ fn failure_fields(failure: &ProxyFailure) -> (&'static str, String, u16) {
         ProxyFailure::Unreachable(msg) => ("runtime_unreachable", msg.clone(), 503),
         ProxyFailure::InvalidConfig(msg) => ("runtime_invalid_config", msg.clone(), 503),
     }
+}
+
+fn chat_failure_response(failure: &ProxyFailure) -> HttpResponse {
+    let (code, detail, http_status) = failure_fields(failure);
+    HttpResponse::json(
+        http_status,
+        json!({
+            "ok": false,
+            "state": "unavailable",
+            "status": "UNAVAILABLE",
+            "code": code,
+            "error": code,
+            "message": detail,
+            "detail": detail,
+        }),
+    )
 }
 
 fn unavailable_runtime_response(

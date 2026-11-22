@@ -19,6 +19,8 @@
       { id: "view-router", group: "Navigation", title: "Open Dynamic Provider Router Workbench", hint: "Alt+3", keywords: "router quota circuit latency", run: () => Studio.switchView("router") },
       { id: "view-rust", group: "Navigation", title: "Open Rust Workspace IDE, Code Graph & Proactive RAG", hint: "Alt+4", keywords: "rust cargo workspace tree diff graph rag uncertainty vietnamese", run: () => Studio.switchView("rust-rag") },
       { id: "view-mem", group: "Navigation", title: "Open Hierarchical MemoryGraph & Curated Skill Vault", hint: "Alt+5", keywords: "memory erase sha256 skills vault", run: () => Studio.switchView("memory") },
+      { id: "view-omnidrive", group: "Navigation", title: "Open OmniDrive Studio (Multi-Stream Downloader & Drive)", hint: "Alt+6", keywords: "omnidrive download streams chunk map handoff providers drive", run: () => Studio.switchView("omnidrive") },
+      { id: "view-atelier", group: "Navigation", title: "Open Atelier Research Studio (Notebooks, Quote+BTW & Artifacts)", hint: "Alt+7", keywords: "atelier notebook gemini split citations btw quote artifacts bridge", run: () => Studio.switchView("atelier") },
       { id: "cap-open", group: "Capabilities", title: "Inspect Connectors, Media Capture & Remote Status", hint: "Live Probes", keywords: "connectors media cdp win32 obs remote pairing lease validate", run: () => { if (Studio.openCapabilityInspector) Studio.openCapabilityInspector(); } },
       { id: "ws-cargo", group: "Workspace IDE", title: "Open Root Cargo.toml in Live Rust Explorer", hint: "GET /api/workspace/file", keywords: "cargo.toml rust crates workspace file", run: () => { Studio.switchView("rust-rag"); if (Studio.ideExplorer) Studio.ideExplorer.openWorkspaceFile("Cargo.toml", 1, 120); } },
 

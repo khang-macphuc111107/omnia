@@ -2,6 +2,11 @@
 //! loopback CORS/Origin/Host guards, path-traversal protection, 3,000ms stalled proxy
 //! timeout, legacy `/api/*` parity, immutable history rollback, and capability crates.
 
+use base64::Engine as _;
+use omnia_connector_gateway::artifact_intake::HttpValidatorStrength;
+use omnia_downloader::{
+    ChunkRange, DownloadJobSnapshot, DownloadStatus, DownloadStore, PacingMode,
+};
 use omnia_remote_control::crypto::sha256_hex;
 use omnia_studio::{start_studio_server, CliAction, StudioConfig};
 use serde_json::{json, Value};
@@ -1333,6 +1338,993 @@ async fn capability_routes_workspace_connectors_media_and_remote_enforce_contrac
     )
     .await;
     assert_eq!(after_revoke.status, 403);
+
+    srv.shutdown().await;
+}
+
+#[tokio::test]
+async fn studio_chat_streams_sse_beyond_3000ms_without_buffering_or_timeout_clamp() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock streaming runtime");
+    let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream_listener.accept().await.expect("accept studio");
+        let mut req_buf = [0_u8; 4096];
+        let _ = stream.read(&mut req_buf).await;
+
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("write sse head");
+        stream.flush().await.expect("flush sse head");
+
+        for (idx, chunk) in [
+            "data: {\"delta\":\"chunk-1\"}\n\n",
+            "data: {\"delta\":\"chunk-2\"}\n\n",
+            "data: {\"delta\":\"chunk-3\"}\n\n",
+            "data: [DONE]\n\n",
+        ]
+        .iter()
+        .enumerate()
+        {
+            if idx > 0 {
+                tokio::time::sleep(Duration::from_millis(1_100)).await;
+            }
+            let frame = format!("{:X}\r\n{chunk}\r\n", chunk.len());
+            stream
+                .write_all(frame.as_bytes())
+                .await
+                .expect("write sse chunk");
+            stream.flush().await.expect("flush sse chunk");
+        }
+        stream
+            .write_all(b"0\r\n\r\n")
+            .await
+            .expect("write final chunk");
+        stream.flush().await.expect("flush final chunk");
+    });
+
+    let sandbox = TempTestDir::new("sse-passthrough");
+    let mut cfg = build_isolated_config(&sandbox);
+    cfg.runtime_url = Some(format!("http://{upstream_addr}"));
+    cfg.runtime_timeout = Duration::from_millis(3_000);
+    let srv = start_studio_server(cfg).await.expect("start studio");
+    let addr = srv.local_addr();
+
+    let payload = json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "messages": [{"role": "user", "content": "long stream"}]
+    })
+    .to_string();
+    let raw_req = format!(
+        "POST /api/chat HTTP/1.1\r\nHost: {addr}\r\nAccept: text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+
+    let start = Instant::now();
+    let mut client = TcpStream::connect(addr).await.expect("connect studio");
+    client
+        .write_all(raw_req.as_bytes())
+        .await
+        .expect("send chat stream request");
+
+    let mut received = Vec::new();
+    let mut buf = [0_u8; 1024];
+    let mut first_chunk_elapsed: Option<Duration> = None;
+    loop {
+        let n = client.read(&mut buf).await.expect("read streamed bytes");
+        if n == 0 {
+            break;
+        }
+        received.extend_from_slice(&buf[..n]);
+        if first_chunk_elapsed.is_none()
+            && String::from_utf8_lossy(&received).contains("chunk-1")
+        {
+            first_chunk_elapsed = Some(start.elapsed());
+        }
+    }
+    let total_elapsed = start.elapsed();
+
+    let first = first_chunk_elapsed.expect("chunk-1 must arrive");
+    assert!(
+        first < Duration::from_millis(2_000),
+        "first SSE chunk should stream immediately without buffering (took {first:?})"
+    );
+    assert!(
+        total_elapsed >= Duration::from_millis(3_100),
+        "SSE stream must survive past the old 3000ms probe timeout (total {total_elapsed:?})"
+    );
+
+    let text = String::from_utf8(received).expect("valid utf8 sse");
+    assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(text.contains("Transfer-Encoding: chunked\r\n"));
+    assert!(text.contains("Content-Type: text/event-stream\r\n"));
+    assert!(text.contains("chunk-1"));
+    assert!(text.contains("chunk-2"));
+    assert!(text.contains("chunk-3"));
+    assert!(text.contains("data: [DONE]"));
+    assert!(text.ends_with("0\r\n\r\n"));
+
+    upstream_task.await.expect("upstream task finishes");
+    srv.shutdown().await;
+}
+
+#[tokio::test]
+async fn studio_enforces_sec_fetch_site_host_origin_unc_block_and_300s_exec_ceiling() {
+    let sandbox = TempTestDir::new("security-and-exec");
+    let cfg = build_isolated_config(&sandbox);
+    let srv = start_studio_server(cfg).await.expect("start studio");
+    let addr = srv.local_addr();
+
+    // 1. Universal Host / Origin / Sec-Fetch-Site guards -> 403
+    let bad_host = send_raw_http(
+        addr,
+        "GET /api/health HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(bad_host.status, 403);
+    assert_eq!(bad_host.json()["code"], "forbidden_host");
+
+    let bad_origin = http_request(
+        addr,
+        "GET",
+        "/api/health",
+        &[("Origin", "https://evil.example")],
+        None,
+    )
+    .await;
+    assert_eq!(bad_origin.status, 403);
+    assert_eq!(bad_origin.json()["code"], "forbidden_origin");
+
+    let cross_site = http_request(
+        addr,
+        "GET",
+        "/api/health",
+        &[("Sec-Fetch-Site", "cross-site")],
+        None,
+    )
+    .await;
+    assert_eq!(cross_site.status, 403);
+    assert_eq!(cross_site.json()["code"], "forbidden_cross_site");
+
+    let same_origin = http_request(
+        addr,
+        "GET",
+        "/api/health",
+        &[("Sec-Fetch-Site", "same-origin")],
+        None,
+    )
+    .await;
+    assert_eq!(same_origin.status, 200);
+
+    // 2. UNC/SMB network paths -> 400 unc_path_blocked
+    let unc_file = http_request(
+        addr,
+        "GET",
+        "/api/workspace/file?path=%5C%5Cevil-server%5Cshare%5Csecret.txt",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(unc_file.status, 400);
+    assert_eq!(unc_file.json()["code"], "unc_path_blocked");
+
+    #[cfg(windows)]
+    let (prog, prog_args) = ("cmd", vec!["/C", "echo exec-timeout-ok"]);
+    #[cfg(not(windows))]
+    let (prog, prog_args) = ("sh", vec!["-c", "echo exec-timeout-ok"]);
+
+    let unc_exec = http_request(
+        addr,
+        "POST",
+        "/api/workspace/exec",
+        &[],
+        Some(json!({
+            "program": prog,
+            "args": prog_args,
+            "cwd": "\\\\evil-server\\share"
+        })),
+    )
+    .await;
+    assert_eq!(unc_exec.status, 400);
+    assert_eq!(unc_exec.json()["code"], "unc_path_blocked");
+
+    // 3. /api/workspace/exec timeout raised to default 120s / max 300s
+    let exec_120s = http_request(
+        addr,
+        "POST",
+        "/api/workspace/exec",
+        &[],
+        Some(json!({
+            "program": prog,
+            "args": prog_args,
+            "timeoutMs": 120_000
+        })),
+    )
+    .await;
+    assert_eq!(exec_120s.status, 200);
+    assert_eq!(exec_120s.json()["success"], true);
+
+    let exec_over_300s = http_request(
+        addr,
+        "POST",
+        "/api/workspace/exec",
+        &[],
+        Some(json!({
+            "program": prog,
+            "args": prog_args,
+            "timeoutMs": 300_001
+        })),
+    )
+    .await;
+    assert_eq!(exec_over_300s.status, 400);
+    assert_eq!(exec_over_300s.json()["code"], "invalid_timeout");
+
+    srv.shutdown().await;
+}
+
+#[tokio::test]
+async fn studio_downloader_and_omnidrive_routes_enforce_ssrf_unc_wal_segments_and_sse() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+
+    // 1. Live loopback mock HTTP server verifying SecurityPolicy::strict() blocks loopback SSRF.
+    let mock_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback mock server");
+    let mock_addr = mock_listener.local_addr().expect("mock addr");
+    let mock_hits = Arc::new(AtomicUsize::new(0));
+    let mock_hits_bg = Arc::clone(&mock_hits);
+    let mock_task = tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = mock_listener.accept().await else {
+                break;
+            };
+            mock_hits_bg.fetch_add(1, Ordering::Relaxed);
+            let mut buf = [0_u8; 512];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntest")
+                .await;
+        }
+    });
+
+    let sandbox = TempTestDir::new("wave3-downloads");
+    let cfg = build_isolated_config(&sandbox);
+    let dl_db = cfg.downloads_db_path();
+    let ws_root = cfg.workspace_root.clone();
+    let staging_dir = cfg.downloads_staging_dir();
+    let srv = start_studio_server(cfg).await.expect("start studio");
+    let addr = srv.local_addr();
+
+    // 2. Host/Origin/Sec-Fetch-Site 403 guards apply to downloader and omni-drive routes.
+    let bad_host = send_raw_http(
+        addr,
+        "GET /api/downloads/list HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(bad_host.status, 403);
+    assert_eq!(bad_host.json()["code"], "forbidden_host");
+
+    let bad_origin = http_request(
+        addr,
+        "GET",
+        "/api/omni-drive/providers",
+        &[("Origin", "https://evil.example")],
+        None,
+    )
+    .await;
+    assert_eq!(bad_origin.status, 403);
+    assert_eq!(bad_origin.json()["code"], "forbidden_origin");
+
+    let cross_site = http_request(
+        addr,
+        "GET",
+        "/api/downloads/list",
+        &[("Sec-Fetch-Site", "cross-site")],
+        None,
+    )
+    .await;
+    assert_eq!(cross_site.status, 403);
+    assert_eq!(cross_site.json()["code"], "forbidden_cross_site");
+
+    // 3. Loopback mock URL MUST be blocked with HTTP 403 and zero hits leaking to the loopback server.
+    let loopback_url = format!("http://{mock_addr}/fixture.bin");
+    let probe_ssrf = http_request(
+        addr,
+        "POST",
+        "/api/downloads/probe",
+        &[],
+        Some(json!({ "url": loopback_url })),
+    )
+    .await;
+    assert_eq!(probe_ssrf.status, 403);
+    assert_eq!(probe_ssrf.json()["code"], "SSRF_OR_RANGE_POLICY_BLOCKED");
+
+    let start_ssrf = http_request(
+        addr,
+        "POST",
+        "/api/downloads/start",
+        &[],
+        Some(json!({ "url": loopback_url })),
+    )
+    .await;
+    assert_eq!(start_ssrf.status, 403);
+    assert_eq!(start_ssrf.json()["code"], "SSRF_OR_RANGE_POLICY_BLOCKED");
+    assert_eq!(
+        mock_hits.load(Ordering::Relaxed),
+        0,
+        "SSRF guard must never leak a TCP hit to loopback mock server"
+    );
+
+    // 4. UNC/SMB staging_dir -> 400 unc_path_blocked; inside-workspace staging_dir -> 403 FORBIDDEN_PATH.
+    let start_unc = http_request(
+        addr,
+        "POST",
+        "/api/downloads/start",
+        &[],
+        Some(json!({
+            "url": "https://cdn.example.org/file.bin",
+            "staging_dir": "\\\\evil-server\\share\\drop"
+        })),
+    )
+    .await;
+    assert_eq!(start_unc.status, 400);
+    assert_eq!(start_unc.json()["code"], "unc_path_blocked");
+
+    let start_nt_obj = http_request(
+        addr,
+        "POST",
+        "/api/downloads/start",
+        &[],
+        Some(json!({
+            "url": "https://cdn.example.org/file.bin",
+            "staging_dir": "\\??\\C:\\Windows\\Temp\\drop"
+        })),
+    )
+    .await;
+    assert_eq!(start_nt_obj.status, 400);
+    assert_eq!(start_nt_obj.json()["code"], "unc_path_blocked");
+
+    let start_inside_ws = http_request(
+        addr,
+        "POST",
+        "/api/downloads/start",
+        &[],
+        Some(json!({
+            "url": "https://cdn.example.org/file.bin",
+            "staging_dir": ws_root.join("inside-dl").display().to_string()
+        })),
+    )
+    .await;
+    assert_eq!(start_inside_ws.status, 403);
+    assert_eq!(start_inside_ws.json()["code"], "FORBIDDEN_PATH");
+
+    // 5. Seed a real persisted job + 128 segments in WAL SQLite and verify list/get/segments/SSE.
+    let store = DownloadStore::open(&dl_db, Some(&ws_root)).expect("open wal store");
+    let now_ms = 1_700_000_000_000u64;
+    store
+        .upsert_job(&DownloadJobSnapshot {
+            job_id: "job-wave3-128".to_string(),
+            sanitized_url: "https://cdn.example.org/archive.tar.zst".to_string(),
+            provider_id: "generic_http".to_string(),
+            destination_path: staging_dir.join("archive.tar.zst"),
+            part_path: staging_dir.join("archive.tar.zst.part"),
+            total_bytes: 128 * 1024,
+            downloaded_bytes: 64 * 1024,
+            status: DownloadStatus::Paused,
+            pacing_mode: PacingMode::Adaptive,
+            streams: 128,
+            etag: Some("\"wave3-v1\"".to_string()),
+            last_modified: None,
+            validator_strength: HttpValidatorStrength::StrongEtag,
+            sha256_expected: None,
+            sha256_actual: None,
+            crc32c_expected: None,
+            crc32c_actual: None,
+            error_code: None,
+            error_message: None,
+            drm_supported: false,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        })
+        .expect("seed job");
+    let segs: Vec<ChunkRange> = (0..128usize)
+        .map(|i| ChunkRange {
+            chunk_id: i,
+            start: (i as u64) * 1024,
+            end: ((i as u64) + 1) * 1024 - 1,
+            downloaded: if i < 64 { 1024 } else { 0 },
+            is_completed: i < 64,
+        })
+        .collect();
+    store
+        .replace_segments("job-wave3-128", &segs)
+        .expect("seed 128 segments");
+    drop(store);
+
+    let list_resp = http_request(addr, "GET", "/api/downloads/list", &[], None).await;
+    assert_eq!(list_resp.status, 200);
+    assert_eq!(list_resp.json()["count"], 1);
+    assert_eq!(list_resp.json()["drm_supported"], false);
+    assert_eq!(list_resp.json()["jobs"][0]["job_id"], "job-wave3-128");
+
+    let get_resp = http_request(
+        addr,
+        "GET",
+        "/api/downloads/get?id=job-wave3-128",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(get_resp.status, 200);
+    assert_eq!(get_resp.json()["job"]["streams"], 128);
+
+    let segs_resp = http_request(
+        addr,
+        "GET",
+        "/api/downloads/segments?id=job-wave3-128",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(segs_resp.status, 200);
+    assert_eq!(segs_resp.json()["count"], 128);
+    assert_eq!(segs_resp.json()["segments"][0]["is_completed"], true);
+    assert_eq!(segs_resp.json()["segments"][127]["is_completed"], false);
+
+    // Pause/cancel on non-running persisted job return clean 404 JOB_NOT_FOUND.
+    let pause_resp = http_request(
+        addr,
+        "POST",
+        "/api/downloads/pause",
+        &[],
+        Some(json!({ "job_id": "job-wave3-128" })),
+    )
+    .await;
+    assert_eq!(pause_resp.status, 404);
+    assert_eq!(pause_resp.json()["code"], "JOB_NOT_FOUND");
+
+    let cancel_resp = http_request(
+        addr,
+        "POST",
+        "/api/downloads/cancel",
+        &[],
+        Some(json!({ "job_id": "job-wave3-128" })),
+    )
+    .await;
+    assert_eq!(cancel_resp.status, 404);
+    assert_eq!(cancel_resp.json()["code"], "JOB_NOT_FOUND");
+
+    // 6. Verify /api/downloads/events live SSE stream emits snapshot event immediately.
+    let mut sse_client = TcpStream::connect(addr).await.expect("connect sse");
+    let sse_req = format!(
+        "GET /api/downloads/events HTTP/1.1\r\nHost: {addr}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+    );
+    sse_client
+        .write_all(sse_req.as_bytes())
+        .await
+        .expect("write sse req");
+    let mut sse_buf = Vec::new();
+    let mut tmp = [0_u8; 2048];
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let n = tokio::time::timeout(Duration::from_secs(2), sse_client.read(&mut tmp))
+            .await
+            .expect("sse read timeout")
+            .expect("sse read ok");
+        if n == 0 {
+            break;
+        }
+        sse_buf.extend_from_slice(&tmp[..n]);
+        let so_far = String::from_utf8_lossy(&sse_buf);
+        if so_far.contains("event: snapshot") && so_far.contains("job-wave3-128") {
+            break;
+        }
+    }
+    let sse_text = String::from_utf8_lossy(&sse_buf);
+    assert!(sse_text.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(sse_text.contains("Content-Type: text/event-stream"));
+    assert!(sse_text.contains("Transfer-Encoding: chunked"));
+    assert!(sse_text.contains("event: snapshot"));
+    assert!(sse_text.contains("job-wave3-128"));
+    drop(sse_client);
+
+    // 7. Verify all /api/omni-drive/* routes.
+    let resolved = http_request(
+        addr,
+        "POST",
+        "/api/omni-drive/resolve",
+        &[],
+        Some(json!({
+            "url": "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit",
+            "export_format": "pdf"
+        })),
+    )
+    .await;
+    assert_eq!(resolved.status, 200);
+    assert_eq!(resolved.json()["resource"]["kind"], "google_doc");
+    assert_eq!(resolved.json()["export_target"]["extension"], "pdf");
+
+    let batch = http_request(
+        addr,
+        "POST",
+        "/api/omni-drive/batch-expand",
+        &[],
+        Some(json!({
+            "pattern": "https://cdn.example.org/dataset-[01-03].bin"
+        })),
+    )
+    .await;
+    assert_eq!(batch.status, 200);
+    assert_eq!(batch.json()["count"], 3);
+
+    // Minimal ISO-BMFF `ftyp` + `pssh` (Widevine UUID) bytes to prove read-only DRM detection.
+    let mut mp4_bytes: Vec<u8> = Vec::new();
+    mp4_bytes.extend_from_slice(&20u32.to_be_bytes());
+    mp4_bytes.extend_from_slice(b"ftypisom\x00\x00\x02\x00isom");
+    // pssh box: 8 header + 4 version/flags + 16 Widevine system_id + 4 data_size = 32 bytes
+    mp4_bytes.extend_from_slice(&32u32.to_be_bytes());
+    mp4_bytes.extend_from_slice(b"pssh");
+    mp4_bytes.extend_from_slice(&[0, 0, 0, 0]);
+    mp4_bytes.extend_from_slice(&[
+        0xed, 0xef, 0x8b, 0xa9, 0x79, 0xd6, 0x4a, 0xce, 0xa3, 0xc8, 0x27, 0xdc, 0xd5, 0x1d, 0x21,
+        0xed,
+    ]);
+    mp4_bytes.extend_from_slice(&0u32.to_be_bytes());
+    let mp4_b64 = base64::engine::general_purpose::STANDARD.encode(&mp4_bytes);
+
+    let media = http_request(
+        addr,
+        "POST",
+        "/api/omni-drive/inspect-media",
+        &[],
+        Some(json!({ "bytes_base64": mp4_b64 })),
+    )
+    .await;
+    assert_eq!(media.status, 200);
+    assert_eq!(media.json()["drm_supported"], false);
+    assert_eq!(media.json()["report"]["has_pssh"], true);
+    assert_eq!(media.json()["report"]["drm_detected"], true);
+
+    let providers = http_request(addr, "GET", "/api/omni-drive/providers", &[], None).await;
+    assert_eq!(providers.status, 200);
+    assert_eq!(providers.json()["count"], 23);
+
+    let handoffs = http_request(addr, "GET", "/api/omni-drive/handoffs", &[], None).await;
+    assert_eq!(handoffs.status, 200);
+    assert_eq!(
+        handoffs.json()["execution_mode"],
+        "MANUAL_VISIBLE_BROWSER_ONLY"
+    );
+    assert_eq!(handoffs.json()["auto_solve_permitted"], false);
+
+    mock_task.abort();
+    srv.shutdown().await;
+}
+
+#[tokio::test]
+async fn studio_notebook_crud_ingest_grounding_btw_bridge_and_artifacts_roundtrip() {
+    let sandbox = TempTestDir::new("wave3-notebooks");
+    let cfg = build_isolated_config(&sandbox);
+    let srv = start_studio_server(cfg).await.expect("start studio");
+    let addr = srv.local_addr();
+
+    // 1. Status & CRUD
+    let status = http_request(addr, "GET", "/api/notebooks/status", &[], None).await;
+    assert_eq!(status.status, 200);
+    assert_eq!(status.json()["status"]["crate_name"], "omnia-notebook");
+
+    let created = http_request(
+        addr,
+        "POST",
+        "/api/notebooks",
+        &[],
+        Some(json!({
+            "title": "Wave 3 Research Notebook",
+            "description": "Studio integration test notebook"
+        })),
+    )
+    .await;
+    assert_eq!(created.status, 200);
+    let nb_id = created.json()["notebook"]["notebook_id"]
+        .as_str()
+        .expect("notebook_id")
+        .to_string();
+
+    let listed = http_request(addr, "GET", "/api/notebooks", &[], None).await;
+    assert_eq!(listed.status, 200);
+    assert_eq!(listed.json()["count"], 1);
+
+    let fetched = http_request(
+        addr,
+        "GET",
+        &format!("/api/notebooks/get?id={nb_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(fetched.status, 200);
+    assert_eq!(fetched.json()["notebook"]["title"], "Wave 3 Research Notebook");
+
+    let updated_model = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/model",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "model_id": "gemini-3.8-flash",
+            "effort": "high"
+        })),
+    )
+    .await;
+    assert_eq!(updated_model.status, 200);
+    assert_eq!(updated_model.json()["notebook"]["effort_level"], "high");
+
+    // 2. Source ingest (+ UNC guard) + list + preview
+    let unc_ingest = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/sources/ingest",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "filename": "\\\\evil-server\\share\\doc.md",
+            "text": "blocked"
+        })),
+    )
+    .await;
+    assert_eq!(unc_ingest.status, 400);
+    assert_eq!(unc_ingest.json()["code"], "unc_path_blocked");
+
+    let ingested = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/sources/ingest",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "title": "Rust Architecture Notes",
+            "filename": "architecture.md",
+            "text": "# Omnia Studio\nOmnia uses winsqlite WAL mode and Win32 Job Objects for zero-orphan subprocess supervision.\n"
+        })),
+    )
+    .await;
+    assert_eq!(ingested.status, 200);
+    let source_id = ingested.json()["outcome"]["source"]["source_id"]
+        .as_str()
+        .expect("source_id")
+        .to_string();
+
+    let sources = http_request(
+        addr,
+        "GET",
+        &format!("/api/notebooks/sources?notebook_id={nb_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(sources.status, 200);
+    assert_eq!(sources.json()["count"], 1);
+
+    let preview = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/preview",
+        &[],
+        Some(json!({
+            "filename": "sample.html",
+            "text": "<html><body><h1>Preview</h1></body></html>"
+        })),
+    )
+    .await;
+    assert_eq!(preview.status, 200);
+    assert_eq!(
+        preview.header("X-Content-Type-Options"),
+        Some("nosniff")
+    );
+    assert!(
+        preview
+            .header("Content-Disposition")
+            .unwrap_or_default()
+            .starts_with("attachment"),
+        "HTML preview HTTP header must force Content-Disposition: attachment"
+    );
+    assert!(
+        preview
+            .header("Content-Security-Policy")
+            .unwrap_or_default()
+            .contains("sandbox"),
+        "HTML preview HTTP header must emit sandbox CSP"
+    );
+    assert_eq!(
+        preview.json()["preview"]["headers"]["x_content_type_options"],
+        "nosniff"
+    );
+    assert!(preview.json()["preview"]["headers"]["content_disposition"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("attachment"));
+
+    // 3. Grounded prompt, citation verification & main turns
+    let grounded = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/grounded-prompt",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "query": "How does Omnia supervise subprocesses?",
+            "max_chunks": 4
+        })),
+    )
+    .await;
+    assert_eq!(grounded.status, 200);
+    assert!(
+        !grounded.json()["pack"]["evidence"]
+            .as_array()
+            .expect("evidence array")
+            .is_empty()
+    );
+
+    let verify_ok = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/verify-citations",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "response_markdown": format!("Omnia uses Win32 Job Objects [{source_id}:0].")
+        })),
+    )
+    .await;
+    assert_eq!(verify_ok.status, 200);
+    assert_eq!(verify_ok.json()["report"]["valid"], true);
+
+    let turn = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/turns",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "surface": "notebook",
+            "prompt_text": "How does Omnia supervise subprocesses?",
+            "response_markdown": format!("Omnia uses Win32 Job Objects [{source_id}:0]."),
+            "model_id": "gemini-3.8-flash",
+            "effort": "medium",
+            "citations": [format!("{source_id}:0")]
+        })),
+    )
+    .await;
+    assert_eq!(turn.status, 200);
+    let turn_id = turn.json()["turn"]["turn_id"]
+        .as_str()
+        .expect("turn_id")
+        .to_string();
+
+    // 4. Unified Quote + BTW (zero pollution on main turns!) + promote + Cross-Bridge
+    let quote_card = http_request(
+        addr,
+        "POST",
+        "/api/btw/quote-card",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "surface": "notebook",
+            "anchor_turn_id": turn_id,
+            "source_id": source_id,
+            "excerpt": "Win32 Job Objects",
+            "char_start": 11,
+            "char_end": 28
+        })),
+    )
+    .await;
+    assert_eq!(quote_card.status, 200);
+    let quote_ref = quote_card.json()["card"]["quote"].clone();
+
+    let btw_created = http_request(
+        addr,
+        "POST",
+        "/api/btw/create",
+        &[],
+        Some(json!({
+            "quote": quote_ref,
+            "question": "Does KILL_ON_JOB_CLOSE handle grandchildren too?"
+        })),
+    )
+    .await;
+    assert_eq!(btw_created.status, 200);
+    let btw_id = btw_created.json()["thread"]["btw_id"]
+        .as_str()
+        .expect("btw_id")
+        .to_string();
+
+    let btw_appended = http_request(
+        addr,
+        "POST",
+        "/api/btw/append",
+        &[],
+        Some(json!({
+            "btw_id": btw_id,
+            "role": "assistant",
+            "content": "Yes, closing the Job handle kills all descendant processes synchronously."
+        })),
+    )
+    .await;
+    assert_eq!(btw_appended.status, 200);
+    assert_eq!(
+        btw_appended.json()["thread"]["messages"]
+            .as_array()
+            .expect("messages")
+            .len(),
+        2
+    );
+
+    // Zero-pollution invariant: main turns count must still be 1!
+    let turns_after_btw = http_request(
+        addr,
+        "GET",
+        &format!("/api/notebooks/turns?notebook_id={nb_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(turns_after_btw.status, 200);
+    assert_eq!(turns_after_btw.json()["count"], 1);
+
+    let btw_list = http_request(
+        addr,
+        "GET",
+        &format!("/api/btw/list?notebook_id={nb_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(btw_list.status, 200);
+    assert_eq!(btw_list.json()["count"], 1);
+
+    let promoted = http_request(
+        addr,
+        "POST",
+        "/api/btw/promote",
+        &[],
+        Some(json!({
+            "btw_id": btw_id,
+            "title": "Promoted BTW Note"
+        })),
+    )
+    .await;
+    assert_eq!(promoted.status, 200);
+    assert_eq!(promoted.json()["outcome"]["source"]["title"], "Promoted BTW Note");
+
+    let bridged = http_request(
+        addr,
+        "POST",
+        "/api/bridge",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "direction": "gemini_to_notebook",
+            "title": "Gemini Insight",
+            "content": "Captured insight from Gemini side panel."
+        })),
+    )
+    .await;
+    assert_eq!(bridged.status, 200);
+
+    let bridge_events = http_request(
+        addr,
+        "GET",
+        &format!("/api/bridge?notebook_id={nb_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(bridge_events.status, 200);
+    assert_eq!(bridge_events.json()["count"], 1);
+
+    // 5. Artifacts generate/list/rename/delete + heal/clear + delete notebook
+    let artifact = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/artifacts",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "kind": "briefing",
+            "title": "Architecture Briefing"
+        })),
+    )
+    .await;
+    assert_eq!(artifact.status, 200);
+    let art_id = artifact.json()["artifact"]["artifact_id"]
+        .as_str()
+        .expect("artifact_id")
+        .to_string();
+
+    let renamed = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/artifacts/rename",
+        &[],
+        Some(json!({
+            "artifact_id": art_id,
+            "title": "Updated Briefing"
+        })),
+    )
+    .await;
+    assert_eq!(renamed.status, 200);
+    assert_eq!(renamed.json()["artifact"]["title"], "Updated Briefing");
+
+    let art_list = http_request(
+        addr,
+        "GET",
+        &format!("/api/notebooks/artifacts?notebook_id={nb_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(art_list.status, 200);
+    assert_eq!(art_list.json()["count"], 1);
+
+    let healed = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/sources/heal",
+        &[],
+        Some(json!({ "notebook_id": nb_id })),
+    )
+    .await;
+    assert_eq!(healed.status, 200);
+
+    let cleared = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/sources/clear",
+        &[],
+        Some(json!({ "notebook_id": nb_id })),
+    )
+    .await;
+    assert_eq!(cleared.status, 200);
+    // Clear sources MUST preserve turns and artifacts!
+    let turns_after_clear = http_request(
+        addr,
+        "GET",
+        &format!("/api/notebooks/turns?notebook_id={nb_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(turns_after_clear.json()["count"], 1);
+
+    let art_deleted = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/artifacts/delete",
+        &[],
+        Some(json!({ "artifact_id": art_id })),
+    )
+    .await;
+    assert_eq!(art_deleted.status, 200);
+    assert_eq!(art_deleted.json()["deleted"], true);
+
+    let nb_deleted = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/delete",
+        &[],
+        Some(json!({ "notebook_id": nb_id })),
+    )
+    .await;
+    assert_eq!(nb_deleted.status, 200);
+    assert_eq!(nb_deleted.json()["deleted"], true);
 
     srv.shutdown().await;
 }

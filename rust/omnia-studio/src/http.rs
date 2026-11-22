@@ -1,6 +1,7 @@
 //! Async Tokio HTTP/1.1 loopback server, AdGuard header/request-line parser, CORS, and static UI server.
 
 use crate::telemetry::is_reparse_or_symlink;
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -10,8 +11,9 @@ use std::path::{Component, Path};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time;
 use url::{form_urlencoded, Host, Url};
@@ -82,13 +84,30 @@ impl HttpRequest {
     }
 }
 
+/// Streaming HTTP body forwarded as chunked HTTP/1.1 without full-body buffering.
+#[derive(Debug)]
+pub enum StreamBody {
+    /// Upstream `reqwest::Response` byte stream (used for `/api/chat` SSE pass-through).
+    UpstreamProxy {
+        upstream: reqwest::Response,
+        chunk_timeout: Duration,
+        max_bytes: usize,
+    },
+    /// Internal server-sent event stream pushed from an async producer task.
+    EventStream {
+        receiver: mpsc::Receiver<Vec<u8>>,
+        keepalive_interval: Duration,
+    },
+}
+
 /// HTTP response written back to the TCP client.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HttpResponse {
     pub status: u16,
     pub content_type: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub stream_body: Option<Box<StreamBody>>,
 }
 
 impl HttpResponse {
@@ -107,6 +126,7 @@ impl HttpResponse {
             content_type: "application/json; charset=utf-8".to_string(),
             headers: Vec::new(),
             body,
+            stream_body: None,
         }
     }
 
@@ -135,6 +155,7 @@ impl HttpResponse {
             content_type: "text/plain; charset=utf-8".to_string(),
             headers: Vec::new(),
             body: Vec::new(),
+            stream_body: None,
         }
     }
 
@@ -146,6 +167,47 @@ impl HttpResponse {
             content_type: content_type.to_string(),
             headers: Vec::new(),
             body,
+            stream_body: None,
+        }
+    }
+
+    /// Constructs a zero-buffer chunked streaming response (used for SSE pass-through).
+    #[must_use]
+    pub fn stream(
+        status: u16,
+        content_type: &str,
+        upstream: reqwest::Response,
+        chunk_timeout: Duration,
+        max_bytes: usize,
+    ) -> Self {
+        Self {
+            status,
+            content_type: content_type.to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            stream_body: Some(Box::new(StreamBody::UpstreamProxy {
+                upstream,
+                chunk_timeout,
+                max_bytes,
+            })),
+        }
+    }
+
+    /// Constructs a server-sent events (SSE) chunked stream backed by an async `mpsc::Receiver`.
+    #[must_use]
+    pub fn sse_channel(
+        receiver: mpsc::Receiver<Vec<u8>>,
+        keepalive_interval: Duration,
+    ) -> Self {
+        Self {
+            status: 200,
+            content_type: "text/event-stream; charset=utf-8".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            stream_body: Some(Box::new(StreamBody::EventStream {
+                receiver,
+                keepalive_interval,
+            })),
         }
     }
 }
@@ -249,7 +311,11 @@ impl StudioServer {
 #[must_use]
 pub fn is_allowed_loopback_host(raw: &str) -> bool {
     let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed.len() > 256 || has_control_or_space(trimmed) {
+    if trimmed.is_empty()
+        || trimmed.len() > 256
+        || has_control_or_space(trimmed)
+        || trimmed.contains('@')
+    {
         return false;
     }
     let host_part = if let Some(rest) = trimmed.strip_prefix('[') {
@@ -615,6 +681,15 @@ pub fn parse_http_head_and_remainder(
             ));
         }
     }
+    if let Some(fetch_site) = headers.get("sec-fetch-site") {
+        if !is_allowed_fetch_site(fetch_site) {
+            return Err(HttpResponse::error(
+                403,
+                "forbidden_cross_site",
+                "Cross-site browser request rejected by Sec-Fetch-Site guard.",
+            ));
+        }
+    }
 
     let req = HttpRequest {
         method: method.to_string(),
@@ -832,7 +907,154 @@ where
         }
     }
 
+    if let Some(stream_body) = response.stream_body.take() {
+        return write_streaming_http_response(stream, &response, *stream_body).await;
+    }
+
     write_http_response(&mut stream, &response).await
+}
+
+/// Validates a `Sec-Fetch-Site` browser header (`cross-site` is always blocked with HTTP 403).
+#[must_use]
+pub fn is_allowed_fetch_site(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if has_control_or_space(trimmed) {
+        return false;
+    }
+    trimmed
+        .split(',')
+        .map(str::trim)
+        .all(|token| !token.eq_ignore_ascii_case("cross-site"))
+}
+
+async fn wait_for_client_disconnect(reader: &mut OwnedReadHalf) -> io::Result<()> {
+    let mut buf = [0_u8; 512];
+    loop {
+        reader.readable().await?;
+        match reader.try_read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(_) => continue,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn write_streaming_http_response(
+    stream: TcpStream,
+    response: &HttpResponse,
+    stream_body: StreamBody,
+) -> io::Result<()> {
+    let (mut reader, mut writer) = stream.into_split();
+    let reason = status_reason(response.status);
+    let mut head = format!(
+        "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nCache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\n",
+        response.status, response.content_type,
+    );
+    for (name, value) in &response.headers {
+        let safe_name = name.replace(['\r', '\n'], "");
+        let safe_val = value.replace(['\r', '\n'], "");
+        head.push_str(&format!("{safe_name}: {safe_val}\r\n"));
+    }
+    head.push_str("\r\n");
+
+    writer.write_all(head.as_bytes()).await?;
+    writer.flush().await?;
+
+    let client_disconnect = wait_for_client_disconnect(&mut reader);
+    tokio::pin!(client_disconnect);
+
+    match stream_body {
+        StreamBody::UpstreamProxy {
+            upstream,
+            chunk_timeout,
+            max_bytes,
+        } => {
+            let mut total_bytes = 0usize;
+            let mut upstream = upstream.bytes_stream();
+            loop {
+                let next = tokio::select! {
+                    disc = &mut client_disconnect => {
+                        return disc.and_then(|_| {
+                            Err(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "studio SSE client disconnected",
+                            ))
+                        });
+                    }
+                    item = time::timeout(chunk_timeout, upstream.next()) => item,
+                };
+
+                let chunk = match next {
+                    Ok(Some(Ok(bytes))) => bytes,
+                    Ok(None) => break,
+                    Ok(Some(Err(_))) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "upstream SSE stream terminated unexpectedly",
+                        ));
+                    }
+                    Err(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "upstream SSE chunk timed out",
+                        ));
+                    }
+                };
+                if chunk.is_empty() {
+                    continue;
+                }
+                total_bytes = total_bytes.saturating_add(chunk.len());
+                if total_bytes > max_bytes {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "upstream SSE stream exceeded max byte limit",
+                    ));
+                }
+                let frame_head = format!("{:X}\r\n", chunk.len());
+                writer.write_all(frame_head.as_bytes()).await?;
+                writer.write_all(&chunk).await?;
+                writer.write_all(b"\r\n").await?;
+                writer.flush().await?;
+            }
+        }
+        StreamBody::EventStream {
+            mut receiver,
+            keepalive_interval,
+        } => {
+            let ping_frame = b"8\r\n: ping\n\n\r\n";
+            loop {
+                tokio::select! {
+                    _ = &mut client_disconnect => {
+                        return Ok(());
+                    }
+                    maybe_chunk = receiver.recv() => {
+                        match maybe_chunk {
+                            Some(chunk) if !chunk.is_empty() => {
+                                let frame_head = format!("{:X}\r\n", chunk.len());
+                                writer.write_all(frame_head.as_bytes()).await?;
+                                writer.write_all(&chunk).await?;
+                                writer.write_all(b"\r\n").await?;
+                                writer.flush().await?;
+                            }
+                            Some(_) => continue,
+                            None => break,
+                        }
+                    }
+                    _ = time::sleep(keepalive_interval) => {
+                        writer.write_all(ping_frame).await?;
+                        writer.flush().await?;
+                    }
+                }
+            }
+        }
+    }
+
+    writer.write_all(b"0\r\n\r\n").await?;
+    writer.flush().await
 }
 
 async fn write_http_response(stream: &mut TcpStream, response: &HttpResponse) -> io::Result<()> {

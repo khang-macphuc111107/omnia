@@ -12,7 +12,7 @@ use crate::native_types::{
     validate_session_id, AgentEvent, AgentMessage, AgentRunStateRecord, AgentRunStatus,
     AgentSessionNavigationSnapshot, AgentSessionPage, AgentSessionPageCursor, AgentSessionSummary,
     CreateAgentSessionRequest, SaveAgentSessionNavigationRequest,
-    UpdateAgentSessionSettingsRequest, DEFAULT_AGENT_SESSION_PAGE_LIMIT, DEFAULT_TOKEN_BUDGET,
+    UpdateAgentSessionSettingsRequest, DEFAULT_AGENT_SESSION_PAGE_LIMIT,
     MAX_NAVIGATION_OPEN_SESSION_IDS,
 };
 
@@ -192,11 +192,7 @@ impl HarnessStore {
         };
         let title = normalize_and_validate_title(&req.title)?;
         let model = normalize_and_validate_model(&req.model)?;
-        let token_budget = if req.token_budget <= 0 {
-            DEFAULT_TOKEN_BUDGET
-        } else {
-            req.token_budget
-        };
+        let token_budget = req.token_budget.filter(|&budget| budget > 0);
 
         let summary = AgentSessionSummary {
             id,

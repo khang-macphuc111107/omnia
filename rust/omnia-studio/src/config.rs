@@ -303,6 +303,70 @@ impl StudioConfig {
         }
     }
 
+    /// Resolves the external Studio data directory (`OMNIA_HOME`, sandbox sibling of
+    /// `rollback_root`, or `D:\OmniaData\studio`), strictly outside `workspace_root`.
+    #[must_use]
+    pub fn studio_data_dir(&self) -> PathBuf {
+        if self.rollback_root != Path::new(DEFAULT_ROLLBACK_ROOT) {
+            if let Some(parent) = self.rollback_root.parent() {
+                return parent.join("studio-data");
+            }
+        }
+        if let Some(home) = non_empty_env("OMNIA_HOME") {
+            return PathBuf::from(home).join("studio");
+        }
+        #[cfg(windows)]
+        {
+            PathBuf::from(r"D:\OmniaData\studio")
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::temp_dir().join("omnia-data").join("studio")
+        }
+    }
+
+    /// Resolves the external WAL SQLite DB path for `omnia-downloader`.
+    #[must_use]
+    pub fn downloads_db_path(&self) -> PathBuf {
+        if let Some(custom) = non_empty_env("OMNIA_DOWNLOADS_DB") {
+            return PathBuf::from(custom);
+        }
+        self.studio_data_dir().join("downloads.db")
+    }
+
+    /// Resolves the default external download staging directory (outside `workspace_root`).
+    #[must_use]
+    pub fn downloads_staging_dir(&self) -> PathBuf {
+        if let Some(custom) = non_empty_env("OMNIA_DOWNLOADS_STAGING") {
+            return PathBuf::from(custom);
+        }
+        if self.rollback_root != Path::new(DEFAULT_ROLLBACK_ROOT) {
+            if let Some(parent) = self.rollback_root.parent() {
+                return parent.join("downloads-staging");
+            }
+        }
+        if let Some(home) = non_empty_env("OMNIA_HOME") {
+            return PathBuf::from(home).join("downloads");
+        }
+        #[cfg(windows)]
+        {
+            PathBuf::from(r"D:\OmniaData\downloads")
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::temp_dir().join("omnia-data").join("downloads")
+        }
+    }
+
+    /// Resolves the external WAL SQLite DB path for `omnia-notebook`.
+    #[must_use]
+    pub fn notebooks_db_path(&self) -> PathBuf {
+        if let Some(custom) = non_empty_env("OMNIA_NOTEBOOK_DB") {
+            return PathBuf::from(custom);
+        }
+        self.studio_data_dir().join("notebooks.db")
+    }
+
     /// Returns static CLI usage documentation.
     #[must_use]
     pub fn help_text() -> String {

@@ -544,6 +544,23 @@
     }
   }
 
+  async function requestStudioJson(method, path, body, options) {
+    const res = await requestJsonDetailed(method, path, body, options || { timeoutMs: 12000 });
+    const payload = res.data && typeof res.data === "object" ? res.data : {};
+    if (res.ok) {
+      return Object.assign({ ok: true, httpStatus: res.httpStatus }, payload);
+    }
+    const code = payload.code || res.error || (res.httpStatus ? "http_" + res.httpStatus : "network_unreachable");
+    const message = payload.message || res.message || ("HTTP " + res.httpStatus + " from " + path);
+    return Object.assign({}, payload, {
+      ok: false,
+      httpStatus: res.httpStatus,
+      code: String(code),
+      error: String(code),
+      message: String(message)
+    });
+  }
+
   function unavailableResult(error, extra) {
     return Object.assign({
       ok: false,
@@ -1277,6 +1294,205 @@
         total: 0,
         skills: []
       });
+    },
+
+    canAttemptHttp() {
+      return canAttemptHttp();
+    },
+
+    /* --- Wave 3: Downloads & OmniDrive Studio --- */
+    async probeDownload(url) {
+      return requestStudioJson("POST", "/api/downloads/probe", { url: String(url || "").trim() }, { timeoutMs: 30000 });
+    },
+
+    async startDownload(payload) {
+      return requestStudioJson("POST", "/api/downloads/start", payload || {}, { timeoutMs: 30000 });
+    },
+
+    async listDownloads() {
+      return requestStudioJson("GET", "/api/downloads/list", undefined, { timeoutMs: 10000 });
+    },
+
+    async getDownload(id) {
+      return requestStudioJson("GET", "/api/downloads/get?id=" + encodeURIComponent(String(id || "")), undefined, { timeoutMs: 10000 });
+    },
+
+    async getDownloadSegments(id) {
+      return requestStudioJson("GET", "/api/downloads/segments?id=" + encodeURIComponent(String(id || "")), undefined, { timeoutMs: 10000 });
+    },
+
+    async pauseDownload(jobId) {
+      return requestStudioJson("POST", "/api/downloads/pause", { job_id: String(jobId || "") }, { timeoutMs: 10000 });
+    },
+
+    async cancelDownload(jobId) {
+      return requestStudioJson("POST", "/api/downloads/cancel", { job_id: String(jobId || "") }, { timeoutMs: 10000 });
+    },
+
+    async resolveOmniDrive(url) {
+      return requestStudioJson("POST", "/api/omni-drive/resolve", { url: String(url || "").trim() }, { timeoutMs: 20000 });
+    },
+
+    async planOmniDriveFolder(payload) {
+      return requestStudioJson("POST", "/api/omni-drive/plan-folder", payload || {}, { timeoutMs: 30000 });
+    },
+
+    async expandOmniDriveBatch(pattern) {
+      return requestStudioJson("POST", "/api/omni-drive/batch-expand", { pattern: String(pattern || "") }, { timeoutMs: 10000 });
+    },
+
+    async inspectOmniDriveMedia(bytesBase64) {
+      return requestStudioJson("POST", "/api/omni-drive/inspect-media", { bytes_base64: String(bytesBase64 || "") }, { timeoutMs: 15000 });
+    },
+
+    async getOmniDriveProviders() {
+      return requestStudioJson("GET", "/api/omni-drive/providers", undefined, { timeoutMs: 10000 });
+    },
+
+    async getOmniDriveHandoffs() {
+      return requestStudioJson("GET", "/api/omni-drive/handoffs", undefined, { timeoutMs: 10000 });
+    },
+
+    /* --- Wave 3: Atelier Research Studio (Notebooks, Grounding, BTW, Bridge) --- */
+    async getNotebooksStatus() {
+      return requestStudioJson("GET", "/api/notebooks/status", undefined, { timeoutMs: 10000 });
+    },
+
+    async listNotebooks() {
+      return requestStudioJson("GET", "/api/notebooks", undefined, { timeoutMs: 10000 });
+    },
+
+    async createNotebook(payload) {
+      return requestStudioJson("POST", "/api/notebooks", payload || {}, { timeoutMs: 10000 });
+    },
+
+    async getNotebook(id) {
+      return requestStudioJson("GET", "/api/notebooks/get?id=" + encodeURIComponent(String(id || "")), undefined, { timeoutMs: 10000 });
+    },
+
+    async deleteNotebook(notebookId) {
+      return requestStudioJson("POST", "/api/notebooks/delete", { notebook_id: String(notebookId || "") }, { timeoutMs: 10000 });
+    },
+
+    async setNotebookModel(notebookId, modelId, effort) {
+      return requestStudioJson("POST", "/api/notebooks/model", {
+        notebook_id: String(notebookId || ""),
+        model_id: String(modelId || ""),
+        effort: String(effort || "medium")
+      }, { timeoutMs: 10000 });
+    },
+
+    async ingestNotebookSource(payload) {
+      return requestStudioJson("POST", "/api/notebooks/sources/ingest", payload || {}, { timeoutMs: 30000 });
+    },
+
+    async listNotebookSources(notebookId) {
+      return requestStudioJson("GET", "/api/notebooks/sources?notebook_id=" + encodeURIComponent(String(notebookId || "")), undefined, { timeoutMs: 10000 });
+    },
+
+    async clearNotebookSources(notebookId) {
+      return requestStudioJson("POST", "/api/notebooks/sources/clear", { notebook_id: String(notebookId || "") }, { timeoutMs: 15000 });
+    },
+
+    async healNotebookSources(notebookId) {
+      return requestStudioJson("POST", "/api/notebooks/sources/heal", { notebook_id: String(notebookId || "") }, { timeoutMs: 30000 });
+    },
+
+    async previewNotebookSource(payload) {
+      return requestStudioJson("POST", "/api/notebooks/preview", payload || {}, { timeoutMs: 15000 });
+    },
+
+    async groundedPrompt(notebookId, query, maxChunks) {
+      const body = {
+        notebook_id: String(notebookId || ""),
+        query: String(query || "")
+      };
+      if (maxChunks != null && Number.isFinite(Number(maxChunks))) {
+        body.max_chunks = Math.max(1, Math.min(24, Math.trunc(Number(maxChunks))));
+      }
+      return requestStudioJson("POST", "/api/notebooks/grounded-prompt", body, { timeoutMs: 20000 });
+    },
+
+    async verifyNotebookCitations(notebookId, responseMarkdown) {
+      return requestStudioJson("POST", "/api/notebooks/verify-citations", {
+        notebook_id: String(notebookId || ""),
+        response_markdown: String(responseMarkdown || "")
+      }, { timeoutMs: 10000 });
+    },
+
+    async listNotebookTurns(notebookId) {
+      return requestStudioJson("GET", "/api/notebooks/turns?notebook_id=" + encodeURIComponent(String(notebookId || "")), undefined, { timeoutMs: 10000 });
+    },
+
+    async recordNotebookTurn(payload) {
+      return requestStudioJson("POST", "/api/notebooks/turns", payload || {}, { timeoutMs: 15000 });
+    },
+
+    async listNotebookArtifacts(notebookId) {
+      return requestStudioJson("GET", "/api/notebooks/artifacts?notebook_id=" + encodeURIComponent(String(notebookId || "")), undefined, { timeoutMs: 10000 });
+    },
+
+    async generateNotebookArtifact(payload) {
+      return requestStudioJson("POST", "/api/notebooks/artifacts", payload || {}, { timeoutMs: 30000 });
+    },
+
+    async renameNotebookArtifact(artifactId, title) {
+      return requestStudioJson("POST", "/api/notebooks/artifacts/rename", {
+        artifact_id: String(artifactId || ""),
+        title: String(title || "")
+      }, { timeoutMs: 10000 });
+    },
+
+    async deleteNotebookArtifact(artifactId) {
+      return requestStudioJson("POST", "/api/notebooks/artifacts/delete", {
+        artifact_id: String(artifactId || "")
+      }, { timeoutMs: 10000 });
+    },
+
+    async importNotebookShare(notebookId, shareUrl) {
+      return requestStudioJson("POST", "/api/notebooks/import-share", {
+        notebook_id: String(notebookId || ""),
+        share_url: String(shareUrl || "").trim()
+      }, { timeoutMs: 30000 });
+    },
+
+    async createQuoteCard(payload) {
+      return requestStudioJson("POST", "/api/btw/quote-card", payload || {}, { timeoutMs: 10000 });
+    },
+
+    async createBtwThread(quote, question) {
+      return requestStudioJson("POST", "/api/btw/create", {
+        quote,
+        question: String(question || "")
+      }, { timeoutMs: 10000 });
+    },
+
+    async appendBtwMessage(btwId, role, content) {
+      return requestStudioJson("POST", "/api/btw/append", {
+        btw_id: String(btwId || ""),
+        role: String(role || "user"),
+        content: String(content || "")
+      }, { timeoutMs: 10000 });
+    },
+
+    async listBtwThreads(notebookId) {
+      return requestStudioJson("GET", "/api/btw/list?notebook_id=" + encodeURIComponent(String(notebookId || "")), undefined, { timeoutMs: 10000 });
+    },
+
+    async promoteBtwThread(btwId, title) {
+      const body = { btw_id: String(btwId || "") };
+      if (title != null && String(title).trim()) {
+        body.title = String(title).trim();
+      }
+      return requestStudioJson("POST", "/api/btw/promote", body, { timeoutMs: 15000 });
+    },
+
+    async bridgeTransfer(payload) {
+      return requestStudioJson("POST", "/api/bridge", payload || {}, { timeoutMs: 15000 });
+    },
+
+    async listBridgeEvents(notebookId) {
+      return requestStudioJson("GET", "/api/bridge?notebook_id=" + encodeURIComponent(String(notebookId || "")), undefined, { timeoutMs: 10000 });
     }
   };
 

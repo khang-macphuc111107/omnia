@@ -10,15 +10,18 @@ name = "omnia-studio"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 futures-util.workspace = true
 omnia-connector-gateway = { path = "../omnia-connector-gateway" }
 omnia-core = { path = "../omnia-core" }
+omnia-downloader.workspace = true
 omnia-graph = { path = "../omnia-graph" }
 omnia-harness = { path = "../omnia-harness" }
 omnia-media-capture = { path = "../omnia-media-capture" }
+omnia-notebook.workspace = true
 omnia-remote-control = { path = "../omnia-remote-control" }
 omnia-routing = { path = "../omnia-routing" }
-omnia-storage = { path = "../omnia-storage" }
+omnia-storage.workspace = true
 omnia-workspace-ops = { path = "../omnia-workspace-ops" }
 reqwest.workspace = true
 serde.workspace = true

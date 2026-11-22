@@ -127,6 +127,28 @@
             </span>
             <span class="kbd-hint rail-shortcut">Alt+5</span>
           </button>
+
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" aria-controls="view-omnidrive" data-nav-view="omnidrive" title="OmniDrive Studio — Multi-Stream Downloader & Drive Resolver (Alt+6)">
+            <span class="rail-nav-left">
+              <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M9 2.5v8.2M5.8 7.8L9 11l3.2-3.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M3 12.5v2.2h12v-2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="rail-label-text">OmniDrive</span>
+            </span>
+            <span class="kbd-hint rail-shortcut">Alt+6</span>
+          </button>
+
+          <button type="button" class="rail-nav-btn" role="tab" aria-selected="false" aria-controls="view-atelier" data-nav-view="atelier" title="Atelier Research Studio — Grounded Notebooks, Quote + BTW & Artifacts (Alt+7)">
+            <span class="rail-nav-left">
+              <svg class="rail-icon" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M3 3.5h5.2a2 2 0 0 1 1.8 1.1 2 2 0 0 1 1.8-1.1H15v10.8h-3.8a1.8 1.8 0 0 0-1.2.5 1.8 1.8 0 0 0-1.2-.5H3V3.5z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+                <line x1="9" y1="4.6" x2="9" y2="14.5" stroke="currentColor" stroke-width="1.3"/>
+              </svg>
+              <span class="rail-label-text">Atelier Studio</span>
+            </span>
+            <span class="kbd-hint rail-shortcut">Alt+7</span>
+          </button>
         </nav>
 
         <div class="rail-sessions-section">
@@ -715,6 +737,601 @@
             <div class="stack-sm" id="skillVaultResults"></div>
           </div>
         </section>
+
+        <!-- ==============================================================
+             VIEW 6: OMNIDRIVE STUDIO (MULTI-STREAM DOWNLOADER & DRIVE)
+             ============================================================== -->
+        <section class="studio-view view-omnidrive-grid" id="view-omnidrive" data-view-panel="omnidrive" role="tabpanel" aria-label="OmniDrive Studio Multi-Stream Downloader" hidden>
+          <header class="omnidrive-topbar">
+            <div class="stack-xs">
+              <div class="section-eyebrow">OmniDrive Studio · omnia-downloader</div>
+              <div class="row-wrap">
+                <strong style="font-size:1rem;">Multi-Stream Segmented Engine &amp; Drive Resolver</strong>
+                <span class="badge badge-cyan" id="odSseStatusBadge" role="status" aria-live="polite">SSE STANDBY</span>
+                <span class="badge" id="odJobCountBadge">0 jobs</span>
+              </div>
+            </div>
+            <div class="row-wrap">
+              <span class="badge badge-amber" title="Commercial DRM decryption and automated CAPTCHA solving remain strictly disabled">DRM: Unsupported · Auto-Solve: Off</span>
+              <span class="mono muted" id="odThroughputReadout" style="font-size:11px;">0 B/s</span>
+              <button type="button" class="btn btn-subtle btn-sm" id="btnOdRefreshAll" aria-label="Refresh OmniDrive Queue and Reconnect Stream">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M13.5 8a5.5 5.5 0 1 1-1.4-3.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  <path d="M13.5 2.5v2.6h-2.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>Refresh</span>
+              </button>
+            </div>
+          </header>
+
+          <aside class="omnidrive-controls-pane" aria-label="Download Probe and Launch Controls">
+            <form id="odStartForm" class="atelier-card stack-sm" aria-label="Start Segmented Download Form">
+              <div class="section-eyebrow">
+                <span>URL Probe &amp; Transfer Launch</span>
+                <span class="mono">1–128 streams</span>
+              </div>
+
+              <label class="field-label" for="odUrlInput">
+                <span>Target URL</span>
+                <input type="text" id="odUrlInput" class="studio-input mono" placeholder="Enter download or Google Drive URL…" autocomplete="off" required>
+              </label>
+
+              <div class="row-wrap">
+                <button type="button" class="btn btn-sm" id="btnOdProbe">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.4"/>
+                    <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  </svg>
+                  <span>Probe URL</span>
+                </button>
+                <button type="button" class="btn btn-subtle btn-sm" id="btnOdResolveDrive">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M5.5 2.5h5l3.5 6-2.5 4.5h-7L2 8.5l3.5-6z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+                  </svg>
+                  <span>Resolve Drive</span>
+                </button>
+              </div>
+
+              <div id="odProbeResult" class="atelier-card-elevated stack-xs" hidden aria-live="polite"></div>
+
+              <label class="field-label" for="odFilenameInput">
+                <span>Optional Filename</span>
+                <input type="text" id="odFilenameInput" class="studio-input mono" placeholder="Auto-detect from headers or URL" autocomplete="off">
+              </label>
+
+              <div class="field-label">
+                <div class="row-between">
+                  <label for="odStreamsInput">Parallel Streams (1–128)</label>
+                  <span class="mono muted" id="odStreamsEffectiveNote" style="font-size:10.5px;">AIMD window</span>
+                </div>
+                <div class="studio-range-row">
+                  <input type="range" id="odStreamsRange" min="1" max="128" step="1" value="16" aria-label="Parallel streams slider">
+                  <input type="number" id="odStreamsInput" class="studio-input studio-num-input" min="1" max="128" step="1" value="16" aria-label="Parallel streams count">
+                </div>
+              </div>
+
+              <div class="field-label">
+                <span id="odPacingLabel">Pacing Mode</span>
+                <div class="segmented-group segmented-grid-4" id="odPacingGroup" role="radiogroup" aria-labelledby="odPacingLabel">
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-od-pacing="turbo">Turbo</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="true" data-od-pacing="adaptive">Adaptive</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-od-pacing="polite">Polite</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-od-pacing="linear_rate_guarded">Linear Guard</button>
+                </div>
+                <span class="mono muted" id="odPacingNote" style="font-size:10.5px;">AIMD + BDP adaptive concurrency up to configured stream cap.</span>
+              </div>
+
+              <details class="reasoning-trace">
+                <summary>
+                  <span>Optional Integrity &amp; Rate Cap</span>
+                  <span class="mono muted">SHA-256 · B/s</span>
+                </summary>
+                <div class="stack-sm" style="padding:var(--space-2);">
+                  <label class="field-label" for="odSpeedLimitInput">
+                    <span>Speed Limit (bytes/sec, blank = unlimited)</span>
+                    <input type="number" id="odSpeedLimitInput" class="studio-input mono" min="0" step="65536" placeholder="e.g. 5242880">
+                  </label>
+                  <label class="field-label" for="odExpectedShaInput">
+                    <span>Expected SHA-256 (64 hex chars)</span>
+                    <input type="text" id="odExpectedShaInput" class="studio-input mono" maxlength="64" placeholder="Optional lowercase SHA-256 digest" autocomplete="off">
+                  </label>
+                </div>
+              </details>
+
+              <button type="submit" class="btn btn-primary" id="btnOdStartDownload" style="width:100%;">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M8 2.5v7.5M5 7.2L8 10.2l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M2.5 11.5v2h11v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>Start Segmented Download</span>
+              </button>
+
+              <div id="odFormFeedback" class="studio-error-banner" hidden role="status" aria-live="polite"></div>
+            </form>
+
+            <details class="reasoning-trace">
+              <summary>
+                <span>OmniDrive Utilities</span>
+                <span class="mono muted">Batch · Folder · Media Box</span>
+              </summary>
+              <div class="stack-md" style="padding:var(--space-2);">
+                <form id="odBatchForm" class="stack-xs">
+                  <label class="field-label" for="odBatchPatternInput">
+                    <span>Batch Pattern Expand</span>
+                    <input type="text" id="odBatchPatternInput" class="studio-input mono" placeholder="Pattern with [01-04] range…" autocomplete="off">
+                  </label>
+                  <button type="submit" class="btn btn-subtle btn-sm">Expand Batch URLs</button>
+                  <div id="odBatchOutput" class="stack-xs" hidden></div>
+                </form>
+
+                <form id="odFolderForm" class="stack-xs">
+                  <label class="field-label" for="odFolderInput">
+                    <span>Drive Folder URL or Folder ID</span>
+                    <input type="text" id="odFolderInput" class="studio-input mono" placeholder="Drive folder URL or ID…" autocomplete="off">
+                  </label>
+                  <div class="row-between">
+                    <label class="row-wrap mono muted" for="odFolderDepthInput" style="font-size:11px;">
+                      <span>Max depth</span>
+                      <input type="number" id="odFolderDepthInput" class="studio-input studio-num-input" min="0" max="16" value="3">
+                    </label>
+                    <button type="submit" class="btn btn-subtle btn-sm">Plan Folder</button>
+                  </div>
+                  <div id="odFolderOutput" class="stack-xs" hidden></div>
+                </form>
+
+                <form id="odMediaForm" class="stack-xs">
+                  <label class="field-label" for="odMediaBase64Input">
+                    <span>Read-Only Media Box / DRM Inspector (Base64 Header)</span>
+                    <textarea id="odMediaBase64Input" class="studio-textarea-sm mono" placeholder="Paste base64 container header bytes (ISO-BMFF / TS / ADTS / WebM)…"></textarea>
+                  </label>
+                  <button type="submit" class="btn btn-subtle btn-sm">Inspect Media Boxes</button>
+                  <div id="odMediaOutput" class="stack-xs" hidden></div>
+                </form>
+              </div>
+            </details>
+          </aside>
+
+          <div class="omnidrive-stage-pane">
+            <section class="stack-sm" aria-label="Download Job Queue and 128-Cell Chunk Maps">
+              <div class="row-between">
+                <div>
+                  <div class="section-eyebrow">Active &amp; Historical Transfer Queue</div>
+                  <div style="font-size:0.98rem;font-weight:700;">Segmented Jobs &amp; Live 128-Cell Chunk Maps</div>
+                </div>
+                <div class="od-legend-row" aria-label="Chunk completion legend">
+                  <span><span class="od-legend-swatch od-cell-0"></span>0%</span>
+                  <span><span class="od-legend-swatch od-cell-1"></span>&lt;35%</span>
+                  <span><span class="od-legend-swatch od-cell-2"></span>&lt;70%</span>
+                  <span><span class="od-legend-swatch od-cell-3"></span>&lt;100%</span>
+                  <span><span class="od-legend-swatch od-cell-4"></span>100%</span>
+                </div>
+              </div>
+
+              <div id="odJobsError" class="studio-error-banner" hidden role="alert"></div>
+
+              <div class="od-table-wrap">
+                <table class="od-jobs-table" aria-label="Download jobs table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Job &amp; Destination</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Progress</th>
+                      <th scope="col">Speed / Streams</th>
+                      <th scope="col">ETA</th>
+                      <th scope="col">Controls</th>
+                    </tr>
+                  </thead>
+                  <tbody id="odJobsTableBody">
+                    <tr>
+                      <td colspan="6" class="muted mono" style="padding:14px;">Waiting for GET /api/downloads/list…</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <div class="omnidrive-lower-grid">
+              <section class="atelier-card stack-sm" aria-label="Manual Browser Handoff Tickets">
+                <div class="row-between">
+                  <div>
+                    <div class="section-eyebrow">Visible Browser Handoffs</div>
+                    <div style="font-size:0.94rem;font-weight:700;">MANUAL_VISIBLE_BROWSER_ONLY Tickets</div>
+                  </div>
+                  <span class="badge badge-amber" id="odHandoffsCountBadge">0 tickets</span>
+                </div>
+                <div id="odHandoffsError" class="studio-error-banner" hidden role="alert"></div>
+                <div class="stack-xs" id="odHandoffsList">
+                  <div class="muted mono" style="font-size:11px;">Loading handoff tickets…</div>
+                </div>
+              </section>
+
+              <section class="atelier-card stack-sm" aria-label="OmniDrive Provider Registry">
+                <div class="row-between">
+                  <div>
+                    <div class="section-eyebrow">Provider Registry</div>
+                    <div style="font-size:0.94rem;font-weight:700;">Supported Host Profiles</div>
+                  </div>
+                  <span class="badge badge-cyan" id="odProvidersCountBadge">0 providers</span>
+                </div>
+                <div id="odProvidersError" class="studio-error-banner" hidden role="alert"></div>
+                <div class="segmented-group" id="odProviderCategories" role="group" aria-label="Filter providers by category"></div>
+                <div class="od-provider-grid" id="odProvidersGrid">
+                  <div class="muted mono" style="font-size:11px;">Loading provider catalog…</div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==============================================================
+             VIEW 7: ATELIER RESEARCH STUDIO (NOTEBOOK | GEMINI | SPLIT)
+             ============================================================== -->
+        <section class="studio-view view-atelier-grid" id="view-atelier" data-view-panel="atelier" data-atelier-mode="notebook" role="tabpanel" aria-label="Atelier Research Studio" hidden>
+          <header class="atelier-topbar">
+            <div class="row-wrap">
+              <div class="stack-xs">
+                <div class="section-eyebrow">Atelier Research Studio · omnia-notebook</div>
+                <div class="row-wrap">
+                  <strong id="atActiveNotebookBadge" style="font-size:0.98rem;">No notebook selected</strong>
+                  <span class="badge badge-cyan" id="atStatusBadge" role="status">Engine probing…</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="row-wrap">
+              <div class="segmented-group" id="atViewModeGroup" role="radiogroup" aria-label="Workspace Surface View Toggle">
+                <button type="button" class="segmented-btn" role="radio" aria-checked="true" data-at-mode="notebook">Notebook</button>
+                <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-mode="gemini">Gemini</button>
+                <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-mode="split">Split</button>
+              </div>
+
+              <button type="button" class="btn btn-sm" id="btnAtToggleBtwDrawer" aria-expanded="false" aria-controls="atBtwDrawer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M2.5 3h11v7.5H7.2L4 13v-2.5H2.5V3z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+                </svg>
+                <span>BTW Drawer</span>
+                <span class="badge badge-cyan" id="atBtwCountBadge">0</span>
+              </button>
+
+              <button type="button" class="btn btn-subtle btn-sm" id="btnAtRefreshAll" aria-label="Refresh Atelier Research Studio">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M13.5 8a5.5 5.5 0 1 1-1.4-3.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  <path d="M13.5 2.5v2.6h-2.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>Refresh</span>
+              </button>
+            </div>
+          </header>
+
+          <!-- Left Sidebar: Notebooks + Sources -->
+          <aside class="atelier-sidebar-pane" aria-label="Notebooks and Source Library">
+            <div id="atGlobalError" class="studio-error-banner" hidden role="alert"></div>
+
+            <section class="atelier-card stack-sm" aria-label="Notebooks Management">
+              <div class="section-eyebrow">
+                <span>Notebooks</span>
+                <span class="badge" id="atNotebookCountBadge">0</span>
+              </div>
+
+              <form id="atCreateNotebookForm" class="stack-xs">
+                <input type="text" id="atNotebookTitleInput" class="studio-input" placeholder="New notebook title…" aria-label="New notebook title" required>
+                <input type="text" id="atNotebookDescInput" class="studio-input" placeholder="Optional description…" aria-label="New notebook description">
+                <button type="submit" class="btn btn-primary btn-sm" id="btnAtCreateNotebook" style="width:100%;">+ Create Notebook</button>
+                <div id="atNotebookFormFeedback" class="studio-error-banner" hidden role="status" aria-live="polite"></div>
+              </form>
+
+              <div class="at-list-stack" id="atNotebookList" role="listbox" aria-label="Notebook List">
+                <div class="muted mono" style="font-size:11px;">Loading notebooks…</div>
+              </div>
+
+              <details class="reasoning-trace">
+                <summary>
+                  <span>Model &amp; Reasoning Effort</span>
+                  <span class="mono muted" id="atModelSummaryLabel">—</span>
+                </summary>
+                <div class="stack-sm" style="padding:var(--space-2);">
+                  <div class="field-label">
+                    <span id="atModelPickerLabel">Model</span>
+                    <div class="segmented-group" id="atModelGroup" role="radiogroup" aria-labelledby="atModelPickerLabel" style="width:100%;">
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="true" data-at-model="gemini-3.5-flash-lite">3.5 Flash-Lite</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-model="gemini-4-hydrogen">4 Hydrogen</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-model="gemini-3.1-pro">3.1 Pro</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-model="gemini-4-argon">4 Argon</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-model="gemini-4-carbon">4 Carbon</button>
+                    </div>
+                  </div>
+                  <div class="field-label">
+                    <span id="atEffortPickerLabel">Effort</span>
+                    <div class="segmented-group segmented-grid-4" id="atEffortGroup" role="radiogroup" aria-labelledby="atEffortPickerLabel">
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-effort="minimal">Minimal</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-effort="low">Low</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="true" data-at-effort="medium">Medium</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-effort="high">High</button>
+                    </div>
+                  </div>
+                  <div id="atModelFeedback" class="mono muted" style="font-size:10.5px;"></div>
+                </div>
+              </details>
+            </section>
+
+            <section class="atelier-card stack-sm" aria-label="Notebook Sources Library">
+              <div class="row-between">
+                <div class="section-eyebrow">
+                  <span>Sources</span>
+                  <span class="badge badge-cyan" id="atSourceCountBadge">0</span>
+                </div>
+                <div class="row-wrap" style="gap:4px;">
+                  <button type="button" class="btn btn-subtle btn-xs" id="btnAtHealSources" title="Run self-healing integrity sweep on active notebook sources">Heal</button>
+                  <button type="button" class="btn btn-danger btn-xs" id="btnAtClearSources" title="Clear all sources from active notebook">Clear</button>
+                </div>
+              </div>
+
+              <div id="atSourceActionFeedback" class="studio-info-banner" hidden role="status" aria-live="polite"></div>
+
+              <form id="atIngestForm" class="stack-xs" aria-label="Ingest Source Form">
+                <input type="text" id="atSourceTitleInput" class="studio-input" placeholder="Source title (optional)" aria-label="Source title">
+                <input type="text" id="atSourceFilenameInput" class="studio-input mono" placeholder="Filename (e.g. architecture.md)" aria-label="Source filename" required>
+                <textarea id="atSourceTextInput" class="studio-textarea-sm" placeholder="Paste document, markdown, notes, or code text to ingest…" aria-label="Source text content" required></textarea>
+                <div class="row-between">
+                  <button type="button" class="btn btn-subtle btn-xs" id="btnAtPreviewSource">Preview</button>
+                  <button type="submit" class="btn btn-primary btn-sm" id="btnAtIngestSource">Ingest Source</button>
+                </div>
+              </form>
+
+              <div id="atSourcePreviewBox" class="atelier-card-elevated stack-xs" hidden></div>
+
+              <details class="reasoning-trace">
+                <summary>
+                  <span>Import Public Share URL</span>
+                  <span class="mono muted">import-share</span>
+                </summary>
+                <form id="atShareImportForm" class="stack-xs" style="padding:var(--space-2);">
+                  <input type="text" id="atShareUrlInput" class="studio-input mono" placeholder="Public Gemini or Notebook share URL…" aria-label="Public share URL" required>
+                  <button type="submit" class="btn btn-subtle btn-xs">Import Share</button>
+                  <div id="atShareImportFeedback" class="mono muted" style="font-size:10.5px;"></div>
+                </form>
+              </details>
+
+              <div class="at-list-stack" id="atSourceList" aria-label="Ingested Sources List">
+                <div class="muted mono" style="font-size:11px;">Select or create a notebook to inspect sources.</div>
+              </div>
+            </section>
+          </aside>
+
+          <!-- Center Stage: Notebook Grounded Chat | Gemini Surface | Split -->
+          <div class="atelier-center-stage">
+            <div id="atSelectionBar" class="at-selection-bar" style="margin:var(--space-2) var(--space-3) 0;flex:0 0 auto;" hidden role="region" aria-label="Text Selection Quote and BTW Actions">
+              <div class="row-wrap" style="min-width:0;">
+                <span class="badge badge-amber">SELECTION</span>
+                <span class="at-selection-excerpt" id="atSelectionPreview"></span>
+              </div>
+              <div class="row-wrap" style="gap:5px;">
+                <button type="button" class="btn btn-sm" id="btnAtSelectionQuote">Quote</button>
+                <button type="button" class="btn btn-primary btn-sm" id="btnAtSelectionBtw">BTW</button>
+                <button type="button" class="btn btn-subtle btn-xs" id="btnAtSelectionClear" aria-label="Clear selection bar">×</button>
+              </div>
+            </div>
+
+            <div class="atelier-surfaces-grid">
+            <!-- Grounded Notebook Surface -->
+            <div class="atelier-surface-col atelier-notebook-surface" aria-label="Grounded Notebook Chat Surface">
+              <div class="at-surface-header">
+                <div class="row-wrap">
+                  <span class="badge badge-emerald">NOTEBOOK</span>
+                  <strong style="font-size:0.9rem;">Grounded Citation Q&amp;A</strong>
+                </div>
+                <span class="mono muted" id="atGroundedStatsBadge" style="font-size:11px;">0 turns</span>
+              </div>
+
+              <div class="atelier-surface-scroll" id="atNotebookScroll">
+                <div id="atCitationInspector" class="at-citation-inspector" hidden role="region" aria-label="Citation Inspector">
+                  <div class="row-between">
+                    <div class="row-wrap">
+                      <span class="badge badge-cyan" id="atCiteInspectorMarker"></span>
+                      <strong id="atCiteInspectorTitle" style="font-size:12px;"></strong>
+                    </div>
+                    <button type="button" class="btn btn-subtle btn-xs" id="btnAtCloseCitationInspector" aria-label="Close citation inspector">Close</button>
+                  </div>
+                  <div id="atCiteInspectorBody" class="stack-xs"></div>
+                </div>
+
+                <section id="atEvidenceSection" class="stack-xs" hidden aria-label="Latest Grounded Evidence Pack">
+                  <div class="row-between">
+                    <span class="section-eyebrow">Retrieved Evidence Pack (BM25F + ProactiveRag)</span>
+                    <span class="mono muted" id="atEvidenceMeta" style="font-size:10.5px;"></span>
+                  </div>
+                  <div class="stack-xs" id="atEvidenceList"></div>
+                </section>
+
+                <div class="stack-sm" id="atNotebookTurnsList" aria-label="Notebook Grounded Turns">
+                  <div class="atelier-card muted" style="font-size:12px;">
+                    Ingest one or more sources, then ask a grounded query below. Retrieved evidence and clickable [source_id:chunk_idx] citation chips will appear here. Highlight any passage in a turn to trigger Quote or BTW.
+                  </div>
+                </div>
+              </div>
+
+              <div class="atelier-surface-dock">
+                <div class="at-quote-chips-bar" id="atNotebookQuoteChips" aria-label="Attached Quote Cards"></div>
+                <form id="atGroundedForm" class="stack-xs" aria-label="Grounded Query Form">
+                  <textarea id="atGroundedQueryInput" class="studio-textarea-sm" placeholder="Ask a grounded question against active notebook sources… (Ctrl+Enter to submit)" aria-label="Grounded query" required></textarea>
+                  <div class="row-between">
+                    <label class="row-wrap mono muted" for="atMaxChunksInput" style="font-size:11px;">
+                      <span>Max chunks</span>
+                      <input type="number" id="atMaxChunksInput" class="studio-input studio-num-input" min="1" max="24" value="6" style="width:56px;">
+                    </label>
+                    <button type="submit" class="btn btn-primary btn-sm" id="btnAtSendGrounded">Ask Grounded &amp; Record Turn</button>
+                  </div>
+                  <div id="atGroundedFeedback" class="studio-error-banner" hidden role="status" aria-live="polite"></div>
+                </form>
+              </div>
+            </div>
+
+            <!-- Gemini Workspace Surface -->
+            <div class="atelier-surface-col atelier-gemini-surface" aria-label="Gemini Workspace and Cross-Bridge Surface">
+              <div class="at-surface-header">
+                <div class="row-wrap">
+                  <span class="badge badge-amber">GEMINI</span>
+                  <strong style="font-size:0.9rem;">Gemini Workspace &amp; Cross-Bridge</strong>
+                </div>
+                <span class="badge badge-cyan" id="atBridgeCountBadge">0 bridge events</span>
+              </div>
+
+              <div class="atelier-surface-scroll" id="atGeminiScroll">
+                <div id="atGeminiSelectionHint" class="mono muted" style="font-size:11px;">
+                  Select any passage in a Gemini turn for Quote or BTW, or bridge turns directly into the active Notebook source library.
+                </div>
+
+                <div class="stack-sm" id="atGeminiTurnsList" aria-label="Gemini Surface Turns">
+                  <div class="atelier-card muted" style="font-size:12px;">
+                    No Gemini surface turns recorded for this notebook yet.
+                  </div>
+                </div>
+
+                <details class="reasoning-trace" id="atBridgeLogDetails">
+                  <summary>
+                    <span>Cross-Bridge Transfer Ledger (GET /api/bridge)</span>
+                    <span class="mono muted" id="atBridgeSummaryMeta">0 events</span>
+                  </summary>
+                  <div class="stack-xs" id="atBridgeEventsList" style="padding:var(--space-2);">
+                    <div class="muted mono" style="font-size:11px;">No Cross-Bridge events recorded.</div>
+                  </div>
+                </details>
+              </div>
+
+              <div class="atelier-surface-dock">
+                <div class="at-quote-chips-bar" id="atGeminiQuoteChips" aria-label="Attached Gemini Quote Cards"></div>
+                <form id="atGeminiForm" class="stack-xs" aria-label="Gemini Surface Turn Form">
+                  <input type="text" id="atGeminiPromptInput" class="studio-input" placeholder="Gemini prompt or exploration note…" aria-label="Gemini prompt" required>
+                  <textarea id="atGeminiResponseInput" class="studio-textarea-sm" placeholder="Gemini response / synthesis markdown (or leave empty to record prompt draft)…" aria-label="Gemini response markdown"></textarea>
+                  <div class="row-between">
+                    <button type="button" class="btn btn-subtle btn-xs" id="btnAtBridgeToNotebook" title="Promote this note directly into Notebook sources via POST /api/bridge">Bridge to Notebook</button>
+                    <button type="submit" class="btn btn-primary btn-sm" id="btnAtRecordGeminiTurn">Record Gemini Turn</button>
+                  </div>
+                  <div id="atGeminiFeedback" class="studio-error-banner" hidden role="status" aria-live="polite"></div>
+                </form>
+              </div>
+            </div>
+            </div>
+          </div>
+
+          <!-- Right Pane: Studio Artifacts (9-Kind Segmented Picker) -->
+          <aside class="atelier-artifacts-pane" aria-label="Studio Artifacts Workbench">
+            <div class="row-between">
+              <div class="section-eyebrow">
+                <span>Studio Artifacts</span>
+                <span class="badge badge-amber" id="atArtifactsCountBadge">0</span>
+              </div>
+              <span class="mono muted" style="font-size:10.5px;">9 formats</span>
+            </div>
+
+            <form id="atArtifactForm" class="atelier-card stack-sm" aria-label="Generate Studio Artifact Form">
+              <div class="field-label">
+                <span id="atArtifactKindLabel">Artifact Kind</span>
+                <div class="segmented-group segmented-grid-9" id="atArtifactKindGroup" role="radiogroup" aria-labelledby="atArtifactKindLabel">
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="true" data-at-kind="briefing">Briefing</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="study_guide">Study Guide</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="faq">FAQ</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="timeline">Timeline</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="quiz">Quiz</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="flashcards">Flashcards</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="mind_map">Mind Map</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="infographic_spec">Infographic</button>
+                  <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-kind="data_table">Data Table</button>
+                </div>
+              </div>
+
+              <input type="text" id="atArtifactTitleInput" class="studio-input" placeholder="Optional custom artifact title…" aria-label="Artifact title">
+              <input type="text" id="atArtifactFocusInput" class="studio-input" placeholder="Optional focus prompt…" aria-label="Artifact focus prompt">
+              <button type="submit" class="btn btn-primary btn-sm" id="btnAtGenerateArtifact" style="width:100%;">Generate Artifact</button>
+              <div id="atArtifactFeedback" class="studio-error-banner" hidden role="status" aria-live="polite"></div>
+            </form>
+
+            <div class="at-list-stack" id="atArtifactList" aria-label="Generated Artifacts List">
+              <div class="muted mono" style="font-size:11px;">No Studio artifacts generated for this notebook yet.</div>
+            </div>
+
+            <section id="atArtifactViewerCard" class="atelier-card stack-sm" hidden aria-label="Selected Artifact Preview">
+              <div class="row-between">
+                <span class="badge badge-cyan" id="atArtifactViewerKind"></span>
+                <button type="button" class="btn btn-subtle btn-xs" id="btnAtCloseArtifactViewer">Close</button>
+              </div>
+              <form id="atArtifactRenameForm" class="row-wrap" style="gap:4px;">
+                <input type="text" id="atArtifactRenameInput" class="studio-input" aria-label="Rename artifact title" style="flex:1;min-width:120px;">
+                <button type="submit" class="btn btn-subtle btn-xs">Rename</button>
+              </form>
+              <div id="atArtifactViewerBody" class="at-artifact-viewer"></div>
+              <details class="reasoning-trace">
+                <summary>
+                  <span>Structured JSON Payload</span>
+                  <span class="mono muted">schema</span>
+                </summary>
+                <pre class="code-pre" id="atArtifactViewerJson" style="max-height:180px;"></pre>
+              </details>
+            </section>
+          </aside>
+
+          <!-- Overlay BTW Thread Drawer (Zero-Pollution Side-Threads) -->
+          <aside id="atBtwDrawer" class="atelier-btw-drawer" role="region" aria-label="BTW Side-Thread Drawer" hidden>
+            <div class="at-btw-header">
+              <div class="stack-xs">
+                <span class="section-eyebrow">Isolated Side-Threads</span>
+                <strong style="font-size:0.92rem;">BTW Thread Drawer</strong>
+              </div>
+              <button type="button" class="btn btn-subtle btn-xs" id="btnAtCloseBtwDrawer" aria-label="Close BTW thread drawer">Close (Esc)</button>
+            </div>
+
+            <div class="at-btw-body">
+              <div id="atBtwError" class="studio-error-banner" hidden role="alert"></div>
+
+              <section id="atBtwCreateCard" class="atelier-card-elevated stack-sm" hidden aria-label="Start New BTW Thread">
+                <div class="section-eyebrow">New BTW Side-Thread · POST /api/btw/create</div>
+                <div class="at-md-blockquote" id="atBtwStagedQuote"></div>
+                <form id="atBtwCreateForm" class="stack-xs">
+                  <textarea id="atBtwQuestionInput" class="studio-textarea-sm" placeholder="Ask a zero-pollution side question about this excerpt…" aria-label="BTW question" required></textarea>
+                  <div class="row-between">
+                    <button type="button" class="btn btn-subtle btn-xs" id="btnAtCancelBtwCreate">Cancel</button>
+                    <button type="submit" class="btn btn-primary btn-sm" id="btnAtCreateBtwSubmit">Create BTW Thread</button>
+                  </div>
+                </form>
+              </section>
+
+              <div class="stack-xs">
+                <div class="section-eyebrow">Threads in Active Notebook</div>
+                <div class="at-list-stack" id="atBtwThreadList">
+                  <div class="muted mono" style="font-size:11px;">No BTW threads yet. Highlight text in any turn and click BTW.</div>
+                </div>
+              </div>
+
+              <section id="atBtwActivePanel" class="atelier-card stack-sm" hidden aria-label="Active BTW Thread Conversation">
+                <div class="row-between">
+                  <span class="section-eyebrow">Active Thread</span>
+                  <span class="badge" id="atBtwActiveStatus">open</span>
+                </div>
+                <div class="at-md-blockquote" id="atBtwActiveAnchor"></div>
+                <div class="stack-xs" id="atBtwMessagesList"></div>
+
+                <form id="atBtwAppendForm" class="stack-xs">
+                  <div class="row-between">
+                    <span class="mono muted" id="atBtwRoleLabel" style="font-size:10.5px;">Append Role</span>
+                    <div class="segmented-group" id="atBtwRoleGroup" role="radiogroup" aria-labelledby="atBtwRoleLabel">
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="true" data-at-btw-role="user">User</button>
+                      <button type="button" class="segmented-btn" role="radio" aria-checked="false" data-at-btw-role="assistant">Assistant</button>
+                    </div>
+                  </div>
+                  <textarea id="atBtwAppendInput" class="studio-textarea-sm" placeholder="Append follow-up message to this BTW thread…" aria-label="BTW append message" required></textarea>
+                  <button type="submit" class="btn btn-sm" id="btnAtBtwAppend">Append Message</button>
+                </form>
+
+                <form id="atBtwPromoteForm" class="stack-xs" style="border-top:1px solid var(--border-subtle);padding-top:var(--space-2);">
+                  <div class="section-eyebrow">Promote to First-Class Source</div>
+                  <input type="text" id="atBtwPromoteTitleInput" class="studio-input" placeholder="Optional promoted source title…" aria-label="Promoted source title">
+                  <button type="submit" class="btn btn-primary btn-sm" id="btnAtBtwPromote">Promote BTW to Source</button>
+                  <div id="atBtwPromoteFeedback" class="studio-success-banner" hidden role="status" aria-live="polite"></div>
+                </form>
+              </section>
+            </div>
+          </aside>
+        </section>
       </main>
     </div>
 
@@ -786,6 +1403,8 @@
   <script defer src="./app/ide-explorer.js"></script>
   <script defer src="./app/memory-vault.js"></script>
   <script defer src="./app/history.js"></script>
+  <script defer src="./app/omnidrive.js"></script>
+  <script defer src="./app/atelier.js"></script>
   <script defer src="./app/command-palette.js"></script>
   <script defer src="./app/main.js"></script>
 </body>

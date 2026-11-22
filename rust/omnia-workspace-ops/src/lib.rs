@@ -8,18 +8,26 @@
 //!    numbered snippet slicing, atomic temp+rename writes with SHA-256 before/after
 //!    digests, unified diff summaries, and external rollback receipts (`D:\OmniaData\...`).
 //! 3. **Bounded command execution (`process_ops`)**: Workspace-contained `cwd`
-//!    verification, timeout enforcement with process-tree termination receipts,
-//!    and deadlock-free capped stdout/stderr capture.
+//!    verification, Win32 Job Object process-tree supervision (`KILL_ON_JOB_CLOSE`),
+//!    zero-busy-poll wait/timeout enforcement, and deadlock-free capped stdout/stderr capture.
 //! 4. **Chunked range download planner (`range_downloader`)**: 1–128 stream
 //!    inclusive byte-range planning, pure-Rust SSRF/URL guard, external staging
 //!    containment, dynamic work-stealing tail splits, and SHA-256 verification.
+//! 5. **Hardware tier & VRAM guard (`hardware`)**: Zero-subprocess Win32 RAM/VRAM
+//!    detection (`GlobalMemoryStatusEx` + 64-bit `qwMemorySize` registry query) and
+//!    AN515-55 4 GB VRAM safety guard.
+//! 6. **Shell output micro-compactor (`shell_compactor`)**: `rtk`-style output
+//!    scrubber, build/test/diff/install compressor, traceback-preserving cap, and
+//!    external `>4 KB` spill writer.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod fs_ops;
+pub mod hardware;
 pub mod path_guard;
 pub mod process_ops;
 pub mod range_downloader;
+pub mod shell_compactor;
 
 use std::io;
 use std::path::Path;
@@ -30,17 +38,30 @@ pub use fs_ops::{
     LineEndingPolicy, NumberedLine, ReadFileResult, RollbackOutcome, RollbackReceipt,
     SnippetResult, WriteOptions, WriteReceipt,
 };
+pub use hardware::{
+    classify_hardware_tier, detect_hardware_profile, validate_local_aux_model_vram,
+    HardwareProfile, HardwareTier, LocalAuxVramCheck, DEFAULT_DWM_UI_HEADROOM_MB,
+    DEFAULT_MAX_AUX_MODEL_VRAM_MB,
+};
 pub use path_guard::{
     is_reparse_point, is_reparse_point_metadata, relative_posix_path, resolve_contained_path,
     resolve_workspace_root, strip_verbatim_drive_prefix,
 };
-pub use process_ops::{run_bounded_command, CommandReceipt, CommandSpec};
+pub use process_ops::{
+    collect_process_tree_pids, pid_is_alive, process_tree_rss_bytes, run_bounded_command,
+    spawn_supervised_command, CommandReceipt, CommandSpec, ProcessSupervisor,
+};
 pub use range_downloader::{
     assemble_and_verify_chunks, assemble_plan_chunks_and_verify, pick_largest_stealable_segment,
     plan_range_download, plan_range_download_with_policy, split_largest_active_segment,
     validate_download_url, validate_download_url_with_policy, ByteRangeSegment,
     RangeDownloadError, RangeDownloadPlan, RangeUrlPolicy, ValidatedDownloadUrl,
     VerifiedChunkAssembly, MAX_RANGE_STREAMS, MIN_RANGE_STREAMS,
+};
+pub use shell_compactor::{
+    cap_output_traceback_preserving, compact_shell_output, scrub_shell_output,
+    spill_oversized_output, CompactedShellOutput, ShellSpillReceipt,
+    DEFAULT_SPILL_THRESHOLD_BYTES,
 };
 
 /// Unified error type for all Omnia workspace path, file, rollback, and process operations.

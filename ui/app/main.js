@@ -5,7 +5,7 @@
   const { escapeHtml } = Studio.utils;
 
   const THEMES = ["obsidian", "alabaster", "blueprint"];
-  const VIEWS = ["chat", "graph", "router", "rust-rag", "memory"];
+  const VIEWS = ["chat", "graph", "router", "rust-rag", "memory", "omnidrive", "atelier"];
 
   const appState = {
     theme: "obsidian",
@@ -47,8 +47,13 @@
   }
 
   function switchView(viewId, optionalTargetId) {
+    const prev = appState.activeView;
     const next = VIEWS.includes(viewId) ? viewId : "chat";
     appState.activeView = next;
+
+    if (prev === "omnidrive" && next !== "omnidrive" && Studio.omnidrive && typeof Studio.omnidrive.onDeactivate === "function") {
+      Studio.omnidrive.onDeactivate();
+    }
 
     document.querySelectorAll("[data-view-panel]").forEach((panel) => {
       const active = panel.getAttribute("data-view-panel") === next;
@@ -67,6 +72,15 @@
       Studio.routerLab.highlightCandidate(optionalTargetId);
     } else if (next === "rust-rag" && optionalTargetId && Studio.ideExplorer) {
       Studio.ideExplorer.selectModule(optionalTargetId);
+    } else if (next === "omnidrive" && Studio.omnidrive && typeof Studio.omnidrive.onActivate === "function") {
+      Studio.omnidrive.onActivate();
+    } else if (next === "atelier" && Studio.atelier) {
+      if (optionalTargetId && typeof Studio.atelier.setViewMode === "function") {
+        Studio.atelier.setViewMode(optionalTargetId);
+      }
+      if (typeof Studio.atelier.onActivate === "function") {
+        Studio.atelier.onActivate();
+      }
     }
   }
 
@@ -502,7 +516,7 @@
       });
     }
 
-    // Global Keyboard Shortcuts (Ctrl+K, Alt+T, Alt+1..5, Ctrl+B, Escape)
+    // Global Keyboard Shortcuts (Ctrl+K, Alt+T, Alt+1..7, Ctrl+B, Escape)
     document.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -521,7 +535,7 @@
         setTheme(THEMES[nextIdx]);
         return;
       }
-      if (e.altKey && /^[1-5]$/.test(e.key)) {
+      if (e.altKey && /^[1-7]$/.test(e.key)) {
         e.preventDefault();
         switchView(VIEWS[Number(e.key) - 1]);
         return;
@@ -535,11 +549,16 @@
         if (Studio.commandPalette && Studio.commandPalette.isOpen()) {
           e.preventDefault();
           Studio.commandPalette.close();
+          return;
+        }
+        if (Studio.atelier && typeof Studio.atelier.isBtwDrawerOpen === "function" && Studio.atelier.isBtwDrawerOpen()) {
+          e.preventDefault();
+          Studio.atelier.closeBtwDrawer();
         }
       }
     });
 
-    // Initialize all 5 studio feature modules + capability cards + command palette
+    // Initialize all 7 studio feature modules + capability cards + command palette
     await Promise.all([
       refreshCapabilities(),
       refreshHealthTelemetry(),
@@ -550,7 +569,9 @@
       Studio.routerLab.init(),
       Studio.ideExplorer.init(),
       Studio.memoryVault.init(),
-      Studio.history.init()
+      Studio.history.init(),
+      Studio.omnidrive ? Studio.omnidrive.init() : Promise.resolve(),
+      Studio.atelier ? Studio.atelier.init() : Promise.resolve()
     ]);
     Studio.commandPalette.init();
     switchView("chat");

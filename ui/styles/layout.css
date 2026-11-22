@@ -367,6 +367,175 @@ pre,
   min-height: 0;
 }
 
+/* --- View 6: OmniDrive Studio (Multi-Stream Downloader & Drive Resolver) --- */
+.view-omnidrive-grid {
+  grid-template-columns: 348px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.omnidrive-topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.omnidrive-controls-pane {
+  background-color: var(--bg-rail);
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.omnidrive-stage-pane {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+}
+
+.omnidrive-lower-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* --- View 7: Atelier Research Studio (Notebook | Gemini | Split + BTW Drawer) --- */
+.view-atelier-grid {
+  position: relative;
+  grid-template-columns: 272px minmax(0, 1fr) 332px;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.view-atelier-grid[data-atelier-mode="split"] {
+  grid-template-columns: 236px minmax(0, 1fr) 292px;
+}
+
+.atelier-topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.atelier-sidebar-pane {
+  background-color: var(--bg-rail);
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.atelier-center-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+}
+
+.atelier-surfaces-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.view-atelier-grid[data-atelier-mode="split"] .atelier-surfaces-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.view-atelier-grid[data-atelier-mode="notebook"] .atelier-gemini-surface {
+  display: none;
+}
+
+.view-atelier-grid[data-atelier-mode="gemini"] .atelier-notebook-surface {
+  display: none;
+}
+
+.atelier-surface-col {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.view-atelier-grid[data-atelier-mode="split"] .atelier-notebook-surface {
+  border-right: 1px solid var(--border-subtle);
+}
+
+.atelier-surface-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.atelier-surface-dock {
+  background-color: var(--bg-panel);
+  border-top: 1px solid var(--border-strong);
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.atelier-artifacts-pane {
+  background-color: var(--bg-rail);
+  border-left: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
 /* --- Row 3: Bottom Unclipped Studio Telemetry & UIA Bar --- */
 .studio-footer {
   display: flex;
@@ -420,6 +589,22 @@ pre,
     grid-template-columns: 284px minmax(0, 1fr);
   }
 
+  .view-omnidrive-grid {
+    grid-template-columns: 304px minmax(0, 1fr);
+  }
+
+  .omnidrive-lower-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .view-atelier-grid {
+    grid-template-columns: 236px minmax(0, 1fr) 276px;
+  }
+
+  .view-atelier-grid[data-atelier-mode="split"] {
+    grid-template-columns: 212px minmax(0, 1fr) 244px;
+  }
+
   .capability-cards-grid {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
@@ -453,6 +638,18 @@ pre,
     grid-template-columns: 260px minmax(0, 1fr);
   }
 
+  .view-omnidrive-grid {
+    grid-template-columns: 276px minmax(0, 1fr);
+  }
+
+  .view-atelier-grid {
+    grid-template-columns: 216px minmax(0, 1fr) 252px;
+  }
+
+  .view-atelier-grid[data-atelier-mode="split"] {
+    grid-template-columns: 204px minmax(0, 1fr) 224px;
+  }
+
   .header-telemetry-detail-extra {
     display: none;
   }
@@ -463,8 +660,15 @@ pre,
   .view-graph-grid,
   .view-router-grid,
   .view-rust-rag-grid,
-  .view-memory-grid {
+  .view-memory-grid,
+  .view-omnidrive-grid,
+  .view-atelier-grid,
+  .view-atelier-grid[data-atelier-mode="split"] {
     grid-template-columns: minmax(0, 1fr);
     overflow-y: auto;
+  }
+
+  .view-atelier-grid[data-atelier-mode="split"] .atelier-surfaces-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

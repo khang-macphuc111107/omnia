@@ -2,14 +2,22 @@ mod nvidia;
 mod skills;
 
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use omnia_connector_gateway::proxy_router::{
+    FailureScope, NormalizedProxyConfig, ProxyCandidateConfig, ProxyRouter, QuotaCertainty,
+    RouteSelectionRequest, RoutingStrategy,
+};
+use omnia_core::now_epoch_ms;
+use omnia_routing::{normalize_provider_wire_payload, ProviderWireDialect};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -25,8 +33,14 @@ const DEFAULT_BIND: &str = "127.0.0.1:8790";
 const DEFAULT_ORIGINS: &str = "http://127.0.0.1:8787,http://localhost:8787";
 const DEFAULT_MAX_BODY: usize = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_HEADER_TIMEOUT_MS: u64 = 45_000;
+const DEFAULT_TOKEN_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_MAX_RETRIES: u32 = 2;
 const DEFAULT_CHAT_PATH: &str = "chat/completions";
 const DEFAULT_MODELS_PATH: &str = "models";
+
+static RUNTIME_REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -34,9 +48,14 @@ struct Config {
     allowed_origins: Vec<String>,
     max_body_bytes: usize,
     provider_base_url: Option<Url>,
+    provider_fallback_urls: Vec<Url>,
     provider_model: Option<String>,
     provider_api_key: Option<String>,
     provider_timeout: Duration,
+    provider_connect_timeout: Duration,
+    provider_header_timeout: Duration,
+    provider_token_timeout: Duration,
+    provider_max_retries: u32,
     provider_chat_path: String,
     provider_models_path: String,
     provider_config_error: Option<String>,
@@ -61,11 +80,31 @@ impl Config {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_BODY);
-        let timeout_ms = env::var("OMNIA_PROVIDER_TIMEOUT_MS")
+        let explicit_timeout_ms = env::var("OMNIA_PROVIDER_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| (100..=600_000).contains(value));
+        let timeout_ms = explicit_timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+        let connect_timeout_ms = env::var("OMNIA_PROVIDER_CONNECT_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| (100..=60_000).contains(value))
+            .unwrap_or_else(|| DEFAULT_CONNECT_TIMEOUT_MS.min(timeout_ms));
+        let header_timeout_ms = env::var("OMNIA_PROVIDER_HEADER_TIMEOUT_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| (100..=600_000).contains(value))
-            .unwrap_or(DEFAULT_TIMEOUT_MS);
+            .unwrap_or_else(|| explicit_timeout_ms.unwrap_or(DEFAULT_HEADER_TIMEOUT_MS));
+        let token_timeout_ms = env::var("OMNIA_PROVIDER_TOKEN_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| (100..=600_000).contains(value))
+            .unwrap_or_else(|| explicit_timeout_ms.unwrap_or(DEFAULT_TOKEN_TIMEOUT_MS));
+        let provider_max_retries = env::var("OMNIA_PROVIDER_MAX_RETRIES")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .map(|value| value.min(5))
+            .unwrap_or(DEFAULT_MAX_RETRIES);
         let provider_chat_path =
             env::var("OMNIA_PROVIDER_CHAT_PATH").unwrap_or_else(|_| DEFAULT_CHAT_PATH.to_string());
         let provider_models_path = env::var("OMNIA_PROVIDER_MODELS_PATH")
@@ -89,6 +128,13 @@ impl Config {
                 Some("OMNIA_PROVIDER_BASE_URL is not configured".to_string()),
             ),
         };
+        let provider_fallback_urls = env::var("OMNIA_PROVIDER_FALLBACK_URLS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .filter_map(|raw| parse_provider_url(raw).ok())
+            .collect::<Vec<_>>();
         let skills_root = env::var("OMNIA_SKILLS_ROOT").ok();
         let skills_manifest = env::var("OMNIA_SKILLS_MANIFEST").ok();
         let skills = SkillCatalog::load(skills_root.as_deref(), skills_manifest.as_deref());
@@ -107,9 +153,14 @@ impl Config {
             allowed_origins,
             max_body_bytes,
             provider_base_url,
+            provider_fallback_urls,
             provider_model,
             provider_api_key,
             provider_timeout: Duration::from_millis(timeout_ms),
+            provider_connect_timeout: Duration::from_millis(connect_timeout_ms),
+            provider_header_timeout: Duration::from_millis(header_timeout_ms),
+            provider_token_timeout: Duration::from_millis(token_timeout_ms),
+            provider_max_retries,
             provider_chat_path,
             provider_models_path,
             provider_config_error,
@@ -136,16 +187,132 @@ impl Config {
 struct App {
     config: Config,
     client: Client,
+    retry_client: Client,
+    proxy_router: Arc<Mutex<ProxyRouter>>,
+    candidate_urls: Arc<HashMap<String, Url>>,
 }
 
 impl App {
     fn new(config: Config) -> Result<Self, String> {
+        // Split-budget client: enforce connect_timeout only on reqwest::Client (NEVER a hard
+        // wall-clock total `.timeout(...)`), so multi-minute token streams never drop mid-response.
         let client = Client::builder()
-            .connect_timeout(config.provider_timeout)
-            .timeout(config.provider_timeout)
+            .connect_timeout(config.provider_connect_timeout)
+            .tcp_nodelay(true)
+            .pool_idle_timeout(Duration::from_secs(30))
             .build()
             .map_err(|_| "unable to initialize provider HTTP client".to_string())?;
-        Ok(Self { config, client })
+        // Non-pooled client used strictly on retry attempts (`attempt >= 1`) so retries never
+        // check out a potentially stalled idle keepalive or h2 socket.
+        let retry_client = Client::builder()
+            .connect_timeout(config.provider_connect_timeout)
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(0)
+            .build()
+            .map_err(|_| "unable to initialize provider retry HTTP client".to_string())?;
+
+        let mut candidates = Vec::new();
+        let mut candidate_urls = HashMap::new();
+        if let Some(primary) = config.provider_base_url.as_ref() {
+            let id = "primary-provider".to_string();
+            let origin = primary.origin().ascii_serialization();
+            candidate_urls.insert(id.clone(), primary.clone());
+            candidates.push(ProxyCandidateConfig {
+                candidate_id: id,
+                provider_id: "htmustc".to_string(),
+                upstream_origin: origin,
+                upstream_url: primary.to_string(),
+                proxy_origin: None,
+                direct: true,
+                env_var_ref: Some("OMNIA_PROVIDER_API_KEY".to_string()),
+                route_priority: 100,
+                weight: 100,
+                enabled: true,
+                proven: true,
+                supported_models: Vec::new(),
+                fallback_chain: Vec::new(),
+                quota_certainty: QuotaCertainty::Unknown,
+            });
+        }
+        for (idx, fallback) in config.provider_fallback_urls.iter().enumerate() {
+            let id = format!("fallback-provider-{}", idx + 1);
+            let origin = fallback.origin().ascii_serialization();
+            candidate_urls.insert(id.clone(), fallback.clone());
+            candidates.push(ProxyCandidateConfig {
+                candidate_id: id,
+                provider_id: "htmustc-fallback".to_string(),
+                upstream_origin: origin,
+                upstream_url: fallback.to_string(),
+                proxy_origin: None,
+                direct: true,
+                env_var_ref: Some("OMNIA_PROVIDER_API_KEY".to_string()),
+                route_priority: 50 - i32::try_from(idx).unwrap_or(0),
+                weight: 50,
+                enabled: true,
+                proven: false,
+                supported_models: Vec::new(),
+                fallback_chain: Vec::new(),
+                quota_certainty: QuotaCertainty::Unknown,
+            });
+        }
+        let proxy_router = ProxyRouter::new(NormalizedProxyConfig {
+            strategy: RoutingStrategy::FillFirst,
+            candidates,
+            trust_forwarded_headers: false,
+        });
+
+        Ok(Self {
+            config,
+            client,
+            retry_client,
+            proxy_router: Arc::new(Mutex::new(proxy_router)),
+            candidate_urls: Arc::new(candidate_urls),
+        })
+    }
+
+    fn select_candidate_for_attempt(
+        &self,
+        model: &str,
+        attempt: u32,
+        excluded: &[String],
+    ) -> Option<(String, Url)> {
+        let now_ms = u64::try_from(now_epoch_ms()).unwrap_or(0);
+        let req_id = format!(
+            "rt-{}",
+            RUNTIME_REQUEST_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        if let Ok(mut router) = self.proxy_router.lock() {
+            let sel_req = RouteSelectionRequest {
+                request_id: req_id,
+                model: model.to_string(),
+                attempt_number: attempt,
+                excluded_candidates: excluded.to_vec(),
+                request_headers: BTreeMap::new(),
+            };
+            if let Ok(receipt) = router.select_route(&sel_req, now_ms) {
+                if let Some(url) = self.candidate_urls.get(&receipt.selected_candidate_id) {
+                    return Some((receipt.selected_candidate_id, url.clone()));
+                }
+            }
+        }
+        self.config
+            .provider_base_url
+            .as_ref()
+            .map(|url| ("primary-provider".to_string(), url.clone()))
+    }
+
+    fn record_candidate_outcome(
+        &self,
+        candidate_id: &str,
+        model: &str,
+        status: u16,
+        retry_after_ms: Option<u64>,
+        scope: FailureScope,
+    ) {
+        let now_ms = u64::try_from(now_epoch_ms()).unwrap_or(0);
+        if let Ok(mut router) = self.proxy_router.lock() {
+            router.record_outcome(candidate_id, model, status, retry_after_ms, scope, now_ms);
+        }
     }
 }
 
@@ -299,14 +466,35 @@ fn is_credential_name(value: &str) -> bool {
         || normalized.ends_with("password")
 }
 
-fn contains_credential_field(value: &Value) -> bool {
+fn is_proxy_config_container_key(key: &str) -> bool {
+    let normalized = compact_header_name(key);
+    matches!(
+        normalized.as_str(),
+        "options" | "provider" | "auth" | "headers" | "config" | "client" | "credentials" | "connection"
+    )
+}
+
+fn contains_credential_field_recursive(value: &Value) -> bool {
     match value {
-        Value::Object(object) => object
-            .iter()
-            .any(|(key, value)| is_credential_name(key) || contains_credential_field(value)),
-        Value::Array(values) => values.iter().any(contains_credential_field),
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            is_credential_name(key) || contains_credential_field_recursive(value)
+        }),
+        Value::Array(values) => values.iter().any(contains_credential_field_recursive),
         _ => false,
     }
+}
+
+/// Checks only top-level request keys and proxy-config sub-objects (`options`, `provider`,
+/// `auth`, `headers`, `config`, `client`, `credentials`, `connection`). Never rejects LLM
+/// content or tool-schema fields inside `messages`, `tools`, `arguments`, `input`, etc.
+fn contains_credential_field(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.iter().any(|(key, val)| {
+        is_credential_name(key)
+            || (is_proxy_config_container_key(key) && contains_credential_field_recursive(val))
+    })
 }
 
 fn validate_request_headers(headers: &HashMap<String, String>) -> Result<(), String> {
@@ -674,12 +862,22 @@ fn add_cors_headers(response: &mut ResponseSpec, origin: Option<&str>) {
     }
 }
 
-fn provider_headers(config: &Config, accept: &str) -> Result<HeaderMap, ResponseSpec> {
+fn provider_headers(
+    config: &Config,
+    accept: &str,
+    dialect: Option<ProviderWireDialect>,
+) -> Result<HeaderMap, ResponseSpec> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     let accept = HeaderValue::from_str(accept)
         .map_err(|_| json_error(500, "internal_error", "provider Accept header is invalid"))?;
     headers.insert(ACCEPT, accept);
+    if dialect == Some(ProviderWireDialect::AnthropicMessages) {
+        headers.insert(
+            reqwest::header::HeaderName::from_static("anthropic-version"),
+            HeaderValue::from_static("2023-06-01"),
+        );
+    }
     if let Some(api_key) = config.provider_api_key.as_deref() {
         let authorization = HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| {
             json_error(
@@ -689,6 +887,19 @@ fn provider_headers(config: &Config, accept: &str) -> Result<HeaderMap, Response
             )
         })?;
         headers.insert(AUTHORIZATION, authorization);
+        if dialect == Some(ProviderWireDialect::AnthropicMessages) {
+            let x_api_key = HeaderValue::from_str(api_key).map_err(|_| {
+                json_error(
+                    503,
+                    "provider_unavailable",
+                    "configured provider credential is invalid",
+                )
+            })?;
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                x_api_key,
+            );
+        }
     }
     Ok(headers)
 }
@@ -775,7 +986,7 @@ async fn request_models(app: &App) -> Result<Dispatch, ResponseSpec> {
             "provider models endpoint is invalid",
         )
     })?;
-    let headers = provider_headers(&app.config, "application/json")?;
+    let headers = provider_headers(&app.config, "application/json", None)?;
     let response = time::timeout(
         app.config.provider_timeout,
         app.client.get(url).headers(headers).send(),
@@ -850,11 +1061,59 @@ async fn request_models(app: &App) -> Result<Dispatch, ResponseSpec> {
     )))
 }
 
+fn parse_wire_dialect(raw: &str) -> Option<ProviderWireDialect> {
+    match raw.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "openai_responses" | "responses" => Some(ProviderWireDialect::OpenAiResponses),
+        "anthropic_messages" | "anthropic" | "messages" => {
+            Some(ProviderWireDialect::AnthropicMessages)
+        }
+        "gemini_chat_completions" | "gemini" => Some(ProviderWireDialect::GeminiChatCompletions),
+        "local_aux_gguf" | "local_gguf" | "local" => Some(ProviderWireDialect::LocalAuxGguf),
+        _ => None,
+    }
+}
+
+fn parse_retry_after_ms(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|secs| secs.saturating_mul(1_000).min(60_000))
+}
+
+fn is_retryable_upstream_status(status: u16) -> bool {
+    matches!(status, 429 | 502 | 503 | 504)
+}
+
+fn retry_backoff_delay(attempt: u32, retry_after_ms: Option<u64>) -> Duration {
+    if let Some(ra) = retry_after_ms {
+        return Duration::from_millis(ra.min(2_000));
+    }
+    let exp = 50u64.saturating_mul(1u64 << attempt.min(5));
+    let jitter = (u64::try_from(now_epoch_ms()).unwrap_or(0) % 25) + 5;
+    Duration::from_millis((exp + jitter).min(2_000))
+}
+
 async fn request_chat(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
+    request_chat_with_dialect(app, request, None).await
+}
+
+async fn request_chat_with_dialect(
+    app: &App,
+    request: &Request,
+    route_dialect: Option<ProviderWireDialect>,
+) -> Result<Dispatch, ResponseSpec> {
     if !app.config.provider_configured() {
         return Err(provider_unavailable(&app.config));
     }
     let mut body = parse_json_object(request)?;
+    let explicit_dialect = body
+        .as_object_mut()
+        .and_then(|obj| obj.remove("wire_dialect"))
+        .and_then(|val| val.as_str().and_then(parse_wire_dialect));
+    let active_dialect = route_dialect.or(explicit_dialect);
+
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")
@@ -884,64 +1143,160 @@ async fn request_chat(app: &App, request: &Request) -> Result<Dispatch, Response
     }
     body.as_object_mut()
         .expect("request body is an object")
-        .insert("model".to_string(), Value::String(requested_model));
+        .insert("model".to_string(), Value::String(requested_model.clone()));
+
+    if let Some(dialect) = active_dialect {
+        let normalized = normalize_provider_wire_payload(dialect, &body).map_err(|err| {
+            json_error(400, "invalid_wire_payload", &err.to_string())
+        })?;
+        body = normalized.into_value();
+    }
+
     let serialized = serde_json::to_vec(&body)
         .map_err(|_| json_error(400, "invalid_json", "request body could not be serialized"))?;
-    let base = app
-        .config
-        .provider_base_url
-        .as_ref()
-        .expect("provider base URL was checked");
-    let url = endpoint(base, &app.config.provider_chat_path).map_err(|_| {
-        json_error(
-            503,
-            "provider_unavailable",
-            "provider chat endpoint is invalid",
-        )
-    })?;
-    let headers = provider_headers(
-        &app.config,
-        if stream {
-            "text/event-stream"
-        } else {
-            "application/json"
-        },
-    )?;
-    let response = time::timeout(
-        app.config.provider_timeout,
-        app.client
-            .request(Method::POST, url)
-            .headers(headers)
-            .body(serialized)
-            .send(),
-    )
-    .await
-    .map_err(|_| json_error(504, "provider_timeout", "provider request timed out"))?
-    .map_err(provider_request_error)?;
-    if !response.status().is_success() {
-        return Err(upstream_error(
-            502,
-            "provider returned an unsuccessful chat response",
-        ));
-    }
-    if stream {
-        Ok(Dispatch::Stream(response))
+    let endpoint_path = match active_dialect {
+        Some(ProviderWireDialect::OpenAiResponses) => "responses",
+        Some(ProviderWireDialect::AnthropicMessages) => "messages",
+        _ => app.config.provider_chat_path.as_str(),
+    };
+    let accept_header = if stream {
+        "text/event-stream"
     } else {
+        "application/json"
+    };
+
+    let max_attempts = app.config.provider_max_retries.saturating_add(1);
+    let mut excluded_candidates: Vec<String> = Vec::new();
+    let mut last_error: Option<ResponseSpec> = None;
+
+    for attempt in 0..max_attempts {
+        let Some((candidate_id, base)) =
+            app.select_candidate_for_attempt(&requested_model, attempt, &excluded_candidates)
+        else {
+            return Err(provider_unavailable(&app.config));
+        };
+        let url = endpoint(&base, endpoint_path).map_err(|_| {
+            json_error(
+                503,
+                "provider_unavailable",
+                "provider chat endpoint is invalid",
+            )
+        })?;
+        let mut headers = provider_headers(&app.config, accept_header, active_dialect)?;
+        let http_client = if attempt >= 1 {
+            // Use non-pooled retry client + `Connection: close` so retries force a brand-new TCP/TLS socket.
+            headers.insert(CONNECTION, HeaderValue::from_static("close"));
+            &app.retry_client
+        } else {
+            &app.client
+        };
+
+        let send_result = time::timeout(
+            app.config.provider_header_timeout,
+            http_client
+                .request(Method::POST, url)
+                .headers(headers)
+                .body(serialized.clone())
+                .send(),
+        )
+        .await;
+
+        let response = match send_result {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(err)) => {
+                let status = if err.is_timeout() { 504 } else { 502 };
+                app.record_candidate_outcome(
+                    &candidate_id,
+                    &requested_model,
+                    status,
+                    None,
+                    FailureScope::AccountCooldown,
+                );
+                if app.candidate_urls.len() > 1 {
+                    excluded_candidates.push(candidate_id);
+                }
+                last_error = Some(provider_request_error(err));
+                if attempt + 1 < max_attempts {
+                    time::sleep(retry_backoff_delay(attempt, None)).await;
+                    continue;
+                }
+                return Err(last_error.expect("error recorded"));
+            }
+            Err(_) => {
+                app.record_candidate_outcome(
+                    &candidate_id,
+                    &requested_model,
+                    504,
+                    None,
+                    FailureScope::AccountCooldown,
+                );
+                if app.candidate_urls.len() > 1 {
+                    excluded_candidates.push(candidate_id);
+                }
+                last_error = Some(json_error(
+                    504,
+                    "provider_timeout",
+                    "provider request timed out",
+                ));
+                if attempt + 1 < max_attempts {
+                    time::sleep(retry_backoff_delay(attempt, None)).await;
+                    continue;
+                }
+                return Err(last_error.expect("timeout recorded"));
+            }
+        };
+
         let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let retry_after_ms = parse_retry_after_ms(&response);
+            let scope = if status == 429 {
+                FailureScope::AccountQuota
+            } else if matches!(status, 400 | 409 | 413 | 422) {
+                FailureScope::None
+            } else {
+                FailureScope::AccountCooldown
+            };
+            app.record_candidate_outcome(
+                &candidate_id,
+                &requested_model,
+                status,
+                retry_after_ms,
+                scope,
+            );
+            if is_retryable_upstream_status(status) && attempt + 1 < max_attempts {
+                if app.candidate_urls.len() > 1 {
+                    excluded_candidates.push(candidate_id);
+                }
+                time::sleep(retry_backoff_delay(attempt, retry_after_ms)).await;
+                continue;
+            }
+            return Err(upstream_error(
+                502,
+                "provider returned an unsuccessful chat response",
+            ));
+        }
+
+        app.record_candidate_outcome(&candidate_id, &requested_model, status, None, FailureScope::None);
+        if stream {
+            return Ok(Dispatch::Stream(response));
+        }
         let content_type = upstream_content_type(&response, "application/json; charset=utf-8");
         let body = collect_upstream_body(
             response,
             app.config.max_body_bytes,
-            app.config.provider_timeout,
+            app.config.provider_token_timeout,
         )
         .await
         .map_err(|detail| upstream_error(502, detail))?;
-        Ok(Dispatch::Response(ResponseSpec::bytes(
+        return Ok(Dispatch::Response(ResponseSpec::bytes(
             status,
             &content_type,
             body,
-        )))
+        )));
     }
+
+    Err(last_error
+        .unwrap_or_else(|| upstream_error(502, "provider returned an unsuccessful chat response")))
 }
 
 #[derive(Debug)]
@@ -1084,6 +1439,14 @@ async fn dispatch_request(app: &App, request: &Request) -> Result<Dispatch, Resp
         | ("POST", "/api/chat/completions")
         | ("POST", "/api/chat")
         | ("POST", "/chat") => request_chat(app, request).await,
+        ("POST", "/v1/responses") | ("POST", "/api/responses") => {
+            request_chat_with_dialect(app, request, Some(ProviderWireDialect::OpenAiResponses))
+                .await
+        }
+        ("POST", "/v1/messages") | ("POST", "/api/messages") => {
+            request_chat_with_dialect(app, request, Some(ProviderWireDialect::AnthropicMessages))
+                .await
+        }
         ("OPTIONS", _) => {
             let mut response = ResponseSpec::empty(204);
             response.headers.push((
@@ -1120,13 +1483,77 @@ async fn wait_for_client_disconnect(reader: &mut OwnedReadHalf) -> io::Result<()
     }
 }
 
+/// Persistent cross-chunk SSE line parser ensuring split keepalive comments (e.g., `":"`
+/// followed by `" ping\n\n"`) never falsely reset the token-progress stall watchdog.
+#[derive(Debug, Clone, Copy)]
+struct SseProgressTracker {
+    at_line_start: bool,
+    in_comment_line: bool,
+}
+
+impl SseProgressTracker {
+    const fn new() -> Self {
+        Self {
+            at_line_start: true,
+            in_comment_line: false,
+        }
+    }
+
+    fn feed(&mut self, chunk: &[u8]) -> bool {
+        let mut meaningful = false;
+        for &byte in chunk {
+            if byte == b'\n' {
+                self.at_line_start = true;
+                self.in_comment_line = false;
+                continue;
+            }
+            if byte == b'\r' {
+                continue;
+            }
+            if self.at_line_start {
+                if byte == b' ' || byte == b'\t' {
+                    continue;
+                }
+                self.at_line_start = false;
+                if byte == b':' {
+                    self.in_comment_line = true;
+                } else {
+                    self.in_comment_line = false;
+                    meaningful = true;
+                }
+            } else if !self.in_comment_line {
+                meaningful = true;
+            }
+        }
+        meaningful
+    }
+}
+
+fn validate_fetch_site(fetch_site: Option<&str>) -> Result<(), String> {
+    let Some(raw) = fetch_site else {
+        return Ok(());
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    if trimmed
+        .split(',')
+        .map(str::trim)
+        .any(|token| token.eq_ignore_ascii_case("cross-site"))
+    {
+        return Err("Cross-site requests are rejected by Sec-Fetch-Site guard".to_string());
+    }
+    Ok(())
+}
+
 async fn write_stream_response(
     stream: &mut OwnedWriteHalf,
     reader: &mut OwnedReadHalf,
     response: reqwest::Response,
     origin: Option<&str>,
     max_body_bytes: usize,
-    timeout: Duration,
+    token_timeout: Duration,
 ) -> io::Result<()> {
     let status = response.status().as_u16();
     let content_type = response
@@ -1150,9 +1577,18 @@ async fn write_stream_response(
 
     let mut body_bytes = 0usize;
     let mut upstream = response.bytes_stream();
+    let mut progress_tracker = SseProgressTracker::new();
+    let mut token_deadline = time::Instant::now() + token_timeout;
     let client_disconnect = wait_for_client_disconnect(reader);
     tokio::pin!(client_disconnect);
     loop {
+        let remaining = token_deadline.saturating_duration_since(time::Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "provider stream token-progress timed out",
+            ));
+        }
         let next = tokio::select! {
             result = &mut client_disconnect => {
                 return result.and_then(|_| {
@@ -1162,7 +1598,7 @@ async fn write_stream_response(
                     ))
                 });
             }
-            result = time::timeout(timeout, upstream.next()) => result,
+            result = time::timeout(remaining, upstream.next()) => result,
         };
         let chunk = match next {
             Ok(Some(Ok(chunk))) => chunk,
@@ -1176,7 +1612,7 @@ async fn write_stream_response(
             Err(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "provider stream timed out",
+                    "provider stream token-progress timed out",
                 ));
             }
         };
@@ -1188,6 +1624,9 @@ async fn write_stream_response(
         }
         if chunk.is_empty() {
             continue;
+        }
+        if progress_tracker.feed(&chunk) {
+            token_deadline = time::Instant::now() + token_timeout;
         }
         body_bytes += chunk.len();
         let size = format!("{:X}\r\n", chunk.len());
@@ -1231,6 +1670,10 @@ async fn serve_connection(mut stream: TcpStream, app: App) -> io::Result<()> {
     if let Err(detail) = validate_origin(origin, &app.config.allowed_origins) {
         return write_response(&mut stream, json_error(403, "invalid_origin", &detail)).await;
     }
+    let fetch_site = request.headers.get("sec-fetch-site").map(String::as_str);
+    if let Err(detail) = validate_fetch_site(fetch_site) {
+        return write_response(&mut stream, json_error(403, "forbidden_cross_site", &detail)).await;
+    }
     if let Err(detail) = validate_request_headers(&request.headers) {
         let mut response = json_error(400, "credential_header_rejected", &detail);
         add_cors_headers(&mut response, origin);
@@ -1250,7 +1693,7 @@ async fn serve_connection(mut stream: TcpStream, app: App) -> io::Result<()> {
                 response,
                 origin,
                 app.config.max_body_bytes,
-                app.config.provider_timeout,
+                app.config.provider_token_timeout,
             )
             .await
         }
@@ -1308,9 +1751,14 @@ mod tests {
             allowed_origins: vec!["http://localhost:8787".to_string()],
             max_body_bytes: 1024,
             provider_base_url: None,
+            provider_fallback_urls: Vec::new(),
             provider_model: None,
             provider_api_key: None,
             provider_timeout: Duration::from_millis(250),
+            provider_connect_timeout: Duration::from_millis(250),
+            provider_header_timeout: Duration::from_millis(250),
+            provider_token_timeout: Duration::from_millis(250),
+            provider_max_retries: 0,
             provider_chat_path: DEFAULT_CHAT_PATH.to_string(),
             provider_models_path: DEFAULT_MODELS_PATH.to_string(),
             provider_config_error: Some("provider is not configured for this test".to_string()),
@@ -1330,9 +1778,14 @@ mod tests {
             allowed_origins: vec!["http://localhost:8787".to_string()],
             max_body_bytes: 4096,
             provider_base_url: Some(base_url),
+            provider_fallback_urls: Vec::new(),
             provider_model: Some("transport-test-model".to_string()),
             provider_api_key: None,
             provider_timeout: Duration::from_secs(2),
+            provider_connect_timeout: Duration::from_secs(2),
+            provider_header_timeout: Duration::from_secs(2),
+            provider_token_timeout: Duration::from_secs(2),
+            provider_max_retries: 1,
             provider_chat_path: DEFAULT_CHAT_PATH.to_string(),
             provider_models_path: DEFAULT_MODELS_PATH.to_string(),
             provider_config_error: None,
@@ -2134,5 +2587,365 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["allowed-model-1", "allowed-model-2"]);
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn contains_credential_field_allows_messages_and_tools_while_rejecting_top_level_and_options() {
+        let valid_tool_payload = json!({
+            "model": "gpt-5.4",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain how OAuth token rotation works",
+                    "metadata": { "token": "not-a-proxy-credential", "secret": "example" }
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "verify_auth",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "token": { "type": "string" },
+                                "api_key": { "type": "string" },
+                                "password": { "type": "string" },
+                                "max_tokens": { "type": "integer" }
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+        assert!(
+            !contains_credential_field(&valid_tool_payload),
+            "LLM messages and tool schemas must never trigger false-400 credential rejection"
+        );
+        let parsed_req = request(
+            "POST",
+            "/v1/chat/completions",
+            serde_json::to_vec(&valid_tool_payload).unwrap().as_slice(),
+        );
+        assert!(parse_json_object(&parsed_req).is_ok());
+
+        for bad in [
+            json!({ "api_key": "client-supplied", "messages": [] }),
+            json!({ "authorization": "Bearer x", "messages": [] }),
+            json!({ "options": { "secret": "nested-config-secret" }, "messages": [] }),
+            json!({ "headers": { "x-api-key": "header-secret" }, "messages": [] }),
+        ] {
+            assert!(
+                contains_credential_field(&bad),
+                "top-level or proxy-config credential field must still be rejected: {bad}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn split_budget_stream_survives_steady_tokens_and_times_out_on_keepalive_only_stall() {
+        // Case 1: Steady meaningful SSE chunks spanning 480ms with token_timeout=220ms MUST succeed
+        // (proving there is no hard total `.timeout(...)` killing healthy long streams!).
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let steady_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_request(&mut stream, 4096).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            for chunk in [
+                "data: {\"delta\":\"a\"}\n\n",
+                "data: {\"delta\":\"b\"}\n\n",
+                "data: {\"delta\":\"c\"}\n\n",
+                "data: [DONE]\n\n",
+            ] {
+                let frame = format!("{:X}\r\n{chunk}\r\n", chunk.len());
+                stream.write_all(frame.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+                time::sleep(Duration::from_millis(120)).await;
+            }
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let mut cfg = provider_config(Url::parse(&format!("http://{addr}")).unwrap());
+        cfg.provider_token_timeout = Duration::from_millis(260);
+        cfg.provider_timeout = Duration::from_millis(260);
+        let app = App::new(cfg).unwrap();
+
+        let Dispatch::Stream(resp) = request_chat(
+            &app,
+            &request("POST", "/api/chat", br#"{"messages":[],"stream":true}"#),
+        )
+        .await
+        .expect("steady stream connects") else {
+            panic!("expected stream");
+        };
+        let out_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let out_addr = out_listener.local_addr().unwrap();
+        let client_fut = tokio::spawn(async move { TcpStream::connect(out_addr).await.unwrap() });
+        let (srv_stream, _) = out_listener.accept().await.unwrap();
+        let mut client = client_fut.await.unwrap();
+        let (mut reader, mut writer) = srv_stream.into_split();
+        write_stream_response(
+            &mut writer,
+            &mut reader,
+            resp,
+            None,
+            8192,
+            Duration::from_millis(260),
+        )
+        .await
+        .expect("steady stream spanning >260ms must complete cleanly");
+        drop(writer);
+        drop(reader);
+        let mut collected = Vec::new();
+        client.read_to_end(&mut collected).await.unwrap();
+        let text = String::from_utf8(collected).unwrap();
+        assert!(text.contains("data: [DONE]"));
+        steady_task.await.unwrap();
+
+        // Case 2: Keepalive-only `: ping\n\n` chunks MUST NOT reset the token-progress timeout!
+        let ka_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ka_addr = ka_listener.local_addr().unwrap();
+        let _ka_task = tokio::spawn(async move {
+            let (mut stream, _) = ka_listener.accept().await.unwrap();
+            let _ = read_request(&mut stream, 4096).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            for _ in 0..12 {
+                let ping = ": ping\n\n";
+                let frame = format!("{:X}\r\n{ping}\r\n", ping.len());
+                if stream.write_all(frame.as_bytes()).await.is_err() {
+                    break;
+                }
+                let _ = stream.flush().await;
+                time::sleep(Duration::from_millis(45)).await;
+            }
+        });
+
+        let mut cfg2 = provider_config(Url::parse(&format!("http://{ka_addr}")).unwrap());
+        cfg2.provider_token_timeout = Duration::from_millis(160);
+        let app2 = App::new(cfg2).unwrap();
+        let Dispatch::Stream(resp2) = request_chat(
+            &app2,
+            &request("POST", "/api/chat", br#"{"messages":[],"stream":true}"#),
+        )
+        .await
+        .expect("keepalive stream connects") else {
+            panic!("expected stream");
+        };
+        let out_listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let out_addr2 = out_listener2.local_addr().unwrap();
+        let client_fut2 = tokio::spawn(async move { TcpStream::connect(out_addr2).await.unwrap() });
+        let (srv_stream2, _) = out_listener2.accept().await.unwrap();
+        let _client2 = client_fut2.await.unwrap();
+        let (mut reader2, mut writer2) = srv_stream2.into_split();
+        let err = write_stream_response(
+            &mut writer2,
+            &mut reader2,
+            resp2,
+            None,
+            8192,
+            Duration::from_millis(160),
+        )
+        .await
+        .expect_err("keepalive-only stream must trigger token-progress timeout");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn request_chat_retries_with_connection_close_and_updates_proxy_router() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            // Attempt 1: return retryable 502 Bad Gateway
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let req1 = read_request(&mut s1, 4096).await.unwrap();
+            assert_ne!(
+                req1.headers.get("connection").map(String::as_str),
+                Some("close")
+            );
+            s1.write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"error\":\"gw\"}",
+            )
+            .await
+            .unwrap();
+            s1.flush().await.unwrap();
+
+            // Attempt 2: verify `Connection: close` retry header and return 200 OK
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let req2 = read_request(&mut s2, 4096).await.unwrap();
+            assert_eq!(
+                req2.headers.get("connection").map(String::as_str),
+                Some("close"),
+                "retry attempt must rotate socket with Connection: close"
+            );
+            let ok_body = br#"{"id":"recovered-after-retry"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                ok_body.len(),
+                std::str::from_utf8(ok_body).unwrap()
+            );
+            s2.write_all(resp.as_bytes()).await.unwrap();
+            s2.flush().await.unwrap();
+        });
+
+        let mut cfg = provider_config(Url::parse(&format!("http://{addr}")).unwrap());
+        cfg.provider_max_retries = 2;
+        let app = App::new(cfg).unwrap();
+        let Dispatch::Response(spec) = request_chat(
+            &app,
+            &request("POST", "/api/chat", br#"{"messages":[{"role":"user","content":"hi"}]}"#),
+        )
+        .await
+        .expect("retry should recover from initial 502") else {
+            panic!("expected buffered response");
+        };
+        assert_eq!(spec.status, 200);
+        assert_eq!(json_body(&spec)["id"], "recovered-after-retry");
+
+        {
+            let router = app.proxy_router.lock().unwrap();
+            assert_eq!(router.candidates().len(), 1);
+            assert_eq!(router.candidates()[0].consecutive_failures, 0);
+            assert_eq!(router.candidates()[0].last_status, Some(200));
+        }
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_normalizes_wire_adapter_payload_for_v1_responses() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let req = read_request(&mut stream, 8192).await.unwrap();
+            assert_eq!(req.path, "/responses");
+            let sent: Value = serde_json::from_slice(&req.body).unwrap();
+            // Foreign Anthropic/Gemini keys must be stripped by omnia_routing::wire_adapter!
+            assert!(sent.get("anthropic_version").is_none());
+            assert!(sent.get("thinking_config").is_none());
+            assert_eq!(sent["model"], "transport-test-model");
+            let ok_body = br#"{"id":"resp-normalized"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                ok_body.len(),
+                std::str::from_utf8(ok_body).unwrap()
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let app = App::new(provider_config(Url::parse(&format!("http://{addr}")).unwrap())).unwrap();
+        let req = request(
+            "POST",
+            "/v1/responses",
+            br#"{"input":"hello","anthropic_version":"2023-06-01","thinking_config":{"thinkingBudget":1024}}"#,
+        );
+        let Dispatch::Response(spec) = dispatch_request(&app, &req)
+            .await
+            .expect("/v1/responses should normalize and forward") else {
+            panic!("expected buffered response");
+        };
+        assert_eq!(spec.status, 200);
+        assert_eq!(json_body(&spec)["id"], "resp-normalized");
+        server_task.await.unwrap();
+    }
+
+    #[test]
+    fn split_chunk_sse_keepalive_never_resets_token_progress_watchdog() {
+        let mut tracker = SseProgressTracker::new();
+        // Split `: ping\n\n` across two separate TCP packets must NOT count as progress!
+        assert!(!tracker.feed(b":"));
+        assert!(!tracker.feed(b" ping\n\n"));
+        assert!(!tracker.feed(b"   \r\n: keep"));
+        assert!(!tracker.feed(b"alive\n"));
+        // Real data payload line MUST count as progress!
+        assert!(tracker.feed(b"data: {\"delta\":\"ok\"}\n\n"));
+        // Subsequent split comment again must NOT count as progress.
+        assert!(!tracker.feed(b":"));
+        assert!(!tracker.feed(b" heartbeat\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn explicit_wire_dialect_routes_anthropic_messages_with_version_and_x_api_key_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let synth_key = ["omnia", "anth", "fixture", "key999"].join("-");
+        let expected_key = synth_key.clone();
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let req = read_request(&mut stream, 8192).await.unwrap();
+            assert_eq!(
+                req.path, "/messages",
+                "explicit wire_dialect must route to /messages endpoint"
+            );
+            assert_eq!(
+                req.headers.get("anthropic-version").map(String::as_str),
+                Some("2023-06-01")
+            );
+            assert_eq!(
+                req.headers.get("x-api-key").map(String::as_str),
+                Some(expected_key.as_str())
+            );
+            let ok_body = br#"{"id":"msg-1","type":"message"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                ok_body.len(),
+                std::str::from_utf8(ok_body).unwrap()
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let mut cfg = provider_config(Url::parse(&format!("http://{addr}")).unwrap());
+        cfg.provider_api_key = Some(synth_key);
+        let app = App::new(cfg).unwrap();
+        let req = request(
+            "POST",
+            "/api/chat",
+            br#"{"wire_dialect":"anthropic_messages","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let Dispatch::Response(spec) = dispatch_request(&app, &req)
+            .await
+            .expect("explicit anthropic_messages dialect should route cleanly") else {
+            panic!("expected buffered response");
+        };
+        assert_eq!(spec.status, 200);
+        assert_eq!(json_body(&spec)["id"], "msg-1");
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serve_connection_blocks_cross_site_sec_fetch_site() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = test_app();
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            serve_connection(stream, app).await.unwrap();
+        });
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(
+                b"GET /api/hardware/nvidia HTTP/1.1\r\nHost: 127.0.0.1:8790\r\nSec-Fetch-Site: cross-site\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut raw_resp = Vec::new();
+        client.read_to_end(&mut raw_resp).await.unwrap();
+        server_task.await.unwrap();
+        let resp_text = String::from_utf8(raw_resp).unwrap();
+        assert!(resp_text.starts_with("HTTP/1.1 403 Forbidden\r\n"));
+        assert!(resp_text.contains("forbidden_cross_site"));
     }
 }

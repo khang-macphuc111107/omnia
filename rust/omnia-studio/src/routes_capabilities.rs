@@ -57,9 +57,25 @@ const MAX_TREE_DEPTH: usize = 6;
 const DEFAULT_TREE_DEPTH: usize = 2;
 const MAX_TREE_ENTRIES: usize = 500;
 const MAX_AUDIT_LOG_ENTRIES: usize = 256;
-const DEFAULT_EXEC_TIMEOUT_MS: u64 = 5_000;
-const MAX_EXEC_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_EXEC_TIMEOUT_MS: u64 = 120_000;
+const MAX_EXEC_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_LEASE_TTL_MS: u64 = 300_000;
+
+fn is_unc_or_smb_path(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.starts_with(r"\\")
+        || trimmed.starts_with("//")
+        || trimmed.starts_with(r"\??\")
+        || trimmed.starts_with("/??/")
+}
+
+fn unc_path_blocked_response() -> HttpResponse {
+    HttpResponse::error(
+        400,
+        "unc_path_blocked",
+        "UNC/SMB network paths are blocked for workspace operations.",
+    )
+}
 
 /// Configured connector metadata retained in Studio state.
 #[derive(Debug, Clone)]
@@ -363,6 +379,9 @@ async fn handle_workspace_tree(state: &StudioState, req: &HttpRequest) -> HttpRe
         .unwrap_or_default()
         .trim()
         .to_string();
+    if is_unc_or_smb_path(&rel_path) {
+        return unc_path_blocked_response();
+    }
     let max_depth = match req
         .query_param("max_depth")
         .or_else(|| req.query_param("maxDepth"))
@@ -423,6 +442,9 @@ async fn handle_workspace_file(state: &StudioState, req: &HttpRequest) -> HttpRe
             return HttpResponse::error(400, "missing_path", "Query parameter 'path' is required.");
         }
     };
+    if is_unc_or_smb_path(&rel_path) {
+        return unc_path_blocked_response();
+    }
 
     let start_line_opt = match req
         .query_param("start_line")
@@ -563,6 +585,9 @@ async fn handle_workspace_diff(state: &StudioState, req: &HttpRequest) -> HttpRe
                 "Field 'rollbackReceiptPath' is required when rollback=true.",
             );
         };
+        if is_unc_or_smb_path(receipt_path) {
+            return unc_path_blocked_response();
+        }
         let rollback_root = state.config.rollback_root.clone();
         let workspace_root = state.config.workspace_root.clone();
         let receipt_owned = PathBuf::from(receipt_path);
@@ -597,6 +622,9 @@ async fn handle_workspace_diff(state: &StudioState, req: &HttpRequest) -> HttpRe
     else {
         return HttpResponse::error(400, "missing_path", "Field 'path' is required.");
     };
+    if is_unc_or_smb_path(&rel_path) {
+        return unc_path_blocked_response();
+    }
 
     let Some(after_content) = obj
         .get("content")
@@ -734,6 +762,10 @@ async fn handle_workspace_exec(state: &StudioState, req: &HttpRequest) -> HttpRe
         return HttpResponse::error(400, "missing_program", "Field 'program' is required.");
     };
 
+    if is_unc_or_smb_path(&program) {
+        return unc_path_blocked_response();
+    }
+
     let args: Vec<String> = obj
         .get("args")
         .and_then(Value::as_array)
@@ -754,7 +786,7 @@ async fn handle_workspace_exec(state: &StudioState, req: &HttpRequest) -> HttpRe
         return HttpResponse::error(
             400,
             "invalid_timeout",
-            "Field 'timeoutMs' must be between 1 and 30000.",
+            "Field 'timeoutMs' must be between 1 and 300000.",
         );
     }
 
@@ -768,6 +800,9 @@ async fn handle_workspace_exec(state: &StudioState, req: &HttpRequest) -> HttpRe
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
+        if is_unc_or_smb_path(cwd) {
+            return unc_path_blocked_response();
+        }
         spec = spec.with_cwd(cwd);
     }
 

@@ -2285,13 +2285,13 @@ pub fn swallows(res: Result<(), i32>) {
         assert_eq!(pruned.compacted_count, 2);
 
         // First two older failures compacted while <thought_plan> preserved verbatim; latest 2 intact.
-        for i in 0..2 {
-            assert!(pruned.turns[i].content.contains(&format!(
+        for (i, turn) in pruned.turns.iter().enumerate().take(2) {
+            assert!(turn.content.contains(&format!(
                 "<thought_plan>Inspect borrow issue step {}</thought_plan>",
                 i + 1
             )));
-            assert!(pruned.turns[i].content.contains("[COMPACTED_ERROR_RECEIPT"));
-            assert!(!pruned.turns[i]
+            assert!(turn.content.contains("[COMPACTED_ERROR_RECEIPT"));
+            assert!(!turn
                 .content
                 .contains("Verbose 200-line compiler trace"));
         }
