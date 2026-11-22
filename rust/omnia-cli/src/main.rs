@@ -165,7 +165,7 @@ RUN OPTIONS:
   --output-format <fmt>          stream-json | json | text (default: text)
   --auto-approve                 Run with ApprovalMode::Yolo (non-interactive)
   --approval-mode <mode>         yolo | write | plan | always-ask | always-ask-cached
-  --max-turns <n>                Maximum agent turns (default: 25)
+  --max-turns <n>                Maximum agent turns (default: 50)
   --timeout-secs, --timeout <s>  Run timeout in seconds (default: 300)
   --prompt-file <path>           Read prompt from UTF-8 file instead of positional arg
   --trajectory <path>            Write append-only JSONL turn trajectory
@@ -291,7 +291,7 @@ async fn run_agent_cmd(args: &[String]) -> Result<bool> {
     let config_dir = arg_value(args, "--config-dir").map(PathBuf::from);
     let max_turns = arg_value(args, "--max-turns")
         .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(25);
+        .unwrap_or(50);
     let timeout_secs = arg_value(args, "--timeout-secs")
         .or_else(|| arg_value(args, "--timeout"))
         .and_then(|s| s.parse::<u64>().ok())

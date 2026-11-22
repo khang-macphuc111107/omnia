@@ -600,22 +600,26 @@ impl ToolRuntime {
     }
 
     async fn exec_edit_file(&self, args: &Value) -> Result<String> {
-        let rel = args
-            .get("path")
-            .and_then(|v| v.as_str())
+        // Accept common search/replace argument aliases emitted by GPT/Gemini/Claude families.
+        let str_arg = |keys: &[&str]| -> Option<&str> {
+            keys.iter()
+                .find_map(|k| args.get(*k).and_then(|v| v.as_str()))
+        };
+        let rel = str_arg(&["path", "file_path", "filepath", "file", "filename"])
             .context("edit_file requires string parameter 'path'")?;
-        let new_str = args
-            .get("new_string")
-            .and_then(|v| v.as_str())
-            .context("edit_file requires string parameter 'new_string'")?;
-        let start_anchor = args
-            .get("start_anchor")
-            .and_then(|v| v.as_str())
+        let new_str = str_arg(&[
+            "new_string",
+            "new_text",
+            "new_str",
+            "newText",
+            "replacement",
+            "replace",
+        ])
+        .context("edit_file requires string parameter 'new_string'")?;
+        let start_anchor = str_arg(&["start_anchor", "anchor"])
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let end_anchor = args
-            .get("end_anchor")
-            .and_then(|v| v.as_str())
+        let end_anchor = str_arg(&["end_anchor"])
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
@@ -672,10 +676,15 @@ impl ToolRuntime {
                 &self.read_tracker,
             )?
         } else {
-            let old_str = args
-                .get("old_string")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
+            let old_str = str_arg(&[
+                "old_string",
+                "old_text",
+                "old_str",
+                "oldText",
+                "search",
+                "find",
+            ])
+            .ok_or_else(|| {
                     anyhow::anyhow!(
                         "{}",
                         format_fail_fast_error(
@@ -1428,8 +1437,14 @@ fn run_supervised_shell(
     if timed_out {
         bail!("Command timed out after {timeout_secs}s (process tree killed).\n{capped}");
     }
+    if exit_code < 0 {
+        bail!("Command failed to run (exit_code {exit_code}).\n{capped}");
+    }
     if exit_code != 0 {
-        bail!("Command exited with code {exit_code}.\n{capped}");
+        // Non-zero exit (e.g. failing tests) is valid command OUTPUT, not a tool failure.
+        return Ok(format!(
+            "exit_code: {exit_code}\nCommand exited with code {exit_code}.\n{capped}"
+        ));
     }
 
     if capped.trim().is_empty() {
@@ -2445,6 +2460,41 @@ mod tests {
             "read_file must reject >4 MiB file upfront: {}",
             out.content
         );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn shell_nonzero_exit_is_output_not_tool_error_and_edit_accepts_arg_aliases() {
+        let tmp = std::env::temp_dir().join(format!("omni_shell_alias_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("cfg.py"), "RATE = 0.10\n").unwrap();
+        let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Yolo,
+            true,
+            PermissionsEngine::default_rules(),
+            graph,
+            ctx,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let sh = rt.execute("shell", &json!({ "command": "exit 3" })).await;
+        assert!(!sh.is_error, "non-zero exit must not be a tool failure: {}", sh.content);
+        assert!(sh.content.starts_with("exit_code: 3"), "{}", sh.content);
+
+        // GPT/Gemini-style alias arguments, editing a file that was never read_file'd
+        let ed = rt
+            .execute(
+                "edit_file",
+                &json!({ "file_path": "cfg.py", "old_text": "RATE = 0.10", "new_text": "RATE = 0.15" }),
+            )
+            .await;
+        assert!(!ed.is_error, "alias edit failed: {}", ed.content);
+        assert_eq!(fs::read_to_string(tmp.join("cfg.py")).unwrap(), "RATE = 0.15\n");
         let _ = fs::remove_dir_all(&tmp);
     }
 }

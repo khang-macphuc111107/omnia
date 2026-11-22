@@ -492,7 +492,7 @@ impl SuperHarnessManager {
             cwd: clean_cwd,
             backend: req.backend,
             started_at: Utc::now().timestamp(),
-            max_turns: req.max_turns.clamp(1, 60),
+            max_turns: req.max_turns.clamp(1, 120),
             model_label: Arc::new(Mutex::new(Some(model_label_str))),
             is_streaming: Arc::new(AtomicBool::new(false)),
             waiting_for_user,
@@ -1179,7 +1179,7 @@ pub async fn run_acp_stdio_server(
                     // Spawn concurrently so `session/cancel` can arrive and flip `cancel_flag` live!
                     tokio::spawn(async move {
                         let mut eng = eng_arc.lock().await;
-                        let reply = match eng.run_prompt(&prompt_text, 25, 300, Some(h_sink)).await {
+                        let reply = match eng.run_prompt(&prompt_text, 50, 300, Some(h_sink)).await {
                             Ok(sum) => id.map(|req_id| {
                                 json!({
                                     "jsonrpc": "2.0",
@@ -1254,6 +1254,10 @@ mod tests {
         );
         assert_eq!(
             WireApiMode::Auto.resolve_api_kind("gemini-3.8-flash", "openai-completions"),
+            "anthropic-messages"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("gpt-6.2-sol", "openai-completions"),
             "openai-completions"
         );
         assert_eq!(

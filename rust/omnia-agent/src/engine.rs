@@ -53,7 +53,6 @@ use tokio::sync::Notify;
 
 const MAX_INTERLEAVED_REASONING_CHARS: usize = 6_000;
 const ACTIVE_DECODE_GAP_CAP_MS: u64 = 5_000;
-const MAX_RETRY_TIMEOUT_SECS: u64 = 60;
 
 /// Multi-dialect wire routing mode (`--wire-api auto|chat|responses|messages|gemini`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -89,7 +88,14 @@ impl WireApiMode {
             Self::Gemini => "google-gemini",
             Self::Auto => {
                 let m = model_id.to_ascii_lowercase();
-                if m.starts_with("claude") || m.contains("/claude") {
+                // htmustc wire forensics: Gemini over OpenAI chat/responses loses ~2k tokens of
+                // cached prefix EVERY turn (37/103 breaks), while the same models over Anthropic
+                // `/v1/messages` keep a byte-stable cached prefix (delta ~6 tokens/turn).
+                if m.starts_with("claude")
+                    || m.contains("/claude")
+                    || m.starts_with("gemini")
+                    || m.contains("/gemini")
+                {
                     "anthropic-messages"
                 } else if configured_api == "openai-responses" {
                     "openai-responses"
@@ -110,9 +116,10 @@ pub struct StreamBudgetConfig {
     pub first_delta_timeout: Duration,
     pub heavy_first_delta_timeout: Duration,
     pub inter_chunk_timeout: Duration,
-    /// Hard upper bound on any single LLM HTTP turn (`90s` default) so one stalled turn
-    /// can never exhaust a 300s task budget.
-    pub per_turn_deadline: Duration,
+    /// Hard upper bound for EACH individual HTTP attempt (`180s` default). Every retry gets a
+    /// FRESH per-attempt budget (bounded only by the overall run deadline) so a slow first
+    /// attempt can never clamp later attempts down to sub-second stall windows.
+    pub per_attempt_deadline: Duration,
     pub max_retries_per_turn: u32,
     pub retry_base_backoff_ms: u64,
     /// Bounded pre-TTFT hedging (`<= 5%` retry budget, NEVER post-TTFT).
@@ -123,17 +130,45 @@ pub struct StreamBudgetConfig {
 impl Default for StreamBudgetConfig {
     fn default() -> Self {
         Self {
-            header_timeout: Duration::from_secs(22),
-            heavy_header_timeout: Duration::from_secs(45),
-            first_delta_timeout: Duration::from_secs(22),
-            heavy_first_delta_timeout: Duration::from_secs(45),
-            inter_chunk_timeout: Duration::from_secs(25),
-            per_turn_deadline: Duration::from_secs(90),
+            // Calibrated on 105-run htmustc Stage 1 wire traces: the proxy burst-flushes whole
+            // responses (gen window ~1ms) after 12-188s of upstream wait, sending NO bytes
+            // (not even headers) before the flush. Pre-delta budgets must cover that wait.
+            header_timeout: Duration::from_secs(90),
+            heavy_header_timeout: Duration::from_secs(150),
+            first_delta_timeout: Duration::from_secs(90),
+            heavy_first_delta_timeout: Duration::from_secs(150),
+            inter_chunk_timeout: Duration::from_secs(45),
+            per_attempt_deadline: Duration::from_secs(180),
             max_retries_per_turn: 3,
             retry_base_backoff_ms: 800,
-            enable_pre_ttft_hedge: true,
-            pre_ttft_hedge_delay: Duration::from_secs(12),
+            // Opt-in only: upstream keeps processing aborted requests and serializes per-family
+            // concurrency, so hedges/aborts double-load htmustc and queue the next turn.
+            enable_pre_ttft_hedge: false,
+            pre_ttft_hedge_delay: Duration::from_secs(60),
         }
+    }
+}
+
+impl StreamBudgetConfig {
+    /// Defaults plus explicit opt-in overrides:
+    /// `OMNIA_PRE_TTFT_HEDGE=1` enables bounded pre-TTFT hedging (never on Anthropic wire),
+    /// `OMNIA_PRE_TTFT_HEDGE_DELAY_SECS` sets the hedge delay (floored at 45s).
+    #[must_use]
+    pub fn from_env() -> Self {
+        let mut cfg = Self::default();
+        if std::env::var("OMNIA_PRE_TTFT_HEDGE")
+            .ok()
+            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        {
+            cfg.enable_pre_ttft_hedge = true;
+        }
+        if let Some(secs) = std::env::var("OMNIA_PRE_TTFT_HEDGE_DELAY_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            cfg.pre_ttft_hedge_delay = Duration::from_secs(secs.max(45));
+        }
+        cfg
     }
 }
 
@@ -143,7 +178,8 @@ impl StreamBudgetConfig {
             return true;
         }
         let m = model_id.to_ascii_lowercase();
-        m.contains("opus")
+        m.contains("claude")
+            || m.contains("opus")
             || m.contains("gpt-6.2")
             || m.contains("gpt-6-luna")
             || m.contains("gemini-4")
@@ -175,7 +211,7 @@ impl StreamBudgetConfig {
         } else {
             1.25_f64.powi(attempt.min(3) as i32)
         };
-        let cap = Duration::from_secs(MAX_RETRY_TIMEOUT_SECS);
+        let cap = self.per_attempt_deadline.max(Duration::from_secs(1));
         let scale_dur = |d: Duration| -> Duration {
             let scaled = Duration::from_secs_f64((d.as_secs_f64() * scale).min(cap.as_secs_f64()));
             scaled.min(remaining)
@@ -683,6 +719,7 @@ struct ExecutionProgressState {
     sent_60pct_nudge: bool,
     sent_82pct_nudge: bool,
     escalate_reasoning: bool,
+    final_review_nudges: u32,
     /// Pending shell or edit failure tracked for D7 `ACE` Playbook error -> green fix capture.
     last_failed_shell: Option<(String, String, String)>,
     last_failed_edit: Option<(String, String, String)>,
@@ -732,6 +769,9 @@ pub struct NativeSuperEngine {
     pub total_oscillation_nudges: u32,
     pub total_hedge_wins: u32,
     pub total_hedges_issued: u32,
+    pub total_final_review_nudges: u32,
+    /// One-shot requirements/edge-case review before a mutating task finishes (default on).
+    pub final_review_gate: bool,
     pub last_context_tokens: u64,
     http: reqwest::Client,
     fresh_http: reqwest::Client,
@@ -840,7 +880,7 @@ impl NativeSuperEngine {
             system_prompt,
             canonical_tools,
             tool_schemas_by_name,
-            stream_budget: StreamBudgetConfig::default(),
+            stream_budget: StreamBudgetConfig::from_env(),
             supports_reasoning_echo: true,
             supports_prompt_cache_key: true,
             active_prompt_start_turn: 1,
@@ -862,6 +902,8 @@ impl NativeSuperEngine {
             total_oscillation_nudges: 0,
             total_hedge_wins: 0,
             total_hedges_issued: 0,
+            total_final_review_nudges: 0,
+            final_review_gate: true,
             last_context_tokens: 0,
             http,
             fresh_http,
@@ -913,7 +955,7 @@ impl NativeSuperEngine {
         let prompt_start = Instant::now();
         let total_budget_secs = timeout_secs.max(5);
         let deadline = prompt_start + Duration::from_secs(total_budget_secs);
-        let max_turns = max_turns.clamp(1, 60);
+        let max_turns = max_turns.clamp(1, 120);
         self.active_prompt_start_turn = self.total_turns + 1;
 
         // Inject workspace context + query-seeded PPR AST RepoMap ONLY into Turn-1 user message
@@ -1328,6 +1370,32 @@ impl NativeSuperEngine {
                     continue;
                 }
 
+                // 4. One-shot Final Review Gate: re-check every stated requirement & edge case
+                // (catches `9/10 checks` premature exits) while budget clearly remains.
+                let review_floor = Duration::from_secs((total_budget_secs / 5).max(45));
+                if self.final_review_gate
+                    && !progress.files_mutated.is_empty()
+                    && progress.final_review_nudges < 1
+                    && prompt_turns + 2 <= max_turns
+                    && rem_now > review_floor
+                {
+                    progress.final_review_nudges += 1;
+                    self.total_final_review_nudges += 1;
+                    self.trajectory.record(
+                        cur_turn,
+                        "final_review_gate",
+                        json!({ "editedFiles": progress.files_mutated.len() }),
+                    );
+                    self.messages.push(HarnessMessage::user(
+                        "[Final Review Gate] Before finishing, re-read the original task and check EVERY stated requirement and edge case (boundaries, inclusive/exclusive limits, rounding/precision, idempotency, error paths). If any item is not yet proven by a passing run, add or run a targeted check and fix it now. If everything is verified, reply with your concise final summary.",
+                        cur_turn,
+                    ));
+                    if let Some(ref s) = sink {
+                        s(HarnessStreamEvent::TurnEnd { turn: cur_turn });
+                    }
+                    continue;
+                }
+
                 if let Some(ref s) = sink {
                     s(HarnessStreamEvent::TurnEnd { turn: cur_turn });
                 }
@@ -1430,8 +1498,16 @@ impl NativeSuperEngine {
             {
                 self.total_tool_calls += 1;
                 *self.tool_histogram.entry(tc.name.clone()).or_insert(0) += 1;
+                // A shell command that ran and returned non-zero (e.g. failing tests) is valid
+                // tool output, not a tool failure; it still drives verify gates & playbooks.
+                let shell_nonzero = tc.name == "shell"
+                    && !out.is_error
+                    && parse_shell_exit_code(&out.content).is_some_and(|c| c != 0);
+                let effective_error = out.is_error || shell_nonzero;
                 if out.is_error {
                     self.total_tool_errors += 1;
+                }
+                if effective_error {
                     turn_had_error = true;
                     progress.escalate_reasoning = true;
                 }
@@ -1520,7 +1596,7 @@ impl NativeSuperEngine {
                             TestOutcomeTransition::AllGreen { .. }
                             | TestOutcomeTransition::Neutral => {}
                         }
-                        if out.is_error {
+                        if effective_error {
                             progress.last_shell_exit_code = Some(1);
                             let fp_hex = format!("{:016x}", error_fingerprint(&tool_text));
                             let err_kind = format!("{:?}", classify_tool_error("shell", &tool_text));
@@ -1595,7 +1671,7 @@ impl NativeSuperEngine {
                         &tc.name,
                         &arg_val,
                         &tool_text,
-                        out.is_error,
+                        effective_error,
                     ) {
                         self.cache_guard.loop_nudges += 1;
                         loop_nudges_this_turn.push(nudge.clone());
@@ -1607,7 +1683,7 @@ impl NativeSuperEngine {
                         &tc.name,
                         &tc.arguments,
                         &tool_text,
-                        out.is_error,
+                        effective_error,
                     ) {
                         let msg = osc.format_nudge();
                         self.total_oscillation_nudges += 1;
@@ -1720,7 +1796,7 @@ impl NativeSuperEngine {
                     tool_text,
                     cur_turn,
                     target_path,
-                    out.is_error,
+                    effective_error,
                 ));
             }
 
@@ -1837,9 +1913,9 @@ impl NativeSuperEngine {
             0
         };
         let max_attempts = max_retries + 1;
-        // Hard per-turn deadline (`90s` default) prevents one hung socket from starving a 300s task!
-        let capped_rem = remaining.min(self.stream_budget.per_turn_deadline);
-        let call_deadline = Instant::now() + capped_rem;
+        // Overall run deadline bounds ALL attempts; each attempt gets its own FRESH
+        // `per_attempt_deadline` budget (never a shared, shrinking per-turn window).
+        let run_deadline = Instant::now() + remaining;
 
         let mut include_stream_options = true;
         let mut retries = 0u32;
@@ -1850,10 +1926,11 @@ impl NativeSuperEngine {
             if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
                 bail!("Aborted by user");
             }
-            let rem_now = call_deadline.saturating_duration_since(Instant::now());
-            if rem_now.is_zero() {
+            let rem_run = run_deadline.saturating_duration_since(Instant::now());
+            if rem_run.is_zero() {
                 bail!("Timed out waiting for LLM turn");
             }
+            let rem_now = rem_run.min(self.stream_budget.per_attempt_deadline);
 
             let api_kind = self.active_wire_dialect();
             let force_fresh_socket = attempt > 0;
@@ -2063,7 +2140,7 @@ impl NativeSuperEngine {
                     kind,
                     detail,
                 }) if attempt + 1 < max_attempts => {
-                    let rem_after = call_deadline.saturating_duration_since(Instant::now());
+                    let rem_after = run_deadline.saturating_duration_since(Instant::now());
                     if rem_after <= Duration::from_millis(500) {
                         bail!("Timed out after retryable error: {detail}");
                     }
@@ -3115,10 +3192,14 @@ impl NativeSuperEngine {
         if !status.is_success() {
             let err_body = resp.text().await.unwrap_or_default();
             let snippet: String = err_body.chars().take(400).collect();
+            let non_claude_auto = self.wire_api_mode == WireApiMode::Auto
+                && !self.endpoint.model_id.to_ascii_lowercase().contains("claude");
             if matches!(
                 status,
                 StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
-            ) {
+            ) || (non_claude_auto
+                && matches!(status, StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY))
+            {
                 return Err(StreamTurnError::EndpointUnsupported(format!(
                     "Anthropic HTTP {status}: {snippet}"
                 )));
@@ -3901,6 +3982,12 @@ fn extract_tool_target_path(tool_name: &str, args: &Value) -> Option<String> {
     }
 }
 
+/// Parse the leading `exit_code: N` header emitted by the `shell` tool.
+fn parse_shell_exit_code(content: &str) -> Option<i32> {
+    let first = content.lines().next()?.trim();
+    first.strip_prefix("exit_code:")?.trim().parse::<i32>().ok()
+}
+
 /// Extract Gemini `thought_signature` / `thoughtSignature` verbatim from SSE delta or part JSON.
 fn extract_thought_signature(v: &Value) -> Option<String> {
     v.get("thought_signature")
@@ -4147,7 +4234,12 @@ fn build_anthropic_messages(
                         continue;
                     }
                 }
-                ant_msgs.push(json!({ "role": "user", "content": m.content }));
+                // Always block-array form so moving cache_control breakpoints never flip an
+                // earlier message between string and array shapes (byte-stable prefix).
+                ant_msgs.push(json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": m.content }]
+                }));
             }
             "assistant" => {
                 let mut blocks = Vec::new();
@@ -4434,12 +4526,14 @@ mod tests {
             first_delta_timeout: Duration::from_millis(220),
             heavy_first_delta_timeout: Duration::from_millis(300),
             inter_chunk_timeout: Duration::from_millis(180),
-            per_turn_deadline: Duration::from_secs(10),
+            per_attempt_deadline: Duration::from_secs(10),
             pre_ttft_hedge_delay: Duration::from_millis(500),
             enable_pre_ttft_hedge: false,
             max_retries_per_turn: 3,
             retry_base_backoff_ms: 20,
         };
+        eng.final_review_gate = false;
+        eng.wire_api_mode = WireApiMode::Chat;
         eng
     }
 
@@ -5306,7 +5400,7 @@ data: [DONE]\n\n";
         std::fs::create_dir_all(&tmp).unwrap();
         let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
         eng.endpoint.model_id = "gemini-3.8-flash".into();
-        eng.wire_api_mode = WireApiMode::Auto;
+        eng.wire_api_mode = WireApiMode::Chat;
         eng.stream_budget.header_timeout = Duration::from_secs(5);
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
 
@@ -5681,5 +5775,240 @@ data: [DONE]\n\n";
             .unwrap();
         assert_eq!(tool_asst.tool_calls[0].arguments, "{\"path\":\"hist.py\"}");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn http_body_json(raw: &str) -> Value {
+        let body = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+        serde_json::from_str(body).unwrap_or(Value::Null)
+    }
+
+    fn strip_cache_control(v: &Value) -> Value {
+        match v {
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .filter(|(k, _)| k.as_str() != "cache_control")
+                    .map(|(k, val)| (k.clone(), strip_cache_control(val)))
+                    .collect(),
+            ),
+            Value::Array(arr) => Value::Array(arr.iter().map(strip_cache_control).collect()),
+            other => other.clone(),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_retry_attempt_gets_fresh_budget_instead_of_shared_shrinking_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            // Attempt 1: burst-flush proxy sends NOTHING (no headers) for 1s -> pre-delta stall.
+            let (mut s1, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let _ = read_http_request(&mut s1).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                drop(s1);
+            });
+            // Attempt 2: flushes after 300ms. A shared 600ms window would only have ~180ms left!
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut s2).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let ok = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"FRESH_ATTEMPT_BUDGET_OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":5}}\n\n\
+data: [DONE]\n\n";
+            let _ = s2.write_all(ok.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_eng_fresh_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.stream_budget.header_timeout = Duration::from_millis(400);
+        eng.stream_budget.first_delta_timeout = Duration::from_millis(400);
+        eng.stream_budget.per_attempt_deadline = Duration::from_millis(600);
+
+        let sum = eng.run_prompt("fresh budget", 4, 15, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.status, "completed", "error: {:?}", sum.error);
+        assert_eq!(sum.final_text, "FRESH_ATTEMPT_BUDGET_OK");
+        assert_eq!(sum.stall_retries, 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn htmustc_calibrated_defaults_cover_burst_flush_waits_and_hedge_is_opt_in() {
+        let cfg = StreamBudgetConfig::default();
+        assert!(cfg.header_timeout >= Duration::from_secs(75));
+        assert!(cfg.first_delta_timeout >= Duration::from_secs(75));
+        assert!(cfg.heavy_first_delta_timeout >= Duration::from_secs(95));
+        assert!(cfg.inter_chunk_timeout >= Duration::from_secs(45));
+        assert!(cfg.per_attempt_deadline >= Duration::from_secs(180));
+        assert!(!cfg.enable_pre_ttft_hedge, "hedging must be opt-in");
+        assert!(cfg.pre_ttft_hedge_delay >= Duration::from_secs(45));
+        // Retry attempts are never clamped below the base budget by a 60s cap.
+        let (h, f, _) = cfg.effective_timeouts("claude-sonnet-5-5", 0, 1, Duration::from_secs(290));
+        assert!(h >= Duration::from_secs(150) && f >= Duration::from_secs(150));
+        assert!(StreamBudgetConfig::is_heavy_model("claude-sonnet-5-5", 0));
+    }
+
+    #[tokio::test]
+    async fn chat_wire_prefix_is_byte_identical_across_turns_1_to_3() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+        let bodies_bg = Arc::clone(&bodies);
+        let srv = tokio::spawn(async move {
+            let responses = [
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"k1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.py\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"k2\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"b.py\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":150,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"KV_DONE\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":200,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+            ];
+            for body in responses {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut sock).await;
+                bodies_bg.lock().unwrap().push(req);
+                let frame = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = sock.write_all(frame.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_eng_kvchat_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), "A = 1\n").unwrap();
+        std::fs::write(tmp.join("b.py"), "B = 2\n").unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "gpt-6.2-sol".into();
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("read a then b", 6, 30, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "KV_DONE");
+
+        let reqs: Vec<Value> = bodies.lock().unwrap().iter().map(|r| http_body_json(r)).collect();
+        assert_eq!(reqs.len(), 3);
+        for w in reqs.windows(2) {
+            let (prev, cur) = (&w[0], &w[1]);
+            assert_eq!(prev["tools"], cur["tools"], "tools[] must be byte-identical");
+            assert_eq!(prev["prompt_cache_key"], cur["prompt_cache_key"]);
+            let pm = prev["messages"].as_array().unwrap();
+            let cm = cur["messages"].as_array().unwrap();
+            assert!(cm.len() > pm.len());
+            assert_eq!(&cm[..pm.len()], &pm[..], "earlier messages must stay append-only");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn anthropic_wire_prefix_is_stable_across_turns_and_gemini_auto_routes_to_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let reqs_raw = Arc::new(Mutex::new(Vec::<String>::new()));
+        let reqs_bg = Arc::clone(&reqs_raw);
+        let srv = tokio::spawn(async move {
+            let tool_turn = |id: &str, path: &str| {
+                format!(
+                    "data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":100}}}}}}\n\n\
+data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"read_file\"}}}}\n\n\
+data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{{\\\"path\\\":\\\"{path}\\\"}}\"}}}}\n\n\
+data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"output_tokens\":9}}}}\n\n\
+data: {{\"type\":\"message_stop\"}}\n\n"
+                )
+            };
+            let final_turn = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100}}}\n\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"GEMINI_VIA_MESSAGES_OK\"}}\n\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n\
+data: {\"type\":\"message_stop\"}\n\n".to_string();
+            for body in [tool_turn("t1", "a.py"), tool_turn("t2", "b.py"), final_turn] {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut sock).await;
+                reqs_bg.lock().unwrap().push(req);
+                let frame = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = sock.write_all(frame.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_eng_kvant_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), "A = 1\n").unwrap();
+        std::fs::write(tmp.join("b.py"), "B = 2\n").unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "gemini-3.8-flash".into();
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        assert_eq!(eng.active_wire_dialect(), "anthropic-messages");
+
+        let sum = eng.run_prompt("read a then b", 6, 30, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "GEMINI_VIA_MESSAGES_OK");
+
+        let raws = reqs_raw.lock().unwrap().clone();
+        assert_eq!(raws.len(), 3);
+        assert!(raws.iter().all(|r| r.starts_with("POST /v1/messages")));
+        let reqs: Vec<Value> = raws.iter().map(|r| strip_cache_control(&http_body_json(r))).collect();
+        for w in reqs.windows(2) {
+            let (prev, cur) = (&w[0], &w[1]);
+            assert_eq!(prev["system"], cur["system"], "system must be byte-identical");
+            assert_eq!(prev["tools"], cur["tools"], "tools must be byte-identical");
+            let pm = prev["messages"].as_array().unwrap();
+            let cm = cur["messages"].as_array().unwrap();
+            assert!(cm.len() > pm.len());
+            assert_eq!(&cm[..pm.len()], &pm[..], "Anthropic history must stay append-only");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn final_review_gate_fires_once_before_finishing_a_mutating_task() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let cap_bg = Arc::clone(&captured);
+        let srv = tokio::spawn(async move {
+            let responses = [
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"w1\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"m.py\\\",\\\"content\\\":\\\"V = 1\\\\n\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"s1\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"echo OK\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Done.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":140,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"All requirements verified.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":160,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
+            ];
+            for body in responses {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut sock).await;
+                cap_bg.lock().unwrap().push(req);
+                let frame = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = sock.write_all(frame.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_eng_review_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.final_review_gate = true;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("create m.py", 10, 120, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "All requirements verified.");
+        assert_eq!(eng.total_final_review_nudges, 1);
+        let reqs = captured.lock().unwrap();
+        assert_eq!(reqs.len(), 4);
+        assert!(reqs[3].contains("[Final Review Gate]"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parses_shell_exit_code_header() {
+        assert_eq!(parse_shell_exit_code("exit_code: 0\nok"), Some(0));
+        assert_eq!(parse_shell_exit_code("exit_code: 3\nCommand exited with code 3."), Some(3));
+        assert_eq!(parse_shell_exit_code("{\"exitCode\":0}"), None);
     }
 }

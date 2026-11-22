@@ -68,6 +68,10 @@ pub fn format_hashline(line_num_1: usize, tag: &[u8; 3], line_text: &str) -> Str
 pub fn parse_hashline_anchor(raw: &str) -> Result<(usize, [u8; 3])> {
     let clean = raw
         .trim()
+        .split('|')
+        .next()
+        .unwrap_or("")
+        .trim()
         .trim_start_matches(['L', 'l'])
         .trim_end_matches('|');
     let (line_s, hash_s) = clean
@@ -177,7 +181,7 @@ fn verify_pre_read_guard(
     workspace_root: &Path,
     rel_path: &str,
     tracker: &FileReadTracker,
-) -> Result<(PathBuf, String, bool, bool)> {
+) -> Result<(PathBuf, String, bool, bool, ReadGuardState)> {
     let abs = ensure_within_workspace(workspace_root, rel_path)?;
     if !abs.exists() {
         bail!(
@@ -193,38 +197,57 @@ fn verify_pre_read_guard(
     let raw_bytes = fs::read(&abs).with_context(|| format!("failed to read {rel_path}"))?;
     let current_digest = blake3_hex(&raw_bytes);
 
-    match tracker.get(&abs) {
-        None => {
-            bail!(
-                "{}",
-                format_fail_fast_error(
-                    "Pre-Read Guard: file not yet read in this session",
-                    "path",
-                    rel_path,
-                    &format!("Call read_file(path=\"{rel_path}\") before edit_file")
-                )
-            );
-        }
-        Some(snap) if snap.sha256 != current_digest => {
-            bail!(
-                "{}",
-                format_fail_fast_error(
-                    "Pre-Read Guard: file changed on disk since last read_file",
-                    "path",
-                    &format!("{rel_path} (expected {}, actual {})", &snap.sha256[..12], &current_digest[..12]),
-                    &format!("Call read_file(path=\"{rel_path}\") again before edit_file")
-                )
-            );
-        }
-        Some(_) => {}
-    }
+    let guard = match tracker.get(&abs) {
+        None => ReadGuardState::Unread,
+        Some(snap) if snap.sha256 != current_digest => ReadGuardState::Stale {
+            expected: snap.sha256[..12].to_string(),
+            actual: current_digest[..12].to_string(),
+        },
+        Some(_) => ReadGuardState::Fresh,
+    };
 
     let raw_text = String::from_utf8(raw_bytes)
         .with_context(|| format!("'{rel_path}' is not valid UTF-8"))?;
     let had_bom = raw_text.starts_with('\u{FEFF}');
     let uses_crlf = raw_text.contains("\r\n");
     let norm = raw_text.replace("\r\n", "\n");
-    Ok((abs, norm, uses_crlf, had_bom))
+    Ok((abs, norm, uses_crlf, had_bom, guard))
+}
+
+/// Pre-Read Guard freshness of the on-disk file relative to the last `read_file` snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadGuardState {
+    Fresh,
+    Unread,
+    Stale { expected: String, actual: String },
+}
+
+impl ReadGuardState {
+    /// Actionable error used ONLY when a non-content-addressed (fuzzy) edit is attempted
+    /// against an unread or externally modified file.
+    fn fuzzy_block_error(&self, rel_path: &str) -> Option<anyhow::Error> {
+        match self {
+            Self::Fresh => None,
+            Self::Unread => Some(anyhow::anyhow!(
+                "{}",
+                format_fail_fast_error(
+                    "Pre-Read Guard: old_string has no exact match and file not yet read in this session",
+                    "path",
+                    rel_path,
+                    &format!("Call read_file(path=\"{rel_path}\") and copy exact text or hashline anchors")
+                )
+            )),
+            Self::Stale { expected, actual } => Some(anyhow::anyhow!(
+                "{}",
+                format_fail_fast_error(
+                    "Pre-Read Guard: file changed on disk since last read_file and old_string has no exact match",
+                    "path",
+                    &format!("{rel_path} (expected {expected}, actual {actual})"),
+                    &format!("Call read_file(path=\"{rel_path}\") again before edit_file")
+                )
+            )),
+        }
+    }
 }
 
 /// Mode 1: Hashline Content-Addressable Line-Range Splice (`start_anchor`, optional `end_anchor`).
@@ -236,7 +259,7 @@ pub fn edit_file_by_hashline(
     new_string: &str,
     tracker: &FileReadTracker,
 ) -> Result<EditFileResult> {
-    let (abs, norm_content, uses_crlf, had_bom) =
+    let (abs, norm_content, uses_crlf, had_bom, _guard) =
         verify_pre_read_guard(workspace_root, rel_path, tracker)?;
     let (start_1, start_tag) = parse_hashline_anchor(start_anchor)?;
     let (end_1, end_tag) = match end_anchor.filter(|s| !s.trim().is_empty()) {
@@ -387,7 +410,7 @@ pub fn edit_file_guarded(
         );
     }
 
-    let (abs, norm_content, uses_crlf, had_bom) =
+    let (abs, norm_content, uses_crlf, had_bom, guard) =
         verify_pre_read_guard(workspace_root, rel_path, tracker)?;
     let mut norm_old = old_string.replace("\r\n", "\n");
     let mut norm_new = new_string.replace("\r\n", "\n");
@@ -455,6 +478,9 @@ pub fn edit_file_guarded(
             );
         }
     } else if !replace_all {
+        if let Some(err) = guard.fuzzy_block_error(rel_path) {
+            return Err(err);
+        }
         // Tier 2: Unique indentation-normalized Fast Apply
         if let Some((updated, ls, le)) =
             fast_apply_indent_normalized(&norm_content, &norm_old, &norm_new)
@@ -899,7 +925,7 @@ pub fn edit_file_by_symbol_block(
     new_block: &str,
     tracker: &FileReadTracker,
 ) -> Result<EditFileResult> {
-    let (abs, normalized, uses_crlf, had_bom) =
+    let (abs, normalized, uses_crlf, had_bom, _guard) =
         verify_pre_read_guard(workspace_root, rel_path, tracker)?;
     let trailing_nl = normalized.ends_with('\n');
     let lines: Vec<&str> = normalized
@@ -1061,10 +1087,18 @@ mod tests {
 
         let tracker = FileReadTracker::new();
 
-        // 1. Pre-Read Guard blocks edit before read_file
-        let err = edit_file_guarded(&tmp, "calc.py", "return a + b", "return a * b", false, &tracker)
-            .unwrap_err();
+        // 1. Pre-Read Guard blocks FUZZY (non-exact) edits before read_file...
+        let err = edit_file_guarded(
+            &tmp,
+            "calc.py",
+            "def mul(self, a, b):\n    return a + b",
+            "def mul(self, a, b):\n    return a * b",
+            false,
+            &tracker,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("Pre-Read Guard"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), initial);
 
         // 2. Record read -> Fast Apply fallback matches despite wrong indentation AND preserves real indentation!
         let abs = ensure_within_workspace(&tmp, "calc.py").unwrap();
@@ -1085,11 +1119,22 @@ mod tests {
             "class Calc:\n    def mul(self, a, b):\n        return a * b\n"
         );
 
-        // 3. External disk mutation invalidates Pre-Read Guard
+        // 3. External disk mutation: fuzzy edits blocked, but exact unique matches stay safe
         fs::write(&file, "class Calc:\n    def mul(self, a, b):\n        return 0\n").unwrap();
-        let stale = edit_file_guarded(&tmp, "calc.py", "return 0", "return 1", false, &tracker)
-            .unwrap_err();
+        let stale = edit_file_guarded(
+            &tmp,
+            "calc.py",
+            "def mul(self, a, b):\n    return 0",
+            "def mul(self, a, b):\n    return 1",
+            false,
+            &tracker,
+        )
+        .unwrap_err();
         assert!(stale.to_string().contains("changed on disk"));
+        let exact_stale =
+            edit_file_guarded(&tmp, "calc.py", "return 0", "return 1", false, &tracker).unwrap();
+        assert_eq!(exact_stale.match_mode, "exact");
+        assert!(fs::read_to_string(&file).unwrap().contains("return 1"));
 
         // 4. Ambiguous match rejected unless replace_all = true
         let dup_body = "x = foo()\ny = foo()\n";
@@ -1100,6 +1145,37 @@ mod tests {
             edit_file_guarded(&tmp, "calc.py", "foo()", "bar()", true, &tracker).unwrap();
         assert_eq!(rep_all.replacements, 2);
         assert_eq!(fs::read_to_string(&file).unwrap(), "x = bar()\ny = bar()\n");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unread_exact_unique_edit_succeeds_without_prior_read_file() {
+        let tmp = std::env::temp_dir().join(format!("omni_unread_edit_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("svc.py");
+        fs::write(&file, "def fee(x):\n    return x * 0.10\n").unwrap();
+        let tracker = FileReadTracker::new();
+
+        let res = edit_file_guarded(&tmp, "svc.py", "x * 0.10", "x * 0.15", false, &tracker).unwrap();
+        assert_eq!(res.match_mode, "exact");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "def fee(x):\n    return x * 0.15\n");
+
+        // Copied hashline prefixes in an unread file still resolve exactly.
+        let res2 = edit_file_guarded(
+            &tmp,
+            "svc.py",
+            "2:abc|     return x * 0.15",
+            "2:abc|     return x * 0.20",
+            false,
+            &tracker,
+        )
+        .unwrap();
+        assert_eq!(res2.match_mode, "exact_hashline_stripped");
+        assert!(fs::read_to_string(&file).unwrap().contains("x * 0.20"));
+
+        // Anchors copied with trailing code (`42:a3f|  code`) parse cleanly.
+        assert_eq!(parse_hashline_anchor("7:0af|    return y").unwrap().0, 7);
 
         let _ = fs::remove_dir_all(&tmp);
     }
