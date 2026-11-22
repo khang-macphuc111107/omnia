@@ -1,0 +1,24 @@
+[package]
+name = "omnia-agent"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Full Native Rust SOTA v4 Autonomous Coding Agent Engine for Omnia"
+
+[dependencies]
+blake3.workspace = true
+imara-diff.workspace = true
+memchr.workspace = true
+omnia-connector-gateway.workspace = true
+omnia-core.workspace = true
+omnia-graph.workspace = true
+omnia-harness.workspace = true
+omnia-routing.workspace = true
+omnia-storage.workspace = true
+omnia-workspace-ops.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+xxhash-rust.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "omnia-notebook"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Full Native Rust Gemini Notebook & Atelier Research Studio engine"
+
+[dependencies]
+blake3.workspace = true
+omnia-connector-gateway.workspace = true
+omnia-core.workspace = true
+omnia-graph.workspace = true
+omnia-harness.workspace = true
+omnia-storage.workspace = true
+omnia-workspace-ops.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

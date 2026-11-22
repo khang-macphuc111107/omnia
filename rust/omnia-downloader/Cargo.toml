@@ -1,0 +1,22 @@
+[package]
+name = "omnia-downloader"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Full Native Rust multi-stream segmented HTTP & Google Drive downloader (OmniDownloader Pro)"
+
+[dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+omnia-connector-gateway.workspace = true
+omnia-core.workspace = true
+omnia-storage.workspace = true
+omnia-workspace-ops.workspace = true
+parking_lot.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "omnia-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Ultra-lightweight headless Full Native Rust CLI for Omnia"
+
+[[bin]]
+name = "omnia"
+path = "src/main.rs"
+
+[dependencies]
+mimalloc.workspace = true
+omnia-agent.workspace = true
+omnia-core.workspace = true
+omnia-downloader.workspace = true
+omnia-notebook.workspace = true
+omnia-routing.workspace = true
+omnia-storage.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
