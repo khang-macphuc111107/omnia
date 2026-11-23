@@ -239,6 +239,28 @@ fn extract_positional_prompt(args: &[String]) -> Option<String> {
     }
 }
 
+fn resolve_omp_tui_paths() -> Option<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+    let candidates = [
+        env::var("OMNIA_OMP_TUI_DIR").ok().map(PathBuf::from),
+        Some(default_omnia_data_dir().join("omp-tui")),
+        Some(PathBuf::from(r"D:\OmniaData\omp-tui")),
+    ];
+    for root in candidates.into_iter().flatten() {
+        let bun = root.join("bun.exe");
+        let cli_js = root
+            .join("app")
+            .join("node_modules")
+            .join("@oh-my-pi")
+            .join("pi-coding-agent")
+            .join("dist")
+            .join("cli.js");
+        if bun.is_file() && cli_js.is_file() {
+            return Some((bun, cli_js, root.join("agent"), root.join("sessions")));
+        }
+    }
+    None
+}
+
 fn launch_tui_from_args(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
@@ -251,6 +273,56 @@ fn launch_tui_from_args(args: &[String]) -> ExitCode {
     let model = arg_value(args, "--model");
     let base_url = arg_value(args, "--base-url").or_else(|| arg_value(args, "--api-base"));
     let api_key = arg_value(args, "--api-key");
+    let force_native = args.iter().any(|a| a == "--native");
+
+    if !force_native {
+        if let Some((bun, cli_js, agent_dir, sessions_dir)) = resolve_omp_tui_paths() {
+            let clean_ws = sanitize_windows_path(&workspace);
+            let _ = fs::create_dir_all(&agent_dir);
+            let _ = fs::create_dir_all(&sessions_dir);
+            let mut cmd = std::process::Command::new(&bun);
+            cmd.arg(&cli_js)
+                .arg("--cwd")
+                .arg(&clean_ws)
+                .arg("--session-dir")
+                .arg(&sessions_dir)
+                .env("PI_CODING_AGENT_DIR", &agent_dir);
+            let selected_model = model
+                .clone()
+                .or_else(|| env::var("OMNIA_MODEL").ok().filter(|s| !s.trim().is_empty()))
+                .unwrap_or_else(|| "htmustc/claude-sonnet-5-5".into());
+            cmd.arg("--model").arg(&selected_model);
+            if let Some(ref k) = api_key {
+                cmd.env("HTMUSTC_API_KEY", k).arg("--api-key").arg(k);
+            } else if let Ok(k) = env::var("OMNIA_API_KEY").or_else(|_| env::var("OPENAI_API_KEY")) {
+                if env::var("HTMUSTC_API_KEY").is_err() && !k.trim().is_empty() {
+                    cmd.env("HTMUSTC_API_KEY", k);
+                }
+            }
+            if args.iter().any(|a| a == "-c" || a == "--continue") {
+                cmd.arg("-c");
+            }
+            if let Some(r) = arg_value(args, "--resume").or_else(|| arg_value(args, "-r")) {
+                cmd.arg("--resume").arg(r);
+            }
+            match cmd.status() {
+                Ok(status) => {
+                    return if status.success() {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(status.code().unwrap_or(1) as u8)
+                    };
+                }
+                Err(e) => {
+                    eprintln!(
+                        "omnia omp-tui launch warning ({}); falling back to native TUI",
+                        redact_secrets(&e.to_string())
+                    );
+                }
+            }
+        }
+    }
+
     let wire_api = arg_value(args, "--wire-api").map(|s| WireApiMode::parse_flag(&s));
     let thinking = arg_value(args, "--thinking");
     let approval_mode = resolve_approval_mode(args).ok().filter(|_| {
