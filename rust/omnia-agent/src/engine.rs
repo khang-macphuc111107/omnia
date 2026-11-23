@@ -1066,8 +1066,9 @@ impl NativeSuperEngine {
                             "epochCutoffTurn": self.epoch_masker.last_masked_turn
                         }),
                     );
-                    // Stage 2: Factory Anchored Iterative Summarization when nearing context-rot knee (~68%)
-                    let rot_knee = (self.endpoint.context_window * 68) / 100;
+                    // Stage 2: Factory Anchored Iterative Summarization when nearing context-rot knee (~68% of <=200k compact cap)
+                    let compact_cap = self.endpoint.context_window.min(200_000);
+                    let rot_knee = (compact_cap * 68) / 100;
                     if self.last_context_tokens >= rot_knee && self.epoch_masker.last_masked_turn > 0
                     {
                         self.anchored_summary

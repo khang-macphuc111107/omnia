@@ -1057,7 +1057,12 @@ pub async fn run_acp_stdio_server(
                         PermissionsEngine::default_rules(),
                         store.clone(),
                     )));
-                    let _ = g.lock().unwrap().refresh();
+                    let g_bg = Arc::clone(&g);
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(mut idx) = g_bg.lock() {
+                            let _ = idx.refresh();
+                        }
+                    });
                     NativeSuperEngine::new(
                         sid.clone(),
                         cwd,

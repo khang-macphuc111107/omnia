@@ -36,9 +36,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_READ_LINES_DEFAULT: usize = 400;
-const MAX_READ_CHARS: usize = 32_000;
+const MAX_READ_CHARS: usize = 5_000;
 const MAX_BATCH_READ_FILES: usize = 8;
-const MAX_SHELL_OUTPUT_CHARS: usize = 14_000;
+const MAX_SHELL_OUTPUT_CHARS: usize = 5_000;
+const MAX_TOOL_OUTPUT_CHARS: usize = 5_000;
 const SHELL_COMPACT_MIN_CHARS: usize = 1_800;
 
 /// Optional interactive approval callback used when `PermissionsEngine` returns `Ask`.
@@ -307,7 +308,7 @@ impl ToolRuntime {
         let duration_ms = t0.elapsed().as_millis() as u64;
         match res {
             Ok(content) => ToolExecOutput {
-                content,
+                content: cap_output_traceback_preserving(&content, MAX_TOOL_OUTPUT_CHARS),
                 is_error: false,
                 is_host_tool: is_host,
                 duration_ms,
