@@ -411,7 +411,7 @@ pub fn resolve_model_endpoint(
     let (context_window, max_tokens, cost) = if let Some(m) = matched_model {
         (
             m.context_window.max(32_000),
-            m.max_tokens.clamp(1024, 65_536),
+            m.max_tokens.clamp(1024, 128_000),
             m.cost,
         )
     } else {
