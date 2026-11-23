@@ -31,20 +31,21 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+mod tui;
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    // Dispatch subcommand FIRST so global flags like `--version` or `-h` inside a prompt
-    // or `omnia run ...` arguments NEVER hijack subcommand execution!
+    // Launch interactive TUI when invoked with no arguments (`omnia`) or `omnia tui ...`!
     let Some(first) = args.first().map(String::as_str) else {
-        print_help();
-        return ExitCode::SUCCESS;
+        return launch_tui_from_args(&[]);
     };
 
     match first {
+        "tui" => launch_tui_from_args(&args[1..]),
         "--help" | "-h" | "help" => {
             print_help();
             ExitCode::SUCCESS
@@ -235,6 +236,62 @@ fn extract_positional_prompt(args: &[String]) -> Option<String> {
         None
     } else {
         Some(positionals.join(" "))
+    }
+}
+
+fn launch_tui_from_args(args: &[String]) -> ExitCode {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return ExitCode::SUCCESS;
+    }
+    let workspace = arg_value(args, "--workspace")
+        .or_else(|| arg_value(args, "--cwd"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let model = arg_value(args, "--model");
+    let base_url = arg_value(args, "--base-url").or_else(|| arg_value(args, "--api-base"));
+    let api_key = arg_value(args, "--api-key");
+    let wire_api = arg_value(args, "--wire-api").map(|s| WireApiMode::parse_flag(&s));
+    let thinking = arg_value(args, "--thinking");
+    let approval_mode = resolve_approval_mode(args).ok().filter(|_| {
+        args.iter().any(|a| {
+            a == "--auto-approve" || a == "--approval-mode" || a.starts_with("--approval-mode=")
+        })
+    });
+    let max_turns = arg_value(args, "--max-turns")
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(50);
+    let timeout_secs = arg_value(args, "--timeout-secs")
+        .or_else(|| arg_value(args, "--timeout"))
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300);
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("omnia runtime error: {}", redact_secrets(&format!("{e:#}")));
+            return ExitCode::FAILURE;
+        }
+    };
+    match rt.block_on(tui::run_interactive_tui(tui::TuiLaunchOptions {
+        workspace,
+        model,
+        base_url,
+        api_key,
+        wire_api,
+        thinking,
+        approval_mode,
+        max_turns,
+        timeout_secs,
+    })) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("omnia tui error: {}", redact_secrets(&format!("{e:#}")));
+            ExitCode::FAILURE
+        }
     }
 }
 
