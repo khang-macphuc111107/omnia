@@ -1075,12 +1075,19 @@ pub async fn run_acp_stdio_server(
                     )
                 }) {
                     Ok(eng) => {
+                        let wire_dialect = eng.active_wire_dialect().to_string();
+                        let resolved_model = format!("{}/{}", eng.endpoint.provider_id, eng.endpoint.model_id);
                         sessions.insert(sid.clone(), (Arc::new(AsyncMutex::new(eng)), cancel_flag));
                         if let Some(req_id) = id {
                             emit(json!({
                                 "jsonrpc": "2.0",
                                 "id": req_id,
-                                "result": { "sessionId": sid }
+                                "result": {
+                                    "sessionId": sid,
+                                    "backend": "omnia-sota-v4.4",
+                                    "model": resolved_model,
+                                    "wireDialect": wire_dialect
+                                }
                             }));
                         }
                     }
@@ -1151,13 +1158,54 @@ pub async fn run_acp_stdio_server(
                             HarnessStreamEvent::ToolEnd {
                                 tool_call_id,
                                 tool_name,
+                                output,
                                 is_error,
+                                duration_ms,
+                            } => {
+                                let preview: String = output.chars().take(160).collect();
+                                Some(json!({
+                                    "sessionUpdate": "tool_call_update",
+                                    "toolCallId": tool_call_id,
+                                    "title": tool_name,
+                                    "status": if is_error { "failed" } else { "completed" },
+                                    "durationMs": duration_ms,
+                                    "outputPreview": redact_secrets(&preview)
+                                }))
+                            }
+                            HarnessStreamEvent::AutoRecovery { attempt, reason } => Some(json!({
+                                "sessionUpdate": "omnia_recovery",
+                                "attempt": attempt,
+                                "reason": redact_secrets(&reason)
+                            })),
+                            HarnessStreamEvent::Metrics {
+                                tokens_per_second,
+                                context_tokens,
+                                context_window,
+                                context_percent,
+                                total_cost_usd,
+                            } => Some(json!({
+                                "sessionUpdate": "omnia_metrics",
+                                "tokensPerSecond": tokens_per_second,
+                                "contextTokens": context_tokens,
+                                "contextWindow": context_window,
+                                "contextPercent": context_percent,
+                                "totalCostUsd": total_cost_usd
+                            })),
+                            HarnessStreamEvent::Telemetry {
+                                cache_stats,
+                                lakeview_compressions,
+                                turn_count,
+                                tool_call_count,
+                                tool_error_count,
                                 ..
                             } => Some(json!({
-                                "sessionUpdate": "tool_call_update",
-                                "toolCallId": tool_call_id,
-                                "title": tool_name,
-                                "status": if is_error { "failed" } else { "completed" }
+                                "sessionUpdate": "omnia_telemetry",
+                                "kvHitPct": cache_stats.cache_hit_pct,
+                                "cacheReadTokens": cache_stats.cache_read_tokens,
+                                "lakeviewCompressions": lakeview_compressions,
+                                "turnCount": turn_count,
+                                "toolCallCount": tool_call_count,
+                                "toolErrorCount": tool_error_count
                             })),
                             _ => None,
                         };
@@ -1215,6 +1263,96 @@ pub async fn run_acp_stdio_server(
                     if let Some((_, cancel_flag)) = sessions.get(sid) {
                         cancel_flag.store(true, Ordering::Relaxed);
                     }
+                }
+            }
+            "session/set_model" => {
+                let sid = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
+                let model = params.get("model").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let thinking = params
+                    .get("thinkingLevel")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                if let Some((eng_arc, _)) = sessions.get(sid).cloned() {
+                    match resolve_model_endpoint(
+                        model,
+                        None,
+                        default_base_url.as_deref(),
+                        default_api_key.as_deref(),
+                    ) {
+                        Ok(ep) => {
+                            let mut eng = eng_arc.lock().await;
+                            eng.endpoint = ep.clone();
+                            eng.epoch_masker = EpochMaskingState::for_context_window(ep.context_window);
+                            eng.edit_affinity = ModelEditAffinity::for_model(&ep.model_id);
+                            if thinking.is_some() {
+                                eng.thinking_level = thinking;
+                            }
+                            let dialect = eng.active_wire_dialect().to_string();
+                            if let Some(req_id) = id {
+                                emit(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": {
+                                        "provider": ep.provider_id,
+                                        "modelId": ep.model_id,
+                                        "contextWindow": ep.context_window,
+                                        "wireDialect": dialect
+                                    }
+                                }));
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(req_id) = id {
+                                emit(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "error": { "code": -32602, "message": redact_secrets(&e.to_string()) }
+                                }));
+                            }
+                        }
+                    }
+                } else if let Some(req_id) = id {
+                    emit(json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": { "code": -32602, "message": format!("unknown sessionId: {sid}") }
+                    }));
+                }
+            }
+            "session/rewind" => {
+                let sid = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
+                let target_turn = params
+                    .get("turn")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as u32;
+                if let Some((eng_arc, _)) = sessions.get(sid).cloned() {
+                    let mut eng = eng_arc.lock().await;
+                    match eng.rewind_to_turn(target_turn) {
+                        Ok(restored) => {
+                            if let Some(req_id) = id {
+                                emit(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": { "restored": restored }
+                                }));
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(req_id) = id {
+                                emit(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "error": { "code": -32000, "message": redact_secrets(&e.to_string()) }
+                                }));
+                            }
+                        }
+                    }
+                } else if let Some(req_id) = id {
+                    emit(json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": { "code": -32602, "message": format!("unknown sessionId: {sid}") }
+                    }));
                 }
             }
             _ => {

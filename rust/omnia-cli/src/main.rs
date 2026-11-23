@@ -287,6 +287,13 @@ fn launch_tui_from_args(args: &[String]) -> ExitCode {
                 .arg("--session-dir")
                 .arg(&sessions_dir)
                 .env("PI_CODING_AGENT_DIR", &agent_dir);
+            if let Ok(exe) = env::current_exe() {
+                cmd.env("OMNIA_EXE_PATH", exe);
+            }
+            let backend_ext = agent_dir.join("extensions").join("omnia-backend.ts");
+            if backend_ext.is_file() {
+                cmd.arg("--extension").arg(&backend_ext);
+            }
             let selected_model = model
                 .clone()
                 .or_else(|| env::var("OMNIA_MODEL").ok().filter(|s| !s.trim().is_empty()))
