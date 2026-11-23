@@ -150,7 +150,7 @@ impl Default for StreamBudgetConfig {
             heavy_header_timeout: Duration::from_secs(150),
             first_delta_timeout: Duration::from_secs(90),
             heavy_first_delta_timeout: Duration::from_secs(150),
-            inter_chunk_timeout: Duration::from_secs(45),
+            inter_chunk_timeout: Duration::from_secs(65),
             per_attempt_deadline: Duration::from_secs(180),
             max_retries_per_turn: 3,
             retry_base_backoff_ms: 800,
@@ -2500,6 +2500,13 @@ impl NativeSuperEngine {
             })?;
 
             let Some(chunk_res) = next_opt else {
+                if !line_buf.is_empty() {
+                    let tail = String::from_utf8_lossy(&line_buf);
+                    if tail.trim().strip_prefix("data:").is_some_and(|d| d.trim() == "[DONE]") {
+                        saw_done = true;
+                    }
+                    line_buf.clear();
+                }
                 break;
             };
 
@@ -3376,6 +3383,30 @@ impl NativeSuperEngine {
                     ),
                 })?;
             let Some(chunk_res) = next_opt else {
+                // Flush any final SSE data line if the proxy closed the stream without trailing `\n`.
+                if !line_buf.is_empty() {
+                    let tail = String::from_utf8_lossy(&line_buf);
+                    if let Some(data) = tail.trim().strip_prefix("data:") {
+                        if let Ok(val) = serde_json::from_str::<Value>(data.trim()) {
+                            match val.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                                "message_delta" => {
+                                    if let Some(sr) = val.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
+                                        stop_reason = Some(sr.to_string());
+                                    }
+                                    if let Some(out) = val.pointer("/usage/output_tokens").and_then(|v| v.as_u64()) {
+                                        usage.saw_usage = true;
+                                        usage.output = out;
+                                    }
+                                }
+                                "message_stop" => {
+                                    saw_message_stop = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    line_buf.clear();
+                }
                 break;
             };
             if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
@@ -3418,6 +3449,12 @@ impl NativeSuperEngine {
                     "content_block_start" => {
                         match val.pointer("/content_block/type").and_then(|v| v.as_str()) {
                             Some("tool_use") => {
+                                let now = Instant::now();
+                                if turn_ttft_ms.is_none() {
+                                    turn_ttft_ms = Some(t_req.elapsed().as_millis() as u64);
+                                    first_delta_at = Some(now);
+                                }
+                                last_delta_at = Some(now);
                                 let id = val
                                     .pointer("/content_block/id")
                                     .and_then(|v| v.as_str())
@@ -3428,14 +3465,27 @@ impl NativeSuperEngine {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
+                                // Some proxy translators populate `content_block.input` inline on
+                                // `content_block_start` instead of emitting `input_json_delta`.
+                                let initial_args = val
+                                    .pointer("/content_block/input")
+                                    .filter(|v| v.as_object().is_some_and(|m| !m.is_empty()))
+                                    .and_then(|v| serde_json::to_string(v).ok())
+                                    .unwrap_or_default();
                                 tool_calls.push(ToolCallRecord {
                                     id,
                                     name,
-                                    arguments: String::new(),
+                                    arguments: initial_args,
                                 });
                                 cur_tool_idx = Some(tool_calls.len() - 1);
                             }
                             Some("redacted_thinking") => {
+                                let now = Instant::now();
+                                if turn_ttft_ms.is_none() {
+                                    turn_ttft_ms = Some(t_req.elapsed().as_millis() as u64);
+                                    first_delta_at = Some(now);
+                                }
+                                last_delta_at = Some(now);
                                 if let Some(data) = val
                                     .pointer("/content_block/data")
                                     .and_then(|v| v.as_str())
@@ -3502,6 +3552,7 @@ impl NativeSuperEngine {
                                 if let Some(sig) =
                                     val.pointer("/delta/signature").and_then(|v| v.as_str())
                                 {
+                                    stamp_token();
                                     reasoning_sig.push_str(sig);
                                 }
                             }
@@ -3525,6 +3576,7 @@ impl NativeSuperEngine {
                         }
                     }
                     "message_delta" => {
+                        last_delta_at = Some(Instant::now());
                         if let Some(sr) = val.pointer("/delta/stop_reason").and_then(|v| v.as_str())
                         {
                             stop_reason = Some(sr.to_string());
@@ -6273,5 +6325,68 @@ data: [DONE]\n\n";
         assert_eq!(parse_shell_exit_code("exit_code: 0\nok"), Some(0));
         assert_eq!(parse_shell_exit_code("exit_code: 3\nCommand exited with code 3."), Some(3));
         assert_eq!(parse_shell_exit_code("{\"exitCode\":0}"), None);
+    }
+
+    #[tokio::test]
+    async fn anthropic_sse_handles_inline_tool_input_signature_progress_and_eof_without_newline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            // Turn 1: content_block_start populates `input` inline (no input_json_delta) AND
+            // ends on `message_stop` with NO trailing newline.
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut s1).await;
+            let turn1 = concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":80}}}\n\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_inline\",\"name\":\"read_file\",\"input\":{\"path\":\"hello.txt\"}}}\n\n",
+                "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":12}}\n\n",
+                "data: {\"type\":\"message_stop\"}"
+            );
+            let _ = s1.write_all(turn1.as_bytes()).await;
+            let _ = s1.shutdown().await;
+
+            // Turn 2: signature_delta resets inter-chunk watchdog cleanly before final text + no trailing newline
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut s2).await;
+            let head2 = concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":80}}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"checking\"}}\n\n"
+            );
+            let _ = s2.write_all(head2.as_bytes()).await;
+            let _ = s2.flush().await;
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            let mid2 = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_ok_123\"}}\n\n";
+            let _ = s2.write_all(mid2.as_bytes()).await;
+            let _ = s2.flush().await;
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            let tail2 = concat!(
+                "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"INLINE_OK\"}}\n\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+                "data: {\"type\":\"message_stop\"}"
+            );
+            let _ = s2.write_all(tail2.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_ant_inline_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("hello.txt"), "hello world\n").unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "claude-sonnet-5-5".into();
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.final_review_gate = false;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        eng.stream_budget.inter_chunk_timeout = Duration::from_millis(200);
+        let sum = eng.run_prompt("read hello.txt", 4, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "INLINE_OK");
+        assert_eq!(eng.total_stall_retries, 0);
+        assert_eq!(eng.total_tool_calls, 1);
+        assert_eq!(eng.total_tool_errors, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
