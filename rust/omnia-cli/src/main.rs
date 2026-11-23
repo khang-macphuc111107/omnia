@@ -290,7 +290,7 @@ fn launch_tui_from_args(args: &[String]) -> ExitCode {
             let selected_model = model
                 .clone()
                 .or_else(|| env::var("OMNIA_MODEL").ok().filter(|s| !s.trim().is_empty()))
-                .unwrap_or_else(|| "htmustc/claude-sonnet-5-5".into());
+                .unwrap_or_else(|| "htmustc-claude/claude-sonnet-5-5".into());
             cmd.arg("--model").arg(&selected_model);
             if let Some(ref k) = api_key {
                 cmd.env("HTMUSTC_API_KEY", k).arg("--api-key").arg(k);
