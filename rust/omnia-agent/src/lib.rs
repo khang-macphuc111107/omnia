@@ -11,6 +11,7 @@
 //!   Ring-Buffer Oscillation Detector + BLAKE3/Deflate Atomic `/rewind` + Win32 Job Objects
 
 pub mod acp;
+pub mod acp_http;
 pub mod agent_store;
 pub mod cache_guard;
 pub mod checkpoint;
@@ -40,6 +41,7 @@ pub use acp::{
     detect_all_backends, run_acp_eval, AcpClient, AcpEvent, AcpLaunchConfig, HarnessBackendId,
     HarnessBackendInfo,
 };
+pub use acp_http::run_acp_http_server;
 pub use agent_store::{
     default_omnia_data_dir, read_models_config, AgentStore, CachedAstRow, CachedMerkleRow,
     ModelCost, ModelEntryConfig, PlaybookEntry, ProviderConfig,

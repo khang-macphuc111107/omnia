@@ -17,10 +17,10 @@
 use anyhow::{bail, Context, Result};
 use mimalloc::MiMalloc;
 use omnia_agent::{
-    default_omnia_data_dir, process_tree_rss_bytes, redact_secrets, run_acp_stdio_server,
-    run_super_eval, sanitize_windows_path, AgentStore, ApprovalMode, FileReadTracker,
-    HarnessEventSink, HarnessStreamEvent, PermissionsEngine, PluginRegistry, SuperEvalOptions,
-    TurnCheckpointStore, WireApiMode,
+    default_omnia_data_dir, process_tree_rss_bytes, redact_secrets, run_acp_http_server,
+    run_acp_stdio_server, run_super_eval, sanitize_windows_path, AgentStore, ApprovalMode,
+    FileReadTracker, HarnessEventSink, HarnessStreamEvent, PermissionsEngine, PluginRegistry,
+    SuperEvalOptions, TurnCheckpointStore, WireApiMode,
 };
 use serde_json::json;
 use std::env;
@@ -80,6 +80,39 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("omnia --acp error: {}", redact_secrets(&format!("{e:#}")));
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "--acp-http" | "acp-http" => {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("omnia runtime error: {}", redact_secrets(&format!("{e:#}")));
+                    return ExitCode::FAILURE;
+                }
+            };
+            let rest = &args[1..];
+            let host = arg_value(rest, "--host").unwrap_or_else(|| "127.0.0.1".into());
+            let port: u16 = arg_value(rest, "--port")
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(8791);
+            let secret = arg_value(rest, "--secret")
+                .or_else(|| env::var("OMNIA_ACP_SECRET").ok())
+                .or_else(|| env::var("GOOSE_SERVER__SECRET_KEY").ok())
+                .filter(|s| !s.trim().is_empty());
+            let model = arg_value(rest, "--model");
+            let base_url = arg_value(rest, "--base-url").or_else(|| arg_value(rest, "--api-base"));
+            let api_key = arg_value(rest, "--api-key");
+            match rt.block_on(run_acp_http_server(
+                &host, port, secret, model, base_url, api_key,
+            )) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("omnia --acp-http error: {}", redact_secrets(&format!("{e:#}")));
                     ExitCode::FAILURE
                 }
             }
