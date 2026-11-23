@@ -36,10 +36,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_READ_LINES_DEFAULT: usize = 400;
-const MAX_READ_CHARS: usize = 5_000;
+const MAX_READ_CHARS: usize = 20_000;
 const MAX_BATCH_READ_FILES: usize = 8;
-const MAX_SHELL_OUTPUT_CHARS: usize = 5_000;
-const MAX_TOOL_OUTPUT_CHARS: usize = 5_000;
+const MAX_SHELL_OUTPUT_CHARS: usize = 20_000;
+const MAX_TOOL_OUTPUT_CHARS: usize = 20_000;
 const SHELL_COMPACT_MIN_CHARS: usize = 1_800;
 
 /// Optional interactive approval callback used when `PermissionsEngine` returns `Ask`.
