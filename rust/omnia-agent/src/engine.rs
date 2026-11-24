@@ -349,9 +349,12 @@ fn compute_token_progress_wait_with_phase(
     let now = Instant::now();
     let rem_turn = turn_deadline.saturating_duration_since(now);
     if rem_turn.is_zero() {
-        return Err(StreamTurnError::Fatal(format!(
-            "Timed out waiting for {dialect_label} turn deadline"
-        )));
+        return Err(StreamTurnError::Retryable {
+            status: None,
+            retry_after_secs: None,
+            kind: RetryKind::ChunkStall,
+            detail: format!("Timed out waiting for {dialect_label} turn deadline"),
+        });
     }
 
     let (anchor, budget, phase) = match (last_meaningful_delta_at, in_reasoning_only) {
@@ -2837,7 +2840,12 @@ impl NativeSuperEngine {
             if rem_run.is_zero() {
                 bail!("Timed out waiting for LLM turn");
             }
-            let rem_now = rem_run.min(self.stream_budget.per_attempt_deadline);
+            let rem_now = compute_attempt_budget(
+                rem_run,
+                self.stream_budget.per_attempt_deadline,
+                attempt,
+                max_retries,
+            );
 
             let router_grant = self.try_reserve_router_slot(msg_id, attempt);
             let t_attempt = Instant::now();
@@ -6752,6 +6760,28 @@ fn compute_pure_gen_duration_ms(
     }
 }
 
+fn compute_attempt_budget(
+    rem_run: Duration,
+    per_attempt_deadline: Duration,
+    attempt: u32,
+    max_retries: u32,
+) -> Duration {
+    let mut budget = rem_run.min(per_attempt_deadline);
+    // Reserve budget for Attempt 1+ on production runs (`>= 120s`) when retries are enabled so a
+    // single hung Attempt 0 socket (`<= min(180s, 65% of remaining)`) never starves recovery.
+    if attempt == 0
+        && max_retries > 0
+        && per_attempt_deadline >= Duration::from_secs(120)
+        && rem_run >= Duration::from_secs(120)
+    {
+        let attempt0_cap = rem_run
+            .mul_f64(0.65)
+            .clamp(Duration::from_secs(90), Duration::from_secs(180));
+        budget = budget.min(attempt0_cap);
+    }
+    budget
+}
+
 fn apply_anthropic_usage_fields(u: &Value, usage: &mut TurnLlmUsage) {
     usage.saw_usage = true;
     if let Some(n) = u.get("input_tokens").and_then(|v| v.as_u64()) {
@@ -9439,6 +9469,45 @@ data: [DONE]\n\n";
         assert!(!is_test_script_invocation(
             "python test_sample.py",
             "exit_code: 0\nTraceback: AssertionError"
+        ));
+    }
+
+    #[test]
+    fn attempt0_budget_reserves_retry_headroom_and_expired_turn_deadline_is_retryable() {
+        let per_attempt = Duration::from_secs(240);
+        // 297s production turn: Attempt 0 caps at 180s (<= min(180s, 65%*297s)), leaving ~117s for Attempt 1
+        let a0 = compute_attempt_budget(Duration::from_secs(297), per_attempt, 0, 3);
+        assert_eq!(a0, Duration::from_secs(180));
+        let a1 = compute_attempt_budget(Duration::from_secs(117), per_attempt, 1, 3);
+        assert_eq!(a1, Duration::from_secs(117));
+
+        // 150s remaining: 65% = 97.5s, reserving 52.5s for Attempt 1
+        let mid = compute_attempt_budget(Duration::from_secs(150), per_attempt, 0, 3);
+        assert!(mid >= Duration::from_secs(97) && mid <= Duration::from_secs(98));
+
+        // Unit-test small deadlines stay untouched
+        let small = compute_attempt_budget(Duration::from_secs(15), Duration::from_secs(10), 0, 3);
+        assert_eq!(small, Duration::from_secs(10));
+
+        // Per-attempt turn_deadline exhaustion returns Retryable (so Attempt 1 still fires!)
+        let now = Instant::now();
+        let err = compute_token_progress_wait_with_phase(
+            now - Duration::from_secs(180),
+            None,
+            Some(now),
+            Duration::from_secs(150),
+            Duration::from_secs(65),
+            now,
+            "OpenAI Responses SSE",
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            StreamTurnError::Retryable {
+                kind: RetryKind::ChunkStall,
+                ..
+            }
         ));
     }
 }

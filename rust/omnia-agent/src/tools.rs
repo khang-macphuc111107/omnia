@@ -19,7 +19,6 @@ use crate::edit::{
 };
 use crate::graph_locator::{verify_syntax_delta, WorkspaceGraphIndex};
 use crate::hooks::{HookEvent, HookRegistry};
-use crate::lakeview::offload_large_observation;
 use crate::lsp::LazyLspManager;
 use crate::mcp_client::{McpManager, McpServerConfig};
 use crate::memory_engine::{dispatch_memory_tool_json, MemoryEngine};
@@ -511,8 +510,13 @@ impl ToolRuntime {
                     content.push_str("\n[hooks] ");
                     content.push_str(&ctx_notes.join(" | "));
                 }
-                let out_cap = if tool_name == "read_file"
-                    && effective_args.get("paths").and_then(Value::as_array).is_some()
+                let out_cap = if (tool_name == "read_file"
+                    && effective_args.get("paths").and_then(Value::as_array).is_some())
+                    || (tool_name == "run_code"
+                        && effective_args
+                            .get("code")
+                            .and_then(Value::as_str)
+                            .is_some_and(|c| c.contains("read_file") || c.contains("parallel(")))
                 {
                     MAX_BATCH_READ_CHARS
                 } else {
@@ -1416,10 +1420,7 @@ impl ToolRuntime {
                 } else {
                     out
                 };
-                let sanitized = self.sanitize_and_track_taint(&maybe_compressed, "shell");
-                let (bounded, _spill) =
-                    offload_large_observation(&self.session_key, "shell", &sanitized, 6_144);
-                Ok(bounded)
+                Ok(self.sanitize_and_track_taint(&maybe_compressed, "shell"))
             }
             Err(e) => {
                 let cleaned = self.sanitize_and_track_taint(&e.to_string(), "shell");
@@ -3080,14 +3081,20 @@ pub fn cap_output_traceback_preserving(text: &str, max_chars: usize) -> String {
         }
     }
 
-    let omitted = tail_start.saturating_sub(head_end);
     if diag_excerpt.is_empty() {
+        let head_full = text.floor_char_boundary(max_chars * 40 / 100);
+        let tail_full = text.ceil_char_boundary(text.len().saturating_sub(max_chars * 57 / 100));
+        if tail_full <= head_full {
+            return text.to_owned();
+        }
+        let omitted_full = tail_full.saturating_sub(head_full);
         format!(
-            "{}\n... [omitted {omitted} chars of middle output] ...\n{}",
-            &text[..head_end],
-            &text[tail_start..]
+            "{}\n... [omitted {omitted_full} chars of middle output] ...\n{}",
+            &text[..head_full],
+            &text[tail_full..]
         )
     } else {
+        let omitted = tail_start.saturating_sub(head_end);
         format!(
             "{}\n... [omitted {omitted} chars; preserved diagnostics] ...\n{}\n... [tail] ...\n{}",
             &text[..head_end],
@@ -4019,6 +4026,15 @@ mod tests {
             .await;
         assert!(err.is_error, "!res.ok must propagate as is_error=true: {}", err.content);
         assert!(err.content.contains("boom_ptc_err"), "{}", err.content);
+
+        // #194: Clean outputs without diagnostics redistribute unused 25% diag_budget cleanly.
+        let clean_30k = "x".repeat(30_000);
+        let capped_clean = cap_output_traceback_preserving(&clean_30k, 20_000);
+        assert!(
+            capped_clean.len() >= 19_000,
+            "clean 30k output under 20k cap should keep >=19k chars, got {}",
+            capped_clean.len()
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
