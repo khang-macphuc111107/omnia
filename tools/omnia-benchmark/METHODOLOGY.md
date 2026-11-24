@@ -20,7 +20,20 @@ This evaluation suite synthesizes the evaluation methodologies of the leading 20
 
 ---
 
-## 2. Task Inventory (17 Deterministic Tasks across Axes 1–7)
+**v4 and stage-0 wall timing.** `harness_overhead_ms` is elapsed wall time from immediately
+before process launch through the runner’s process wait, **minus the union** of observed
+inference request intervals clipped to that window. Both boundaries and all intervals use
+`perf_counter_ns`. Concurrent requests count once; discovery and token-count requests do
+not count. Measured inference error responses do count. This residual includes idle time,
+startup, local tools and scheduling outside inference intervals; it is not harness CPU time
+and does not measure local work concurrent with requests. `wire_total_llm_wait_ms` sums
+individual response durations and must not be subtracted from wall time. With no requests,
+the residual is the entire window. An unrecorded handler, unknown classification, or
+missing/invalid inference interval (including mock responses logged before sending) makes
+the residual `null`, not zero. Historical records without window boundaries cannot be
+corrected exactly from the sum alone.
+
+## 2. Task inventory (selected examples from axes 1–7)
 
 | Axis | ID | Title | Languages / Tools | Grading |
 |---|---|---|---|---|
@@ -42,6 +55,8 @@ This evaluation suite synthesizes the evaluation methodologies of the leading 20
 | 7 | `heal_01_broken_py_pkg` | 6-fault cascading broken Python financial package recovery | Python 3.13 | `unittest` + CLI + hidden numerical checks |
 | 7 | `heal_02_broken_node_service` | 5-fault cascading broken Node.js + Python subprocess bridge recovery | Node.js + Python | Unit tests + hidden Unicode/concurrency tests |
 
+The complete local inventory is in [the generated manifest](suite/manifest.json), including resilience tasks on axis 11. Run `python tools/omnia-benchmark/validate_suite.py` to grade the unmodified fixtures. A valid negative baseline exits 1, reports at least one failed check and no verifier error. A crash, timeout or empty grade is not evidence of task difficulty. Any failed validation prevents publication of a partial manifest. Passing this gate is **not** a model solve rate or a run of the official external suites.
+
 ---
 
 ## 3. Canonical Telemetry & Token Normalization
@@ -58,6 +73,8 @@ Different agent harnesses report token counts with subtle accounting differences
 - `output_tokens`: Total generated tokens (including reasoning/thinking tokens).
 - `reasoning_tokens`: Subset of `output_tokens` spent in thinking/reasoning blocks (when reported).
 - `total_tokens`: `input_tokens + output_tokens`.
+
+Wire timing starts at proxy handler entry, before reading the request body. `wire_ttft_ms` ends when the proxy reads the upstream SSE bytes completing the first recognized nonempty text, reasoning, refusal, tool name or tool input delta. The Gemini bridge measures its upstream OpenAI stream, not the translated downstream frame. Setup, signature, usage and terminal events do not count. HTTP errors, nonstream JSON and streams without a qualifying delta have null TTFT, not a TTFB substitute. `wire_ttfb_ms` is recorded separately (first observed body chunk for SSE; after the full body read for buffered responses). Wire summaries order inference requests by start timestamp, not completion order. First-turn TTFT is null if the first inference request lacks a measurement; the median uses only measured requests and averages the middle pair for even sample counts. Mock model discovery is metadata, consumes no inference turn and contributes no token usage. The synthetic mock usage is not provider billing. ACP currently does not install client-provided MCP servers: it advertises HTTP/SSE MCP capabilities as false and rejects nonempty server lists rather than silently ignoring them.
 
 ---
 
@@ -78,3 +95,8 @@ Normalized relative to empirical reference anchors (or cohort bounds) so scores 
 ### Overall 10-Axis Harness-Model Index
 $$I_{10} = 0.70 \cdot C_{\text{cap}} + 0.10 \cdot A_8 + 0.10 \cdot A_9 + 0.10 \cdot A_{10}$$
 Capability dominates at 70% (10% per capability axis), while Speed, Token Economics, and System Footprint contribute 10% each so a fast/cheap failing agent can never outrank a capable solving agent, yet among equally capable harnesses, operational efficiency cleanly breaks ties.
+
+### v4 wire usage coverage
+For new traces, the proxy counts inference requests without both an input counter and an output counter in `wire_requests_missing_usage`. Counters may arrive in separate stream events. If any inference request lacks either counter, run-level total tokens and normalized cost are unknown (JSON null); explicit zeros remain valid. Other component counters can be partial. Discovery is excluded, and locally injected HTTP failures consume no upstream tokens. The scorer includes failed attempts in the numerator of each per-solved metric. Normalized units are not billed USD. Historical records without coverage flags do not establish completeness.
+
+This local composite is not the [Artificial Analysis Coding Agent Index](https://artificialanalysis.ai/methodology/coding-agents-benchmarking). Its scores cannot substitute for an official run.

@@ -40,7 +40,10 @@ fn main() -> anyhow::Result<()> {
     let mut repomap_bytes = 0usize;
     for _ in 0..10 {
         let tp = Instant::now();
-        let map = graph.render_turn1_repomap("NativeSuperEngine stream_anthropic_turn PrefixCacheGuard", 1200);
+        let map = graph.render_turn1_repomap(
+            "NativeSuperEngine stream_anthropic_turn PrefixCacheGuard",
+            1200,
+        );
         ppr_ms.push(tp.elapsed().as_secs_f64() * 1000.0);
         repomap_bytes = map.len();
     }
@@ -102,7 +105,9 @@ fn main() -> anyhow::Result<()> {
     let target = tmp.join("sample.rs");
     let mut initial = String::new();
     for i in 0..200 {
-        initial.push_str(&format!("pub fn compute_{i}(x: i64) -> i64 {{ x + {i} }}\n"));
+        initial.push_str(&format!(
+            "pub fn compute_{i}(x: i64) -> i64 {{ x + {i} }}\n"
+        ));
     }
     std::fs::write(&target, &initial)?;
     let tracker = FileReadTracker::new();
@@ -124,7 +129,12 @@ fn main() -> anyhow::Result<()> {
         let res = edit_file_by_hashline(&tmp, "sample.rs", &anchor, None, &replacement, &tracker)?;
         assert!(res.replacements == 1);
         let updated = std::fs::read_to_string(&target)?;
-        let report = verify_syntax_delta("sample.rs", &text, &updated, Some((line_idx0 + 1, line_idx0 + 1)));
+        let report = verify_syntax_delta(
+            "sample.rs",
+            &text,
+            &updated,
+            Some((line_idx0 + 1, line_idx0 + 1)),
+        );
         if report.is_clean() {
             syntax_clean += 1;
         }

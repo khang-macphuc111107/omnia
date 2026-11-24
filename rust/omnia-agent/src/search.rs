@@ -15,9 +15,9 @@
 
 use crate::edit::line_hash_tag;
 use crate::graph_locator::ParsedFileAst;
+use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
 use aho_corasick::AhoCorasickBuilder;
 use memchr::memmem;
-use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
 use regex::RegexBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
@@ -60,9 +60,12 @@ impl SearchMode {
         }
         // Auto-promote multi-word natural-language queries without regex metacharacters to Hybrid!
         let has_spaces = query.trim().contains(' ');
-        let has_regex_meta = query
-            .chars()
-            .any(|c| matches!(c, '*' | '+' | '?' | '[' | ']' | '(' | ')' | '|' | '^' | '$' | '\\' | '{' | '}'));
+        let has_regex_meta = query.chars().any(|c| {
+            matches!(
+                c,
+                '*' | '+' | '?' | '[' | ']' | '(' | ')' | '|' | '^' | '$' | '\\' | '{' | '}'
+            )
+        });
         if has_spaces && !has_regex_meta {
             Self::Hybrid
         } else {
@@ -135,12 +138,7 @@ impl HybridSearchIndex {
     }
 
     /// Incrementally index or update a single file (strictly after PermissionsEngine Deny check!).
-    pub fn upsert_file(
-        &mut self,
-        rel_path: &str,
-        content: &str,
-        ast: Option<&ParsedFileAst>,
-    ) {
+    pub fn upsert_file(&mut self, rel_path: &str, content: &str, ast: Option<&ParsedFileAst>) {
         if self.path_to_id.contains_key(rel_path) {
             self.remove_file(rel_path);
         }
@@ -366,7 +364,11 @@ impl HybridSearchIndex {
                     score += ppr * 2.0;
                     let line = format!(
                         "{}:L{}-{} [{}] {}",
-                        rel, sym.start_line, sym.end_line, sym.kind.label(), sym.signature
+                        rel,
+                        sym.start_line,
+                        sym.end_line,
+                        sym.kind.label(),
+                        sym.signature
                     );
                     ranked.push((score, line));
                 }
@@ -482,7 +484,10 @@ impl HybridSearchIndex {
                     if matched.len() < 8 {
                         let tag = hashline_at(&lines, idx);
                         let snippet: String = line.chars().take(180).collect();
-                        matched.push((idx + 1, format!("{}:{}:{}: {}", doc.rel_path, idx + 1, tag, snippet)));
+                        matched.push((
+                            idx + 1,
+                            format!("{}:{}:{}: {}", doc.rel_path, idx + 1, tag, snippet),
+                        ));
                     }
                 }
             }
@@ -735,11 +740,9 @@ impl HybridSearchIndex {
 
                 let pseudo_tf = W_SYMBOL * tf_s
                     / ((1.0 - B_SYMBOL) + B_SYMBOL * (doc.sym_len as f64 / avg_sym))
-                    + W_PATH * tf_p
-                        / ((1.0 - B_PATH) + B_PATH * (doc.path_len as f64 / avg_path))
+                    + W_PATH * tf_p / ((1.0 - B_PATH) + B_PATH * (doc.path_len as f64 / avg_path))
                     + W_DOC * tf_d / ((1.0 - B_DOC) + B_DOC * (doc.doc_len as f64 / avg_doc))
-                    + W_BODY * tf_b
-                        / ((1.0 - B_BODY) + B_BODY * (doc.body_len as f64 / avg_body));
+                    + W_BODY * tf_b / ((1.0 - B_BODY) + B_BODY * (doc.body_len as f64 / avg_body));
 
                 if pseudo_tf > 0.0 {
                     let score = idf * (pseudo_tf * (BM25F_K1 + 1.0)) / (pseudo_tf + BM25F_K1);
@@ -862,9 +865,7 @@ fn format_line_search_outcome(
 ) -> anyhow::Result<SearchOutcome> {
     if hits.is_empty() {
         Ok(SearchOutcome {
-            formatted: format!(
-                "No matches for '{query}' (checked {cand_count} candidate files)."
-            ),
+            formatted: format!("No matches for '{query}' (checked {cand_count} candidate files)."),
             match_count: 0,
             candidate_files: cand_count,
         })
@@ -1030,7 +1031,11 @@ mod tests {
     fn trigram_prefilter_matches_exact_simd_and_skips_non_matching_files() {
         let tmp = std::env::temp_dir().join(format!("omni_search_tri_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&tmp).unwrap();
-        fs::write(tmp.join("hit.py"), "def compute_eigen_delta():\n    return 42\n").unwrap();
+        fs::write(
+            tmp.join("hit.py"),
+            "def compute_eigen_delta():\n    return 42\n",
+        )
+        .unwrap();
         fs::write(tmp.join("miss1.py"), "def alpha():\n    return 1\n").unwrap();
         fs::write(tmp.join("miss2.py"), "def beta():\n    return 2\n").unwrap();
 
@@ -1038,7 +1043,11 @@ mod tests {
         g.refresh().unwrap();
 
         let cands = g.search_index().trigram_candidates("eigen_delta");
-        assert_eq!(cands.len(), 1, "trigram intersection must prune 2/3 non-matching files");
+        assert_eq!(
+            cands.len(),
+            1,
+            "trigram intersection must prune 2/3 non-matching files"
+        );
 
         let res = g
             .search(
@@ -1111,7 +1120,11 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join(".env"), "TOP_SECRET_TOKEN_XYZ=123\n").unwrap();
         fs::write(tmp.join("id_rsa"), "TOP_SECRET_TOKEN_XYZ_SSH\n").unwrap();
-        fs::write(tmp.join("temp.py"), "def ephemeral_marker_fn():\n    pass\n").unwrap();
+        fs::write(
+            tmp.join("temp.py"),
+            "def ephemeral_marker_fn():\n    pass\n",
+        )
+        .unwrap();
 
         let mut g = WorkspaceGraphIndex::new(&tmp);
         g.refresh().unwrap();

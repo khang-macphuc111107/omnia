@@ -1,0 +1,18 @@
+{
+  "id": "worktree_02_conflict_merge_fix",
+  "axis": 14,
+  "axis_name": "Multi-Agent Worktree Refactoring",
+  "title": "Merge conflicting Git feature branches (rate-limiter + audit-hmac) & fix combined semantics",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "git"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "worktree_refactor",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": "setup.py",
+  "verify_script": "verify.py"
+}

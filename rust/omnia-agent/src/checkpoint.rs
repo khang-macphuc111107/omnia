@@ -7,15 +7,15 @@
 //! - Parses test pass/fail counts (`pytest`, `cargo test`, `jest`/`vitest`/`bun test`) and
 //!   emits an immediate `[Regression Alert]` if an edit breaks a previously passing test suite.
 
+use crate::agent_store::AgentStore;
 use crate::cache_guard::blake3_hex;
 use crate::edit::FileReadTracker;
+use crate::path_guard::ensure_within_workspace;
 use crate::sanitizer::atomic_write_bytes;
 use anyhow::{Context, Result};
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
-use crate::path_guard::ensure_within_workspace;
-use crate::agent_store::AgentStore;
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -325,8 +325,10 @@ pub fn parse_test_pass_counts(output: &str) -> Option<TestPassCounts> {
     }
 
     // 2. Jest / Vitest: `Tests: 2 failed, 14 passed, 16 total`
-    let jest_p = JEST_PASS_RE.get_or_init(|| Regex::new(r"(?i)Tests:\s*.*?(\d+)\s+passed").unwrap());
-    let jest_f = JEST_FAIL_RE.get_or_init(|| Regex::new(r"(?i)Tests:\s*.*?(\d+)\s+failed").unwrap());
+    let jest_p =
+        JEST_PASS_RE.get_or_init(|| Regex::new(r"(?i)Tests:\s*.*?(\d+)\s+passed").unwrap());
+    let jest_f =
+        JEST_FAIL_RE.get_or_init(|| Regex::new(r"(?i)Tests:\s*.*?(\d+)\s+failed").unwrap());
     if let Some(line) = output.lines().rev().find(|l| l.contains("Tests:")) {
         let p = jest_p
             .captures(line)
@@ -337,13 +339,17 @@ pub fn parse_test_pass_counts(output: &str) -> Option<TestPassCounts> {
             .and_then(|c| c[1].parse::<u32>().ok())
             .unwrap_or(0);
         if p > 0 || f > 0 {
-            return Some(TestPassCounts { passed: p, failed: f });
+            return Some(TestPassCounts {
+                passed: p,
+                failed: f,
+            });
         }
     }
 
     // 3. Pytest summary line (`=== 5 passed, 1 failed in 0.23s ===` or `12 passed in 0.4s`)
     let py_p = PYTEST_PASS_RE.get_or_init(|| Regex::new(r"\b(\d+)\s+passed\b").unwrap());
-    let py_f = PYTEST_FAIL_RE.get_or_init(|| Regex::new(r"\b(\d+)\s+(?:failed|error|errors)\b").unwrap());
+    let py_f =
+        PYTEST_FAIL_RE.get_or_init(|| Regex::new(r"\b(\d+)\s+(?:failed|error|errors)\b").unwrap());
     for line in output.lines().rev().take(15) {
         if line.contains("passed") || line.contains("failed") || line.contains("error") {
             let p = py_p
@@ -355,7 +361,10 @@ pub fn parse_test_pass_counts(output: &str) -> Option<TestPassCounts> {
                 .and_then(|c| c[1].parse::<u32>().ok())
                 .unwrap_or(0);
             if p > 0 || f > 0 {
-                return Some(TestPassCounts { passed: p, failed: f });
+                return Some(TestPassCounts {
+                    passed: p,
+                    failed: f,
+                });
             }
         }
     }
@@ -420,7 +429,10 @@ mod tests {
         assert_eq!(restored.len(), 3);
         assert_eq!(fs::read_to_string(&f_mod).unwrap(), "v = 1\n");
         assert_eq!(fs::read_to_string(&f_del).unwrap(), "keep_me = True\n");
-        assert!(!f_new.exists(), "newly created file must be removed on rewind");
+        assert!(
+            !f_new.exists(),
+            "newly created file must be removed on rewind"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -463,7 +475,9 @@ mod tests {
 
         // Regressing from 7/0 -> 6/1 emits Regression + alert
         let t4 = store.record_test_outcome_detailed(4, "=== 6 passed, 1 failed in 0.2s ===");
-        assert!(matches!(t4, TestOutcomeTransition::Regression(ref msg) if msg.contains("[Regression Alert]")));
+        assert!(
+            matches!(t4, TestOutcomeTransition::Regression(ref msg) if msg.contains("[Regression Alert]"))
+        );
     }
 
     #[test]

@@ -1,0 +1,2 @@
+{"session": "s3", "role": "user", "text": "In service/audit.py, scrub any key named 'token', 'secret', or 'authorization' (case-insensitive) to '[REDACTED]' before returning or writing records."}
+{"session": "s3", "role": "user", "text": "In service/handler.py, idempotent_post retry_budget is 4 (not 1), and only retry status 429 or 503."}

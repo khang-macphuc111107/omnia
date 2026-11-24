@@ -153,12 +153,16 @@ pub struct PrefixCacheGuard {
 
 impl PrefixCacheGuard {
     #[must_use]
-    pub fn new(session_key: Option<String>, system_prompt: &str, canonical_tools: &[Value]) -> Self {
+    pub fn new(
+        session_key: Option<String>,
+        system_prompt: &str,
+        canonical_tools: &[Value],
+    ) -> Self {
         let sys_hash = blake3_bytes(system_prompt.as_bytes());
         let tool_bytes = serde_json::to_vec(canonical_tools).unwrap_or_default();
         let tool_hash = blake3_bytes(&tool_bytes);
-        let base_tokens = estimate_tokens(system_prompt)
-            + estimate_tokens(&String::from_utf8_lossy(&tool_bytes));
+        let base_tokens =
+            estimate_tokens(system_prompt) + estimate_tokens(&String::from_utf8_lossy(&tool_bytes));
 
         Self {
             session_key,

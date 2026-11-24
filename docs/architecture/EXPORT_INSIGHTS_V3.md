@@ -1,6 +1,6 @@
 # `omp-omni v0.3.0` — Deep Session Export Analysis & Late-2026 Frontier Gap Report
 
-- **Target Specification Audited:** [`SOTA_V3_ENHANCEMENT_SPEC.md`](file:///C:/Users/khang/.gemini/antigravity/scratch/omp-omni/SOTA_V3_ENHANCEMENT_SPEC.md) · [`MERGE_BLUEPRINT.md`](file:///C:/Users/khang/.gemini/antigravity/scratch/omp-omni/MERGE_BLUEPRINT.md) · [`SUPER_HARNESS_SPEC.md`](file:///C:/Users/khang/.gemini/antigravity/scratch/omp-omni/SUPER_HARNESS_SPEC.md)
+- **Target Specification Audited:** [`SOTA_V3_ENHANCEMENT_SPEC.md`](./SOTA_V3_ENHANCEMENT_SPEC.md) · `MERGE_BLUEPRINT.md` · `SUPER_HARNESS_SPEC.md` *(prior external scratch specs)*
 - **Reference Archive Audited (Read-Only):** `C:\Users\khang\AppData\Roaming\shinycake\Quill\data\accounts\primary\files\documents\antigravity_sessions_e9164df8_56531c7c_full_export.zip` (`16,001` zip entries, `15,998` archived session files + `README.md` / `manifest.json` / `conversation_summaries_export.json`, `1.70 GiB` uncompressed, exported `2026-11-22T06:43:02Z`)
 - **Live Verification Date:** `2026-11-22` (100% of external arXiv, GitHub, and `crates.io` citations verified `HTTP 200` with exact title/author/abstract alignment)
 - **Architectural Invariants Preserved:** Single native Rust binary (`< 18 MB`), `< 55 MB` live execution RSS, `< 1,400` base tokens, `>= 92%` KV prefix cache hit, zero Docker, zero Electron, zero Python sidecar bloat, `144` allowlisted Tauri IPC commands, Win32 Job Object `0`-orphan supervision.

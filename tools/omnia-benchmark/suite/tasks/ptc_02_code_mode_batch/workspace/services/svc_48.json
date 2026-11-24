@@ -1,0 +1,10 @@
+{
+  "id": "svc_48",
+  "tier": "critical",
+  "api_version": "v2",
+  "endpoint": "/api/v2/svc_48/invoke",
+  "depends_on": [
+    "svc_47"
+  ],
+  "spec_sha256": "stale"
+}

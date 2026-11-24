@@ -85,11 +85,15 @@ All foreground/background pairs across all **3 instant studio themes** (`Obsidia
 | **1. Studio Chat & Scientific Rich Composer** | `app/composer.js` | Multi-turn provenance cards (`EXTRACTED`, `INFERRED`), collapsible reasoning trace, syntax-highlighted Rust copy receipt, live `ADDITIVE_INTAKE` Steer Queue (`token_budget: NULL`), 15-template LaTeX math/physics/chemistry palette, SHA-256 deduplicated inline + tray attachments, `Esc` zero-mutation paste chooser | `GET /api/composer/templates`, `GET /api/steer`, `POST /api/steer/enqueue`, `POST /api/router/decide` |
 | **2. 2-Way `PeerMeshGraph` & `Graphify` Canvas** | `app/peer-graph.js` | High-DPI `devicePixelRatio` `<canvas>` + accessible node selector strip, curved bidirectional `A <-> B` `Duplex` arcs with directional particles, `disjoint_paths` & `epoch`/`max_hops` inspector, live 2-way pulse dispatch, `Forward`/`Reverse`/`Both` Graphify BFS with quarantined `AMBIGUOUS` edges | `GET /api/graph`, `POST /api/graph/send`, `GET /api/graph/traverse` |
 | **3. Dynamic Provider Router Lab** | `app/router-lab.js` | Task class, token slider, privacy boundary, SSE toggle, per-provider **Trip / Reset Circuit Breaker** controls, visual 5-segment score waterfalls, explicit `Known`/`Stale`/`Unknown` quota meters, secret-redacted `RouteDecisionReceipt` JSON | `GET /api/router/state`, `POST /api/router/decide` |
-| **4. Native Rust Architecture & Proactive RAG** | `app/ide-explorer.js` | Interactive 13-crate Rust workspace explorer (`omnia-winsqlite` .. `omnia-native`) with Windows 11 SDK link badges & Graphify jump + bilingual EN/VN `ProactiveRag` uncertainty analyzer without `"search"` keyword (`citedSources` vs quarantined `unusedSources`) | `POST /api/rag/plan` |
+| **4. Native Rust Architecture & Proactive RAG** | `app/ide-explorer.js` | Interactive 17-crate Rust workspace explorer (`omnia-winsqlite` .. `omnia-notebook` / `omnia-agent`) with Windows 11 SDK link badges & Graphify jump + bilingual EN/VN `ProactiveRag` uncertainty analyzer without `"search"` keyword (`citedSources` vs quarantined `unusedSources`) | `POST /api/rag/plan` |
 | **5. `MemoryGraph` & Curated Skill Vault** | `app/memory-vault.js` | Hierarchical namespace filter (`workspace/*`, `architecture/*`, `lessons/*`), `..`/`\` containment-guarded memory upsert, cryptographic erasure generating SHA-256 `ErasureReceipt` (`verifiedPlaintextFree: true`), instant EN/VN BM25 skill search | `GET /api/memory`, `POST /api/memory/upsert`, `POST /api/memory/erase`, `GET /api/skills?q=` |
 | **Global Shell & `Ctrl+K` Command Palette** | `app/main.js`, `app/command-palette.js` | Live `/api/health` (`LIVE_RUST`) telemetry header pill, instant 3-theme persistence, SQLite WAL cooperative session switcher, fuzzy `Ctrl+K` modal across views/themes/LaTeX/simulations | `GET /api/health`, `GET /api/sessions`, `POST /api/sessions/create` |
 
 ---
+
+The command palette ranks contiguous matches in a command title, group, or keywords above subsequence matches, even at the end of a long keyword list. Enter runs the highlighted result.
+
+Chat is the initial view. Completing asynchronous startup requests must not switch away from a workbench the user has already selected.
 
 ## 4. Quantitative Viewport & Non-Clipping Geometry Contract
 

@@ -11,7 +11,9 @@
 //!   Ring-Buffer Oscillation Detector + BLAKE3/Deflate Atomic `/rewind` + Win32 Job Objects
 
 pub mod acp;
+mod acp_history;
 pub mod acp_http;
+pub mod acp_proto;
 pub mod agent_store;
 pub mod cache_guard;
 pub mod checkpoint;
@@ -301,7 +303,10 @@ impl SuperHarnessManager {
     ) -> Result<(String, u32, Value)> {
         let clean_cwd = sanitize_windows_path(&req.cwd);
         if !clean_cwd.exists() {
-            bail!("workspace directory does not exist: {}", clean_cwd.display());
+            bail!(
+                "workspace directory does not exist: {}",
+                clean_cwd.display()
+            );
         }
 
         let session_key = uuid::Uuid::new_v4().to_string();
@@ -310,7 +315,7 @@ impl SuperHarnessManager {
                 format!("{p}/{m}")
             }
             (_, Some(m)) if !m.trim().is_empty() => m.clone(),
-            _ => "htmustc/gemini-3.8-flash".to_string(),
+            _ => "htmustc-gemini/gemini-3.8-flash".to_string(),
         };
 
         let pending_confirm: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>> =
@@ -319,174 +324,175 @@ impl SuperHarnessManager {
         let waiting_reason = Arc::new(Mutex::new(None::<String>));
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
-        let (driver, pid, initial_state, initial_cache, model_label_str) =
-            if req.backend == HarnessBackendId::OmniSuper {
-                let endpoint =
-                    resolve_model_endpoint(&model_spec, req.config_dir.as_deref(), None, None)?;
-                let model_lbl = format!("{}/{}", endpoint.provider_id, endpoint.model_id);
-                let graph = self.get_or_create_graph(&clean_cwd);
-                {
-                    let mut g = graph.lock().unwrap();
-                    let _ = g.refresh();
-                }
+        let (driver, pid, initial_state, initial_cache, model_label_str) = if req.backend
+            == HarnessBackendId::OmniSuper
+        {
+            let endpoint =
+                resolve_model_endpoint(&model_spec, req.config_dir.as_deref(), None, None)?;
+            let model_lbl = format!("{}/{}", endpoint.provider_id, endpoint.model_id);
+            let graph = self.get_or_create_graph(&clean_cwd);
+            {
+                let mut g = graph.lock().unwrap();
+                let _ = g.refresh();
+            }
 
-                let sk_ap = session_key.clone();
-                let sink_ap = Arc::clone(&event_sink);
-                let pending_ap = Arc::clone(&pending_confirm);
-                let waiting_ap = Arc::clone(&waiting_for_user);
-                let reason_ap = Arc::clone(&waiting_reason);
-                let approver: InteractiveApprover = Arc::new(move |tool: String, target: String| {
-                    let sk = sk_ap.clone();
-                    let sink = Arc::clone(&sink_ap);
-                    let pending = Arc::clone(&pending_ap);
-                    let waiting = Arc::clone(&waiting_ap);
-                    let reason = Arc::clone(&reason_ap);
-                    Box::pin(async move {
-                        let req_id = format!("perm-{}", uuid::Uuid::new_v4());
-                        let (tx, rx) = oneshot::channel();
-                        pending.lock().unwrap().insert(req_id.clone(), tx);
-                        waiting.store(true, Ordering::Relaxed);
-                        let msg = format!("Allow `{tool}` on `{target}`?");
-                        *reason.lock().unwrap() = Some(msg.clone());
-                        sink(json!({
-                            "kind": "extension_ui_request",
-                            "sessionKey": sk,
-                            "request": {
-                                "id": req_id,
-                                "method": "confirm",
-                                "title": format!("Permission: {tool}"),
-                                "message": msg
-                            }
-                        }));
-                        let ok = tokio::time::timeout(Duration::from_secs(120), rx)
-                            .await
-                            .ok()
-                            .and_then(|r| r.ok())
-                            .unwrap_or(false);
-                        waiting.store(false, Ordering::Relaxed);
-                        *reason.lock().unwrap() = None;
-                        ok
-                    })
-                });
+            let sk_ap = session_key.clone();
+            let sink_ap = Arc::clone(&event_sink);
+            let pending_ap = Arc::clone(&pending_confirm);
+            let waiting_ap = Arc::clone(&waiting_for_user);
+            let reason_ap = Arc::clone(&waiting_reason);
+            let approver: InteractiveApprover = Arc::new(move |tool: String, target: String| {
+                let sk = sk_ap.clone();
+                let sink = Arc::clone(&sink_ap);
+                let pending = Arc::clone(&pending_ap);
+                let waiting = Arc::clone(&waiting_ap);
+                let reason = Arc::clone(&reason_ap);
+                Box::pin(async move {
+                    let req_id = format!("perm-{}", uuid::Uuid::new_v4());
+                    let (tx, rx) = oneshot::channel();
+                    pending.lock().unwrap().insert(req_id.clone(), tx);
+                    waiting.store(true, Ordering::Relaxed);
+                    let msg = format!("Allow `{tool}` on `{target}`?");
+                    *reason.lock().unwrap() = Some(msg.clone());
+                    sink(json!({
+                        "kind": "extension_ui_request",
+                        "sessionKey": sk,
+                        "request": {
+                            "id": req_id,
+                            "method": "confirm",
+                            "title": format!("Permission: {tool}"),
+                            "message": msg
+                        }
+                    }));
+                    let ok = tokio::time::timeout(Duration::from_secs(120), rx)
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .unwrap_or(false);
+                    waiting.store(false, Ordering::Relaxed);
+                    *reason.lock().unwrap() = None;
+                    ok
+                })
+            });
 
-                let mut engine = NativeSuperEngine::new(
-                    session_key.clone(),
-                    clean_cwd.clone(),
-                    endpoint.clone(),
-                    req.thinking_level.clone(),
-                    req.approval_mode,
-                    req.workspace_trusted,
-                    req.permission_rules,
-                    self.plugin_registry_snapshot(),
-                    graph,
-                    Some(self.db.clone()),
-                    Some(approver),
-                    Arc::clone(&cancel_flag),
-                    None,
-                )?;
-                engine.wire_api_mode = req.wire_api;
-                let snap = engine.cache_guard.snapshot();
-                let init_state = json!({
-                    "backend": "omnia-agent",
-                    "wireDialect": engine.active_wire_dialect(),
-                    "model": {
-                        "provider": endpoint.provider_id,
-                        "id": endpoint.model_id,
-                        "contextWindow": endpoint.context_window,
-                        "maxTokens": endpoint.max_tokens
-                    },
-                    "thinkingLevel": req.thinking_level.clone().unwrap_or_else(|| "auto".into()),
-                    "prefixStable": snap.prefix_stable,
-                    "estimatedBasePromptTokens": snap.estimated_base_prompt_tokens
-                });
-                (
-                    SessionDriver::Native(Arc::new(AsyncMutex::new(engine))),
-                    std::process::id(),
-                    init_state,
-                    snap,
-                    model_lbl,
-                )
-            } else if req.backend.is_acp() {
-                let ep =
-                    resolve_model_endpoint(&model_spec, req.config_dir.as_deref(), None, None).ok();
-                let cfg = AcpLaunchConfig::resolve(
-                    req.backend,
-                    None,
-                    &clean_cwd,
-                    Some(&model_spec),
-                    ep.as_ref().map(|e| e.base_url.as_str()),
-                    ep.as_ref().map(|e| e.api_key.as_str()),
-                    req.approval_mode,
-                    req.workspace_trusted,
-                    req.permission_rules,
-                )?;
-                let sk_acp = session_key.clone();
-                let sink_acp = Arc::clone(&event_sink);
-                let acp_sink: acp::AcpEventSink = Arc::new(move |ev| match ev {
-                    AcpEvent::TextDelta(t) => sink_acp(json!({
-                        "kind": "delta_batch",
-                        "sessionKey": sk_acp,
-                        "messageId": "acp-msg",
-                        "textDelta": t,
-                        "thinkingDelta": "",
-                        "timestampMs": Utc::now().timestamp_millis()
-                    })),
-                    AcpEvent::ThinkingDelta(t) => sink_acp(json!({
-                        "kind": "delta_batch",
-                        "sessionKey": sk_acp,
-                        "messageId": "acp-msg",
-                        "textDelta": "",
-                        "thinkingDelta": t,
-                        "timestampMs": Utc::now().timestamp_millis()
-                    })),
-                    AcpEvent::ToolCallStart { id, name } => sink_acp(json!({
-                        "kind": "rpc_event",
-                        "sessionKey": sk_acp,
-                        "eventType": "tool_execution_start",
-                        "payload": { "toolCallId": id, "toolName": name }
-                    })),
-                    AcpEvent::ToolCallEnd { id, name, is_error } => sink_acp(json!({
-                        "kind": "rpc_event",
-                        "sessionKey": sk_acp,
-                        "eventType": "tool_execution_end",
-                        "payload": { "toolCallId": id, "toolName": name, "isError": is_error }
-                    })),
-                    AcpEvent::ProcessExit {
-                        exit_code,
-                        stderr_tail,
-                    } => sink_acp(json!({
-                        "kind": "process_exit",
-                        "sessionKey": sk_acp,
-                        "exitCode": exit_code,
-                        "stderrTail": stderr_tail
-                    })),
-                    AcpEvent::RawUpdate(v) => sink_acp(json!({
-                        "kind": "rpc_event",
-                        "sessionKey": sk_acp,
-                        "eventType": "acp_update",
-                        "payload": v
-                    })),
-                });
+            let mut engine = NativeSuperEngine::new(
+                session_key.clone(),
+                clean_cwd.clone(),
+                endpoint.clone(),
+                req.thinking_level.clone(),
+                req.approval_mode,
+                req.workspace_trusted,
+                req.permission_rules,
+                self.plugin_registry_snapshot(),
+                graph,
+                Some(self.db.clone()),
+                Some(approver),
+                Arc::clone(&cancel_flag),
+                None,
+            )?;
+            engine.wire_api_mode = req.wire_api;
+            let snap = engine.cache_guard.snapshot();
+            let init_state = json!({
+                "backend": "omnia-agent",
+                "wireDialect": engine.active_wire_dialect(),
+                "model": {
+                    "provider": endpoint.provider_id,
+                    "id": endpoint.model_id,
+                    "contextWindow": endpoint.context_window,
+                    "maxTokens": endpoint.max_tokens
+                },
+                "thinkingLevel": req.thinking_level.clone().unwrap_or_else(|| "auto".into()),
+                "prefixStable": snap.prefix_stable,
+                "estimatedBasePromptTokens": snap.estimated_base_prompt_tokens
+            });
+            (
+                SessionDriver::Native(Arc::new(AsyncMutex::new(engine))),
+                std::process::id(),
+                init_state,
+                snap,
+                model_lbl,
+            )
+        } else if req.backend.is_acp() {
+            let ep =
+                resolve_model_endpoint(&model_spec, req.config_dir.as_deref(), None, None).ok();
+            let cfg = AcpLaunchConfig::resolve(
+                req.backend,
+                None,
+                &clean_cwd,
+                Some(&model_spec),
+                ep.as_ref().map(|e| e.base_url.as_str()),
+                ep.as_ref().map(|e| e.api_key.as_str()),
+                req.approval_mode,
+                req.workspace_trusted,
+                req.permission_rules,
+            )?;
+            let sk_acp = session_key.clone();
+            let sink_acp = Arc::clone(&event_sink);
+            let acp_sink: acp::AcpEventSink = Arc::new(move |ev| match ev {
+                AcpEvent::TextDelta(t) => sink_acp(json!({
+                    "kind": "delta_batch",
+                    "sessionKey": sk_acp,
+                    "messageId": "acp-msg",
+                    "textDelta": t,
+                    "thinkingDelta": "",
+                    "timestampMs": Utc::now().timestamp_millis()
+                })),
+                AcpEvent::ThinkingDelta(t) => sink_acp(json!({
+                    "kind": "delta_batch",
+                    "sessionKey": sk_acp,
+                    "messageId": "acp-msg",
+                    "textDelta": "",
+                    "thinkingDelta": t,
+                    "timestampMs": Utc::now().timestamp_millis()
+                })),
+                AcpEvent::ToolCallStart { id, name } => sink_acp(json!({
+                    "kind": "rpc_event",
+                    "sessionKey": sk_acp,
+                    "eventType": "tool_execution_start",
+                    "payload": { "toolCallId": id, "toolName": name }
+                })),
+                AcpEvent::ToolCallEnd { id, name, is_error } => sink_acp(json!({
+                    "kind": "rpc_event",
+                    "sessionKey": sk_acp,
+                    "eventType": "tool_execution_end",
+                    "payload": { "toolCallId": id, "toolName": name, "isError": is_error }
+                })),
+                AcpEvent::ProcessExit {
+                    exit_code,
+                    stderr_tail,
+                } => sink_acp(json!({
+                    "kind": "process_exit",
+                    "sessionKey": sk_acp,
+                    "exitCode": exit_code,
+                    "stderrTail": stderr_tail
+                })),
+                AcpEvent::RawUpdate(v) => sink_acp(json!({
+                    "kind": "rpc_event",
+                    "sessionKey": sk_acp,
+                    "eventType": "acp_update",
+                    "payload": v
+                })),
+            });
 
-                let client = AcpClient::spawn_and_initialize(cfg, acp_sink).await?;
-                let pid = client.pid;
-                let init_state = json!({
-                    "backend": req.backend.as_str(),
-                    "acpSessionId": client.acp_session_id,
-                    "agentInfo": client.agent_info,
-                    "model": { "id": model_spec }
-                });
-                let snap = self.cache_stats(None);
-                (
-                    SessionDriver::Acp(Arc::new(client)),
-                    pid,
-                    init_state,
-                    snap,
-                    model_spec.clone(),
-                )
-            } else {
-                bail!("unsupported backend {:?}", req.backend);
-            };
+            let client = AcpClient::spawn_and_initialize(cfg, acp_sink).await?;
+            let pid = client.pid;
+            let init_state = json!({
+                "backend": req.backend.as_str(),
+                "acpSessionId": client.acp_session_id,
+                "agentInfo": client.agent_info,
+                "model": { "id": model_spec }
+            });
+            let snap = self.cache_stats(None);
+            (
+                SessionDriver::Acp(Arc::new(client)),
+                pid,
+                init_state,
+                snap,
+                model_spec.clone(),
+            )
+        } else {
+            bail!("unsupported backend {:?}", req.backend);
+        };
 
         let managed = Arc::new(ManagedSession {
             session_key: session_key.clone(),
@@ -717,7 +723,12 @@ impl SuperHarnessManager {
         bail!("rewind_to_turn is supported only on native omnia-agent sessions")
     }
 
-    pub fn respond_confirm(&self, session_key: &str, request_id: &str, confirmed: bool) -> Result<()> {
+    pub fn respond_confirm(
+        &self,
+        session_key: &str,
+        request_id: &str,
+        confirmed: bool,
+    ) -> Result<()> {
         let sess = self
             .sessions
             .lock()
@@ -824,11 +835,8 @@ impl SuperHarnessManager {
             .ok_or_else(|| anyhow::anyhow!("unknown session: {session_key}"))?;
         if let SessionDriver::Native(ref eng_mtx) = sess.driver {
             let eng = eng_mtx.lock().await;
-            let visible: Vec<&HarnessMessage> = eng
-                .messages
-                .iter()
-                .filter(|m| m.role != "system")
-                .collect();
+            let visible: Vec<&HarnessMessage> =
+                eng.messages.iter().filter(|m| m.role != "system").collect();
             return Ok(serde_json::to_value(&visible)?);
         }
         Ok(json!([]))
@@ -873,8 +881,13 @@ impl SuperHarnessManager {
     }
 
     pub fn stop_all(&self) {
-        let all: Vec<Arc<ManagedSession>> =
-            self.sessions.lock().unwrap().drain().map(|(_, v)| v).collect();
+        let all: Vec<Arc<ManagedSession>> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, v)| v)
+            .collect();
         for sess in all {
             sess.cancel_flag.store(true, Ordering::Relaxed);
             if let SessionDriver::Acp(ref client) = sess.driver {
@@ -951,14 +964,21 @@ pub async fn run_acp_stdio_server(
         }
     });
 
-    let mut sessions: HashMap<String, (Arc<AsyncMutex<NativeSuperEngine>>, Arc<AtomicBool>)> =
-        HashMap::new();
-    let store = AgentStore::open(&default_omnia_data_dir())
-        .or_else(|_| AgentStore::open_in_memory())
-        .ok();
-    let env_auto_approve = std::env::var("OMNIA_ACP_AUTO_APPROVE")
-        .ok()
-        .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
+    let mut state = acp_http::new_acp_state(default_model, default_base_url, default_api_key);
+    // stdio is fail-closed: no Yolo default, engine `Ask` decisions round-trip
+    // through ACP `session/request_permission` to the client.
+    state.secret_key = None;
+    state.stdio_replay = true;
+    let stdout_for_perm = Arc::clone(&stdout);
+    state.perm_emitter = Some(Arc::new(move |frame: Value| -> bool {
+        if let Ok(mut out) = stdout_for_perm.lock() {
+            let _ = writeln!(out, "{frame}");
+            let _ = out.flush();
+            return true;
+        }
+        false
+    }));
+    let state = Arc::new(state);
 
     while let Some(line) = line_rx.recv().await {
         let trimmed = line.trim();
@@ -968,409 +988,29 @@ pub async fn run_acp_stdio_server(
         let Ok(req) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
-        let id = req.get("id").cloned();
-        let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
-
-        match method {
-            "initialize" => {
-                if let Some(req_id) = id {
-                    emit(json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "protocolVersion": 1,
-                            "agentInfo": {
-                                "name": "omnia",
-                                "version": env!("CARGO_PKG_VERSION")
-                            },
-                            "agentCapabilities": {
-                                "promptCapabilities": { "embeddedContext": true }
-                            }
-                        }
-                    }));
+        let is_prompt = matches!(
+            req.get("method").and_then(Value::as_str),
+            Some("session/prompt" | "session/load")
+        );
+        if is_prompt {
+            // Run the turn on a task so `session/cancel` and permission responses
+            // keep being dispatched while it is in flight.
+            let st = Arc::clone(&state);
+            let emit_task = emit.clone();
+            tokio::spawn(async move {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+                let reply = acp_http::dispatch_rpc(req, &st, Some(tx)).await;
+                while let Some(frame) = rx.recv().await {
+                    emit_task(frame);
                 }
-            }
-            "session/new" => {
-                let raw_cwd = params
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-                let cwd = match validate_workspace_dir(&raw_cwd) {
-                    Ok(valid) => valid,
-                    Err(e) => {
-                        if let Some(req_id) = id {
-                            emit(json!({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "error": { "code": -32602, "message": redact_secrets(&e.to_string()) }
-                            }));
-                        }
-                        continue;
-                    }
-                };
-                let opt_in_auto = env_auto_approve
-                    || params
-                        .get("autoApprove")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                let approval_mode = if opt_in_auto {
-                    ApprovalMode::Yolo
-                } else if let Some(m) = params.get("approvalMode").and_then(|v| v.as_str()) {
-                    match ApprovalMode::try_parse_flag(m) {
-                        Ok(mode) => mode,
-                        Err(e) => {
-                            if let Some(req_id) = id {
-                                emit(json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "error": { "code": -32602, "message": e.to_string() }
-                                }));
-                            }
-                            continue;
-                        }
-                    }
-                } else {
-                    ApprovalMode::AlwaysAsk
-                };
-                let workspace_trusted = opt_in_auto
-                    || params
-                        .get("workspaceTrusted")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                let model = params
-                    .get("model")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                    .or_else(|| default_model.clone())
-                    .unwrap_or_else(|| "htmustc/gemini-3.8-flash".into());
-                let sid = format!("acp-{}", uuid::Uuid::new_v4());
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                match resolve_model_endpoint(
-                    &model,
-                    None,
-                    default_base_url.as_deref(),
-                    default_api_key.as_deref(),
-                )
-                .and_then(|ep| {
-                    let g = Arc::new(Mutex::new(WorkspaceGraphIndex::with_options(
-                        &cwd,
-                        PermissionsEngine::default_rules(),
-                        store.clone(),
-                    )));
-                    let g_bg = Arc::clone(&g);
-                    tokio::task::spawn_blocking(move || {
-                        if let Ok(mut idx) = g_bg.lock() {
-                            let _ = idx.refresh();
-                        }
-                    });
-                    NativeSuperEngine::new(
-                        sid.clone(),
-                        cwd,
-                        ep,
-                        None,
-                        approval_mode,
-                        workspace_trusted,
-                        PermissionsEngine::default_rules(),
-                        PluginRegistry::with_default_pillars(),
-                        g,
-                        store.clone(),
-                        None,
-                        Arc::clone(&cancel_flag),
-                        None,
-                    )
-                }) {
-                    Ok(eng) => {
-                        let wire_dialect = eng.active_wire_dialect().to_string();
-                        let resolved_model = format!("{}/{}", eng.endpoint.provider_id, eng.endpoint.model_id);
-                        sessions.insert(sid.clone(), (Arc::new(AsyncMutex::new(eng)), cancel_flag));
-                        if let Some(req_id) = id {
-                            emit(json!({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "result": {
-                                    "sessionId": sid,
-                                    "backend": "omnia-sota-v4.4",
-                                    "model": resolved_model,
-                                    "wireDialect": wire_dialect
-                                }
-                            }));
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(req_id) = id {
-                            emit(json!({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "error": { "code": -32000, "message": redact_secrets(&e.to_string()) }
-                            }));
-                        }
-                    }
+                if let Some(frame) = reply {
+                    emit_task(frame);
                 }
-            }
-            "session/prompt" => {
-                let sid = params
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let prompt_text: String = params
-                    .get("prompt")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
-
-                if let Some((eng_arc, cancel_arc)) = sessions.get(&sid).cloned() {
-                    cancel_arc.store(false, Ordering::Relaxed);
-                    let out_sink = Arc::clone(&stdout);
-                    let out_reply = Arc::clone(&stdout);
-                    let sid_ev = sid.clone();
-                    let h_sink: HarnessEventSink = Arc::new(move |ev| {
-                        let update = match ev {
-                            HarnessStreamEvent::DeltaBatch {
-                                text_delta,
-                                thinking_delta,
-                                ..
-                            } => {
-                                if !text_delta.is_empty() {
-                                    Some(json!({
-                                        "sessionUpdate": "agent_message_chunk",
-                                        "content": { "type": "text", "text": redact_secrets(&text_delta) }
-                                    }))
-                                } else if !thinking_delta.is_empty() {
-                                    Some(json!({
-                                        "sessionUpdate": "agent_thought_chunk",
-                                        "content": { "type": "text", "text": redact_secrets(&thinking_delta) }
-                                    }))
-                                } else {
-                                    None
-                                }
-                            }
-                            HarnessStreamEvent::ToolStart {
-                                tool_call_id,
-                                tool_name,
-                                ..
-                            } => Some(json!({
-                                "sessionUpdate": "tool_call",
-                                "toolCallId": tool_call_id,
-                                "title": tool_name,
-                                "status": "in_progress"
-                            })),
-                            HarnessStreamEvent::ToolEnd {
-                                tool_call_id,
-                                tool_name,
-                                output,
-                                is_error,
-                                duration_ms,
-                            } => {
-                                let preview: String = output.chars().take(160).collect();
-                                Some(json!({
-                                    "sessionUpdate": "tool_call_update",
-                                    "toolCallId": tool_call_id,
-                                    "title": tool_name,
-                                    "status": if is_error { "failed" } else { "completed" },
-                                    "durationMs": duration_ms,
-                                    "outputPreview": redact_secrets(&preview)
-                                }))
-                            }
-                            HarnessStreamEvent::AutoRecovery { attempt, reason } => Some(json!({
-                                "sessionUpdate": "omnia_recovery",
-                                "attempt": attempt,
-                                "reason": redact_secrets(&reason)
-                            })),
-                            HarnessStreamEvent::Metrics {
-                                tokens_per_second,
-                                context_tokens,
-                                context_window,
-                                context_percent,
-                                total_cost_usd,
-                            } => Some(json!({
-                                "sessionUpdate": "omnia_metrics",
-                                "tokensPerSecond": tokens_per_second,
-                                "contextTokens": context_tokens,
-                                "contextWindow": context_window,
-                                "contextPercent": context_percent,
-                                "totalCostUsd": total_cost_usd
-                            })),
-                            HarnessStreamEvent::Telemetry {
-                                cache_stats,
-                                lakeview_compressions,
-                                turn_count,
-                                tool_call_count,
-                                tool_error_count,
-                                ..
-                            } => Some(json!({
-                                "sessionUpdate": "omnia_telemetry",
-                                "kvHitPct": cache_stats.cache_hit_pct,
-                                "cacheReadTokens": cache_stats.cache_read_tokens,
-                                "lakeviewCompressions": lakeview_compressions,
-                                "turnCount": turn_count,
-                                "toolCallCount": tool_call_count,
-                                "toolErrorCount": tool_error_count
-                            })),
-                            _ => None,
-                        };
-                        if let Some(upd) = update {
-                            if let Ok(mut out) = out_sink.lock() {
-                                let _ = writeln!(
-                                    out,
-                                    "{}",
-                                    json!({
-                                        "jsonrpc": "2.0",
-                                        "method": "session/update",
-                                        "params": { "sessionId": sid_ev, "update": upd }
-                                    })
-                                );
-                                let _ = out.flush();
-                            }
-                        }
-                    });
-                    // Spawn concurrently so `session/cancel` can arrive and flip `cancel_flag` live!
-                    tokio::spawn(async move {
-                        let mut eng = eng_arc.lock().await;
-                        let reply = match eng.run_prompt(&prompt_text, 50, 300, Some(h_sink)).await {
-                            Ok(sum) => id.map(|req_id| {
-                                json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "result": { "stopReason": if sum.status == "completed" { "end_turn" } else { "max_turn_requests" } }
-                                })
-                            }),
-                            Err(e) => id.map(|req_id| {
-                                json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "error": { "code": -32000, "message": redact_secrets(&e.to_string()) }
-                                })
-                            }),
-                        };
-                        if let Some(frame) = reply {
-                            if let Ok(mut out) = out_reply.lock() {
-                                let _ = writeln!(out, "{frame}");
-                                let _ = out.flush();
-                            }
-                        }
-                    });
-                } else if let Some(req_id) = id {
-                    emit(json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": { "code": -32602, "message": format!("unknown sessionId: {sid}") }
-                    }));
-                }
-            }
-            "session/cancel" => {
-                if let Some(sid) = params.get("sessionId").and_then(|v| v.as_str()) {
-                    if let Some((_, cancel_flag)) = sessions.get(sid) {
-                        cancel_flag.store(true, Ordering::Relaxed);
-                    }
-                }
-            }
-            "session/set_model" => {
-                let sid = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-                let model = params.get("model").and_then(|v| v.as_str()).unwrap_or("").trim();
-                let thinking = params
-                    .get("thinkingLevel")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                if let Some((eng_arc, _)) = sessions.get(sid).cloned() {
-                    match resolve_model_endpoint(
-                        model,
-                        None,
-                        default_base_url.as_deref(),
-                        default_api_key.as_deref(),
-                    ) {
-                        Ok(ep) => {
-                            let mut eng = eng_arc.lock().await;
-                            eng.endpoint = ep.clone();
-                            eng.epoch_masker = EpochMaskingState::for_context_window(ep.context_window);
-                            eng.edit_affinity = ModelEditAffinity::for_model(&ep.model_id);
-                            if thinking.is_some() {
-                                eng.thinking_level = thinking;
-                            }
-                            let dialect = eng.active_wire_dialect().to_string();
-                            if let Some(req_id) = id {
-                                emit(json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "result": {
-                                        "provider": ep.provider_id,
-                                        "modelId": ep.model_id,
-                                        "contextWindow": ep.context_window,
-                                        "wireDialect": dialect
-                                    }
-                                }));
-                            }
-                        }
-                        Err(e) => {
-                            if let Some(req_id) = id {
-                                emit(json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "error": { "code": -32602, "message": redact_secrets(&e.to_string()) }
-                                }));
-                            }
-                        }
-                    }
-                } else if let Some(req_id) = id {
-                    emit(json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": { "code": -32602, "message": format!("unknown sessionId: {sid}") }
-                    }));
-                }
-            }
-            "session/rewind" => {
-                let sid = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-                let target_turn = params
-                    .get("turn")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1) as u32;
-                if let Some((eng_arc, _)) = sessions.get(sid).cloned() {
-                    let mut eng = eng_arc.lock().await;
-                    match eng.rewind_to_turn(target_turn) {
-                        Ok(restored) => {
-                            if let Some(req_id) = id {
-                                emit(json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "result": { "restored": restored }
-                                }));
-                            }
-                        }
-                        Err(e) => {
-                            if let Some(req_id) = id {
-                                emit(json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "error": { "code": -32000, "message": redact_secrets(&e.to_string()) }
-                                }));
-                            }
-                        }
-                    }
-                } else if let Some(req_id) = id {
-                    emit(json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": { "code": -32602, "message": format!("unknown sessionId: {sid}") }
-                    }));
-                }
-            }
-            _ => {
-                if let Some(req_id) = id {
-                    emit(json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": { "code": -32601, "message": format!("method not found: {method}") }
-                    }));
-                }
-            }
+            });
+            continue;
+        }
+        if let Some(reply) = acp_http::dispatch_rpc(req, &state, None).await {
+            emit(reply);
         }
     }
     Ok(())

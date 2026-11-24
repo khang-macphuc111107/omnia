@@ -12,13 +12,13 @@
 //! - **Persistent SQLite WAL Cache (`omni_db::merkle_cache`)** stored strictly in `app_data_dir`
 //!   (NEVER writes any cache/db file inside the target user workspace!).
 
+use crate::agent_store::{AgentStore, CachedMerkleRow};
 use crate::cache_guard::{blake3_bytes, hex_encode_32};
+use crate::path_guard::sanitize_windows_path;
+use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
 use anyhow::Result;
 use chrono::Utc;
 use ignore::WalkBuilder;
-use crate::path_guard::sanitize_windows_path;
-use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
-use crate::agent_store::{AgentStore, CachedMerkleRow};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -225,7 +225,10 @@ impl MerkleIndex {
                         }
                         if meta.is_dir() {
                             let name = entry.file_name().to_string_lossy();
-                            if IGNORED_DIRS.iter().any(|&ig| ig.eq_ignore_ascii_case(&name)) {
+                            if IGNORED_DIRS
+                                .iter()
+                                .any(|&ig| ig.eq_ignore_ascii_case(&name))
+                            {
                                 return false;
                             }
                         }
@@ -555,7 +558,8 @@ mod tests {
         fs::write(tmp.join("b/other/two.py"), "def two():\n    return 2\n").unwrap();
 
         let db = AgentStore::open_in_memory().unwrap();
-        let mut idx = MerkleIndex::with_options(&tmp, PermissionsEngine::default_rules(), Some(db.clone()));
+        let mut idx =
+            MerkleIndex::with_options(&tmp, PermissionsEngine::default_rules(), Some(db.clone()));
         let d1 = idx.refresh().unwrap();
         // `.env` and `.git/HEAD` MUST be excluded!
         assert_eq!(idx.files().len(), 2);

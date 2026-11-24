@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "inventory": {
+      "command": "python",
+      "args": [
+        "-B",
+        "mcp_inventory_server.py"
+      ]
+    }
+  }
+}

@@ -830,7 +830,26 @@
     renderStatus();
   }
 
+  let notebookRevision = 0;
+  function selectNotebook(id) {
+    if (state.activeNotebookId === id) return;
+    state.activeNotebookId = id;
+    notebookRevision++;
+    state.latestPack = null;
+    state.evidenceByMarker.clear();
+    state.pendingQuoteCards = [];
+    state.highlightedSourceId = null;
+    state.selectedArtifactId = null;
+    state.activeBtwId = null;
+    state.stagedBtwQuote = null;
+    state.activeSelection = null;
+    renderSelectionBar();
+    renderQuoteChips();
+    renderEvidencePack();
+  }
+
   async function refreshActiveNotebookData() {
+    const revision = notebookRevision;
     const nbId = state.activeNotebookId;
     if (!nbId) {
       state.sources = [];
@@ -857,6 +876,7 @@
       Studio.api.listBridgeEvents(nbId)
     ]);
 
+    if (revision !== notebookRevision) return;
     const errors = [];
     if (srcRes && srcRes.ok) state.sources = Array.isArray(srcRes.sources) ? srcRes.sources : [];
     else errors.push((srcRes && srcRes.code) || "sources_error");
@@ -899,7 +919,7 @@
     const res = await Studio.api.listNotebooks();
     if (!res || !res.ok) {
       state.notebooks = [];
-      state.activeNotebookId = null;
+      selectNotebook(null);
       showBanner("atGlobalError", "error", (res && res.code) || "notebooks_unavailable", (res && res.message) || "GET /api/notebooks failed.");
       renderNotebooks();
       await refreshActiveNotebookData();
@@ -908,10 +928,10 @@
     showBanner("atGlobalError", null, null, null);
     state.notebooks = Array.isArray(res.notebooks) ? res.notebooks : [];
     if (state.activeNotebookId && !state.notebooks.some((n) => n.notebook_id === state.activeNotebookId)) {
-      state.activeNotebookId = null;
+      selectNotebook(null);
     }
     if (!state.activeNotebookId && state.notebooks.length > 0) {
-      state.activeNotebookId = state.notebooks[0].notebook_id;
+      selectNotebook(state.notebooks[0].notebook_id);
     }
     renderNotebooks();
     await refreshActiveNotebookData();
@@ -974,7 +994,9 @@
       payload.source_id = state.activeSelection.source_id;
     }
 
+    const revision = notebookRevision;
     const res = await Studio.api.createQuoteCard(payload);
+    if (revision !== notebookRevision) return;
     if (!res || !res.ok || !res.card) {
       showBanner("atGlobalError", "error", (res && res.code) || "quote_card_failed", (res && res.message) || "Failed to create quote card.");
       return;
@@ -1112,8 +1134,7 @@
           showBanner("atNotebookFormFeedback", null, null, null);
           if (titleEl) titleEl.value = "";
           if (descEl) descEl.value = "";
-          state.activeNotebookId = res.notebook.notebook_id;
-          state.latestPack = null;
+          selectNotebook(res.notebook.notebook_id);
           await Promise.all([refreshStatus(), refreshNotebooks()]);
         } finally {
           if (btn) btn.disabled = false;
@@ -1136,8 +1157,7 @@
             return;
           }
           if (state.activeNotebookId === nbId) {
-            state.activeNotebookId = null;
-            state.latestPack = null;
+            selectNotebook(null);
           }
           await Promise.all([refreshStatus(), refreshNotebooks()]);
           return;
@@ -1147,13 +1167,7 @@
         if (selBtn) {
           const nbId = selBtn.getAttribute("data-at-select-nb");
           if (!nbId || nbId === state.activeNotebookId) return;
-          state.activeNotebookId = nbId;
-          state.highlightedSourceId = null;
-          state.selectedArtifactId = null;
-          state.activeBtwId = null;
-          state.stagedBtwQuote = null;
-          state.activeSelection = null;
-          renderSelectionBar();
+          selectNotebook(nbId);
           renderNotebooks();
           await refreshActiveNotebookData();
         }
@@ -1354,7 +1368,9 @@
         showBanner("atGroundedFeedback", "info", "Grounding", "Running POST /api/notebooks/grounded-prompt…");
 
         try {
+          const revision = notebookRevision;
           const packRes = await Studio.api.groundedPrompt(state.activeNotebookId, query, maxChunks);
+          if (revision !== notebookRevision) return;
           if (!packRes || !packRes.ok || !packRes.pack) {
             showBanner("atGroundedFeedback", "error", (packRes && packRes.code) || "grounded_prompt_failed", (packRes && packRes.message) || "Grounded prompt failed.");
             return;
@@ -1388,6 +1404,7 @@
             citations
           });
 
+          if (revision !== notebookRevision) return;
           if (!turnRes || !turnRes.ok || !turnRes.turn) {
             showBanner("atGroundedFeedback", "error", (turnRes && turnRes.code) || "record_turn_failed", (turnRes && turnRes.message) || "Evidence retrieved, but recording turn failed.");
             return;
@@ -1395,6 +1412,7 @@
 
           if (citations.length > 0) {
             const verRes = await Studio.api.verifyNotebookCitations(state.activeNotebookId, responseMarkdown);
+            if (revision !== notebookRevision) return;
             if (verRes && verRes.ok && verRes.report) {
               state.verificationByTurnId.set(turnRes.turn.turn_id, verRes.report);
             }

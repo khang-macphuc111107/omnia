@@ -1,0 +1,3 @@
+incident_id,date,root_cause,mandatory_fix
+INC-104,2026-10-18,legacy md5 accepted forged token,reject alg=md5 and require sha256
+INC-119,2026-10-29,secondary rotated key failed verification,verify against all non-revoked keys

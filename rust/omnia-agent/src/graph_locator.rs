@@ -11,12 +11,14 @@
 //! - Principled Python stdlib-shadowing detector (full core Python 3.x stdlib set, zero benchmark hardcoding)
 //! - Binary-search token-budgeted Turn-1 RepoMap embedding directly into `<workspace_context>`
 
+use crate::agent_store::{AgentStore, CachedAstRow};
 use crate::cache_guard::estimate_tokens;
 use crate::merkle::{MerkleIndex, MerkleRefreshDelta};
-use crate::search::{tokenize_code, HybridSearchIndex, SearchMode, SearchOutcome, SearchQueryOptions};
-use anyhow::Result;
 use crate::permissions::{ApprovalMode, PermissionRule, PermissionsEngine};
-use crate::agent_store::{AgentStore, CachedAstRow};
+use crate::search::{
+    tokenize_code, HybridSearchIndex, SearchMode, SearchOutcome, SearchQueryOptions,
+};
+use anyhow::Result;
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
@@ -33,24 +35,158 @@ const MAX_CALL_REF_DF: usize = 12; // Skip ubiquitous names like `get`/`run`/`in
 
 /// Comprehensive core Python 3.x standard library top-level module names (sorted for binary_search).
 const PYTHON_STDLIB_MODULES: &[&str] = &[
-    "abc", "argparse", "array", "ast", "asyncio", "base64", "bisect", "calendar", "cgi", "cmd",
-    "code", "codecs", "collections", "colorsys", "concurrent", "configparser", "contextlib",
-    "copy", "csv", "ctypes", "curses", "dataclasses", "datetime", "decimal", "difflib", "dis",
-    "doctest", "email", "encodings", "enum", "errno", "faulthandler", "fcntl", "filecmp",
-    "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc", "getopt", "getpass",
-    "gettext", "glob", "graphlib", "gzip", "hashlib", "heapq", "hmac", "html", "http", "imaplib",
-    "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "linecache",
-    "locale", "logging", "lzma", "mailbox", "marshal", "math", "mimetypes", "mmap",
-    "multiprocessing", "netrc", "numbers", "operator", "optparse", "os", "pathlib", "pdb",
-    "pickle", "pkgutil", "platform", "plistlib", "poplib", "posixpath", "pprint", "profile",
-    "pstats", "pty", "pwd", "queue", "quopri", "random", "re", "readline", "reprlib", "resource",
-    "rlcompleter", "runpy", "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil",
-    "signal", "site", "smtplib", "socket", "socketserver", "sqlite3", "ssl", "stat", "statistics",
-    "string", "struct", "subprocess", "sys", "sysconfig", "tarfile", "tempfile", "termios",
-    "textwrap", "threading", "time", "timeit", "tkinter", "token", "tokenize", "tomllib", "trace",
-    "traceback", "tracemalloc", "tty", "turtle", "types", "typing", "unicodedata", "unittest",
-    "urllib", "uuid", "venv", "warnings", "wave", "weakref", "webbrowser", "wsgiref", "xml",
-    "xmlrpc", "zipapp", "zipfile", "zipimport", "zlib", "zoneinfo",
+    "abc",
+    "argparse",
+    "array",
+    "ast",
+    "asyncio",
+    "base64",
+    "bisect",
+    "calendar",
+    "cgi",
+    "cmd",
+    "code",
+    "codecs",
+    "collections",
+    "colorsys",
+    "concurrent",
+    "configparser",
+    "contextlib",
+    "copy",
+    "csv",
+    "ctypes",
+    "curses",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "difflib",
+    "dis",
+    "doctest",
+    "email",
+    "encodings",
+    "enum",
+    "errno",
+    "faulthandler",
+    "fcntl",
+    "filecmp",
+    "fileinput",
+    "fnmatch",
+    "fractions",
+    "ftplib",
+    "functools",
+    "gc",
+    "getopt",
+    "getpass",
+    "gettext",
+    "glob",
+    "graphlib",
+    "gzip",
+    "hashlib",
+    "heapq",
+    "hmac",
+    "html",
+    "http",
+    "imaplib",
+    "importlib",
+    "inspect",
+    "io",
+    "ipaddress",
+    "itertools",
+    "json",
+    "keyword",
+    "linecache",
+    "locale",
+    "logging",
+    "lzma",
+    "mailbox",
+    "marshal",
+    "math",
+    "mimetypes",
+    "mmap",
+    "multiprocessing",
+    "netrc",
+    "numbers",
+    "operator",
+    "optparse",
+    "os",
+    "pathlib",
+    "pdb",
+    "pickle",
+    "pkgutil",
+    "platform",
+    "plistlib",
+    "poplib",
+    "posixpath",
+    "pprint",
+    "profile",
+    "pstats",
+    "pty",
+    "pwd",
+    "queue",
+    "quopri",
+    "random",
+    "re",
+    "readline",
+    "reprlib",
+    "resource",
+    "rlcompleter",
+    "runpy",
+    "sched",
+    "secrets",
+    "select",
+    "selectors",
+    "shelve",
+    "shlex",
+    "shutil",
+    "signal",
+    "site",
+    "smtplib",
+    "socket",
+    "socketserver",
+    "sqlite3",
+    "ssl",
+    "stat",
+    "statistics",
+    "string",
+    "struct",
+    "subprocess",
+    "sys",
+    "sysconfig",
+    "tarfile",
+    "tempfile",
+    "termios",
+    "textwrap",
+    "threading",
+    "time",
+    "timeit",
+    "tkinter",
+    "token",
+    "tokenize",
+    "tomllib",
+    "trace",
+    "traceback",
+    "tracemalloc",
+    "tty",
+    "turtle",
+    "types",
+    "typing",
+    "unicodedata",
+    "unittest",
+    "urllib",
+    "uuid",
+    "venv",
+    "warnings",
+    "wave",
+    "weakref",
+    "webbrowser",
+    "wsgiref",
+    "xml",
+    "xmlrpc",
+    "zipapp",
+    "zipfile",
+    "zipimport",
+    "zlib",
+    "zoneinfo",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -628,11 +764,20 @@ impl WorkspaceGraphIndex {
                     parsed_ast.size_bytes = entry.size_bytes;
                     parsed_ast
                 } else {
-                    parse_file_ast(lang, &entry.sha256, content_opt.as_deref(), entry.size_bytes)
+                    parse_file_ast(
+                        lang,
+                        &entry.sha256,
+                        content_opt.as_deref(),
+                        entry.size_bytes,
+                    )
                 }
             } else {
-                let parsed_ast =
-                    parse_file_ast(lang, &entry.sha256, content_opt.as_deref(), entry.size_bytes);
+                let parsed_ast = parse_file_ast(
+                    lang,
+                    &entry.sha256,
+                    content_opt.as_deref(),
+                    entry.size_bytes,
+                );
                 if lang != "binary" && lang != "text" && self.db.is_some() {
                     if let Ok(ast_json) = serde_json::to_string(&parsed_ast) {
                         new_cache_rows.push(CachedAstRow {
@@ -691,8 +836,12 @@ impl WorkspaceGraphIndex {
             .or_else(|| ast.symbols.iter().find(|s| s.name.eq_ignore_ascii_case(q)))
             .or_else(|| {
                 ast.symbols.iter().find(|s| {
-                    s.qualified_name.to_ascii_lowercase().ends_with(&format!(".{ql}"))
-                        || s.qualified_name.to_ascii_lowercase().ends_with(&format!("::{ql}"))
+                    s.qualified_name
+                        .to_ascii_lowercase()
+                        .ends_with(&format!(".{ql}"))
+                        || s.qualified_name
+                            .to_ascii_lowercase()
+                            .ends_with(&format!("::{ql}"))
                 })
             })
             .or_else(|| {
@@ -704,7 +853,12 @@ impl WorkspaceGraphIndex {
 
     /// `cAST` (`arXiv:2506.15655`) boundary snap: snap a target line cutoff (e.g. 260) to the nearest
     /// enclosing `AstSymbol::end_line` within `+-20` lines so oversized reads never slice functions in half!
-    pub fn snap_line_to_ast_boundary(&self, rel_path: &str, target_line_1: usize, total_lines: usize) -> usize {
+    pub fn snap_line_to_ast_boundary(
+        &self,
+        rel_path: &str,
+        target_line_1: usize,
+        total_lines: usize,
+    ) -> usize {
         let norm = rel_path.trim().replace('\\', "/");
         let Some(ast) = self.parsed.get(&norm) else {
             return target_line_1.min(total_lines);
@@ -769,10 +923,7 @@ impl WorkspaceGraphIndex {
     pub fn compute_ppr_map(&self, seed_text: Option<&str>) -> BTreeMap<String, f64> {
         let csr = CsrGraph::build(&self.parsed, self.cached_forensics.as_ref());
         let scores = csr.compute_ppr(&self.parsed, seed_text, self.cached_forensics.as_ref());
-        csr.nodes
-            .into_iter()
-            .zip(scores)
-            .collect()
+        csr.nodes.into_iter().zip(scores).collect()
     }
 
     /// List all parsed CST symbols defined in a specific workspace-relative file.
@@ -849,7 +1000,10 @@ impl WorkspaceGraphIndex {
                 .then_with(|| a.1.file.cmp(&b.1.file))
                 .then_with(|| a.1.start_line.cmp(&b.1.start_line))
         });
-        hits.into_iter().take(limit.clamp(1, 50)).map(|(_, h)| h).collect()
+        hits.into_iter()
+            .take(limit.clamp(1, 50))
+            .map(|(_, h)| h)
+            .collect()
     }
 
     /// LocAgent k-hop heterogeneous code graph traversal starting from a file path or symbol name.
@@ -964,7 +1118,11 @@ impl WorkspaceGraphIndex {
             return String::new();
         }
         let csr = CsrGraph::build(&self.parsed, self.cached_forensics.as_ref());
-        let ppr = csr.compute_ppr(&self.parsed, Some(prompt_text), self.cached_forensics.as_ref());
+        let ppr = csr.compute_ppr(
+            &self.parsed,
+            Some(prompt_text),
+            self.cached_forensics.as_ref(),
+        );
         let mut order: Vec<usize> = (0..csr.nodes.len()).collect();
         order.sort_by(|&a, &b| {
             ppr[b]
@@ -986,15 +1144,15 @@ impl WorkspaceGraphIndex {
                 kept_set.insert(idx);
                 let path = &csr.nodes[idx];
                 let ast = &self.parsed[path];
-                out.push_str(&format!(
-                    "- {} [{}]",
-                    path, ast.language
-                ));
+                out.push_str(&format!("- {} [{}]", path, ast.language));
                 if let Some(shadowed) = detect_python_stdlib_shadow(path) {
                     out.push_str(&format!(" [WARN: shadows stdlib `{shadowed}`]"));
                 }
                 if csr.inbound_counts[idx] > 0 {
-                    out.push_str(&format!(" (ppr={:.2}, in={})", ppr[idx], csr.inbound_counts[idx]));
+                    out.push_str(&format!(
+                        " (ppr={:.2}, in={})",
+                        ppr[idx], csr.inbound_counts[idx]
+                    ));
                 } else {
                     out.push_str(&format!(" (ppr={:.2})", ppr[idx]));
                 }
@@ -1036,7 +1194,12 @@ impl WorkspaceGraphIndex {
             let mut seen_pair = FxHashSet::default();
             for &(s, d, _, kind) in &csr.display_edges {
                 if kept_set.contains(&s) && kept_set.contains(&d) && seen_pair.insert((s, d)) {
-                    edge_strs.push(format!("{} -> {} [{}]", csr.nodes[s], csr.nodes[d], kind.label()));
+                    edge_strs.push(format!(
+                        "{} -> {} [{}]",
+                        csr.nodes[s],
+                        csr.nodes[d],
+                        kind.label()
+                    ));
                     if edge_strs.len() >= 10 {
                         break;
                     }
@@ -1208,7 +1371,9 @@ impl WorkspaceGraphIndex {
         let filtered_edges: Vec<GraphEdgeInfo> = csr
             .display_edges
             .iter()
-            .filter(|&&(s, d, _, _)| (kept.contains(&s) || kept.contains(&d)) && seen_edge.insert((s, d)))
+            .filter(|&&(s, d, _, _)| {
+                (kept.contains(&s) || kept.contains(&d)) && seen_edge.insert((s, d))
+            })
             .map(|(s, d, spec, _)| GraphEdgeInfo {
                 source: csr.nodes[*s].clone(),
                 target: csr.nodes[*d].clone(),
@@ -1266,7 +1431,10 @@ fn format_detailed_outline(
     for &idx in ranked_indices {
         let path = &csr.nodes[idx];
         let ast = &parsed[path];
-        out.push_str(&format!("- {} [{}] (ppr={:.2}", path, ast.language, ppr[idx]));
+        out.push_str(&format!(
+            "- {} [{}] (ppr={:.2}",
+            path, ast.language, ppr[idx]
+        ));
         if csr.inbound_counts[idx] > 0 {
             out.push_str(&format!(", in={}", csr.inbound_counts[idx]));
         }
@@ -1390,7 +1558,12 @@ pub fn verify_syntax_delta(
                 if let Some(tree_before) = parser.parse(before, None) {
                     if tree_before.root_node().has_error() {
                         let mut before_errs = Vec::new();
-                        collect_ts_syntax_errors(tree_before.root_node(), before, &mut before_errs, 16);
+                        collect_ts_syntax_errors(
+                            tree_before.root_node(),
+                            before,
+                            &mut before_errs,
+                            16,
+                        );
                         for e in before_errs {
                             before_sigs.insert((e.kind, e.snippet));
                         }
@@ -1401,7 +1574,8 @@ pub fn verify_syntax_delta(
             let filtered: Vec<SyntaxDiagnostic> = after_errs
                 .into_iter()
                 .filter(|d| {
-                    let was_preexisting = before_sigs.contains(&(d.kind.clone(), d.snippet.clone()));
+                    let was_preexisting =
+                        before_sigs.contains(&(d.kind.clone(), d.snippet.clone()));
                     if !was_preexisting {
                         return true;
                     }
@@ -1479,12 +1653,7 @@ pub fn verify_syntax_delta(
     SyntaxCheckReport::default()
 }
 
-fn collect_ts_syntax_errors(
-    node: Node,
-    src: &str,
-    out: &mut Vec<SyntaxDiagnostic>,
-    limit: usize,
-) {
+fn collect_ts_syntax_errors(node: Node, src: &str, out: &mut Vec<SyntaxDiagnostic>, limit: usize) {
     if out.len() >= limit || !node.has_error() {
         return;
     }
@@ -1569,7 +1738,9 @@ fn validate_toml_structural(src: &str) -> Vec<SyntaxDiagnostic> {
     for (idx, raw_line) in src.lines().enumerate() {
         let line_no = idx as u32 + 1;
         let trimmed = raw_line.trim();
-        if trimmed.is_empty() || (!in_multiline_double && !in_multiline_single && trimmed.starts_with('#')) {
+        if trimmed.is_empty()
+            || (!in_multiline_double && !in_multiline_single && trimmed.starts_with('#'))
+        {
             continue;
         }
         let bytes = raw_line.as_bytes();
@@ -1637,7 +1808,10 @@ fn validate_toml_structural(src: &str) -> Vec<SyntaxDiagnostic> {
                 line: line_no,
                 col: 1,
                 kind: "TOML".into(),
-                snippet: format!("Unclosed string literal: {}", trimmed.chars().take(60).collect::<String>()),
+                snippet: format!(
+                    "Unclosed string literal: {}",
+                    trimmed.chars().take(60).collect::<String>()
+                ),
                 enclosing_symbol: None,
             });
             break;
@@ -1650,16 +1824,25 @@ fn validate_toml_structural(src: &str) -> Vec<SyntaxDiagnostic> {
                         line: line_no,
                         col: 1,
                         kind: "TOML".into(),
-                        snippet: format!("Malformed table header: {}", trimmed.chars().take(60).collect::<String>()),
+                        snippet: format!(
+                            "Malformed table header: {}",
+                            trimmed.chars().take(60).collect::<String>()
+                        ),
                         enclosing_symbol: None,
                     });
                 }
-            } else if !trimmed.starts_with(']') && !trimmed.starts_with('}') && !trimmed.contains('=') {
+            } else if !trimmed.starts_with(']')
+                && !trimmed.starts_with('}')
+                && !trimmed.contains('=')
+            {
                 out.push(SyntaxDiagnostic {
                     line: line_no,
                     col: 1,
                     kind: "TOML".into(),
-                    snippet: format!("Expected key = value assignment: {}", trimmed.chars().take(60).collect::<String>()),
+                    snippet: format!(
+                        "Expected key = value assignment: {}",
+                        trimmed.chars().take(60).collect::<String>()
+                    ),
                     enclosing_symbol: None,
                 });
             }
@@ -1669,7 +1852,10 @@ fn validate_toml_structural(src: &str) -> Vec<SyntaxDiagnostic> {
                 line: line_no,
                 col: 1,
                 kind: "TOML".into(),
-                snippet: format!("Unmatched closing delimiter: {}", trimmed.chars().take(60).collect::<String>()),
+                snippet: format!(
+                    "Unmatched closing delimiter: {}",
+                    trimmed.chars().take(60).collect::<String>()
+                ),
                 enclosing_symbol: None,
             });
             break;
@@ -1678,7 +1864,9 @@ fn validate_toml_structural(src: &str) -> Vec<SyntaxDiagnostic> {
             break;
         }
     }
-    if out.is_empty() && (bracket_depth != 0 || brace_depth != 0 || in_multiline_double || in_multiline_single) {
+    if out.is_empty()
+        && (bracket_depth != 0 || brace_depth != 0 || in_multiline_double || in_multiline_single)
+    {
         out.push(SyntaxDiagnostic {
             line: src.lines().count().max(1) as u32,
             col: 1,
@@ -1903,8 +2091,10 @@ fn walk_ts_node(
                 }
                 let mut cur = node.walk();
                 for ch in node.named_children(&mut cur) {
-                    if matches!(ch.kind(), "class_heritage" | "extends_clause" | "implements_clause")
-                    {
+                    if matches!(
+                        ch.kind(),
+                        "class_heritage" | "extends_clause" | "implements_clause"
+                    ) {
                         for tok in tokenize_code(node_text(ch, src)) {
                             if !matches!(tok.as_str(), "extends" | "implements") {
                                 ctx.push_inh(&tok);
@@ -2384,7 +2574,11 @@ mod tests {
             "import { helper } from './util';\nexport interface AuthCfg { key: string }\nexport const verifyToken = (t: string) => helper(t);\n",
         )
         .unwrap();
-        fs::write(tmp.join("util.js"), "export function helper(x) { return x; }\n").unwrap();
+        fs::write(
+            tmp.join("util.js"),
+            "export function helper(x) { return x; }\n",
+        )
+        .unwrap();
         fs::write(
             tmp.join("lib.rs"),
             "pub trait Runner { fn run(&self); }\npub struct App;\nimpl Runner for App { fn run(&self) {} }\n",
@@ -2400,7 +2594,10 @@ mod tests {
         g.refresh().unwrap();
 
         let py_app = &g.parsed_asts()["pkg/app.py"];
-        assert!(py_app.symbols.iter().any(|s| s.qualified_name == "LedgerEngine.run"));
+        assert!(py_app
+            .symbols
+            .iter()
+            .any(|s| s.qualified_name == "LedgerEngine.run"));
         assert!(py_app.inherits_refs.iter().any(|b| b == "BaseEngine"));
         assert!(py_app.call_refs.iter().any(|c| c == "balance"));
 
@@ -2501,7 +2698,11 @@ mod tests {
         assert!(elapsed_ms < 20.0, "PPR must run fast, got {elapsed_ms}ms");
 
         let fx_idx = csr.nodes.iter().position(|p| p == "ledger/fx.py").unwrap();
-        let eng_idx = csr.nodes.iter().position(|p| p == "ledger/engine.py").unwrap();
+        let eng_idx = csr
+            .nodes
+            .iter()
+            .position(|p| p == "ledger/engine.py")
+            .unwrap();
         let noise_idx = csr.nodes.iter().position(|p| p == "noise_00.py").unwrap();
         assert!(ppr[fx_idx] > ppr[noise_idx] * 5.0);
         assert!(ppr[eng_idx] > ppr[noise_idx]);
@@ -2510,13 +2711,20 @@ mod tests {
     #[test]
     fn detects_python_stdlib_shadowing_and_embeds_budgeted_turn1_repomap() {
         assert_eq!(detect_python_stdlib_shadow("calendar.py"), Some("calendar"));
-        assert_eq!(detect_python_stdlib_shadow("logging/__init__.py"), Some("logging"));
+        assert_eq!(
+            detect_python_stdlib_shadow("logging/__init__.py"),
+            Some("logging")
+        );
         assert_eq!(detect_python_stdlib_shadow("pkg/calendar.py"), None);
         assert_eq!(detect_python_stdlib_shadow("my_module.py"), None);
 
         let tmp = std::env::temp_dir().join(format!("omni_shadow_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&tmp).unwrap();
-        fs::write(tmp.join("calendar.py"), "def business_days():\n    return 5\n").unwrap();
+        fs::write(
+            tmp.join("calendar.py"),
+            "def business_days():\n    return 5\n",
+        )
+        .unwrap();
         fs::write(tmp.join("app.py"), "def run():\n    return 1\n").unwrap();
 
         let mut g = WorkspaceGraphIndex::new(&tmp);
@@ -2613,11 +2821,25 @@ mod tests {
         assert!(!bad_yaml.is_clean());
         assert_eq!(bad_yaml.diagnostics[0].kind, "YAML");
 
-        let bad_toml = verify_syntax_delta("pyproject.toml", "[project]\nname = \"x\"\n", "[project\nname = \"x\"\n", None);
+        let bad_toml = verify_syntax_delta(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n",
+            "[project\nname = \"x\"\n",
+            None,
+        );
         assert!(!bad_toml.is_clean());
         assert_eq!(bad_toml.diagnostics[0].kind, "TOML");
 
-        let good_toml = verify_syntax_delta("pyproject.toml", "", "[project]\nname = \"x\"\ndeps = [\n  \"pytest\",\n]\n", None);
-        assert!(good_toml.is_clean(), "valid TOML must pass: {:?}", good_toml.diagnostics);
+        let good_toml = verify_syntax_delta(
+            "pyproject.toml",
+            "",
+            "[project]\nname = \"x\"\ndeps = [\n  \"pytest\",\n]\n",
+            None,
+        );
+        assert!(
+            good_toml.is_clean(),
+            "valid TOML must pass: {:?}",
+            good_toml.diagnostics
+        );
     }
 }

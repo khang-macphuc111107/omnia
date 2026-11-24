@@ -371,7 +371,12 @@
   color: var(--ink-primary);
 }
 
-.session-item.is-active {
+.session-item:focus-visible {
+  /* Keep the keyboard ring inside the scrollable session list. */
+  outline-offset: calc(0px - var(--focus-width));
+}
+
+.session-item[aria-current="true"] {
   background-color: var(--bg-panel);
   border-color: var(--border-subtle);
   color: var(--ink-primary);
@@ -1850,6 +1855,7 @@ button.badge-clickable:hover {
   gap: 6px;
 }
 
+#atEvidenceSection[hidden],
 .at-citation-inspector[hidden] {
   display: none;
 }

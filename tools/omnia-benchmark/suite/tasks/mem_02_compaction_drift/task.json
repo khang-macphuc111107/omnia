@@ -1,0 +1,17 @@
+{
+  "id": "mem_02_compaction_drift",
+  "axis": 12,
+  "axis_name": "Long-Horizon Memory & Context Compaction",
+  "title": "Preserve 8 architectural invariants across 110 KB noisy spec evolution without drift",
+  "difficulty": "hard",
+  "languages": [
+    "python"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "memory_state",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

@@ -1,4 +1,7 @@
-"""Clean-Room Isolation Sandbox & Egress Firewall for 5-Way Harness Benchmarking.
+"""Clean-Room Isolation Sandbox & Egress Firewall for 7-Way v5 Harness Benchmarking.
+
+Evaluates Omnia v5 + 6 Competitors (`codex`, `claude`, `opencode`, `goose`, `omp`, `dsh`)
+with `agy` strictly excluded.
 
 Guarantees:
   1. Zero ancestor instruction files (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `.codex/`,
@@ -56,6 +59,7 @@ def build_minimal_path() -> str:
         r"C:\Program Files\Git\cmd",
         r"C:\Program Files\Git\usr\bin",
         r"C:\Program Files\nodejs",
+        r"D:\omnia-bench\.venv\Scripts",
         str(Path.home() / ".local" / "bin"),
         str(Path.home() / ".cargo" / "bin"),
         r"C:\Windows\System32",
@@ -287,60 +291,140 @@ def prepare_harness_launch(
             stdin_text=None, harness_root_exe=exe.name, wire_protocol="openai_chat",
         )
 
-    if harness == "agy":
-        exe = Path(manifest.get("agy", {}).get("binary") or (HARNESS_ROOT / "agy" / "bin" / "agy.exe"))
-        agy_cfg_dir = user_dir / ".gemini" / "antigravity-cli"
-        agy_cfg_dir.mkdir(parents=True, exist_ok=True)
-        agy_settings = {
-            "modelProvider": "gemini",
-            "agentMode": "",
-            "toolPermission": "always-proceed",
-            "artifactReviewPolicy": "always-proceed",
-            "disableSlashCommands": True,
-            "showTips": False,
-            "showFeedbackSurvey": False,
-            "notifications": False,
-            "enableTerminalSandbox": False,
-            "trustedWorkspaces": [str(workspace)],
-            "customModelsConfig": {
-                "customModels": {
-                    "htmustc-bench": {
-                        "modelName": f"gemini-api://{base}/v1beta/models/{model}",
-                        "label": "htmustc-bench",
-                        "maxTokens": 200000,
-                        "toolFormatterType": "TOOL_FORMATTER_TYPE_NONE",
-                        "modelFeatures": {
-                            "supportsImages": True,
-                            "supportsVideo": False,
-                            "supportsPdf": False,
-                            "supportsAudio": False,
-                            "supportsToolCalls": True,
-                            "supportsThinking": True,
-                            "zeroShotCapable": True,
-                        },
-                    }
-                }
-            },
-        }
-        (agy_cfg_dir / "settings.json").write_text(json.dumps(agy_settings, indent=2), encoding="utf-8")
-        env.update({
-            "GEMINI_API_KEY": run_tok,
-            "GOOGLE_GEMINI_BASE_URL": base,
-        })
+    if harness == "goose":
+        exe = Path(manifest.get("goose", {}).get("binary") or (HARNESS_ROOT / "goose" / "bin" / "goose.exe"))
+        is_claude = model.lower().startswith("claude")
+        goose_cfg = env_dir / "goose-config"
+        goose_cfg.mkdir(parents=True, exist_ok=True)
+        env["GOOSE_DISABLE_TELEMETRY"] = "1"
+        env["GOOSE_DISABLE_SESSION_NAMING"] = "1"
+        env["GOOSE_MODE"] = "auto"
+        env["GOOSE_MODEL"] = model
+        env["GOOSE_PATH_ROOT"] = str(goose_cfg)
+        if is_claude:
+            env.update({
+                "GOOSE_PROVIDER": "anthropic",
+                "ANTHROPIC_HOST": base,
+                "ANTHROPIC_API_KEY": run_tok,
+            })
+            wire_proto = "anthropic_messages"
+        else:
+            env.update({
+                "GOOSE_PROVIDER": "openai",
+                "OPENAI_HOST": base,
+                "OPENAI_BASE_PATH": "v1/chat/completions",
+                "OPENAI_API_KEY": run_tok,
+            })
+            wire_proto = "openai_chat"
         cmd = [
             str(exe),
-            "-p", prompt,
-            "--model", "htmustc-bench",
+            "run",
+            "--no-session",
+            "--no-profile",
+            "--with-builtin", "developer",
+            "--max-turns", "25",
+            "--stats",
+            "-q",
             "--output-format", "stream-json",
-            "--dangerously-skip-permissions",
-            "--disable-slash-commands",
-            "--print-timeout", f"{timeout_s}s",
+            "-i", "-",
         ]
         return CleanRoomLaunch(
             harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
-            stdin_text=None, harness_root_exe=exe.name, wire_protocol="gemini_v1beta_to_oai",
+            stdin_text=prompt, harness_root_exe=exe.name, wire_protocol=wire_proto,
         )
 
+    if harness == "omp":
+        exe = Path(manifest.get("omp", {}).get("binary") or (HARNESS_ROOT / "omp" / "bin" / "omp.cmd"))
+        omp_dir = env_dir / "omp-agent"
+        omp_dir.mkdir(parents=True, exist_ok=True)
+        is_claude = model.lower().startswith("claude")
+        api_kind = "anthropic-messages" if is_claude else "openai-responses"
+        base_url = base if is_claude else f"{base}/v1"
+        models_yml = (
+            "providers:\n"
+            "  htmustc:\n"
+            f"    baseUrl: {base_url}\n"
+            f"    apiKey: {run_tok}\n"
+            f"    api: {api_kind}\n"
+            "    authHeader: true\n"
+            "    models:\n"
+            f"      - id: {model}\n"
+            f"        name: {model}\n"
+            "        reasoning: true\n"
+            "        contextWindow: 1000000\n"
+            "        maxTokens: 32768\n"
+        )
+        (omp_dir / "models.yml").write_text(models_yml, encoding="utf-8", newline="\n")
+        env["PI_CODING_AGENT_DIR"] = str(omp_dir)
+        cmd = [
+            str(exe),
+            "--no-session",
+            "--no-lsp",
+            "--no-context-files",
+            "--model", f"htmustc/{model}",
+            "-p",
+            "--mode", "json",
+        ]
+        return CleanRoomLaunch(
+            harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
+            stdin_text=prompt, harness_root_exe="bun.exe",
+            wire_protocol="anthropic_messages" if is_claude else "openai_responses",
+        )
+
+    if harness == "dsh":
+        exe = Path(manifest.get("dsh", {}).get("binary") or (HARNESS_ROOT / "dsh" / "node_modules" / ".bin" / "dsh.cmd"))
+        dsh_home = env_dir / "dsh-home"
+        dsh_home.mkdir(parents=True, exist_ok=True)
+        is_claude = model.lower().startswith("claude")
+        api_kind = "anthropic-messages" if is_claude else "openai-responses"
+        base_url = base if is_claude else f"{base}/v1"
+        patch_path = env_dir / "dsh-patch.yml"
+        patch_yml = (
+            "- id: session-telemetry-otel\n"
+            "  disabled: true\n"
+            "- id: session-title-llm\n"
+            "  disabled: true\n"
+            "- id: llm-pi-ai\n"
+            "  config:\n"
+            "    providers:\n"
+            "      htmustc:\n"
+            "        displayName: htmustc\n"
+            "        apiKeyEnv: HTMUSTC_API_KEY\n"
+            f"        api: {api_kind}\n"
+            f"        baseURL: {base_url}\n"
+            "        models:\n"
+            f"          - id: {model}\n"
+            f"            name: {model}\n"
+            "            contextWindow: 1000000\n"
+            "- id: agent-default-model\n"
+            "  config:\n"
+            "    provider: htmustc\n"
+            f"    model: {model}\n"
+        )
+        patch_path.write_text(patch_yml, encoding="utf-8", newline="\n")
+        env.update({
+            "DSH_HOME": str(dsh_home),
+            "DSH_TELEMETRY_MODE": "OFF",
+            "DSH_TELEMETRY_OTLP_URL": "http://127.0.0.1:1",
+            "HTMUSTC_API_KEY": run_tok,
+        })
+        cmd = [
+            str(exe),
+            "--profile", "headless",
+            "--patch", str(patch_path),
+            "--json",
+            "--permission-mode", "danger-full-access",
+            "--approval-policy", "never",
+            "-",
+        ]
+        return CleanRoomLaunch(
+            harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
+            stdin_text=prompt, harness_root_exe="node.exe",
+            wire_protocol="anthropic_messages" if is_claude else "openai_responses",
+        )
+
+    if harness == "agy":
+        raise ValueError("AGY CLI is strictly excluded from Suite v5 / live benchmark runs.")
     if harness == "omnia":
         exe = omnia_bin or Path(r"D:\OmniaData\build\omnia-rust-workspace\release\omnia.exe")
         omnia_home = env_dir / "omnia-home"

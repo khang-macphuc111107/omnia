@@ -1,0 +1,18 @@
+{
+  "id": "mem_03_cross_session_prefs",
+  "axis": 12,
+  "axis_name": "Long-Horizon Memory & Context Compaction",
+  "title": "Cross-session memory synthesis & incident constraint enforcement",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "csv"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "memory_state",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

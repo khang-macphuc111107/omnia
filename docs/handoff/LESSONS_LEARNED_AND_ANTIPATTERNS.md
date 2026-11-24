@@ -19,11 +19,11 @@ This postmortem handbook distills **16 costly failure modes and architectural le
 | 9 | Mutating source Git trees during "read-only" checks or pushing unauthorized side branches | Never run side-effecting `git` commands on reference trees; open SQLite with `?mode=ro` / `?immutable=1` (and check `wal.st_size > 0`); verify `khang-macphuc111107`. |
 | 10 | Hardcoding models, regex-blocking `gpt` model IDs, or stalling on HTTP 429 walls | Route through Rust `DynamicProviderRouter` (`rust/omnia-routing/src/lib.rs`) with explicit `QuotaState`, atomic reservations, emergency reserve, and circuit breakers. |
 | 11 | Mixing inline paste and attachment-tray semantics or duplicating binary blobs | Preserve dual-mode semantics (`inline-at-caret` vs `tray`, `Esc` -> cancel zero-mutation in `rich_composer.rs`) backed by one SHA-256 `payload_id`. |
-| 12 | Allowing transient chat credentials, browser cookies, or API keys near exports/repos or realistic test tokens failing scanners | Scrub via `rust/omnia-core/src/redactor.rs` + `audit.py --secret-scope all`; use unmistakable dummy/RFC-2606 hosts/tokens in fixtures; push via OS Git Credential Manager. |
-| 13 | In-tree builds or parallel compiler lock collisions (`target/`, shared build locks) | Build strictly out-of-source (`D:\OmniaData\build\omnia-rust-workspace`) and serialize workspace-wide `cargo` invocations across disjoint-ownership lanes. |
+| 12 | Allowing transient chat credentials, browser cookies, or API keys near exports/repos or realistic test tokens failing scanners | Scrub via `rust/omnia-core/src/redactor.rs` + `audit.py --secret-scope all`; use unmistakable dummy/RFC-2606 hosts/tokens in fixtures (avoid `"Test"`/`"abc123"`/`user:pass@non-example`); push via OS Git Credential Manager. |
+| 13 | In-tree builds or parallel compiler lock collisions (`target/`, shared build locks) | Build strictly out-of-source (`D:\OmniaData\build\omnia-rust-workspace`, UI `D:\OmniaData\build\ui-dist`) and serialize workspace-wide `cargo` invocations via `@build-gate`. |
 | 14 | Traversing NTFS junctions during disk audits or stalling for 20+ min deleting millions of cached files | Check `FILE_ATTRIBUTE_REPARSE_POINT (0x400)` before recursing, and purge multi-million-file cache/backup dirs via `robocopy <empty> <dir> /MIR /XJ /MT:32` + `rd /s /q`. |
-| 15 | Cross-host skill drift (`$HOME` quirk on Windows Antigravity, trailing whitespace, or mid-audit `/learn` edits) | Keep all `19` repo skills (`13` curated + `6` `kdense-*`) byte-identical (`LF`, `0` trailing spaces) across Omnia, Codex, and `~/.agents` (`validate_skills.py --strict-all-skills` exit `0`). |
-| 16 | Running `qa-*.ps1` under PS 5.1, breaking offline `serde_derive`, stripping AdGuard cookies naively, or mixing short probe vs chat timeouts | Always run QA under PowerShell 7 (`pwsh`); implement manual `Serialize`/`Deserialize` when `serde_derive` is absent offline; coalesce RFC 9110 multi-`Cookie` headers cleanly (`; `) while preserving smuggling checks; keep short `~3s` probes separate from `65,000 ms` chat timeouts. |
+| 15 | Cross-host skill drift (`$HOME` / dual-drive `E:\Users\<user>` quirk on Windows, trailing whitespace, or >64-char `short_description`) | Keep all `19` repo skills (`13` curated + `6` `kdense-*`) byte-identical (`LF`, `0` trailing spaces, `short_description <= 64`) across Omnia, `~/.codex/skills`, and `~/.agents/skills` (`validate_skills.py --strict-all-skills` exit `0`). |
+| 16 | Running `qa-*.ps1` under PS 5.1, CRLF drift, stripping AdGuard cookies naively, or mixing short probe vs chat timeouts | Always run QA under PowerShell 7 (`pwsh`); enforce `text eol=lf` in `.gitattributes`; coalesce RFC 9110 multi-`Cookie` headers cleanly (`; `) while preserving smuggling checks; keep short `~3s` probes separate from `65,000 ms` chat timeouts. |
 
 ---
 
@@ -33,9 +33,9 @@ This postmortem handbook distills **16 costly failure modes and architectural le
 - **Provenance**: Codex `01a1bce9` Prompts `#2`, `#21`, `#94`–`#100`, `#115`, `#121`; Claude `be2beaab`, `308b37b9`; Wave 4 `#74`; Wave 5 `Steer #14`.
 - **What Went Wrong**: Parallel agents previously dumped build directories, `.tmp-*` probe scripts, `__pycache__/`, screenshots, beside-source `.bak`/copy files, and nested worktree clones directly inside `D:\Omnia`.
 - **Permanent Rule**:
-  1. `D:\Omnia` is **strictly** for tracked Rust/UI/tool/packaging source, `Cargo.toml` / `Cargo.lock`, `19` `.agents/skills/*`, and canonical docs (`docs/{workspace,ui-direction,handoff}`).
+  1. `D:\Omnia` is **strictly** for tracked Rust/UI/tool/packaging source, `Cargo.toml` / `Cargo.lock`, `.gitattributes`, `19` `.agents/skills/*`, and canonical docs (`docs/{workspace,ui-direction,architecture,handoff}`).
   2. Set `$env:CARGO_TARGET_DIR = 'D:\OmniaData\build\omnia-rust-workspace'` and always run Python with `python -B` (`0` `__pycache__`).
-  3. Store all runtime DBs, QA screenshots, UI candidate bundles, backups (`pre-full-rust-20261115/`), research clones, and worktrees under `D:\OmniaData\`.
+  3. Store all runtime DBs, QA screenshots, UI candidate/dist bundles (`D:\OmniaData\build\ui-dist`), backups (`pre-full-rust-20261115/`), quarantined caches (`roaming-20261124/`), research clones, and worktrees under `D:\OmniaData\`.
 
 ---
 

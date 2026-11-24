@@ -1055,6 +1055,8 @@ def run_full_audit(
 def format_markdown_report(receipt: dict[str, Any]) -> str:
     """Render a concise, evidence-grounded Markdown parity and hygiene report from a receipt."""
     summary = receipt["summary"]
+    peers = [root for label, root in receipt["cross_host_parity"]["root_summaries"].items() if label != "workspace"]
+    available = sum(root["exists"] for root in peers)
     lines: list[str] = [
         "# Omnia Skill Parity & UTF-8 Hygiene Report",
         "",
@@ -1065,7 +1067,9 @@ def format_markdown_report(receipt: dict[str, Any]) -> str:
         f"- **Staged Corrected `kdense-*` Skills Valid**: `{summary['staged_kdense_valid']}/{summary['staged_kdense_total']}`",
         f"- **Workspace `skills.json` Valid**: `{summary['workspace_skills_json_valid']}`",
         f"- **Global `skills.json` Valid**: `{summary['global_skills_json_valid']}`",
-        f"- **Cross-Host Drift / Missing Mirrors**: `{summary['cross_host_drift_count']}` drift, `{summary['cross_host_missing_mirror_count']}` missing",
+        f"- **Cross-Host Coverage**: {available}/{len(peers)} configured peer roots available",
+        (f"- **Available Peer Roots Only**: {summary['cross_host_drift_count']} drift, {summary['cross_host_missing_mirror_count']} missing skills"
+         if available else "- **Cross-Host Parity**: not measured (no peer root available)"),
         f"- **Workspace Docs Hygiene (`docs/workspace/*.md`)**: clean=`{summary['docs_workspace_clean']}`, mojibake_findings=`{summary['docs_workspace_mojibake_count']}`",
         "",
         f"## 1. Repository Skills Audit (`{receipt['skills_root']}`)",
@@ -1214,18 +1218,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_peer_profile_path(explicit: Path, default_path: Path, rel_parts: tuple[str, ...]) -> Path:
+    """Resolve user profile skill roots across alternate Windows drive mounts (e.g. E:/Users/<user>)."""
+    if explicit != default_path or explicit.exists():
+        return explicit
+    home_name = Path.home().name
+    for drive in ("E", "D", "C"):
+        candidate = Path(f"{drive}:/Users/{home_name}").joinpath(*rel_parts)
+        if candidate.exists():
+            return candidate
+    return explicit
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     docs_dir = args.docs_dir if args.docs_dir is not None else (args.workspace_root / "docs" / "workspace")
+    global_skills_json = _resolve_peer_profile_path(
+        args.global_skills_json, DEFAULT_GLOBAL_SKILLS_JSON, (".gemini", "config", "skills.json")
+    )
+    codex_skills = _resolve_peer_profile_path(
+        args.codex_skills, DEFAULT_CODEX_SKILLS, (".codex", "skills")
+    )
+    user_agents_skills = _resolve_peer_profile_path(
+        args.user_agents_skills, DEFAULT_USER_AGENTS_SKILLS, (".agents", "skills")
+    )
 
     receipt = run_full_audit(
         workspace_root=args.workspace_root,
         skills_root=args.skills_root,
         skills_json=args.skills_json,
-        global_skills_json=args.global_skills_json,
-        codex_skills=args.codex_skills,
-        user_agents_skills=args.user_agents_skills,
+        global_skills_json=global_skills_json,
+        codex_skills=codex_skills,
+        user_agents_skills=user_agents_skills,
         docs_dir=docs_dir if docs_dir.is_dir() else None,
         staged_kdense_dir=args.staged_kdense_dir,
         require_openai_yaml=not args.no_openai_yaml,
@@ -1240,9 +1265,20 @@ def main(argv: list[str] | None = None) -> int:
 
     s = receipt["summary"]
     if args.strict_all_skills:
+        global_ok = s["global_skills_json_valid"] in (True, None)
+        peers_available = any(
+            root["exists"]
+            for label, root in receipt["cross_host_parity"]["root_summaries"].items()
+            if label != "workspace"
+        )
+        parity_ok = (not peers_available) or (
+            s["cross_host_drift_count"] == 0 and s["cross_host_missing_mirror_count"] == 0
+        )
         ok = (
             s["invalid_skills"] == 0
             and bool(s["workspace_skills_json_valid"])
+            and global_ok
+            and parity_ok
             and (s["docs_workspace_clean"] in (True, None))
         )
         return 0 if ok else 1

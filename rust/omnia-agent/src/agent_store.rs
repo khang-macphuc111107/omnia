@@ -76,6 +76,27 @@ pub struct ModelEntryConfig {
     pub max_tokens: u64,
     #[serde(default)]
     pub cost: ModelCost,
+    /// Per-model wire dialect override (OMP `api:` field). Empty = inherit the provider `api`.
+    #[serde(default)]
+    pub api: String,
+    /// Per-model credential (OMP `apiKey:` field): a literal secret or an ENV var name.
+    /// Empty = inherit provider/env key resolution.
+    #[serde(default)]
+    pub api_key: String,
+    /// Per-model reasoning-effort capability (OMP `thinking:` block).
+    #[serde(default)]
+    pub thinking: Option<ModelThinkingConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelThinkingConfig {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    #[serde(default)]
+    pub default_level: String,
 }
 
 fn default_context_window() -> u64 {
@@ -217,20 +238,27 @@ impl AgentStore {
 
     /// Run a passive WAL checkpoint.
     pub fn checkpoint(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let _ = conn.exec_batch("PRAGMA wal_checkpoint(PASSIVE);");
         Ok(())
     }
 
     pub fn load_merkle_cache(&self, workspace_hash: &str) -> Result<Vec<CachedMerkleRow>> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT rel_path, size_bytes, mtime_secs, mtime_nanos, blake3_hex
                  FROM merkle_cache WHERE workspace_hash = ?1",
             )
             .map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(1, workspace_hash).map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(1, workspace_hash)
+            .map_err(|e| anyhow!("{e}"))?;
         let mut rows = Vec::new();
         while matches!(stmt.step().map_err(|e| anyhow!("{e}"))?, StepStatus::Row) {
             rows.push(CachedMerkleRow {
@@ -253,7 +281,10 @@ impl AgentStore {
         if upserts.is_empty() && removed_paths.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let tx = conn.begin_immediate().map_err(|e| anyhow!("{e}"))?;
         {
             if !removed_paths.is_empty() {
@@ -263,7 +294,9 @@ impl AgentStore {
                 for rem in removed_paths {
                     del_stmt.reset().map_err(|e| anyhow!("{e}"))?;
                     del_stmt.clear_bindings().map_err(|e| anyhow!("{e}"))?;
-                    del_stmt.bind_text(1, workspace_hash).map_err(|e| anyhow!("{e}"))?;
+                    del_stmt
+                        .bind_text(1, workspace_hash)
+                        .map_err(|e| anyhow!("{e}"))?;
                     del_stmt.bind_text(2, rem).map_err(|e| anyhow!("{e}"))?;
                     let _ = del_stmt.step().map_err(|e| anyhow!("{e}"))?;
                 }
@@ -283,12 +316,24 @@ impl AgentStore {
                 for row in upserts {
                     up_stmt.reset().map_err(|e| anyhow!("{e}"))?;
                     up_stmt.clear_bindings().map_err(|e| anyhow!("{e}"))?;
-                    up_stmt.bind_text(1, workspace_hash).map_err(|e| anyhow!("{e}"))?;
-                    up_stmt.bind_text(2, &row.rel_path).map_err(|e| anyhow!("{e}"))?;
-                    up_stmt.bind_int64(3, row.size_bytes as i64).map_err(|e| anyhow!("{e}"))?;
-                    up_stmt.bind_int64(4, row.mtime_secs).map_err(|e| anyhow!("{e}"))?;
-                    up_stmt.bind_int64(5, i64::from(row.mtime_nanos)).map_err(|e| anyhow!("{e}"))?;
-                    up_stmt.bind_text(6, &row.blake3_hex).map_err(|e| anyhow!("{e}"))?;
+                    up_stmt
+                        .bind_text(1, workspace_hash)
+                        .map_err(|e| anyhow!("{e}"))?;
+                    up_stmt
+                        .bind_text(2, &row.rel_path)
+                        .map_err(|e| anyhow!("{e}"))?;
+                    up_stmt
+                        .bind_int64(3, row.size_bytes as i64)
+                        .map_err(|e| anyhow!("{e}"))?;
+                    up_stmt
+                        .bind_int64(4, row.mtime_secs)
+                        .map_err(|e| anyhow!("{e}"))?;
+                    up_stmt
+                        .bind_int64(5, i64::from(row.mtime_nanos))
+                        .map_err(|e| anyhow!("{e}"))?;
+                    up_stmt
+                        .bind_text(6, &row.blake3_hex)
+                        .map_err(|e| anyhow!("{e}"))?;
                     let _ = up_stmt.step().map_err(|e| anyhow!("{e}"))?;
                 }
             }
@@ -305,7 +350,10 @@ impl AgentStore {
         if blake3_hexes.is_empty() {
             return Ok(out);
         }
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT blake3_hex, language, ast_json FROM ast_symbol_cache WHERE blake3_hex = ?1",
@@ -332,7 +380,10 @@ impl AgentStore {
             return Ok(());
         }
         let now = Utc::now().timestamp();
-        let mut conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let tx = conn.begin_immediate().map_err(|e| anyhow!("{e}"))?;
         {
             let mut stmt = tx
@@ -348,7 +399,8 @@ impl AgentStore {
             for r in rows {
                 stmt.reset().map_err(|e| anyhow!("{e}"))?;
                 stmt.clear_bindings().map_err(|e| anyhow!("{e}"))?;
-                stmt.bind_text(1, &r.blake3_hex).map_err(|e| anyhow!("{e}"))?;
+                stmt.bind_text(1, &r.blake3_hex)
+                    .map_err(|e| anyhow!("{e}"))?;
                 stmt.bind_text(2, &r.language).map_err(|e| anyhow!("{e}"))?;
                 stmt.bind_text(3, &r.ast_json).map_err(|e| anyhow!("{e}"))?;
                 stmt.bind_int64(4, now).map_err(|e| anyhow!("{e}"))?;
@@ -366,7 +418,10 @@ impl AgentStore {
         raw_size: usize,
     ) -> Result<()> {
         let now = Utc::now().timestamp();
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         {
             let mut stmt = conn
                 .prepare(
@@ -375,15 +430,20 @@ impl AgentStore {
                 )
                 .map_err(|e| anyhow!("{e}"))?;
             stmt.bind_text(1, blake3_hex).map_err(|e| anyhow!("{e}"))?;
-            stmt.bind_blob(2, compressed_bytes).map_err(|e| anyhow!("{e}"))?;
-            stmt.bind_int64(3, raw_size as i64).map_err(|e| anyhow!("{e}"))?;
+            stmt.bind_blob(2, compressed_bytes)
+                .map_err(|e| anyhow!("{e}"))?;
+            stmt.bind_int64(3, raw_size as i64)
+                .map_err(|e| anyhow!("{e}"))?;
             stmt.bind_int64(4, now).map_err(|e| anyhow!("{e}"))?;
             let _ = stmt.step().map_err(|e| anyhow!("{e}"))?;
         }
         let mut total_stmt = conn
             .prepare("SELECT COALESCE(SUM(LENGTH(compressed_bytes)), 0) FROM checkpoint_blobs")
             .map_err(|e| anyhow!("{e}"))?;
-        let total = if matches!(total_stmt.step().map_err(|e| anyhow!("{e}"))?, StepStatus::Row) {
+        let total = if matches!(
+            total_stmt.step().map_err(|e| anyhow!("{e}"))?,
+            StepStatus::Row
+        ) {
             total_stmt.column_int64(0).map_err(|e| anyhow!("{e}"))?
         } else {
             0
@@ -402,7 +462,10 @@ impl AgentStore {
     }
 
     pub fn get_checkpoint_blob(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare("SELECT compressed_bytes FROM checkpoint_blobs WHERE blake3_hex = ?1")
             .map_err(|e| anyhow!("{e}"))?;
@@ -421,7 +484,10 @@ impl AgentStore {
         manifest_json: &str,
     ) -> Result<()> {
         let now = Utc::now().timestamp();
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "INSERT INTO turn_checkpoints (session_id, turn_idx, manifest_json, created_at)
@@ -432,15 +498,20 @@ impl AgentStore {
             )
             .map_err(|e| anyhow!("{e}"))?;
         stmt.bind_text(1, session_id).map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_int64(2, i64::from(turn_idx)).map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(3, manifest_json).map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_int64(2, i64::from(turn_idx))
+            .map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(3, manifest_json)
+            .map_err(|e| anyhow!("{e}"))?;
         stmt.bind_int64(4, now).map_err(|e| anyhow!("{e}"))?;
         let _ = stmt.step().map_err(|e| anyhow!("{e}"))?;
         Ok(())
     }
 
     pub fn load_turn_checkpoints(&self, session_id: &str) -> Result<Vec<(u32, String)>> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT turn_idx, manifest_json FROM turn_checkpoints
@@ -459,7 +530,10 @@ impl AgentStore {
 
     /// Return the most recent session ID stored in `turn_checkpoints`.
     pub fn latest_checkpoint_session(&self) -> Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare("SELECT session_id FROM turn_checkpoints ORDER BY created_at DESC LIMIT 1")
             .map_err(|e| anyhow!("{e}"))?;
@@ -481,7 +555,10 @@ impl AgentStore {
         let now = Utc::now().timestamp();
         let sym_short: String = symptom.chars().take(240).collect();
         let fix_short: String = verified_fix.chars().take(400).collect();
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "INSERT INTO workspace_playbook
@@ -493,8 +570,10 @@ impl AgentStore {
                     last_used_at = excluded.last_used_at",
             )
             .map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(1, workspace_hash).map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(2, error_fingerprint).map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(1, workspace_hash)
+            .map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(2, error_fingerprint)
+            .map_err(|e| anyhow!("{e}"))?;
         stmt.bind_text(3, error_kind).map_err(|e| anyhow!("{e}"))?;
         stmt.bind_text(4, &sym_short).map_err(|e| anyhow!("{e}"))?;
         stmt.bind_text(5, &fix_short).map_err(|e| anyhow!("{e}"))?;
@@ -508,7 +587,10 @@ impl AgentStore {
         workspace_hash: &str,
         error_fingerprint: &str,
     ) -> Result<Option<PlaybookEntry>> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, workspace_hash, error_fingerprint, error_kind, symptom, verified_fix,
@@ -518,8 +600,10 @@ impl AgentStore {
                    AND helpful_count > harmful_count",
             )
             .map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(1, workspace_hash).map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(2, error_fingerprint).map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(1, workspace_hash)
+            .map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(2, error_fingerprint)
+            .map_err(|e| anyhow!("{e}"))?;
         if matches!(stmt.step().map_err(|e| anyhow!("{e}"))?, StepStatus::Row) {
             Ok(Some(PlaybookEntry {
                 id: stmt.column_int64(0).map_err(|e| anyhow!("{e}"))?,
@@ -542,15 +626,20 @@ impl AgentStore {
         workspace_hash: &str,
         error_fingerprint: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("agent store mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("agent store mutex poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "UPDATE workspace_playbook SET harmful_count = harmful_count + 1
                  WHERE workspace_hash = ?1 AND error_fingerprint = ?2",
             )
             .map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(1, workspace_hash).map_err(|e| anyhow!("{e}"))?;
-        stmt.bind_text(2, error_fingerprint).map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(1, workspace_hash)
+            .map_err(|e| anyhow!("{e}"))?;
+        stmt.bind_text(2, error_fingerprint)
+            .map_err(|e| anyhow!("{e}"))?;
         let _ = stmt.step().map_err(|e| anyhow!("{e}"))?;
         Ok(())
     }
@@ -690,14 +779,18 @@ mod tests {
             .load_ast_cache_batch(&["aa".repeat(32), "cc".repeat(32)])
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits.get(&"aa".repeat(32)).unwrap().ast_json, ast_row.ast_json);
+        assert_eq!(
+            hits.get(&"aa".repeat(32)).unwrap().ast_json,
+            ast_row.ast_json
+        );
 
         db.put_checkpoint_blob("blob1", b"compressed", 64).unwrap();
         assert_eq!(
             db.get_checkpoint_blob("blob1").unwrap().as_deref(),
             Some(&b"compressed"[..])
         );
-        db.save_turn_checkpoint("sess-1", 2, r#"{"turn":2}"#).unwrap();
+        db.save_turn_checkpoint("sess-1", 2, r#"{"turn":2}"#)
+            .unwrap();
         assert_eq!(db.load_turn_checkpoints("sess-1").unwrap().len(), 1);
         assert_eq!(
             db.latest_checkpoint_session().unwrap().as_deref(),

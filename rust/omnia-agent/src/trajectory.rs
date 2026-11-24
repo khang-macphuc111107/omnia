@@ -84,10 +84,8 @@ mod tests {
 
     #[test]
     fn writes_append_only_trajectory_jsonl() {
-        let tmp = std::env::temp_dir().join(format!(
-            "omni_traj_test_{}.jsonl",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("omni_traj_test_{}.jsonl", uuid::Uuid::new_v4()));
         let rec = TrajectoryRecorder::new("sess-1", Some(tmp.clone()));
         rec.record(1, "turn_start", json!({ "model": "gemini-3.8-flash" }));
         rec.record_tool_call(1, "workspace_map", false, 3);

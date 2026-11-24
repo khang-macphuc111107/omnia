@@ -26,6 +26,7 @@ import os
 import re
 import socketserver
 import ssl
+import statistics
 import sys
 import threading
 import time
@@ -38,6 +39,30 @@ from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_UPSTREAM_BASE = "https://htmustc.id.vn"
 
+
+def _covered_inference_ns(records: List[Dict[str, Any]], started: int,
+                          start_ns: int, end_ns: int) -> Optional[int]:
+    """Length of the union of inference intervals inside [start_ns, end_ns)."""
+    # Each handler allocates one sequence number before dispatch and records once.
+    # An unrecorded handler may be inference, even if all completed calls were not.
+    if len(records) != started:
+        return None
+    intervals = []
+    for row in records:
+        if row.get("is_inference") is False:
+            continue
+        begin, end = row.get("t_req_start_ns"), row.get("t_stream_end_ns")
+        if row.get("is_inference") is not True or type(begin) is not int or type(end) is not int or end < begin:
+            return None
+        left, right = max(start_ns, begin), min(end_ns, end)
+        if left < right:
+            intervals.append((left, right))
+    cursor, covered = start_ns, 0
+    for left, right in sorted(intervals):
+        if right > cursor:
+            covered += right - max(cursor, left)
+            cursor = right
+    return covered
 
 def _normalize_usage(obj: dict) -> Dict[str, Any]:
     """Extract canonical token counters across OpenAI Chat, Responses, Anthropic & Gemini shapes."""
@@ -131,6 +156,7 @@ def _finalize_usage(acc: Dict[str, Any]) -> Dict[str, int]:
         prompt_total = raw_in
         uncached = max(0, raw_in - cache_r - cache_w)
     return {
+        "usage_complete": "raw_input" in acc and "output" in acc,
         "prompt_total": prompt_total,
         "uncached_input": uncached,
         "cache_read": cache_r,
@@ -370,15 +396,20 @@ class ProxyState:
                 with open(self.log_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self, wall_window_ns: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
         with self.lock:
             recs = list(self.records)
+            started = self.seq
         llm_recs = [r for r in recs if r.get("is_inference")]
+        # Records arrive on completion, which need not match request start order.
+        llm_recs.sort(key=lambda r: r["t_req_start_ns"] if type(r.get("t_req_start_ns")) is int else -1)
         total_req = len(llm_recs)
+        missing_usage = sum(r.get("usage_complete") is not True for r in llm_recs)
         err_req = sum(1 for r in llm_recs if int(r.get("http_status", 0)) >= 400 or r.get("truncated_sse_eof"))
         fault_inj = sum(1 for r in llm_recs if r.get("is_fault_injected"))
-        total_llm_wait_ms = sum(float(r.get("wire_llm_wait_ms", 0.0)) for r in llm_recs)
-        first_ttft = next((r["wire_ttft_ms"] for r in llm_recs if r.get("wire_ttft_ms") is not None), None)
+        waits = [r.get("wire_llm_wait_ms") for r in llm_recs]
+        total_llm_wait_ms = None if None in waits or len(recs) != started else round(sum(waits), 2)
+        first_ttft = llm_recs[0].get("wire_ttft_ms") if llm_recs else None
         ttfts = [r["wire_ttft_ms"] for r in llm_recs if r.get("wire_ttft_ms") is not None]
         prompt_total = sum(int(r.get("prompt_total", 0)) for r in llm_recs)
         uncached = sum(int(r.get("uncached_input", 0)) for r in llm_recs)
@@ -404,14 +435,21 @@ class ProxyState:
         )
         wire_gen_tps = (non_burst_out / (non_burst_gen_ms / 1000.0)) if non_burst_gen_ms > 10 else 0.0
         eff_cost = 1.0 * uncached + 0.1 * cache_r + 1.25 * cache_w + 5.0 * out_tok
+        window = {}
+        if wall_window_ns is not None:
+            start_ns, end_ns = wall_window_ns
+            covered = _covered_inference_ns(recs, started, start_ns, end_ns)
+            window = {"wire_wall_window_ns": wall_window_ns, "wire_window_inference_ns": covered,
+                      "wire_window_uncovered_ms": (end_ns - start_ns - covered) / 1e6 if covered is not None else None}
         return {
+            **window,
             "wire_requests": total_req,
             "wire_total_http_calls": len(recs),
             "wire_errors": err_req,
             "wire_faults_injected": fault_inj,
             "wire_first_ttft_ms": round(first_ttft, 2) if first_ttft is not None else None,
-            "wire_median_ttft_ms": round(sorted(ttfts)[len(ttfts) // 2], 2) if ttfts else None,
-            "wire_total_llm_wait_ms": round(total_llm_wait_ms, 2),
+            "wire_median_ttft_ms": round(statistics.median(ttfts), 2) if ttfts else None,
+            "wire_total_llm_wait_ms": total_llm_wait_ms,
             "wire_gen_tokens_per_sec": round(wire_gen_tps, 2),
             "wire_prompt_total": prompt_total,
             "wire_uncached_input": uncached,
@@ -419,7 +457,8 @@ class ProxyState:
             "wire_cache_write": cache_w,
             "wire_output_tokens": out_tok,
             "wire_reasoning_tokens": reason_tok,
-            "wire_total_tokens": prompt_total + out_tok,
+            "wire_requests_missing_usage": missing_usage,
+            "wire_total_tokens": None if missing_usage else prompt_total + out_tok,
             "wire_turn1_prompt_tokens": turn1_prompt,
             "wire_kv_cache_hit_rate": round(kv_hit_all, 4),
             "wire_kv_cache_hit_rate_ge2": round(kv_hit_ge2, 4),
@@ -427,8 +466,8 @@ class ProxyState:
             "wire_truncated_eof_count": trunc_count,
             "wire_tool_calls_emitted": tool_calls_wire,
             "wire_malformed_tool_json": malformed_tools,
-            "wire_effective_cost_units": round(eff_cost, 1),
-            "wire_first_req_perf_ns": llm_recs[0]["t_req_start_ns"] if llm_recs else None,
+            "wire_effective_cost_units": None if missing_usage else round(eff_cost, 1),
+            "wire_first_req_perf_ns": llm_recs[0].get("t_req_start_ns") if llm_recs else None,
         }
 
 
@@ -501,19 +540,26 @@ def _make_handler(state: ProxyState):
             is_gemini = "/v1beta/" in path
             is_anthropic = "/messages" in path
             is_responses = "/responses" in path
+            if urllib.parse.urlsplit(path).path.rstrip("/").endswith("/models"):
+                state.record({
+                    "seq": seq, "run_id": state.run_id, "harness": state.harness, "task_id": state.task_id,
+                    "wire_protocol": "mock", "endpoint": path, "is_inference": False, "http_status": 200,
+                    "t_req_start_ns": t0_ns,
+                })
+                self._send_json(200, {"object": "list", "data": [{"id": "mock-model", "object": "model"}]})
+                return
             with state.lock:
                 state.mock_turn += 1
                 turn = state.mock_turn
             state.record({
                 "seq": seq, "run_id": state.run_id, "harness": state.harness, "task_id": state.task_id,
                 "wire_protocol": "mock", "endpoint": path, "is_inference": True, "http_status": 200,
-                "t_req_start_ns": t0_ns, "wire_ttft_ms": 0.5, "wire_llm_wait_ms": 1.0,
+                "t_req_start_ns": t0_ns, "t_stream_end_ns": None,  # recorded before mock response write
+                "wire_ttft_ms": None, "wire_llm_wait_ms": None,
                 "prompt_total": 100, "uncached_input": 100, "cache_read": 0, "cache_write": 0,
+                "usage_complete": True,
                 "output_tokens": 5, "reasoning_tokens": 0,
             })
-            if path.endswith("/models"):
-                self._send_json(200, {"object": "list", "data": [{"id": "mock-model", "object": "model"}]})
-                return
             if is_gemini:
                 resp = {
                     "candidates": [{"content": {"role": "model", "parts": [{"text": "OK"}]}, "finishReason": "STOP", "index": 0}],
@@ -547,19 +593,55 @@ def _make_handler(state: ProxyState):
                 return
             if is_responses:
                 ev1 = {"type": "response.created", "response": {"id": "resp_mock", "status": "in_progress"}}
-                ev2 = {"type": "response.output_text.delta", "delta": "OK"}
+                ev_item_add = {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {"id": "msg_mock", "type": "message", "status": "in_progress", "role": "assistant", "content": []},
+                }
+                ev_part_add = {
+                    "type": "response.content_part.added",
+                    "item_id": "msg_mock",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": []},
+                }
+                ev2 = {
+                    "type": "response.output_text.delta",
+                    "item_id": "msg_mock",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": "OK",
+                }
+                ev_text_done = {
+                    "type": "response.output_text.done",
+                    "item_id": "msg_mock",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": "OK",
+                }
+                ev_part_done = {
+                    "type": "response.content_part.done",
+                    "item_id": "msg_mock",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "OK", "annotations": []},
+                }
+                ev_item_done = {
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": {"id": "msg_mock", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "OK", "annotations": []}]},
+                }
                 ev3 = {
                     "type": "response.completed",
                     "response": {
                         "id": "resp_mock", "status": "completed",
-                        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]}],
+                        "output": [{"id": "msg_mock", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "OK", "annotations": []}]}],
                         "usage": {"input_tokens": 100, "output_tokens": 5, "total_tokens": 105},
                     },
                 }
-                payload = (
-                    f"event: response.created\ndata: {json.dumps(ev1)}\n\n"
-                    f"event: response.output_text.delta\ndata: {json.dumps(ev2)}\n\n"
-                    f"event: response.completed\ndata: {json.dumps(ev3)}\n\n"
+                payload = "".join(
+                    f"event: {ev['type']}\ndata: {json.dumps(ev)}\n\n"
+                    for ev in (ev1, ev_item_add, ev_part_add, ev2, ev_text_done, ev_part_done, ev_item_done, ev3)
                 ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -606,17 +688,20 @@ def _make_handler(state: ProxyState):
             )
             extra = {"Retry-After": "2"} if code == 429 else {}
             self._send_json(code, err_body, extra)
+            end_ns = time.perf_counter_ns()
             state.record({
                 "seq": seq, "run_id": state.run_id, "harness": state.harness, "task_id": state.task_id,
                 "wire_protocol": wire_proto, "endpoint": path, "is_inference": True, "is_fault_injected": True,
-                "http_status": code, "t_req_start_ns": t0_ns, "wire_llm_wait_ms": 1.0,
+                "http_status": code, "t_req_start_ns": t0_ns, "t_stream_end_ns": end_ns,
+                "wire_llm_wait_ms": (end_ns - t0_ns) / 1e6,
+                "usage_complete": True,  # Local injected response; no upstream token use.
                 "prompt_total": 0, "uncached_input": 0, "cache_read": 0, "cache_write": 0, "output_tokens": 0,
             })
             return str(code)
 
         def _handle(self, method: str) -> None:
-            t0_ns = time.perf_counter_ns()
             seq = state.next_seq()
+            t0_ns = time.perf_counter_ns()
             body_bytes = self._read_body() if method in ("POST", "PUT", "PATCH") else b""
             path = self.path
 
@@ -737,7 +822,6 @@ def _make_handler(state: ProxyState):
                 if not is_sse:
                     full = resp.read()
                     t_fb_ns = time.perf_counter_ns()
-                    t_first_delta_ns = t_fb_ns
                     resp_bytes = len(full)
                     self.send_header("Content-Length", str(len(full)))
                     self.end_headers()
@@ -757,7 +841,7 @@ def _make_handler(state: ProxyState):
                     buf = b""
                     frames_sent = 0
                     while True:
-                        chunk = resp.read(4096)
+                        chunk = resp.read1(4096)
                         if not chunk:
                             break
                         now_ns = time.perf_counter_ns()
@@ -779,7 +863,7 @@ def _make_handler(state: ProxyState):
                                 try:
                                     ev = json.loads(payload.decode("utf-8", "replace"))
                                     _merge_usage(usage_acc, _normalize_usage(ev))
-                                    if t_first_delta_ns is None and _sse_has_content_or_tool(ev):
+                                    if is_inf and 200 <= status < 300 and t_first_delta_ns is None and _sse_has_content_or_tool(ev):
                                         t_first_delta_ns = now_ns
                                     tc_n, bad_n, term = _inspect_sse_event(ev)
                                     tool_calls_seen += tc_n
@@ -814,7 +898,7 @@ def _make_handler(state: ProxyState):
             u_fin = _finalize_usage(usage_acc)
             wait_ms = (t_end_ns - t0_ns) / 1e6
             ttfb_ms = ((t_fb_ns - t0_ns) / 1e6) if t_fb_ns else None
-            ttft_ms = ((t_first_delta_ns - t0_ns) / 1e6) if t_first_delta_ns else ttfb_ms
+            ttft_ms = ((t_first_delta_ns - t0_ns) / 1e6) if t_first_delta_ns is not None else None
             gen_ms = ((t_end_ns - t_first_delta_ns) / 1e6) if t_first_delta_ns else 0.0
             burst = (u_fin["output_tokens"] >= 30 and gen_ms < 80.0)
             trunc = bool(is_inf and want_stream and status == 200 and not saw_terminal)
@@ -909,7 +993,6 @@ def _make_handler(state: ProxyState):
                 elif not is_stream:
                     raw = resp.read()
                     t_fb_ns = time.perf_counter_ns()
-                    t_first_delta_ns = t_fb_ns
                     resp_bytes = len(raw)
                     oai_resp = json.loads(raw.decode("utf-8", "replace"))
                     _merge_usage(usage_acc, _normalize_usage(oai_resp))
@@ -928,7 +1011,7 @@ def _make_handler(state: ProxyState):
                     last_finish: Optional[str] = None
                     frames_sent = 0
                     while True:
-                        chunk = resp.read(4096)
+                        chunk = resp.read1(4096)
                         if not chunk:
                             break
                         now_ns = time.perf_counter_ns()
@@ -962,17 +1045,13 @@ def _make_handler(state: ProxyState):
                                 last_finish = fr
                                 saw_terminal = True
                             parts: List[Dict[str, Any]] = []
+                            if t_first_delta_ns is None and _sse_has_content_or_tool(ev):
+                                t_first_delta_ns = now_ns
                             if delta.get("reasoning_content"):
-                                if t_first_delta_ns is None:
-                                    t_first_delta_ns = now_ns
                                 parts.append({"text": str(delta["reasoning_content"]), "thought": True})
                             if delta.get("content"):
-                                if t_first_delta_ns is None:
-                                    t_first_delta_ns = now_ns
                                 parts.append({"text": str(delta["content"])})
                             for tc in delta.get("tool_calls") or []:
-                                if t_first_delta_ns is None:
-                                    t_first_delta_ns = now_ns
                                 idx = int(tc.get("index", 0))
                                 slot = pending_tools.setdefault(idx, {"id": "", "name": "", "args": ""})
                                 if tc.get("id"):
@@ -1046,7 +1125,7 @@ def _make_handler(state: ProxyState):
             u_fin = _finalize_usage(usage_acc)
             wait_ms = (t_end_ns - t0_ns) / 1e6
             ttfb_ms = ((t_fb_ns - t0_ns) / 1e6) if t_fb_ns else None
-            ttft_ms = ((t_first_delta_ns - t0_ns) / 1e6) if t_first_delta_ns else ttfb_ms
+            ttft_ms = ((t_first_delta_ns - t0_ns) / 1e6) if t_first_delta_ns is not None else None
             gen_ms = ((t_end_ns - t_first_delta_ns) / 1e6) if t_first_delta_ns else 0.0
             state.record({
                 "seq": seq,
@@ -1085,14 +1164,26 @@ def _make_handler(state: ProxyState):
 
 
 def _sse_has_content_or_tool(ev: dict) -> bool:
-    etype = ev.get("type", "")
-    if etype in ("content_block_delta", "response.output_text.delta", "response.function_call_arguments.delta", "response.reasoning_summary_text.delta"):
-        return True
-    choices = ev.get("choices")
-    if isinstance(choices, list) and choices:
-        d = choices[0].get("delta") or {}
-        if d.get("content") or d.get("reasoning_content") or d.get("tool_calls"):
+    """Count generated text/reasoning/tool data, not protocol setup or bookkeeping."""
+    etype = ev.get("type")
+    if etype == "content_block_delta":
+        delta = ev.get("delta") or {}
+        field = {"text_delta": "text", "thinking_delta": "thinking",
+                 "input_json_delta": "partial_json"}.get(delta.get("type"))
+        return bool(field and delta.get(field))
+    if etype in ("response.output_text.delta", "response.refusal.delta",
+                 "response.function_call_arguments.delta", "response.custom_tool_call_input.delta",
+                 "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+                 "response.reasoning.delta"):
+        return bool(ev.get("delta"))
+    for choice in ev.get("choices") or []:
+        delta = choice.get("delta") or {}
+        if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning") or delta.get("refusal"):
             return True
+        for call in delta.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            if fn.get("name") or fn.get("arguments"):
+                return True
     return False
 
 
@@ -1167,7 +1258,7 @@ class BenchTelemetryProxy:
         self._thread.start()
         return self.port
 
-    def stop(self) -> Dict[str, Any]:
+    def stop(self, wall_window_ns: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
         if self._server:
             self._server.shutdown()
             self._server.server_close()
@@ -1175,7 +1266,7 @@ class BenchTelemetryProxy:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
-        return self.state.get_summary()
+        return self.state.get_summary(wall_window_ns)
 
     def __enter__(self) -> "BenchTelemetryProxy":
         self.start()

@@ -375,7 +375,8 @@ def run_single_trial(
 
     try:
         prepare_workspace(task, ws, launch.env)
-        t_spawn = time.perf_counter()
+        wall_start_ns = time.perf_counter_ns()
+        t_spawn = wall_start_ns / 1e9
         proc = subprocess.Popen(
             launch.cmd,
             cwd=str(ws),
@@ -436,15 +437,15 @@ def run_single_trial(
             terminate_process_tree(proc.pid)
             exit_code = -9
 
-        wall_s = time.perf_counter() - t_spawn
+        wall_end_ns = time.perf_counter_ns()
+        wall_s = (wall_end_ns - wall_start_ns) / 1e9
         res_summary = mon.stop()
-        wire_summary = proxy.stop()
+        wire_summary = proxy.stop((wall_start_ns, wall_end_ns))
+        harness_overhead_ms = wire_summary["wire_window_uncovered_ms"]
 
         stream_metrics = parse_harness_stream(harness, stdout_events, t_spawn)
         verify_res = run_verifier(task, ws, launch.env, timeout_s=120)
 
-        llm_wait_s = float(wire_summary.get("wire_total_llm_wait_ms", 0.0)) / 1000.0
-        harness_overhead_ms = max(0.0, (wall_s - llm_wait_s) * 1000.0)
 
         record = {
             "schema_version": "4.0",
@@ -461,7 +462,7 @@ def run_single_trial(
             "exit_code": exit_code,
             "timed_out": timed_out,
             "wall_time_s": round(wall_s, 3),
-            "harness_overhead_ms": round(harness_overhead_ms, 2),
+            "harness_overhead_ms": round(harness_overhead_ms, 2) if harness_overhead_ms is not None else None,
             "passed": bool(verify_res.get("passed")) and not timed_out,
             "score": float(verify_res.get("score", 0.0)),
             "verifier": verify_res,
@@ -543,9 +544,11 @@ def main() -> int:
                     w = rec["wire"]
                     res = rec["resources"]
                     st = rec["stream"]
+                    overhead = rec["harness_overhead_ms"]
+                    overhead_label = "unknown" if overhead is None else f"{overhead}ms"
                     print(
                         f"{'PASS' if rec['passed'] else 'FAIL'} "
-                        f"rc={rec['exit_code']} to={int(rec['timed_out'])} wall={rec['wall_time_s']}s ovh={rec['harness_overhead_ms']}ms "
+                        f"rc={rec['exit_code']} to={int(rec['timed_out'])} wall={rec['wall_time_s']}s ovh={overhead_label} "
                         f"reqs={w.get('wire_requests')} werr={w.get('wire_errors')} tok={w.get('wire_total_tokens')} "
                         f"tc={st['tool_call_count']} terr={st['tool_error_count']} rss={res.get('peak_harness_rss_mb')}MB "
                         f"leaks={len(rec['egress_audit']['non_loopback_sockets'])}",

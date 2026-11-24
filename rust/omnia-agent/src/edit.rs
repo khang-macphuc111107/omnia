@@ -15,11 +15,11 @@
 
 use crate::cache_guard::blake3_hex;
 use crate::graph_locator::verify_syntax_delta;
+use crate::path_guard::ensure_within_workspace;
 use crate::sanitizer::{atomic_write_bom_free, format_fail_fast_error};
 use anyhow::{bail, Context, Result};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use memchr::memmem;
-use crate::path_guard::ensure_within_workspace;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -34,7 +34,8 @@ const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 /// Compute deterministic 12-bit (3 lowercase ASCII hex chars) Hashline anchor from trimmed
 /// line content plus immediate neighbor lines so repeated braces/blank lines get unique tags.
 pub fn line_hash_tag(prev_trimmed: &str, curr_trimmed: &str, next_trimmed: &str) -> [u8; 3] {
-    let mut buf = Vec::with_capacity(prev_trimmed.len() + curr_trimmed.len() + next_trimmed.len() + 2);
+    let mut buf =
+        Vec::with_capacity(prev_trimmed.len() + curr_trimmed.len() + next_trimmed.len() + 2);
     buf.extend_from_slice(prev_trimmed.as_bytes());
     buf.push(0x1f);
     buf.extend_from_slice(curr_trimmed.as_bytes());
@@ -74,9 +75,11 @@ pub fn parse_hashline_anchor(raw: &str) -> Result<(usize, [u8; 3])> {
         .trim()
         .trim_start_matches(['L', 'l'])
         .trim_end_matches('|');
-    let (line_s, hash_s) = clean
-        .split_once(':')
-        .ok_or_else(|| anyhow::anyhow!("invalid hashline anchor '{raw}' (expected '<line>:<3-hex>', e.g. '42:a3f')"))?;
+    let (line_s, hash_s) = clean.split_once(':').ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid hashline anchor '{raw}' (expected '<line>:<3-hex>', e.g. '42:a3f')"
+        )
+    })?;
     let line_1: usize = line_s
         .trim()
         .parse()
@@ -206,8 +209,8 @@ fn verify_pre_read_guard(
         Some(_) => ReadGuardState::Fresh,
     };
 
-    let raw_text = String::from_utf8(raw_bytes)
-        .with_context(|| format!("'{rel_path}' is not valid UTF-8"))?;
+    let raw_text =
+        String::from_utf8(raw_bytes).with_context(|| format!("'{rel_path}' is not valid UTF-8"))?;
     let had_bom = raw_text.starts_with('\u{FEFF}');
     let uses_crlf = raw_text.contains("\r\n");
     let norm = raw_text.replace("\r\n", "\n");
@@ -284,7 +287,11 @@ pub fn edit_file_by_hashline(
     let span = end_1 - start_1 + 1;
 
     let tag_at = |idx0: usize| -> [u8; 3] {
-        let prev = if idx0 > 0 { doc_lines[idx0 - 1].trim() } else { "" };
+        let prev = if idx0 > 0 {
+            doc_lines[idx0 - 1].trim()
+        } else {
+            ""
+        };
         let curr = doc_lines[idx0].trim();
         let next = if idx0 + 1 < total {
             doc_lines[idx0 + 1].trim()
@@ -325,7 +332,8 @@ pub fn edit_file_by_hashline(
         }
     };
 
-    let clean_new = strip_accidental_hashline_prefixes(new_string).unwrap_or_else(|| new_string.to_string());
+    let clean_new =
+        strip_accidental_hashline_prefixes(new_string).unwrap_or_else(|| new_string.to_string());
     let norm_new = clean_new.replace("\r\n", "\n");
     let new_lines: Vec<&str> = if norm_new.is_empty() {
         Vec::new()
@@ -363,7 +371,10 @@ pub fn edit_file_by_hashline(
     let written_bytes = if had_bom {
         final_output.as_bytes()
     } else {
-        final_output.strip_prefix('\u{FEFF}').unwrap_or(&final_output).as_bytes()
+        final_output
+            .strip_prefix('\u{FEFF}')
+            .unwrap_or(&final_output)
+            .as_bytes()
     };
     tracker.record_read(&abs, written_bytes);
 
@@ -434,7 +445,8 @@ pub fn edit_file_guarded(
         }
     }
 
-    let (updated_norm, replacements, match_mode, line_start, line_end) = if !exact_positions.is_empty()
+    let (updated_norm, replacements, match_mode, line_start, line_end) = if !exact_positions
+        .is_empty()
     {
         if replace_all {
             let first_line = byte_offset_to_line(&norm_content, exact_positions[0]);
@@ -452,9 +464,8 @@ pub fn edit_file_guarded(
         } else if exact_positions.len() == 1 {
             let pos = exact_positions[0];
             let line_start = byte_offset_to_line(&norm_content, pos);
-            let mut out = String::with_capacity(
-                norm_content.len() - norm_old.len() + norm_new.len(),
-            );
+            let mut out =
+                String::with_capacity(norm_content.len() - norm_old.len() + norm_new.len());
             out.push_str(&norm_content[..pos]);
             out.push_str(&norm_new);
             out.push_str(&norm_content[pos + norm_old.len()..]);
@@ -525,7 +536,10 @@ pub fn edit_file_guarded(
     let written_bytes = if had_bom {
         final_output.as_bytes()
     } else {
-        final_output.strip_prefix('\u{FEFF}').unwrap_or(&final_output).as_bytes()
+        final_output
+            .strip_prefix('\u{FEFF}')
+            .unwrap_or(&final_output)
+            .as_bytes()
     };
     tracker.record_read(&abs, written_bytes);
 
@@ -555,7 +569,11 @@ fn render_fresh_window(lines: &[&str], center0: usize, radius: usize) -> String 
     for i in lo..=hi {
         let prev = if i > 0 { lines[i - 1].trim() } else { "" };
         let curr = lines[i].trim();
-        let next = if i + 1 < lines.len() { lines[i + 1].trim() } else { "" };
+        let next = if i + 1 < lines.len() {
+            lines[i + 1].trim()
+        } else {
+            ""
+        };
         let tag = line_hash_tag(prev, curr, next);
         out.push(format_hashline(i + 1, &tag, lines[i]));
     }
@@ -624,7 +642,10 @@ fn fast_apply_indent_normalized(
 /// - Boundary lines (first & last non-empty lines of `old_str`) must match trimmed.
 /// - Computes normalized Histogram LCS similarity `sim = 2 * kept / (|W| + |Q|)`.
 /// - Accepts ONLY if `best_sim >= 0.88` AND `(best_sim - second_best_sim) >= 0.10`!
-pub fn find_unique_histogram_window(doc_lines: &[&str], needle_lines: &[&str]) -> Option<(usize, usize)> {
+pub fn find_unique_histogram_window(
+    doc_lines: &[&str],
+    needle_lines: &[&str],
+) -> Option<(usize, usize)> {
     let non_empty_count = needle_lines.iter().filter(|l| !l.trim().is_empty()).count();
     if non_empty_count < 3 || doc_lines.len() < 3 {
         return None;
@@ -702,7 +723,12 @@ pub fn find_unique_histogram_window(doc_lines: &[&str], needle_lines: &[&str]) -
     }
 }
 
-fn histogram_line_similarity(win_trimmed: &str, needle_trimmed: &str, win_len: usize, needle_len: usize) -> f64 {
+fn histogram_line_similarity(
+    win_trimmed: &str,
+    needle_trimmed: &str,
+    win_len: usize,
+    needle_len: usize,
+) -> f64 {
     if win_len + needle_len == 0 {
         return 1.0;
     }
@@ -802,12 +828,20 @@ pub fn format_compact_unified_diff(
     let before_lines: Vec<&str> = if before.is_empty() {
         Vec::new()
     } else {
-        before.strip_suffix('\n').unwrap_or(before).split('\n').collect()
+        before
+            .strip_suffix('\n')
+            .unwrap_or(before)
+            .split('\n')
+            .collect()
     };
     let after_lines: Vec<&str> = if after.is_empty() {
         Vec::new()
     } else {
-        after.strip_suffix('\n').unwrap_or(after).split('\n').collect()
+        after
+            .strip_suffix('\n')
+            .unwrap_or(after)
+            .split('\n')
+            .collect()
     };
 
     let input = InternedInput::new(before, after);
@@ -871,9 +905,7 @@ pub fn format_compact_unified_diff(
 }
 
 fn leading_ws(s: &str) -> &str {
-    let end = s
-        .find(|c: char| c != ' ' && c != '\t')
-        .unwrap_or(s.len());
+    let end = s.find(|c: char| c != ' ' && c != '\t').unwrap_or(s.len());
     &s[..end]
 }
 
@@ -947,7 +979,11 @@ pub fn edit_file_by_symbol_block(
     }
     let clean_new = new_block.replace("\r\n", "\n");
     let inserted_len = if !clean_new.is_empty() {
-        let parts: Vec<&str> = clean_new.strip_suffix('\n').unwrap_or(&clean_new).split('\n').collect();
+        let parts: Vec<&str> = clean_new
+            .strip_suffix('\n')
+            .unwrap_or(&clean_new)
+            .split('\n')
+            .collect();
         for l in &parts {
             out_lines.push((*l).to_string());
         }
@@ -1120,7 +1156,11 @@ mod tests {
         );
 
         // 3. External disk mutation: fuzzy edits blocked, but exact unique matches stay safe
-        fs::write(&file, "class Calc:\n    def mul(self, a, b):\n        return 0\n").unwrap();
+        fs::write(
+            &file,
+            "class Calc:\n    def mul(self, a, b):\n        return 0\n",
+        )
+        .unwrap();
         let stale = edit_file_guarded(
             &tmp,
             "calc.py",
@@ -1141,8 +1181,7 @@ mod tests {
         fs::write(&file, dup_body).unwrap();
         tracker.record_read(&abs, dup_body.as_bytes());
         assert!(edit_file_guarded(&tmp, "calc.py", "foo()", "bar()", false, &tracker).is_err());
-        let rep_all =
-            edit_file_guarded(&tmp, "calc.py", "foo()", "bar()", true, &tracker).unwrap();
+        let rep_all = edit_file_guarded(&tmp, "calc.py", "foo()", "bar()", true, &tracker).unwrap();
         assert_eq!(rep_all.replacements, 2);
         assert_eq!(fs::read_to_string(&file).unwrap(), "x = bar()\ny = bar()\n");
 
@@ -1157,9 +1196,13 @@ mod tests {
         fs::write(&file, "def fee(x):\n    return x * 0.10\n").unwrap();
         let tracker = FileReadTracker::new();
 
-        let res = edit_file_guarded(&tmp, "svc.py", "x * 0.10", "x * 0.15", false, &tracker).unwrap();
+        let res =
+            edit_file_guarded(&tmp, "svc.py", "x * 0.10", "x * 0.15", false, &tracker).unwrap();
         assert_eq!(res.match_mode, "exact");
-        assert_eq!(fs::read_to_string(&file).unwrap(), "def fee(x):\n    return x * 0.15\n");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "def fee(x):\n    return x * 0.15\n"
+        );
 
         // Copied hashline prefixes in an unread file still resolve exactly.
         let res2 = edit_file_guarded(
@@ -1196,7 +1239,15 @@ mod tests {
         let t3 = line_hash_tag_str(&lines, 2);
 
         // Wrong hash rejected with fresh anchors preview
-        assert!(edit_file_by_hashline(&tmp, "app.py", "2:fff", Some("3:fff"), "    x = 9", &tracker).is_err());
+        assert!(edit_file_by_hashline(
+            &tmp,
+            "app.py",
+            "2:fff",
+            Some("3:fff"),
+            "    x = 9",
+            &tracker
+        )
+        .is_err());
 
         // Unique relocation when line numbers drifted by +2 (passing 4:t2..5:t3 when lines are at 2..3!)
         let res = edit_file_by_hashline(
@@ -1209,7 +1260,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(res.match_mode, "hashline_relocated");
-        assert!(fs::read_to_string(&file).unwrap().contains("x = 10\n    y = 20"));
+        assert!(fs::read_to_string(&file)
+            .unwrap()
+            .contains("x = 10\n    y = 20"));
 
         // Defensive strip guard: copied `   1:abc| ` prefix inside old_string still succeeds cleanly!
         let cur = fs::read_to_string(&file).unwrap();
@@ -1286,17 +1339,34 @@ def compute(items):
             total += item.price - item.discount + item.tax
             count += 1
     return total, count";
-        let res = edit_file_guarded(&tmp, "engine.py", slightly_off_old, replacement, false, &tracker).unwrap();
+        let res = edit_file_guarded(
+            &tmp,
+            "engine.py",
+            slightly_off_old,
+            replacement,
+            false,
+            &tracker,
+        )
+        .unwrap();
         assert_eq!(res.match_mode, "imara_histogram_fuzzy");
-        assert!(res.diff_preview.contains("item.price - item.discount + item.tax"));
+        assert!(res
+            .diff_preview
+            .contains("item.price - item.discount + item.tax"));
 
         // Ambiguous duplicated block -> Tier 3 MUST REJECT (margin < 0.10)!
         let dup = format!("{body9}\n# second copy\n{body9}");
         fs::write(&file, &dup).unwrap();
         tracker.record_read(&abs, dup.as_bytes());
         assert!(
-            edit_file_guarded(&tmp, "engine.py", slightly_off_old, replacement, false, &tracker)
-                .is_err(),
+            edit_file_guarded(
+                &tmp,
+                "engine.py",
+                slightly_off_old,
+                replacement,
+                false,
+                &tracker
+            )
+            .is_err(),
             "ambiguous fuzzy match MUST be rejected by uniqueness margin proof"
         );
 

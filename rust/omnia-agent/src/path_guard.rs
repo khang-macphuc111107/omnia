@@ -137,7 +137,10 @@ pub fn validate_workspace_dir(path: &Path) -> Result<PathBuf> {
     validate_raw_path_hygiene(trimmed)?;
     let canon = canonicalize_strict(Path::new(trimmed))?;
     if !canon.is_dir() {
-        bail!("workspace path is not an existing directory: {}", canon.display());
+        bail!(
+            "workspace path is not an existing directory: {}",
+            canon.display()
+        );
     }
     Ok(canon)
 }

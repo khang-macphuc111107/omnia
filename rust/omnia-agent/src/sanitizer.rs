@@ -169,7 +169,10 @@ pub fn atomic_write_bytes(abs_path: &Path, bytes: &[u8]) -> Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
-    let tmp_path = parent.join(format!(".{fname}.omni_tmp_{}", uuid::Uuid::new_v4().simple()));
+    let tmp_path = parent.join(format!(
+        ".{fname}.omni_tmp_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
 
     let write_res = fs::write(&tmp_path, bytes)
         .with_context(|| format!("failed to stage atomic write for {}", abs_path.display()));
@@ -206,11 +209,17 @@ mod tests {
         let rep = sanitize_untrusted_text(&smuggled, "repo/evil.py");
         assert!(rep.tainted);
         assert_eq!(rep.stripped_invisible_count, 4);
-        assert!(rep.injection_signals.contains(&"unicode_tag_or_bidi_smuggling"));
-        assert!(rep.injection_signals.contains(&"hidden_prompt_injection_directive"));
+        assert!(rep
+            .injection_signals
+            .contains(&"unicode_tag_or_bidi_smuggling"));
+        assert!(rep
+            .injection_signals
+            .contains(&"hidden_prompt_injection_directive"));
         assert!(!rep.cleaned.contains('\u{E0041}'));
         assert!(!rep.cleaned.contains('\u{202E}'));
-        assert!(rep.cleaned.contains("<untrusted_workspace_data source=\"repo/evil.py\""));
+        assert!(rep
+            .cleaned
+            .contains("<untrusted_workspace_data source=\"repo/evil.py\""));
 
         // Clean source code passes through untouched (zero token overhead!)
         let clean = "def add(a, b):\n    return a + b\n";
@@ -243,7 +252,10 @@ def send_login_response(user, req):
         ] {
             let bad = sanitize_untrusted_text(malicious, "README.md");
             assert!(
-                bad.tainted && bad.injection_signals.contains(&"credential_exfiltration_directive"),
+                bad.tainted
+                    && bad
+                        .injection_signals
+                        .contains(&"credential_exfiltration_directive"),
                 "real exfiltration directive must be caught: {malicious}"
             );
         }

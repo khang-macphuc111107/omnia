@@ -4,9 +4,9 @@
   "decision": "DEFERRED",
   "owner": "root-integrator",
   "policy": "GOAL.md#follow-up-chat-admission--session-01",
-  "candidateCommit": "d5536ecd1381e45f16146406d70f13584fdf0d4f",
+  "candidateCommit": "42cf46343506f6c40e6e43270fa5853f64e05eb6",
   "candidateTree": "436d4e7878c3570c2f1fb90209d05c8336aaf6c3",
-  "candidateTreeScope": "HEAD^{tree} plus dirty Steer #14 Full Native Rust 13-crate Cargo migration (Cargo.toml, Cargo.lock, rust/**, ui/**, native/{app.manifest,qa-*,README.md}, platform/**, tools/**, 19 .agents/skills/*, docs/**); Wave 4 C++20/CMake snapshot backed up externally under D:\\OmniaData\\backups\\pre-full-rust-20261115\\",
+  "candidateTreeScope": "Branch omnia-sota-harness plus Steer #14..#15 Full Native Rust 17-crate Cargo workspace (Cargo.toml, Cargo.lock, rust/**, ui/**, ui-v5/**, native/{app.manifest,qa-*,README.md}, platform/**, tools/**, 19 .agents/skills/*, docs/**); Wave 4 C++20/CMake snapshot backed up externally under D:\\OmniaData\\backups\\pre-full-rust-20261115\\",
   "workingTreeState": "DIRTY",
   "workingTreeStatusSha256": "bc70650c02b7d2f156c062ba3d1deeee55fc79c98cfde0c8ea021f773754a136",
   "rebaselineReceipt": "D:\\OmniaData\\qa\\governance-rust-rebaseline-20261114\\RUST_RUNTIME_REBASELINE_RECEIPT.json",
@@ -35,7 +35,7 @@
         "D:\\OmniaData\\qa\\cpp-native-precheck-20261112\\QA_SUITE_SUMMARY_RECEIPT.json",
         "D:\\OmniaData\\qa\\github-cpp20-clean-clone-20261112\\GITHUB_CPP20_DELIVERY_RECEIPT.json"
       ],
-      "next": "Wave 4 C++20 receipts remain archived snapshot evidence only; must pass Wave 2/3 unified cargo check/clippy/test/build --workspace --offline --locked, 7/7 pwsh native/qa-*.ps1 workflows, live /browser Edge CDP QA, and strict consolidated audit on the 13-crate Rust tree."
+      "next": "Wave 4 C++20 receipts remain archived snapshot evidence only; must pass Steer #15 unified 17-crate cargo check/clippy/test/build --workspace --offline --locked, 7/7 pwsh native/qa-*.ps1 workflows, isolated Playwright + 4x-CPU CDP QA, benchmark suites, and strict consolidated audit."
     },
     {
       "id": "SESSION-G02",
@@ -156,7 +156,7 @@
       "state": "IN_PROGRESS",
       "owner": "root-integrator",
       "source": "GOAL.md",
-      "next": "Complete Steer #14 Full Native Rust 13-crate Cargo workspace migration (Cargo.toml, rust/*, omnia-studio.exe, omnia-runtime.exe, omnia-native.exe, omnia_qa_seed.exe; Wave 4 C++20 backed up in D:\\OmniaData\\backups\\pre-full-rust-20261115\\) and verify via unified --workspace --offline --locked check/clippy/test/build.",
+      "next": "Complete Steer #14..#15 Full Native Rust 17-crate Cargo workspace (Cargo.toml, rust/*, omnia.exe, omnia-studio.exe, omnia-runtime.exe, omnia-native.exe, omnia_qa_seed.exe; Wave 4 C++20 backed up in D:\\OmniaData\\backups\\pre-full-rust-20261115\\) and verify via unified --workspace --offline --locked check/clippy/test/build.",
       "acceptance": [
         "DOD-01",
         "DOD-02",
@@ -188,7 +188,7 @@
       "state": "IN_PROGRESS",
       "owner": "product-owner",
       "source": "GOAL.md",
-      "next": "Modular 13-crate Rust workspace (rust/**), zero-bundler ES2022 Flagship Studio UI (ui/**), packaging (platform/**), and Python tooling (tools/**) maintained cleanly under DISJOINT_OWNERSHIP.json; verify workspace clippy/test and node --check post-Wave-2.",
+      "next": "Modular 17-crate Rust workspace (rust/**), Flagship Studio UI (ui/** / ui-v5/**), packaging (platform/**), and Python/Node tooling (tools/** incl. omnia-benchmark and omnia-gemini-extractor) maintained cleanly; verify workspace clippy/test, Playwright, and node --check post-Wave-3.",
       "acceptance": [
         "DOD-07"
       ]
@@ -337,5 +337,5 @@
     "goalActivation": "NOT_REQUESTED",
     "checkpoint": "CHECKPOINT.md#wave-5-steer-14-full-native-rust-migration-progress--2026-11-15"
   },
-  "limits": "The prior READY decision remains historical only for frozen Wave 3/4 snapshots (backed up externally in D:\\OmniaData\\backups\\pre-full-rust-20261115\\). Under Steer #14 (Full Native Rust 13-crate migration), SESSION_ADMISSION.json remains DEFERRED until Wave 2 finishes and the post-Wave-2 verification gates pass: (1) unified cargo check/clippy/test/build --workspace --offline --locked under D:\\OmniaData\\build\\omnia-rust-workspace, (2) 7/7 pwsh Win32 QA workflows (native/qa-*.ps1), (3) live /browser Edge CDP UI QA against Rust omnia-studio.exe, (4) audit.py --secret-scope all --strict --strict-scope full with 0 secrets/hygiene/ownership conflicts, and (5) 3 consecutive frozen-snapshot cleanroom audit rounds."
+  "limits": "The prior READY decision remains historical only for frozen Wave 3/4 snapshots (backed up externally in D:\\OmniaData\\backups\\pre-full-rust-20261115\\). Under Steer #14..#15 (Full Native Rust 17-crate workspace + Omnia v5), SESSION_ADMISSION.json remains DEFERRED until verification gates pass: (1) unified cargo check/clippy/test/build --workspace --offline --locked under D:\\OmniaData\\build\\omnia-rust-workspace, (2) 7/7 pwsh Win32 QA workflows (native/qa-*.ps1), (3) isolated Playwright E2E + 4x-CPU layout continuity CDP QA against Rust omnia-studio.exe, (4) Suite v5 & AA benchmark suites (GPT+Claude on htmustc.id.vn, NO agy), (5) audit.py --secret-scope all --strict --strict-scope full with 0 secrets/hygiene/ownership conflicts, and (6) 3 consecutive frozen-snapshot cleanroom audit rounds."
 }

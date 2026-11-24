@@ -2,7 +2,7 @@
 name: deep-general-graph-orchestration
 description: Design, execute, and verify bidirectional all-to-all agent peer-mesh graphs, cyclic/event/state/hypergraph workflows, and Graphify-style deterministic bidirectional code-and-knowledge graphs with explicit provenance and execution receipts.
 metadata:
-  short-description: Bidirectional all-to-all agent graphs and Graphify provenance navigation
+  short-description: Bidirectional agent peer-mesh graphs and Graphify provenance
 ---
 
 # Deep General Graph Orchestration & Bidirectional Peer Mesh

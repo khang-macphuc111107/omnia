@@ -1,0 +1,18 @@
+{
+  "id": "worktree_01_parallel_services",
+  "axis": 14,
+  "axis_name": "Multi-Agent Worktree Refactoring",
+  "title": "Refactor 3 decoupled services (billing, auth, notify) onto Envelope v2 contract",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "git"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "worktree_refactor",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": "setup.py",
+  "verify_script": "verify.py"
+}

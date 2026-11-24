@@ -97,9 +97,7 @@ impl WireApiMode {
                     || m.contains("/gemini")
                 {
                     "anthropic-messages"
-                } else if configured_api == "openai-responses"
-                    || is_openai_responses_family(&m)
-                {
+                } else if configured_api == "openai-responses" || is_openai_responses_family(&m) {
                     "openai-responses"
                 } else if configured_api == "google-gemini" {
                     "google-gemini"
@@ -169,10 +167,12 @@ impl StreamBudgetConfig {
     #[must_use]
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
-        if std::env::var("OMNIA_PRE_TTFT_HEDGE")
-            .ok()
-            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        {
+        if std::env::var("OMNIA_PRE_TTFT_HEDGE").ok().is_some_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        }) {
             cfg.enable_pre_ttft_hedge = true;
         }
         if let Some(secs) = std::env::var("OMNIA_PRE_TTFT_HEDGE_DELAY_SECS")
@@ -383,25 +383,63 @@ pub fn resolve_model_endpoint(
         })
         .unwrap_or_else(|| "https://htmustc.id.vn/v1".into());
 
+    // Per-model `apiKey:` (OMP schema) wins over the provider key so gated models such as
+    // `must1c-v1` can carry their own credential. A value shaped like an ENV var name is
+    // dereferenced; anything else is a literal secret.
+    let model_key = matched_model
+        .as_ref()
+        .map(|m| m.api_key.trim().to_string())
+        .filter(|k| !k.is_empty());
     let api_key = api_key_override
         .map(String::from)
+        .or_else(|| model_key.clone())
         .or_else(|| {
             matched_provider
                 .as_ref()
                 .map(|p| p.api_key.clone())
                 .filter(|k| !k.trim().is_empty())
         })
-        .or_else(|| std::env::var("OMNIA_API_KEY").ok().filter(|s| !s.trim().is_empty()))
-        .or_else(|| std::env::var("HTMUSTC_API_KEY").ok().filter(|s| !s.trim().is_empty()))
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.trim().is_empty()))
-        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.trim().is_empty()))
-        .or_else(|| std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| {
+            std::env::var("OMNIA_API_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("HTMUSTC_API_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("GEMINI_API_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
         .unwrap_or_default();
+    // `models.yml` credentials may be literal secrets OR ENV var names (HTMUSTC_API_KEY):
+    // deref env-shaped values so ACP/HTTP paths that skip the CLI env fallback still auth.
+    let api_key = crate::acp_proto::deref_env_credential(&api_key).unwrap_or(api_key);
 
-    let api = matched_provider
+    // Per-model `api:` overrides the provider dialect (e.g. must1c-v1 is chat-completions only).
+    let api = matched_model
         .as_ref()
-        .map(|p| p.api.clone())
-        .filter(|a| !a.trim().is_empty())
+        .map(|m| m.api.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .or_else(|| {
+            matched_provider
+                .as_ref()
+                .map(|p| p.api.clone())
+                .filter(|a| !a.trim().is_empty())
+        })
         .unwrap_or_else(|| "openai-completions".into());
     let auth_header = matched_provider
         .as_ref()
@@ -795,6 +833,12 @@ pub struct NativeSuperEngine {
 }
 
 impl NativeSuperEngine {
+    pub(crate) fn restore_acp_history(&mut self, turns: u32, messages: Vec<HarnessMessage>) {
+        self.first_prompt_sent = !messages.is_empty();
+        self.total_turns = turns;
+        self.messages.extend(messages);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_key: String,
@@ -839,18 +883,15 @@ impl NativeSuperEngine {
         } else {
             BASE_SYSTEM_PROMPT_NO_VERIFY.to_string()
         };
-        let active_tools = plugins
-            .active_tools_with_deferred(has_skills, !tool_runtime.deferred_tools.is_empty());
+        let active_tools =
+            plugins.active_tools_with_deferred(has_skills, !tool_runtime.deferred_tools.is_empty());
         let tool_schemas_by_name: HashMap<String, Value> = active_tools
             .iter()
             .map(|t| (t.name.clone(), t.parameters.clone()))
             .collect();
         let canonical_tools = canonicalize_openai_tools(&active_tools);
-        let cache_guard = PrefixCacheGuard::new(
-            Some(session_key.clone()),
-            &system_prompt,
-            &canonical_tools,
-        );
+        let cache_guard =
+            PrefixCacheGuard::new(Some(session_key.clone()), &system_prompt, &canonical_tools);
 
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -1069,7 +1110,8 @@ impl NativeSuperEngine {
                     // Stage 2: Factory Anchored Iterative Summarization when nearing context-rot knee (~68% of <=200k compact cap)
                     let compact_cap = self.endpoint.context_window.min(200_000);
                     let rot_knee = (compact_cap * 68) / 100;
-                    if self.last_context_tokens >= rot_knee && self.epoch_masker.last_masked_turn > 0
+                    if self.last_context_tokens >= rot_knee
+                        && self.epoch_masker.last_masked_turn > 0
                     {
                         self.anchored_summary
                             .merge_messages(&self.messages, self.epoch_masker.last_masked_turn);
@@ -1154,8 +1196,7 @@ impl NativeSuperEngine {
                     prompt_start
                         .elapsed()
                         .as_millis()
-                        .saturating_sub(turn_res.turn_gen_ms as u128)
-                        as u64,
+                        .saturating_sub(turn_res.turn_gen_ms as u128) as u64,
                 );
                 if prompt_turns == 1 {
                     if let Some(lt) = turn_res.turn_ttft_ms {
@@ -1221,7 +1262,8 @@ impl NativeSuperEngine {
             // Run Rust BAML SAP partial-JSON repair ONCE BEFORE recording conversation history
             // so repaired tool calls persist cleanly as valid JSON objects (never `{"_raw": ...}`).
             let mut sap_repairs_this_turn = 0u32;
-            let mut sanitized_tcs: Vec<ToolCallRecord> = Vec::with_capacity(turn_res.tool_calls.len());
+            let mut sanitized_tcs: Vec<ToolCallRecord> =
+                Vec::with_capacity(turn_res.tool_calls.len());
             let mut parsed_calls: Vec<(ToolCallRecord, Result<Value>)> =
                 Vec::with_capacity(turn_res.tool_calls.len());
             for tc in &turn_res.tool_calls {
@@ -1394,11 +1436,12 @@ impl NativeSuperEngine {
                 // Anti-Termination-Lag (arXiv:2611.14960): if a real test suite already ran green
                 // (`FailToPass` / `AllGreen`) after the last edit, do NOT force an extra turn.
                 let base_floor = (total_budget_secs / 5).max(45);
-                let heavy_floor = if self.stream_budget.first_delta_timeout >= Duration::from_secs(120) {
-                    base_floor.max(120)
-                } else {
-                    base_floor
-                };
+                let heavy_floor =
+                    if self.stream_budget.first_delta_timeout >= Duration::from_secs(120) {
+                        base_floor.max(120)
+                    } else {
+                        base_floor
+                    };
                 let review_floor = Duration::from_secs(heavy_floor);
                 if self.final_review_gate
                     && !progress.files_mutated.is_empty()
@@ -1445,7 +1488,10 @@ impl NativeSuperEngine {
                                 s(HarnessStreamEvent::ToolStart {
                                     tool_call_id: tc.id.clone(),
                                     tool_name: tc.name.clone(),
-                                    arguments: parsed.as_ref().cloned().unwrap_or_else(|_| json!({})),
+                                    arguments: parsed
+                                        .as_ref()
+                                        .cloned()
+                                        .unwrap_or_else(|_| json!({})),
                                 });
                             }
                             let pre_handle = spec_map.remove(&idx);
@@ -1549,7 +1595,9 @@ impl NativeSuperEngine {
                 // Update ExecutionProgressState for Runtime Self-Verify Gate, Regression Detector,
                 // Anti-Termination-Lag, & ACE Playbook (covering BOTH shell AND edit/patch errors!)
                 let mut tool_text = out.content;
-                if tool_text.contains("[Syntax Check") || tool_text.contains("[Compiler Syntax Check FAILED]") {
+                if tool_text.contains("[Syntax Check")
+                    || tool_text.contains("[Compiler Syntax Check FAILED]")
+                {
                     turn_had_syntax_error = true;
                 }
                 match tc.name.as_str() {
@@ -1562,7 +1610,8 @@ impl NativeSuperEngine {
                         turn_had_mutation = true;
                         if out.is_error {
                             let fp_hex = format!("{:016x}", error_fingerprint(&tool_text));
-                            let err_kind = format!("{:?}", classify_tool_error(&tc.name, &tool_text));
+                            let err_kind =
+                                format!("{:?}", classify_tool_error(&tc.name, &tool_text));
                             let symptom: String = tool_text.chars().take(200).collect();
                             if let Some(ref db) = self.tool_runtime.db {
                                 if let Ok(Some(entry)) =
@@ -1586,10 +1635,8 @@ impl NativeSuperEngine {
                                 progress.last_failed_edit.take()
                             {
                                 if let Some(ref db) = self.tool_runtime.db {
-                                    let fix_summary = format!(
-                                        "Recovered via `{}` on `{label}`",
-                                        tc.name
-                                    );
+                                    let fix_summary =
+                                        format!("Recovered via `{}` on `{label}`", tc.name);
                                     let _ = db.record_playbook_fix(
                                         &self.workspace_hash,
                                         &fp_hex,
@@ -1635,7 +1682,8 @@ impl NativeSuperEngine {
                             progress.last_shell_exit_code = Some(1);
                             progress.test_suite_passed_since_last_mutation = false;
                             let fp_hex = format!("{:016x}", error_fingerprint(&tool_text));
-                            let err_kind = format!("{:?}", classify_tool_error("shell", &tool_text));
+                            let err_kind =
+                                format!("{:?}", classify_tool_error("shell", &tool_text));
                             let symptom: String = tool_text.chars().take(200).collect();
                             if let Some(ref db) = self.tool_runtime.db {
                                 if let Ok(Some(entry)) =
@@ -1810,9 +1858,7 @@ impl NativeSuperEngine {
                     }
 
                     // 60% & 82% elapsed time-budget pacing
-                    if !progress.sent_82pct_nudge
-                        && elapsed_s * 100 >= total_budget_secs * 82
-                    {
+                    if !progress.sent_82pct_nudge && elapsed_s * 100 >= total_budget_secs * 82 {
                         progress.sent_82pct_nudge = true;
                         progress.sent_60pct_nudge = true;
                         tool_text.push_str(&format!(
@@ -1973,9 +2019,8 @@ impl NativeSuperEngine {
 
             let api_kind = self.active_wire_dialect();
             let force_fresh_socket = attempt > 0;
-            let (header_to, first_delta_to, inter_chunk_to) = self
-                .stream_budget
-                .effective_timeouts(
+            let (header_to, first_delta_to, inter_chunk_to) =
+                self.stream_budget.effective_timeouts(
                     &self.endpoint.model_id,
                     self.last_context_tokens,
                     attempt,
@@ -2503,7 +2548,11 @@ impl NativeSuperEngine {
             let Some(chunk_res) = next_opt else {
                 if !line_buf.is_empty() {
                     let tail = String::from_utf8_lossy(&line_buf);
-                    if tail.trim().strip_prefix("data:").is_some_and(|d| d.trim() == "[DONE]") {
+                    if tail
+                        .trim()
+                        .strip_prefix("data:")
+                        .is_some_and(|d| d.trim() == "[DONE]")
+                    {
                         saw_done = true;
                     }
                     line_buf.clear();
@@ -2645,8 +2694,8 @@ impl NativeSuperEngine {
                     }
                 }
 
-                let sink_allowed = hedge_slot
-                    .is_none_or(|(w, _, slot)| w.load(Ordering::Acquire) == slot);
+                let sink_allowed =
+                    hedge_slot.is_none_or(|(w, _, slot)| w.load(Ordering::Acquire) == slot);
                 if sink_allowed {
                     if let Some(s) = sink {
                         if (!pending_text_delta.is_empty() || !pending_think_delta.is_empty())
@@ -2877,13 +2926,18 @@ impl NativeSuperEngine {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::HeaderTimeout,
-                detail: format!("Responses header timeout after {}ms", header_timeout.as_millis()),
+                detail: format!(
+                    "Responses header timeout after {}ms",
+                    header_timeout.as_millis()
+                ),
             })?
             .map_err(|e| StreamTurnError::Retryable {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::Transport,
-                detail: crate::sanitizer::redact_secrets(&format!("Responses transport error: {e}")),
+                detail: crate::sanitizer::redact_secrets(&format!(
+                    "Responses transport error: {e}"
+                )),
             })?;
 
         let status = resp.status();
@@ -2912,7 +2966,9 @@ impl NativeSuperEngine {
                     detail: format!("Responses HTTP {status}: {snippet}"),
                 });
             }
-            return Err(StreamTurnError::Fatal(format!("Responses HTTP {status}: {snippet}")));
+            return Err(StreamTurnError::Fatal(format!(
+                "Responses HTTP {status}: {snippet}"
+            )));
         }
 
         let mut text = String::new();
@@ -2946,7 +3002,10 @@ impl NativeSuperEngine {
                     status: None,
                     retry_after_secs: None,
                     kind: RetryKind::ChunkStall,
-                    detail: format!("Responses SSE stall timeout after {}ms", chunk_budget.as_millis()),
+                    detail: format!(
+                        "Responses SSE stall timeout after {}ms",
+                        chunk_budget.as_millis()
+                    ),
                 })?;
             let Some(chunk_res) = next_opt else {
                 break;
@@ -3040,7 +3099,9 @@ impl NativeSuperEngine {
                                     .and_then(|v| v.as_str())
                                     .filter(|s| !s.is_empty())
                                     .map(String::from)
-                                    .unwrap_or_else(|| format!("call_{msg_id}_{}", tool_calls.len()));
+                                    .unwrap_or_else(|| {
+                                        format!("call_{msg_id}_{}", tool_calls.len())
+                                    });
                                 let name = item
                                     .get("name")
                                     .and_then(|v| v.as_str())
@@ -3067,7 +3128,8 @@ impl NativeSuperEngine {
                         if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
                             if !d.is_empty() {
                                 stamp_token();
-                                let item_id = val.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                                let item_id =
+                                    val.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
                                 if let Some(&idx) = tool_by_item_id.get(item_id) {
                                     tool_calls[idx].arguments.push_str(d);
                                 } else if let Some(last) = tool_calls.last_mut() {
@@ -3081,10 +3143,8 @@ impl NativeSuperEngine {
                         if let Some(item) = val.get("item") {
                             if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
                                 let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let final_args = item
-                                    .get("arguments")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
+                                let final_args =
+                                    item.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
                                 let idx_opt = tool_by_item_id.get(item_id).copied().or_else(|| {
                                     let cid = item.get("call_id").and_then(|v| v.as_str())?;
                                     tool_calls.iter().position(|t| t.id == cid)
@@ -3102,7 +3162,9 @@ impl NativeSuperEngine {
                                             .and_then(|v| v.as_str())
                                             .filter(|s| !s.is_empty())
                                             .map(String::from)
-                                            .unwrap_or_else(|| format!("call_{msg_id}_{}", tool_calls.len()));
+                                            .unwrap_or_else(|| {
+                                                format!("call_{msg_id}_{}", tool_calls.len())
+                                            });
                                         tool_calls.push(ToolCallRecord {
                                             id: call_id,
                                             name: item
@@ -3160,7 +3222,8 @@ impl NativeSuperEngine {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::TruncatedStream,
-                detail: "Truncated OpenAI Responses SSE stream EOF before response.completed".into(),
+                detail: "Truncated OpenAI Responses SSE stream EOF before response.completed"
+                    .into(),
             });
         }
 
@@ -3231,7 +3294,11 @@ impl NativeSuperEngine {
         if user_indices.len() >= 2 {
             let target_idx = user_indices[user_indices.len() - 2];
             if let Some(msg) = ant_msgs.get_mut(target_idx) {
-                if let Some(s) = msg.get("content").and_then(|v| v.as_str()).map(String::from) {
+                if let Some(s) = msg
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                {
                     msg["content"] = json!([{
                         "type": "text",
                         "text": s,
@@ -3240,10 +3307,7 @@ impl NativeSuperEngine {
                 } else if let Some(arr) = msg.get_mut("content").and_then(|v| v.as_array_mut()) {
                     if let Some(last_blk) = arr.last_mut() {
                         if let Some(obj) = last_blk.as_object_mut() {
-                            obj.insert(
-                                "cache_control".into(),
-                                json!({ "type": "ephemeral" }),
-                            );
+                            obj.insert("cache_control".into(), json!({ "type": "ephemeral" }));
                         }
                     }
                 }
@@ -3307,13 +3371,18 @@ impl NativeSuperEngine {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::HeaderTimeout,
-                detail: format!("Anthropic header timeout after {}ms", header_timeout.as_millis()),
+                detail: format!(
+                    "Anthropic header timeout after {}ms",
+                    header_timeout.as_millis()
+                ),
             })?
             .map_err(|e| StreamTurnError::Retryable {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::Transport,
-                detail: crate::sanitizer::redact_secrets(&format!("Anthropic transport error: {e}")),
+                detail: crate::sanitizer::redact_secrets(&format!(
+                    "Anthropic transport error: {e}"
+                )),
             })?;
 
         let status = resp.status();
@@ -3321,12 +3390,21 @@ impl NativeSuperEngine {
             let err_body = resp.text().await.unwrap_or_default();
             let snippet: String = err_body.chars().take(400).collect();
             let non_claude_auto = self.wire_api_mode == WireApiMode::Auto
-                && !self.endpoint.model_id.to_ascii_lowercase().contains("claude");
+                && !self
+                    .endpoint
+                    .model_id
+                    .to_ascii_lowercase()
+                    .contains("claude");
             if matches!(
                 status,
-                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
+                StatusCode::NOT_FOUND
+                    | StatusCode::METHOD_NOT_ALLOWED
+                    | StatusCode::NOT_IMPLEMENTED
             ) || (non_claude_auto
-                && matches!(status, StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY))
+                && matches!(
+                    status,
+                    StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+                ))
             {
                 return Err(StreamTurnError::EndpointUnsupported(format!(
                     "Anthropic HTTP {status}: {snippet}"
@@ -3391,10 +3469,14 @@ impl NativeSuperEngine {
                         if let Ok(val) = serde_json::from_str::<Value>(data.trim()) {
                             match val.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                                 "message_delta" => {
-                                    if let Some(sr) = val.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
+                                    if let Some(sr) =
+                                        val.pointer("/delta/stop_reason").and_then(|v| v.as_str())
+                                    {
                                         stop_reason = Some(sr.to_string());
                                     }
-                                    if let Some(out) = val.pointer("/usage/output_tokens").and_then(|v| v.as_u64()) {
+                                    if let Some(out) =
+                                        val.pointer("/usage/output_tokens").and_then(|v| v.as_u64())
+                                    {
                                         usage.saw_usage = true;
                                         usage.output = out;
                                     }
@@ -3572,7 +3654,12 @@ impl NativeSuperEngine {
                     "content_block_stop" => {
                         if let Some(idx) = cur_tool_idx.take() {
                             if let Some(tc) = tool_calls.get(idx) {
-                                spec_pool.try_spawn_if_admissible(idx, tc, &self.tool_runtime, true);
+                                spec_pool.try_spawn_if_admissible(
+                                    idx,
+                                    tc,
+                                    &self.tool_runtime,
+                                    true,
+                                );
                             }
                         }
                     }
@@ -3683,7 +3770,9 @@ impl NativeSuperEngine {
         let mut contents = Vec::new();
         for m in &self.messages {
             match m.role.as_str() {
-                "user" => contents.push(json!({ "role": "user", "parts": [{ "text": m.content }] })),
+                "user" => {
+                    contents.push(json!({ "role": "user", "parts": [{ "text": m.content }] }))
+                }
                 "assistant" => {
                     let mut parts = Vec::new();
                     if !m.content.is_empty() {
@@ -3771,7 +3860,10 @@ impl NativeSuperEngine {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::HeaderTimeout,
-                detail: format!("Gemini header timeout after {}ms", header_timeout.as_millis()),
+                detail: format!(
+                    "Gemini header timeout after {}ms",
+                    header_timeout.as_millis()
+                ),
             })?
             .map_err(|e| StreamTurnError::Retryable {
                 status: None,
@@ -3791,7 +3883,9 @@ impl NativeSuperEngine {
                     detail: format!("Gemini HTTP {status}: {snippet}"),
                 });
             }
-            return Err(StreamTurnError::Fatal(format!("Gemini HTTP {status}: {snippet}")));
+            return Err(StreamTurnError::Fatal(format!(
+                "Gemini HTTP {status}: {snippet}"
+            )));
         }
 
         let mut text = String::new();
@@ -3888,7 +3982,8 @@ impl NativeSuperEngine {
                         if let Some(sig) = extract_thought_signature(p) {
                             thought_signature = Some(sig);
                         }
-                        let is_thought = p.get("thought").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let is_thought =
+                            p.get("thought").and_then(|v| v.as_bool()).unwrap_or(false);
                         if let Some(t) = p.get("text").and_then(|v| v.as_str()) {
                             if !t.is_empty() {
                                 if turn_ttft_ms.is_none() {
@@ -4048,9 +4143,7 @@ enum ToolDispatchBatch {
 
 /// Partition a turn's tool calls into maximal contiguous parallel read-only runs
 /// separated by sequential mutating barriers (preserving exact wire order!).
-fn partition_tool_batches(
-    calls: &[(ToolCallRecord, Result<Value>)],
-) -> Vec<ToolDispatchBatch> {
+fn partition_tool_batches(calls: &[(ToolCallRecord, Result<Value>)]) -> Vec<ToolDispatchBatch> {
     let mut out = Vec::new();
     let mut i = 0usize;
     let n = calls.len();
@@ -4206,7 +4299,8 @@ fn message_to_openai_json(
             {
                 if let Some(ref r) = m.reasoning {
                     if !r.is_empty() {
-                        let capped: String = r.chars().take(MAX_INTERLEAVED_REASONING_CHARS).collect();
+                        let capped: String =
+                            r.chars().take(MAX_INTERLEAVED_REASONING_CHARS).collect();
                         obj.insert("reasoning_content".into(), Value::String(capped));
                     }
                 }
@@ -4249,10 +4343,7 @@ fn message_to_openai_json(
 }
 
 /// Accumulate OpenAI-compatible SSE `delta.tool_calls` into a sparse `BTreeMap<usize, ToolCallRecord>`.
-fn accumulate_openai_tool_deltas(
-    deltas: &[Value],
-    accum: &mut BTreeMap<usize, ToolCallRecord>,
-) {
+fn accumulate_openai_tool_deltas(deltas: &[Value], accum: &mut BTreeMap<usize, ToolCallRecord>) {
     for d in deltas {
         let idx_opt = d.get("index").and_then(|v| v.as_u64()).map(|u| u as usize);
         let id_part = d.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -4498,7 +4589,10 @@ pub async fn run_super_eval(opts: SuperEvalOptions) -> Result<SuperEvalReport> {
     let start_all = Instant::now();
     let clean_cwd = sanitize_windows_path(&opts.cwd);
     if !clean_cwd.exists() {
-        bail!("workspace directory does not exist: {}", clean_cwd.display());
+        bail!(
+            "workspace directory does not exist: {}",
+            clean_cwd.display()
+        );
     }
 
     let endpoint = resolve_model_endpoint(
@@ -4553,7 +4647,12 @@ pub async fn run_super_eval(opts: SuperEvalOptions) -> Result<SuperEvalReport> {
     });
 
     let summary = engine
-        .run_prompt(&opts.prompt, opts.max_turns, opts.timeout_secs, opts.event_sink)
+        .run_prompt(
+            &opts.prompt,
+            opts.max_turns,
+            opts.timeout_secs,
+            opts.event_sink,
+        )
         .await?;
     done_flag.store(true, Ordering::Relaxed);
 
@@ -4916,24 +5015,12 @@ data: [DONE]\n\n";
             name: "read_file".into(),
             arguments: "{\"path\":\"a.py\"}".into(),
         }];
-        let old_prompt_asst = HarnessMessage::assistant(
-            "",
-            Some("OLD_PROMPT_THOUGHT".into()),
-            tc.clone(),
-            1,
-        );
-        let active_prompt_asst = HarnessMessage::assistant(
-            "",
-            Some("ACTIVE_TOOL_LOOP_THOUGHT".into()),
-            tc,
-            4,
-        );
-        let active_final_no_tools = HarnessMessage::assistant(
-            "Done",
-            Some("FINAL_THOUGHT".into()),
-            Vec::new(),
-            5,
-        );
+        let old_prompt_asst =
+            HarnessMessage::assistant("", Some("OLD_PROMPT_THOUGHT".into()), tc.clone(), 1);
+        let active_prompt_asst =
+            HarnessMessage::assistant("", Some("ACTIVE_TOOL_LOOP_THOUGHT".into()), tc, 4);
+        let active_final_no_tools =
+            HarnessMessage::assistant("Done", Some("FINAL_THOUGHT".into()), Vec::new(), 5);
 
         // Prompt #2 starts at turn 4
         let wire_old = message_to_openai_json(&old_prompt_asst, 4, true, false);
@@ -4944,7 +5031,9 @@ data: [DONE]\n\n";
 
         let wire_active = message_to_openai_json(&active_prompt_asst, 4, true, false);
         assert_eq!(
-            wire_active.get("reasoning_content").and_then(|v| v.as_str()),
+            wire_active
+                .get("reasoning_content")
+                .and_then(|v| v.as_str()),
             Some("ACTIVE_TOOL_LOOP_THOUGHT"),
             "intra-prompt tool loop assistant turn MUST preserve reasoning_content"
         );
@@ -4993,15 +5082,27 @@ data: [DONE]\n\n";
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
         eng.stream_budget.inter_chunk_timeout = Duration::from_secs(5);
 
-        let sum = eng.run_prompt("Create app.py and verify", 8, 60, None).await.unwrap();
+        let sum = eng
+            .run_prompt("Create app.py and verify", 8, 60, None)
+            .await
+            .unwrap();
         srv.await.unwrap();
 
         assert_eq!(sum.status, "completed");
-        assert_eq!(sum.narration_nudges, 1, "narration guard must intercept Turn 1");
-        assert_eq!(sum.verify_gate_nudges, 1, "self-verify gate must intercept Turn 3");
+        assert_eq!(
+            sum.narration_nudges, 1,
+            "narration guard must intercept Turn 1"
+        );
+        assert_eq!(
+            sum.verify_gate_nudges, 1,
+            "self-verify gate must intercept Turn 3"
+        );
         assert_eq!(sum.turns, 5);
         assert!(sum.final_text.contains("Verified app.py"));
-        assert_eq!(std::fs::read_to_string(tmp.join("app.py")).unwrap(), "print(42)\n");
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("app.py")).unwrap(),
+            "print(42)\n"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -5078,7 +5179,10 @@ data: [DONE]\n\n";
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
         eng.stream_budget.inter_chunk_timeout = Duration::from_secs(5);
 
-        let sum = eng.run_prompt("write app.py and verify", 8, 60, None).await.unwrap();
+        let sum = eng
+            .run_prompt("write app.py and verify", 8, 60, None)
+            .await
+            .unwrap();
         srv.await.unwrap();
         assert_eq!(sum.status, "completed");
 
@@ -5121,12 +5225,21 @@ data: [DONE]\n\n";
         };
 
         pool.try_spawn_if_admissible(0, &tc_read1, &eng.tool_runtime, false);
-        assert!(pool.handles.contains_key(&0), "pure read before barrier must be spawned speculatively");
+        assert!(
+            pool.handles.contains_key(&0),
+            "pure read before barrier must be spawned speculatively"
+        );
         pool.try_spawn_if_admissible(1, &tc_write, &eng.tool_runtime, false);
         assert!(pool.saw_mutating);
-        assert!(!pool.handles.contains_key(&1), "mutating tool must NEVER be speculated");
+        assert!(
+            !pool.handles.contains_key(&1),
+            "mutating tool must NEVER be speculated"
+        );
         pool.try_spawn_if_admissible(2, &tc_read2, &eng.tool_runtime, false);
-        assert!(!pool.handles.contains_key(&2), "read AFTER mutating tool must NEVER be speculated");
+        assert!(
+            !pool.handles.contains_key(&2),
+            "read AFTER mutating tool must NEVER be speculated"
+        );
 
         let mut taken = pool.take_all();
         let entry0 = taken.remove(&0).unwrap();
@@ -5173,7 +5286,10 @@ data: [DONE]\n\n";
         eng2.stream_budget.header_timeout = Duration::from_secs(5);
         eng2.stream_budget.first_delta_timeout = Duration::from_secs(5);
         eng2.stream_budget.inter_chunk_timeout = Duration::from_secs(5);
-        let sum = eng2.run_prompt("read both files", 5, 30, None).await.unwrap();
+        let sum = eng2
+            .run_prompt("read both files", 5, 30, None)
+            .await
+            .unwrap();
         srv.await.unwrap();
 
         assert_eq!(sum.status, "completed");
@@ -5215,7 +5331,8 @@ data: [DONE]\n\n";
 
     #[tokio::test]
     async fn speculative_pool_ignores_empty_interleaved_headers_and_rejects_stale_args() {
-        let tmp = std::env::temp_dir().join(format!("omni_eng_spec_interleave_{}", uuid::Uuid::new_v4()));
+        let tmp =
+            std::env::temp_dir().join(format!("omni_eng_spec_interleave_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.py"), "alpha_val = 42\n").unwrap();
         std::fs::write(tmp.join("b.py"), "beta_val = 99\n").unwrap();
@@ -5255,21 +5372,34 @@ data: [DONE]\n\n";
         eng.stream_budget.header_timeout = Duration::from_secs(5);
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
         eng.stream_budget.inter_chunk_timeout = Duration::from_secs(5);
-        let sum = eng.run_prompt("read both files", 5, 30, None).await.unwrap();
+        let sum = eng
+            .run_prompt("read both files", 5, 30, None)
+            .await
+            .unwrap();
         srv.await.unwrap();
 
         assert_eq!(sum.status, "completed");
-        assert_eq!(eng.total_tool_errors, 0, "interleaved headers MUST NOT produce stale empty-arg errors");
+        assert_eq!(
+            eng.total_tool_errors, 0,
+            "interleaved headers MUST NOT produce stale empty-arg errors"
+        );
         let req2 = &captured_tool_msgs.lock().unwrap()[0];
-        assert!(req2.contains("alpha_val = 42"), "req2 missing a.py content: {req2}");
-        assert!(req2.contains("beta_val = 99"), "req2 missing b.py content: {req2}");
+        assert!(
+            req2.contains("alpha_val = 42"),
+            "req2 missing a.py content: {req2}"
+        );
+        assert!(
+            req2.contains("beta_val = 99"),
+            "req2 missing b.py content: {req2}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn http_400_generic_unknown_field_degrades_prompt_cache_key_cleanly() {
-        let tmp = std::env::temp_dir().join(format!("omni_eng_400_compat_{}", uuid::Uuid::new_v4()));
+        let tmp =
+            std::env::temp_dir().join(format!("omni_eng_400_compat_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5355,12 +5485,18 @@ data: [DONE]\n\n";
         eng.stream_budget.first_delta_timeout = Duration::from_secs(2);
         eng.stream_budget.inter_chunk_timeout = Duration::from_millis(160);
 
-        let sum = eng.run_prompt("check ping watchdog", 4, 15, None).await.unwrap();
+        let sum = eng
+            .run_prompt("check ping watchdog", 4, 15, None)
+            .await
+            .unwrap();
         srv.await.unwrap();
 
         assert_eq!(sum.status, "completed");
         assert_eq!(sum.final_text, "PING_STALL_RECOVERED");
-        assert_eq!(sum.stall_retries, 1, "keepalive ping stall must trigger exactly 1 stall retry");
+        assert_eq!(
+            sum.stall_retries, 1,
+            "keepalive ping stall must trigger exactly 1 stall retry"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -5413,8 +5549,16 @@ data: [DONE]\n\n";
         assert!(eng.anthropic_fallback_to_openai);
         let paths = seen_paths.lock().unwrap();
         assert_eq!(paths.len(), 2);
-        assert!(paths[0].contains("POST /v1/messages"), "first try must be /v1/messages: {}", paths[0]);
-        assert!(paths[1].contains("POST /v1/chat/completions"), "fallback must be /v1/chat/completions: {}", paths[1]);
+        assert!(
+            paths[0].contains("POST /v1/messages"),
+            "first try must be /v1/messages: {}",
+            paths[0]
+        );
+        assert!(
+            paths[1].contains("POST /v1/chat/completions"),
+            "fallback must be /v1/chat/completions: {}",
+            paths[1]
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -5450,7 +5594,10 @@ data: {\"type\":\"message_stop\"}\n\n";
         eng.stream_budget.header_timeout = Duration::from_secs(5);
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
 
-        let sum = eng.run_prompt("check native anthropic", 4, 20, None).await.unwrap();
+        let sum = eng
+            .run_prompt("check native anthropic", 4, 20, None)
+            .await
+            .unwrap();
         srv.await.unwrap();
 
         assert_eq!(sum.status, "completed");
@@ -5484,7 +5631,10 @@ data: {\"type\":\"message_stop\"}\n\n";
             // Turn 1: emits a function_call item over /v1/responses
             let (mut s1, _) = listener.accept().await.unwrap();
             let req1 = read_http_request(&mut s1).await;
-            assert!(req1.contains("POST /v1/responses"), "expected /v1/responses: {req1}");
+            assert!(
+                req1.contains("POST /v1/responses"),
+                "expected /v1/responses: {req1}"
+            );
             let sse1 = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
 data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_resp_1\",\"name\":\"read_file\"}}\n\n\
 data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"path\\\":\\\"hello.py\\\"}\"}\n\n\
@@ -5544,7 +5694,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
         );
         msg.reasoning_signature = Some("sig_gem_verbatim".into());
         let wire = message_to_openai_json(&msg, 2, false, true);
-        assert!(wire.get("reasoning_content").is_none(), "Flash must omit redundant reasoning_content echo");
+        assert!(
+            wire.get("reasoning_content").is_none(),
+            "Flash must omit redundant reasoning_content echo"
+        );
         assert_eq!(
             wire.pointer("/tool_calls/0/extra_content/google/thought_signature")
                 .and_then(|v| v.as_str()),
@@ -5583,9 +5736,17 @@ data: [DONE]\n\n";
         assert_eq!(sum.status, "completed");
         let raw_req = captured.lock().unwrap().clone();
         assert!(raw_req.contains("\"reasoning_effort\":\"medium\""));
-        assert!(raw_req.contains("\"prompt_cache_key\""), "Gemini must receive session-stable prompt_cache_key");
+        assert!(
+            raw_req.contains("\"prompt_cache_key\""),
+            "Gemini must receive session-stable prompt_cache_key"
+        );
         assert!(raw_req.to_ascii_lowercase().contains("x-session-id:"));
-        let last_asst = eng.messages.iter().rev().find(|m| m.role == "assistant").unwrap();
+        let last_asst = eng
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .unwrap();
         assert_eq!(last_asst.reasoning_signature.as_deref(), Some("sig_ret_99"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -5629,7 +5790,10 @@ data: [DONE]\n\n";
         assert_eq!(sum.status, "completed");
         assert_eq!(sum.final_text, "SAP_OK");
         assert_eq!(eng.total_tool_errors, 0);
-        assert!(eng.total_sap_repairs >= 1, "SAP repair counter must increment");
+        assert!(
+            eng.total_sap_repairs >= 1,
+            "SAP repair counter must increment"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -5678,7 +5842,8 @@ data: [DONE]\n\n";
             let (mut s1, _) = listener2.accept().await.unwrap();
             rc_bg.fetch_add(1, Ordering::Relaxed);
             let _ = read_http_request(&mut s1).await;
-            let part1 = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+            let part1 =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
 data: {\"choices\":[{\"delta\":{\"content\":\"FIRST_\"},\"finish_reason\":null}]}\n\n";
             let _ = s1.write_all(part1.as_bytes()).await;
             tokio::time::sleep(Duration::from_millis(220)).await;
@@ -5695,10 +5860,17 @@ data: [DONE]\n\n";
         eng2.stream_budget.enable_pre_ttft_hedge = true;
         eng2.stream_budget.pre_ttft_hedge_delay = Duration::from_millis(80);
 
-        let sum2 = eng2.run_prompt("no post-ttft hedge", 4, 15, None).await.unwrap();
+        let sum2 = eng2
+            .run_prompt("no post-ttft hedge", 4, 15, None)
+            .await
+            .unwrap();
         srv2.await.unwrap();
         assert_eq!(sum2.final_text, "FIRST_SECOND");
-        assert_eq!(req_count.load(Ordering::Relaxed), 1, "MUST NEVER fire a hedge post-TTFT");
+        assert_eq!(
+            req_count.load(Ordering::Relaxed),
+            1,
+            "MUST NEVER fire a hedge post-TTFT"
+        );
         assert_eq!(eng2.total_hedges_issued, 0);
         assert_eq!(eng2.total_hedge_wins, 0);
 
@@ -5718,7 +5890,8 @@ data: [DONE]\n\n";
             }],
             1,
         );
-        asst.redacted_thinking.push("opaque_redacted_blob_xyz".into());
+        asst.redacted_thinking
+            .push("opaque_redacted_blob_xyz".into());
 
         let msgs = vec![
             HarnessMessage::system("SYS"),
@@ -5738,7 +5911,9 @@ data: [DONE]\n\n";
 
         // Assistant message must contain thinking + redacted_thinking + tool_use
         let asst_blocks = ant[1]["content"].as_array().unwrap();
-        assert!(asst_blocks.iter().any(|b| b["type"] == "thinking" && b["signature"] == "sig_123"));
+        assert!(asst_blocks
+            .iter()
+            .any(|b| b["type"] == "thinking" && b["signature"] == "sig_123"));
         assert!(asst_blocks
             .iter()
             .any(|b| b["type"] == "redacted_thinking" && b["data"] == "opaque_redacted_blob_xyz"));
@@ -5764,7 +5939,10 @@ data: [DONE]\n\n";
         );
         assert!(u.saw_usage);
         assert_eq!(u.cache_read, 150);
-        assert_eq!(u.uncached_input, 50, "must subtract cached_tokens from Responses input_tokens");
+        assert_eq!(
+            u.uncached_input, 50,
+            "must subtract cached_tokens from Responses input_tokens"
+        );
         assert_eq!(u.output, 50);
         assert_eq!(u.reasoning, Some(35));
     }
@@ -5790,28 +5968,35 @@ data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"GEMINI_HEADER_OK\"}]
         std::fs::create_dir_all(&tmp).unwrap();
         let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1beta"));
         eng.endpoint.model_id = "gemini-3.8-flash".into();
-        eng.endpoint.api_key = "AIzaSyTestHeaderSecretValue99999".into();
+        eng.endpoint.api_key = "AIzaSyDummyHeaderSecret123456".into();
         eng.wire_api_mode = WireApiMode::Gemini;
         eng.stream_budget.header_timeout = Duration::from_secs(5);
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
 
-        let sum = eng.run_prompt("check header auth", 4, 20, None).await.unwrap();
+        let sum = eng
+            .run_prompt("check header auth", 4, 20, None)
+            .await
+            .unwrap();
         srv.await.unwrap();
 
         assert_eq!(sum.status, "completed");
         assert_eq!(sum.final_text, "GEMINI_HEADER_OK");
         let raw_req = captured.lock().unwrap().clone();
         let first_line = raw_req.lines().next().unwrap_or("");
-        assert!(first_line.contains("?alt=sse"), "request line missing ?alt=sse: {first_line}");
         assert!(
-            !first_line.contains("key=") && !first_line.contains("AIzaSyTestHeaderSecretValue99999"),
+            first_line.contains("?alt=sse"),
+            "request line missing ?alt=sse: {first_line}"
+        );
+        assert!(
+            !first_line.contains("key=")
+                && !first_line.contains("AIzaSyDummyHeaderSecret123456"),
             "API key MUST NEVER appear in Gemini URL query: {first_line}"
         );
         assert!(
             raw_req
                 .to_ascii_lowercase()
-                .contains("x-goog-api-key: aizasystestheadersecretvalue99999")
-                || raw_req.contains("x-goog-api-key: AIzaSyTestHeaderSecretValue99999"),
+                .contains("x-goog-api-key: aizasydummyheadersecret123456")
+                || raw_req.contains("x-goog-api-key: AIzaSyDummyHeaderSecret123456"),
             "Gemini native request must pass x-goog-api-key header: {raw_req}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
@@ -5851,7 +6036,10 @@ data: [DONE]\n\n";
         eng_a.stream_budget.pre_ttft_hedge_delay = Duration::from_millis(80);
         eng_a.stream_budget.max_retries_per_turn = 0;
 
-        let sum_a = eng_a.run_prompt("hedge 502 test", 4, 15, None).await.unwrap();
+        let sum_a = eng_a
+            .run_prompt("hedge 502 test", 4, 15, None)
+            .await
+            .unwrap();
         srv_a.await.unwrap();
         assert_eq!(sum_a.final_text, "PRIMARY_SURVIVED_HEDGE_502");
         assert_eq!(eng_a.total_hedge_wins, 0);
@@ -6058,16 +6246,28 @@ data: [DONE]\n\n";
         srv.await.unwrap();
         assert_eq!(sum.final_text, "KV_DONE");
 
-        let reqs: Vec<Value> = bodies.lock().unwrap().iter().map(|r| http_body_json(r)).collect();
+        let reqs: Vec<Value> = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| http_body_json(r))
+            .collect();
         assert_eq!(reqs.len(), 3);
         for w in reqs.windows(2) {
             let (prev, cur) = (&w[0], &w[1]);
-            assert_eq!(prev["tools"], cur["tools"], "tools[] must be byte-identical");
+            assert_eq!(
+                prev["tools"], cur["tools"],
+                "tools[] must be byte-identical"
+            );
             assert_eq!(prev["prompt_cache_key"], cur["prompt_cache_key"]);
             let pm = prev["messages"].as_array().unwrap();
             let cm = cur["messages"].as_array().unwrap();
             assert!(cm.len() > pm.len());
-            assert_eq!(&cm[..pm.len()], &pm[..], "earlier messages must stay append-only");
+            assert_eq!(
+                &cm[..pm.len()],
+                &pm[..],
+                "earlier messages must stay append-only"
+            );
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -6124,15 +6324,25 @@ data: {\"type\":\"message_stop\"}\n\n".to_string();
         let raws = reqs_raw.lock().unwrap().clone();
         assert_eq!(raws.len(), 3);
         assert!(raws.iter().all(|r| r.starts_with("POST /v1/messages")));
-        let reqs: Vec<Value> = raws.iter().map(|r| strip_cache_control(&http_body_json(r))).collect();
+        let reqs: Vec<Value> = raws
+            .iter()
+            .map(|r| strip_cache_control(&http_body_json(r)))
+            .collect();
         for w in reqs.windows(2) {
             let (prev, cur) = (&w[0], &w[1]);
-            assert_eq!(prev["system"], cur["system"], "system must be byte-identical");
+            assert_eq!(
+                prev["system"], cur["system"],
+                "system must be byte-identical"
+            );
             assert_eq!(prev["tools"], cur["tools"], "tools must be byte-identical");
             let pm = prev["messages"].as_array().unwrap();
             let cm = cur["messages"].as_array().unwrap();
             assert!(cm.len() > pm.len());
-            assert_eq!(&cm[..pm.len()], &pm[..], "Anthropic history must stay append-only");
+            assert_eq!(
+                &cm[..pm.len()],
+                &pm[..],
+                "Anthropic history must stay append-only"
+            );
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -6273,7 +6483,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
             let pi = prev["input"].as_array().unwrap();
             let ci = cur["input"].as_array().unwrap();
             assert!(ci.len() > pi.len());
-            assert_eq!(&ci[..pi.len()], &pi[..], "Responses input must stay append-only");
+            assert_eq!(
+                &ci[..pi.len()],
+                &pi[..],
+                "Responses input must stay append-only"
+            );
         }
         // Every function_call has a matching function_call_output (zero orphaned IDs)
         let last_input = reqs[2]["input"].as_array().unwrap();
@@ -6292,14 +6506,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
         let srv_b = tokio::spawn(async move {
             let (mut s1, _) = listener_b.accept().await.unwrap();
             let r1 = read_http_request(&mut s1).await;
-            paths_bg.lock().unwrap().push(r1.lines().next().unwrap_or("").to_string());
+            paths_bg
+                .lock()
+                .unwrap()
+                .push(r1.lines().next().unwrap_or("").to_string());
             let _ = s1
                 .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"no\"}")
                 .await;
             let _ = s1.shutdown().await;
             let (mut s2, _) = listener_b.accept().await.unwrap();
             let r2 = read_http_request(&mut s2).await;
-            paths_bg.lock().unwrap().push(r2.lines().next().unwrap_or("").to_string());
+            paths_bg
+                .lock()
+                .unwrap()
+                .push(r2.lines().next().unwrap_or("").to_string());
             let ok = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
 data: {\"choices\":[{\"delta\":{\"content\":\"CHAT_FALLBACK_OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":3}}\n\n\
 data: [DONE]\n\n";
@@ -6324,7 +6544,10 @@ data: [DONE]\n\n";
     #[test]
     fn parses_shell_exit_code_header() {
         assert_eq!(parse_shell_exit_code("exit_code: 0\nok"), Some(0));
-        assert_eq!(parse_shell_exit_code("exit_code: 3\nCommand exited with code 3."), Some(3));
+        assert_eq!(
+            parse_shell_exit_code("exit_code: 3\nCommand exited with code 3."),
+            Some(3)
+        );
         assert_eq!(parse_shell_exit_code("{\"exitCode\":0}"), None);
     }
 

@@ -11,11 +11,11 @@
 //!
 //! Supports external harnesses: `goose acp`, `agy acp`, `codex-acp`, `claude-acp` (plus custom).
 
-use anyhow::{bail, Context, Result};
-use chrono::Utc;
 use crate::path_guard::sanitize_windows_path;
 use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
 use crate::supervisor::{process_tree_rss_bytes, spawn_supervised_command, ProcessSupervisor};
+use anyhow::{bail, Context, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -101,7 +101,9 @@ pub fn detect_all_backends(omp_override: Option<&Path>) -> Vec<HarnessBackendInf
         .or_else(|| which::which("omp").ok());
     let goose_exe = find_goose_binary();
     let agy_exe = which::which("agy").ok();
-    let codex_exe = which::which("codex-acp").ok().or_else(|| which::which("codex").ok());
+    let codex_exe = which::which("codex-acp")
+        .ok()
+        .or_else(|| which::which("codex").ok());
     let claude_exe = which::which("claude-acp")
         .ok()
         .or_else(|| which::which("claude-code-acp").ok())
@@ -286,11 +288,7 @@ impl AcpLaunchConfig {
                     .ok_or_else(|| anyhow::anyhow!("goose binary not found"))?;
                 (
                     p,
-                    vec![
-                        "acp".into(),
-                        "--with-builtin".into(),
-                        "developer".into(),
-                    ],
+                    vec!["acp".into(), "--with-builtin".into(), "developer".into()],
                 )
             }
             HarnessBackendId::AgyAcp => {
@@ -310,7 +308,14 @@ impl AcpLaunchConfig {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .is_some_and(|s| s.to_ascii_lowercase().contains("acp"));
-                (p, if is_adapter { vec![] } else { vec!["acp".into()] })
+                (
+                    p,
+                    if is_adapter {
+                        vec![]
+                    } else {
+                        vec!["acp".into()]
+                    },
+                )
             }
             HarnessBackendId::ClaudeAcp => {
                 let p = explicit_bin
@@ -323,7 +328,14 @@ impl AcpLaunchConfig {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .is_some_and(|s| s.to_ascii_lowercase().contains("acp"));
-                (p, if is_adapter { vec![] } else { vec!["acp".into()] })
+                (
+                    p,
+                    if is_adapter {
+                        vec![]
+                    } else {
+                        vec!["acp".into()]
+                    },
+                )
             }
             _ => bail!("backend {:?} is not an ACP stdio backend", backend),
         };
@@ -366,10 +378,20 @@ impl AcpLaunchConfig {
 pub enum AcpEvent {
     TextDelta(String),
     ThinkingDelta(String),
-    ToolCallStart { id: String, name: String },
-    ToolCallEnd { id: String, name: String, is_error: bool },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallEnd {
+        id: String,
+        name: String,
+        is_error: bool,
+    },
     RawUpdate(Value),
-    ProcessExit { exit_code: Option<i32>, stderr_tail: String },
+    ProcessExit {
+        exit_code: Option<i32>,
+        stderr_tail: String,
+    },
 }
 
 pub type AcpEventSink = Arc<dyn Fn(AcpEvent) + Send + Sync>;
@@ -553,7 +575,10 @@ impl AcpClient {
             Ok(Err(_)) => bail!("ACP process exited before replying to {method}"),
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
-                bail!("ACP request '{method}' timed out after {}s", timeout_dur.as_secs())
+                bail!(
+                    "ACP request '{method}' timed out after {}s",
+                    timeout_dur.as_secs()
+                )
             }
         }
     }
@@ -688,13 +713,8 @@ pub fn build_acp_permission_response(
     let mut any_allow = false;
     for alias in &tool_aliases {
         for tgt in &targets {
-            let eval = PermissionsEngine::evaluate(
-                rules,
-                workspace_trusted,
-                alias,
-                tgt,
-                approval_mode,
-            );
+            let eval =
+                PermissionsEngine::evaluate(rules, workspace_trusted, alias, tgt, approval_mode);
             match eval.decision {
                 PermissionDecision::Deny => {
                     any_deny = true;

@@ -44,7 +44,8 @@
     if (!q) return 1;
     const hay = (cmd.title + " " + cmd.group + " " + cmd.keywords).toLowerCase();
     const needle = q.toLowerCase().trim();
-    if (hay.includes(needle)) return 100 - hay.indexOf(needle);
+    const position = hay.indexOf(needle);
+    if (position >= 0) return 26 + 100 / (1 + position);
     let hi = 0;
     for (let i = 0; i < needle.length; i++) {
       const ch = needle[i];

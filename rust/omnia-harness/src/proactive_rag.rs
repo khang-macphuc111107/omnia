@@ -160,64 +160,65 @@ pub fn fold_vietnamese_ascii(input: &str) -> String {
         if ('\u{0300}'..='\u{036F}').contains(&ch) {
             continue;
         }
-        let mapped = match ch {
-            'á' | 'à' | 'ả' | 'ã' | 'ạ' | 'ă' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' | 'â' | 'ấ' | 'ầ'
-            | 'ẩ' | 'ẫ' | 'ậ' | 'Á' | 'À' | 'Ả' | 'Ã' | 'Ạ' | 'Ă' | 'Ắ' | 'Ằ' | 'Ẳ' | 'Ẵ' | 'Ặ'
-            | 'Â' | 'Ấ' | 'Ầ' | 'Ẩ' | 'Ẫ' | 'Ậ' => 'a',
-            'é' | 'è' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ế' | 'ề' | 'ể' | 'ễ' | 'ệ' | 'É' | 'È' | 'Ẻ'
-            | 'Ẽ' | 'Ẹ' | 'Ê' | 'Ế' | 'Ề' | 'Ể' | 'Ễ' | 'Ệ' => 'e',
-            'í' | 'ì' | 'ỉ' | 'ĩ' | 'ị' | 'Í' | 'Ì' | 'Ỉ' | 'Ĩ' | 'Ị' => 'i',
-            'ó' | 'ò' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ớ' | 'ờ'
-            | 'ở' | 'ỡ' | 'ợ' | 'Ó' | 'Ò' | 'Ỏ' | 'Õ' | 'Ọ' | 'Ô' | 'Ố' | 'Ồ' | 'Ổ' | 'Ỗ' | 'Ộ'
-            | 'Ơ' | 'Ớ' | 'Ờ' | 'Ở' | 'Ỡ' | 'Ợ' => 'o',
-            'ú' | 'ù' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự' | 'Ú' | 'Ù' | 'Ủ'
-            | 'Ũ' | 'Ụ' | 'Ư' | 'Ứ' | 'Ừ' | 'Ử' | 'Ữ' | 'Ự' => 'u',
-            'ý' | 'ỳ' | 'ỷ' | 'ỹ' | 'ỵ' | 'Ý' | 'Ỳ' | 'Ỷ' | 'Ỹ' | 'Ỵ' => 'y',
-            'đ' | 'Đ' => 'd',
-            other => other.to_ascii_lowercase(),
-        };
-        out.push(mapped);
+        out.push(fold_vietnamese_char(ch));
     }
     out
 }
 
-/// Return true if `input` contains any accented Vietnamese character or đ/Đ.
+fn fold_vietnamese_char(ch: char) -> char {
+    match ch {
+        'á' | 'à' | 'ả' | 'ã' | 'ạ' | 'ă' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' | 'â' | 'ấ' | 'ầ'
+        | 'ẩ' | 'ẫ' | 'ậ' | 'Á' | 'À' | 'Ả' | 'Ã' | 'Ạ' | 'Ă' | 'Ắ' | 'Ằ' | 'Ẳ' | 'Ẵ' | 'Ặ'
+        | 'Â' | 'Ấ' | 'Ầ' | 'Ẩ' | 'Ẫ' | 'Ậ' => 'a',
+        'é' | 'è' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ế' | 'ề' | 'ể' | 'ễ' | 'ệ' | 'É' | 'È' | 'Ẻ'
+        | 'Ẽ' | 'Ẹ' | 'Ê' | 'Ế' | 'Ề' | 'Ể' | 'Ễ' | 'Ệ' => 'e',
+        'í' | 'ì' | 'ỉ' | 'ĩ' | 'ị' | 'Í' | 'Ì' | 'Ỉ' | 'Ĩ' | 'Ị' => 'i',
+        'ó' | 'ò' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ớ' | 'ờ'
+        | 'ở' | 'ỡ' | 'ợ' | 'Ó' | 'Ò' | 'Ỏ' | 'Õ' | 'Ọ' | 'Ô' | 'Ố' | 'Ồ' | 'Ổ' | 'Ỗ' | 'Ộ'
+        | 'Ơ' | 'Ớ' | 'Ờ' | 'Ở' | 'Ỡ' | 'Ợ' => 'o',
+        'ú' | 'ù' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự' | 'Ú' | 'Ù' | 'Ủ'
+        | 'Ũ' | 'Ụ' | 'Ư' | 'Ứ' | 'Ừ' | 'Ử' | 'Ữ' | 'Ự' => 'u',
+        'ý' | 'ỳ' | 'ỷ' | 'ỹ' | 'ỵ' | 'Ý' | 'Ỳ' | 'Ỷ' | 'Ỹ' | 'Ỵ' => 'y',
+        'đ' | 'Đ' => 'd',
+        other => other.to_ascii_lowercase(),
+    }
+}
+
+/// Detect accented Vietnamese letters in precomposed or decomposed text, including đ/Đ.
+///
+/// ```
+/// use omnia_harness::has_vietnamese_diacritics;
+///
+/// assert!(has_vietnamese_diacritics("m\u{00e1}")); // precomposed á
+/// assert!(has_vietnamese_diacritics("ma\u{0301}")); // decomposed á
+/// assert!(!has_vietnamese_diacritics("b\u{0301}")); // not a Vietnamese vowel
+/// ```
 #[must_use]
 pub fn has_vietnamese_diacritics(input: &str) -> bool {
-    input.chars().any(|ch| {
-        matches!(
-            ch,
-            'đ' | 'Đ' | 'ă' | 'Ă' | 'â' | 'Â' | 'ê' | 'Ê' | 'ô' | 'Ô' | 'ơ' | 'Ơ' | 'ư' | 'Ư'
-        ) || ('\u{1EA0}'..='\u{1EF9}').contains(&ch)
-            || matches!(
-                ch,
-                'á' | 'à'
-                    | 'ã'
-                    | 'é'
-                    | 'è'
-                    | 'í'
-                    | 'ì'
-                    | 'ó'
-                    | 'ò'
-                    | 'õ'
-                    | 'ú'
-                    | 'ù'
-                    | 'ý'
-                    | 'Á'
-                    | 'À'
-                    | 'Ã'
-                    | 'É'
-                    | 'È'
-                    | 'Í'
-                    | 'Ì'
-                    | 'Ó'
-                    | 'Ò'
-                    | 'Õ'
-                    | 'Ú'
-                    | 'Ù'
-                    | 'Ý'
-            )
-    })
+    let mut base = '\0';
+    for ch in input.chars() {
+        if ch.is_ascii() {
+            base = ch.to_ascii_lowercase();
+            continue;
+        }
+        if fold_vietnamese_char(ch).is_ascii() {
+            return true;
+        }
+        let accented = match ch {
+            '\u{0300}' | '\u{0301}' | '\u{0303}' | '\u{0309}' | '\u{0323}' => {
+                matches!(base, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+            }
+            '\u{0302}' => matches!(base, 'a' | 'e' | 'o'),
+            '\u{0306}' => base == 'a',
+            '\u{031B}' => matches!(base, 'o' | 'u'),
+            _ => false,
+        };
+        if accented {
+            return true;
+        }
+        base = '\0';
+    }
+    false
 }
 
 /// Tokenize normalized ASCII into distinct keyword tokens (`len >= 2`), expanding
@@ -329,6 +330,20 @@ impl ProactiveRag {
             .unwrap_or_default()
     }
 
+    /// Plan bilingual retrieval and rank eligible evidence against the query.
+    /// A zero citation budget retains retrieval decisions but cites no sources.
+    /// Canonically equivalent Vietnamese text gets the same language routing.
+    ///
+    /// ```
+    /// use omnia_harness::ProactiveRag;
+    ///
+    /// let rag = ProactiveRag::new();
+    /// for query in ["m\u{00e1}?", "ma\u{0301}?"] {
+    ///     let plan = rag.plan_and_retrieve(query, 1);
+    ///     assert_eq!(plan.language, "vi");
+    ///     assert!(plan.sub_queries.iter().any(|q| q.intent == "bilingual_cross_reference"));
+    /// }
+    /// ```
     #[must_use]
     pub fn plan_and_retrieve(&self, query: &str, max_citations: usize) -> ProactiveRagResult {
         let folded = fold_vietnamese_ascii(query);
@@ -387,9 +402,8 @@ impl ProactiveRag {
                     .then_with(|| a.source_id.cmp(&b.source_id))
             });
 
-            let limit = max_citations.max(1);
             for (idx, item) in scored_valid.into_iter().enumerate() {
-                if idx < limit {
+                if idx < max_citations {
                     cited_sources.push(item);
                 } else {
                     unused_sources.push(UnusedSourceNote {
@@ -401,7 +415,11 @@ impl ProactiveRag {
             }
         }
 
-        let synthesis = build_synthesis(language, should_retrieve, &cited_sources);
+        let synthesis = if should_retrieve && max_citations == 0 {
+            "No sources cited: citation budget is zero.".to_owned()
+        } else {
+            build_synthesis(language, should_retrieve, &cited_sources)
+        };
         ProactiveRagResult {
             query: query.to_owned(),
             language: language.to_owned(),
@@ -691,4 +709,26 @@ fn default_omnia_corpus() -> Vec<CorpusSource> {
             freshness_label: "superseded".to_owned(),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProactiveRag;
+
+    #[test]
+    fn zero_citation_budget_preserves_retrieval_decisions() {
+        let rag = ProactiveRag::new();
+        let query = "How does loopback CORS work?";
+        let allowed = rag.plan_and_retrieve(query, 1);
+        assert_eq!(allowed.cited_sources.len(), 1);
+
+        let blocked = rag.plan_and_retrieve(query, 0);
+        assert!(blocked.should_retrieve);
+        assert!(blocked.cited_sources.is_empty());
+        assert!(blocked.unused_sources.iter().any(|note| {
+            note.source_id == allowed.cited_sources[0].source_id
+                && note.exclusion_reason == "outside_top_k_citation_budget"
+        }));
+        assert!(blocked.synthesis.contains("citation budget is zero"));
+    }
 }

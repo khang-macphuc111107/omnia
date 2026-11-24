@@ -65,7 +65,8 @@ def run_smoke_cell(harness: str, model: str, timeout_s: int = 120, omnia_bin: Op
     leaks: List[dict] = []
 
     try:
-        t0 = time.perf_counter()
+        wall_start_ns = time.perf_counter_ns()
+        t0 = wall_start_ns / 1e9
         proc = subprocess.Popen(
             launch.cmd,
             cwd=str(ws),
@@ -125,9 +126,11 @@ def run_smoke_cell(harness: str, model: str, timeout_s: int = 120, omnia_bin: Op
             terminate_process_tree(proc.pid)
             exit_code = -9
 
-        wall_s = time.perf_counter() - t0
+        wall_end_ns = time.perf_counter_ns()
+        wall_s = (wall_end_ns - wall_start_ns) / 1e9
         res = mon.stop()
-        wire = proxy.stop()
+        wire = proxy.stop((wall_start_ns, wall_end_ns))
+        harness_overhead_ms = wire["wire_window_uncovered_ms"]
         stream = parse_harness_stream(harness, stdout_events, t0)
 
         # Verify calc.py actually fixed
@@ -146,11 +149,13 @@ def run_smoke_cell(harness: str, model: str, timeout_s: int = 120, omnia_bin: Op
             "exit_code": exit_code,
             "timed_out": timed_out,
             "wall_s": round(wall_s, 2),
-            "harness_overhead_ms": round(max(0.0, (wall_s - wire.get("wire_total_llm_wait_ms", 0.0) / 1000.0) * 1000.0), 1),
+            "wire_wall_window_ns": wire["wire_wall_window_ns"],
+            "wire_window_inference_ns": wire["wire_window_inference_ns"],
+            "harness_overhead_ms": round(harness_overhead_ms, 1) if harness_overhead_ms is not None else None,
             "wire_requests": wire.get("wire_requests", 0),
             "wire_errors": wire.get("wire_errors", 0),
             "wire_ttft_ms": wire.get("wire_first_ttft_ms"),
-            "wire_tokens": wire.get("wire_total_tokens", 0),
+            "wire_tokens": wire.get("wire_total_tokens"),
             "wire_tool_calls": wire.get("wire_tool_calls_emitted", 0),
             "stream_tool_calls": stream.get("tool_call_count", 0),
             "peak_harness_rss_mb": res.peak_harness_rss_mb,

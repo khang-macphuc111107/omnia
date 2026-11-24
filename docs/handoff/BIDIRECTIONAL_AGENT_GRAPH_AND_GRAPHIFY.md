@@ -2,7 +2,7 @@
 
 > **Audience**: Collaborator **HTMusTC**, Omnia **Full Native Rust** & Studio UI maintainers, and Codex / Antigravity / Omnia swarm agents
 >
-> **Authoritative Rust & UI Implementation**: [peer_mesh.rs](../../rust/omnia-graph/src/peer_mesh.rs), [graphify_index.rs](../../rust/omnia-graph/src/graphify_index.rs), [graph_tests.rs](../../rust/omnia-graph/tests/graph_tests.rs), and [ui/app/peer-graph.js](../../ui/app/peer-graph.js) *(archived Wave 4 C++20 implementation backed up externally in `D:\OmniaData\backups\pre-full-rust-20261115\`)*
+> **Authoritative Rust & UI Implementation**: [peer_mesh.rs](../../rust/omnia-graph/src/peer_mesh.rs), [graphify_index.rs](../../rust/omnia-graph/src/graphify_index.rs), [graph_tests.rs](../../rust/omnia-graph/tests/graph_tests.rs), [graph_locator.rs](../../rust/omnia-agent/src/graph_locator.rs), and [ui/app/peer-graph.js](../../ui/app/peer-graph.js) *(archived Wave 4 C++20 implementation backed up externally in `D:\OmniaData\backups\pre-full-rust-20261115\`)*
 >
 > **Related Skills**: [`.agents/skills/deep-general-graph-orchestration`](../../.agents/skills/deep-general-graph-orchestration/SKILL.md), [`.agents/skills/deep-cpp-native`](../../.agents/skills/deep-cpp-native/SKILL.md) *(historical C++ diagnostics)*, [`.agents/skills/autonomous-power-continuity`](../../.agents/skills/autonomous-power-continuity/SKILL.md), [`.agents/skills/omni-bilingual-skill-router`](../../.agents/skills/omni-bilingual-skill-router/SKILL.md)
 >

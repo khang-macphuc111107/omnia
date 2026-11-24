@@ -201,7 +201,11 @@ impl Default for EpochMaskingState {
 }
 
 impl EpochMaskingState {
-    pub fn new(soft_watermark_chars: usize, target_floor_chars: usize, keep_recent_turns: u32) -> Self {
+    pub fn new(
+        soft_watermark_chars: usize,
+        target_floor_chars: usize,
+        keep_recent_turns: u32,
+    ) -> Self {
         Self {
             soft_watermark_chars,
             effective_watermark_chars: soft_watermark_chars,
@@ -223,7 +227,11 @@ impl EpochMaskingState {
         let scaled = ((model_ctx_chars as f64) * 0.45) as usize;
         let w_soft = scaled.clamp(EPOCH_SOFT_WATERMARK_CHARS, 280_000);
         let w_target = ((w_soft as f64) * 0.55) as usize;
-        Self::new(w_soft, w_target.max(EPOCH_TARGET_FLOOR_CHARS), EPOCH_KEEP_RECENT_TURNS)
+        Self::new(
+            w_soft,
+            w_target.max(EPOCH_TARGET_FLOOR_CHARS),
+            EPOCH_KEEP_RECENT_TURNS,
+        )
     }
 
     /// Execute KV-cache-safe hysteresis epoch masking.
@@ -272,7 +280,10 @@ impl EpochMaskingState {
                 latest_failing_shell_idx = Some(idx);
             }
             if let Some(ref p) = msg.tool_target_path {
-                if matches!(tool, "read_file" | "edit_file" | "write_file" | "apply_patch") {
+                if matches!(
+                    tool,
+                    "read_file" | "edit_file" | "write_file" | "apply_patch"
+                ) {
                     let norm = p.replace('\\', "/");
                     let replace = latest_file_op
                         .get(&norm)
@@ -819,7 +830,10 @@ impl AnchoredSummary {
             }
         }
         for m in messages {
-            if m.turn_index == 0 || m.turn_index > cutoff_turn || m.turn_index <= self.merged_through_turn {
+            if m.turn_index == 0
+                || m.turn_index > cutoff_turn
+                || m.turn_index <= self.merged_through_turn
+            {
                 continue;
             }
             if m.role == "tool" {
@@ -847,7 +861,9 @@ impl AnchoredSummary {
                         self.failed_hypotheses.push(first_line);
                     }
                 } else if tool == "shell"
-                    && (m.content.contains("passed") || m.content.contains("exit_code=0") || m.content.contains("OK"))
+                    && (m.content.contains("passed")
+                        || m.content.contains("exit_code=0")
+                        || m.content.contains("OK"))
                 {
                     let fact = m
                         .content
@@ -1038,7 +1054,9 @@ impl OscillationDetector {
             self.tree_history.push_back(repo_tree_blake3.to_string());
         }
         self.zero_mutation_turns += 1;
-        if self.zero_mutation_turns == 5 || (self.zero_mutation_turns > 5 && self.zero_mutation_turns.is_multiple_of(4)) {
+        if self.zero_mutation_turns == 5
+            || (self.zero_mutation_turns > 5 && self.zero_mutation_turns.is_multiple_of(4))
+        {
             return Some(OscillationAlert::ZeroMutationChurn {
                 turns: self.zero_mutation_turns,
             });
@@ -1079,7 +1097,9 @@ mod tests {
         assert_eq!(msgs[0].content, "IMMUTABLE_SYS");
         assert_eq!(msgs[1].content, "IMMUTABLE_TURN1");
         assert!(msgs[2].content.contains("[Lakeview Summary"));
-        assert!(msgs[2].content.contains("AssertionError: expected 42 got 41"));
+        assert!(msgs[2]
+            .content
+            .contains("AssertionError: expected 42 got 41"));
         assert_eq!(msgs[3].content.len(), big.len());
 
         let r2 = compress_stale_tool_results(&mut msgs, 5, 3_000, 2);
@@ -1091,7 +1111,8 @@ mod tests {
             HarnessMessage::tool_result("r1", "read_file", big.clone(), 1),
             HarnessMessage::tool_result("s1", "shell", big.clone(), 1),
         ];
-        let r_under = compress_stale_tool_results_with_watermark(&mut msgs_wm, 10, 6_000, 6, 64_000);
+        let r_under =
+            compress_stale_tool_results_with_watermark(&mut msgs_wm, 10, 6_000, 6, 64_000);
         assert_eq!(r_under.compressed_count, 0);
         let r_over = compress_stale_tool_results_with_watermark(&mut msgs_wm, 10, 3_000, 6, 5_000);
         assert_eq!(r_over.compressed_count, 1);
@@ -1111,7 +1132,8 @@ mod tests {
     }
 
     #[test]
-    fn epoch_masking_stays_append_only_under_watermark_then_folds_once_preserving_next_turns_prefix() {
+    fn epoch_masking_stays_append_only_under_watermark_then_folds_once_preserving_next_turns_prefix(
+    ) {
         let mut masker = EpochMaskingState::new(10_000, 5_000, 4);
         let chunk = "x".repeat(3_500);
         let mut msgs = vec![
@@ -1127,18 +1149,31 @@ mod tests {
         assert_eq!(masker.last_masked_turn, 0);
 
         // Push above watermark (10.5k >= 10k)
-        msgs.push(HarnessMessage::tool_result("s3", "workspace_map", chunk.clone(), 3));
+        msgs.push(HarnessMessage::tool_result(
+            "s3",
+            "workspace_map",
+            chunk.clone(),
+            3,
+        ));
         let r1 = masker.maybe_fold(&mut msgs, 8);
         assert!(r1.compressed_count >= 2);
         assert_eq!(masker.last_masked_turn, 4);
 
         // Snapshot prefix after epoch fold; next turn (turn 9) adds new message below watermark -> ZERO prefix mutations!
         let snapshot_prefix: Vec<String> = msgs.iter().map(|m| m.content.clone()).collect();
-        msgs.push(HarnessMessage::tool_result("s4", "shell", "exit_code: 0\nok", 9));
+        msgs.push(HarnessMessage::tool_result(
+            "s4",
+            "shell",
+            "exit_code: 0\nok",
+            9,
+        ));
         let r2 = masker.maybe_fold(&mut msgs, 9);
         assert_eq!(r2.compressed_count, 0);
         for (i, orig) in snapshot_prefix.iter().enumerate() {
-            assert_eq!(&msgs[i].content, orig, "KV prefix must stay byte-identical after epoch fold!");
+            assert_eq!(
+                &msgs[i].content, orig,
+                "KV prefix must stay byte-identical after epoch fold!"
+            );
         }
     }
 
@@ -1172,27 +1207,21 @@ mod tests {
                 Some("pkg/app.py".into()),
                 false,
             ),
-            HarnessMessage::tool_result_with_meta(
-                "sh1",
-                "shell",
-                big_tb.clone(),
-                3,
-                None,
-                true,
-            ),
+            HarnessMessage::tool_result_with_meta("sh1", "shell", big_tb.clone(), 3, None, true),
         ];
 
         let rep = masker.maybe_fold(&mut msgs, 7);
         assert_eq!(rep.compressed_count, 1);
         assert!(
             msgs[2].content.contains("[Masked: read_file 'pkg/app.py'")
-                && msgs[2].content.contains("superseded by edit_file at turn 2"),
+                && msgs[2]
+                    .content
+                    .contains("superseded by edit_file at turn 2"),
             "superseded read_file should be replaced with 1-line tombstone: {}",
             msgs[2].content
         );
         assert_eq!(
-            msgs[3].content,
-            "Edited 'pkg/app.py' (1 replacement).",
+            msgs[3].content, "Edited 'pkg/app.py' (1 replacement).",
             "compact edit confirmation must remain intact"
         );
         assert_eq!(
@@ -1259,7 +1288,10 @@ mod tests {
         assert_eq!(masker.epochs_folded, 1);
         assert_eq!(masker.last_fold_turn, 8);
         let post_fold_chars: usize = msgs.iter().map(|m| m.content.len()).sum();
-        assert!(post_fold_chars >= 44_000, "post-fold protected chars stay >= 44k");
+        assert!(
+            post_fold_chars >= 44_000,
+            "post-fold protected chars stay >= 44k"
+        );
         assert!(
             masker.effective_watermark_chars >= post_fold_chars + 16_000,
             "watermark must ratchet above post-fold chars + 16k (got {}, post={})",
@@ -1383,12 +1415,25 @@ mod tests {
 
         // 1. Exact failing repeat (>=2)
         assert!(det
-            .observe_tool("edit_file", "{\"path\":\"a.py\"}", "old_string not found", true)
+            .observe_tool(
+                "edit_file",
+                "{\"path\":\"a.py\"}",
+                "old_string not found",
+                true
+            )
             .is_none());
         let repeat = det
-            .observe_tool("edit_file", "{\"path\":\"a.py\"}", "old_string not found", true)
+            .observe_tool(
+                "edit_file",
+                "{\"path\":\"a.py\"}",
+                "old_string not found",
+                true,
+            )
             .expect("2nd identical failing call must trigger ExactFailingRepeat");
-        assert!(matches!(repeat, OscillationAlert::ExactFailingRepeat { repeats: 2, .. }));
+        assert!(matches!(
+            repeat,
+            OscillationAlert::ExactFailingRepeat { repeats: 2, .. }
+        ));
 
         // 2. Repo-state 2-cycle oscillation: S0 -> S1 -> S0 (S_t == S_{t-2})
         assert!(det.observe_turn_tree("hash_aaa", true).is_none());
@@ -1396,7 +1441,10 @@ mod tests {
         let cycle = det
             .observe_turn_tree("hash_aaa", true)
             .expect("S_t == S_{t-2} must trigger RepoStateCycle");
-        assert!(matches!(cycle, OscillationAlert::RepoStateCycle { cycle_len: 2, .. }));
+        assert!(matches!(
+            cycle,
+            OscillationAlert::RepoStateCycle { cycle_len: 2, .. }
+        ));
 
         // 3. Zero-mutation churn (5 consecutive unchanged turns)
         for _ in 0..4 {
@@ -1405,6 +1453,9 @@ mod tests {
         let churn = det
             .observe_turn_tree("hash_aaa", false)
             .expect("5th consecutive zero-mutation turn must trigger ZeroMutationChurn");
-        assert!(matches!(churn, OscillationAlert::ZeroMutationChurn { turns: 5 }));
+        assert!(matches!(
+            churn,
+            OscillationAlert::ZeroMutationChurn { turns: 5 }
+        ));
     }
 }

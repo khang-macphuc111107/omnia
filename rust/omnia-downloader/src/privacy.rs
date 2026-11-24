@@ -759,17 +759,17 @@ mod tests {
             "https://media.akamaized.net/path/file.mp4?hdnts=exp=1799999999~acl=/*~hmac=deadbeef1234"
         );
 
-        let sigv4 = "https://bucket.s3.amazonaws.com/a.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE/20261122/us-east-1/s3/aws4_request&X-Amz-Signature=abc123&gclid=dropme";
+        let sigv4 = "https://bucket.s3.amazonaws.com/a.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE/20261122/us-east-1/s3/aws4_request&X-Amz-Signature=dummy_amz_sig_123456&gclid=dropme";
         let cleaned_s3 = PrivacyShield::sanitize_live_url(sigv4);
         assert!(cleaned_s3.contains("X-Amz-Credential=AKIAEXAMPLE/20261122/us-east-1/s3/aws4_request"));
-        assert!(cleaned_s3.contains("X-Amz-Signature=abc123"));
+        assert!(cleaned_s3.contains("X-Amz-Signature=dummy_amz_sig_123456"));
         assert!(!cleaned_s3.contains("gclid"));
 
         // Receipt sanitizer MUST redact signed values while retaining parameter names.
         let receipt = PrivacyShield::sanitize_for_receipt(sigv4);
         assert!(receipt.contains("X-Amz-Signature=[REDACTED]"));
         assert!(receipt.contains("X-Amz-Credential=[REDACTED]"));
-        assert!(!receipt.contains("abc123"));
+        assert!(!receipt.contains("dummy_amz_sig_123456"));
     }
 
     #[test]

@@ -1,25 +1,23 @@
-# Omnia checkpoint — 2026-11-15, Wave 5 revision 12 (`Steer #14`: Full Native Rust 13-crate migration, 19-skill parity & governance alignment)
+# Omnia checkpoint — 2026-11-24, Wave 5 revision 13 (`Steer #14..#15`: Full Native Rust 17-crate workspace, Omnia v5 Harness/Studio/Benchmarks & Phase 0 Hygiene)
 
 ## Current continuation watermark
 
-- Active checkout: `D:\Omnia`, branch `codex/omnia-context-integration`,
-  `HEAD=d5536ecd1381e45f16146406d70f13584fdf0d4f`; the working tree is in
-  active Wave 2 **Full Native Rust** (`Steer #14`) parallel integration across
-  strictly disjoint lanes (`D:\OmniaData\coordination\master-bridge-01a1d643\DISJOINT_OWNERSHIP.json`).
+- Active checkout: `D:\Omnia`, branch `omnia-sota-harness`,
+  `HEAD=42cf46343506f6c40e6e43270fa5853f64e05eb6`; the working tree is in
+  **Wave 5 / Steer #15 Omnia v5** Phase 0 hygiene + multi-lane swarm execution.
 - **Wave 4 C++20 external archival backup**: The `55` superseded Wave 4 C++20/CMake files (`CMakeLists.txt`, `CMakePresets.json`, `cpp/**`, `native/CMakeLists.txt`, `native/{include,src,tests}/**`) are preserved outside the tree under `D:\OmniaData\backups\pre-full-rust-20261115\manifest.sha256.json` (`patch_bytes: 361065`); `0` `.cpp`/`.hpp`/`CMake*` files remain in the active product tree.
-- **Active Full Native Rust target (`13` Cargo crates)**: `Cargo.toml`, `Cargo.lock`, and `rust/` (`omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-media-capture`, `omnia-remote-control`, `omnia-runtime`, `omnia-studio`, `omnia-native`), built out-of-source via `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`.
-- The Wave 4 C++20 and Flagship Studio entries below remain historical receipts
-  bound to their named snapshots; they do not substitute for Wave 2/3 verification
-  of the Full Native Rust workspace.
+- **Active Full Native Rust target (`17` Cargo crates)**: `Cargo.toml`, `Cargo.lock`, and `rust/` (`omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-media-capture`, `omnia-remote-control`, `omnia-runtime`, `omnia-studio`, `omnia-native`, `omnia-agent`, `omnia-cli`, `omnia-downloader`, `omnia-notebook`), built out-of-source via `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace` (UI dist under `D:\OmniaData\build\ui-dist`), alongside `tools/omnia-benchmark/` and `tools/omnia-gemini-extractor/`.
+- The Wave 4 C++20 and earlier Wave 3 Flagship Studio entries below remain historical receipts
+  bound to their named snapshots; they do not substitute for Steer #15 verification
+  of the 17-crate Rust workspace.
 - History acquisition remains `partial`: Codex and Antigravity metadata surfaces
   are present, while complete transcript-body recovery is not proven. Raw/private
   history remains outside the checkout.
-- Active Wave 2 -> Wave 3 executable sequence:
-  1. complete Wave 2 Rust implementations (`omnia-studio`, `omnia-native`), UI alignment, strict hygiene/whitespace cleanup, `19/19` 3-way skill parity, and doc/ownership ledger updates (`lane_f2_docs_hygiene_learn`);
-  2. serialize unified `cargo check/clippy/test/build --workspace --offline --locked` under external `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`;
-  3. execute `7/7` PowerShell 7 (`pwsh`) Win32 QA workflows (`native/qa-*.ps1`) and live Edge `/browser` CDP QA against Rust `omnia-studio.exe`;
-  4. pass `audit.py --secret-scope all --strict --strict-scope full` + `3` consecutive frozen-snapshot cleanroom audits before flipping `SESSION_ADMISSION.json` to `READY`.
-- Follow-up admission stays **`DEFERRED`** until all Wave 2/3 verification and
+- Active Wave 0 -> Wave 4 executable sequence (`Steer #15`):
+  1. Phase 0 cleanup (`@hygiene-gov` + `@build-gate`): purge in-tree `target/` (`1.11 GB`) & `tools/omnia-benchmark/__pycache__/`, relocate `D:\Omnia\Roaming\` to `D:\OmniaData\quarantine\roaming-20261124\`, enforce LF in `.gitattributes`, achieve `19/19` 3-way skill parity, resolve cross-lane CRLF (`ui/app/atelier.js`, `tools/omnia-benchmark/suite/manifest.json`) & 8 test-fixture secret-scanner matches, commit clean baseline on `omnia-sota-harness`.
+  2. Wave 1–3 implementation & serialized Cargo builds (`@wire-router`, `@tools-mcp-ptc`, `@swarm-memory`, `@studio-backend`, `@studio-ui-ide`, `@build-gate`): SOTA v5 wire/KV/compaction/Context-Folding/RTK/routing, MCP 2026-07-28 + `rquickjs` PTC + ConPTY/Python/DAP/AST/LSP/Hooks/Sandbox/Credentials, live `PeerMeshGraph` worktree swarms + TEX/MCTS + Hindsight/Graphiti/HippoRAG/ACE memory, unified `omnia-studio` + `omnia-notebook` + `omnia-downloader` + `ui-v5`->`ui/` + `ratatui` `omnia-cli` + `omnia-native --studio`.
+  3. Wave 3–4 verification (`@research-bench` + `@verifier`): Suite v5 (`33` tasks) + AA/public benchmarks (`htmustc.id.vn` GPT & Claude only, NO `agy`), `7/7` `pwsh` Win32 QA, isolated Playwright E2E + 4x-CPU layout continuity, `audit.py --secret-scope all --strict --strict-scope full`, and `3` consecutive frozen-snapshot cleanroom audits before flipping `SESSION_ADMISSION.json` to `READY`.
+- Follow-up admission stays **`DEFERRED`** until all Steer #15 verification and
   cleanroom audit gates above pass.
 
 ## Resume here
@@ -597,18 +595,22 @@ Use [STATUS.md](STATUS.md) to jump directly to [PLAN.md](PLAN.md), [TASKS.md](TA
   - **`D:\` & `C:\` Deep-Clean Audit Reports & Receipts (`+944.29 GiB` physical)**: `.gitignore` (`1,067 B`, `sha256=34b53acc61c5de712e3ac3ec94c37147be86d1ba02e716bf51995c43fcb60191`), [DEEP_CLEAN_AUDIT_D_DRIVE.md](DEEP_CLEAN_AUDIT_D_DRIVE.md) (`29,379 B`, `sha256=a51f017a02ecfc8c0e81bace752fcc99dd4876f764b7237b42c0ae7234882aed`), `D_DRIVE_DEEP_CLEAN_RECEIPT.json` (`63,685 B`, `sha256=70f2781df22d91d33bfe0559344041281ea55ea8cec7a9a3eb73a650bc3253af`, `+778.1512 GiB` physical -> `837.57 GiB` free), [DEEP_CLEAN_AUDIT_C_DRIVE.md](DEEP_CLEAN_AUDIT_C_DRIVE.md) (`29,828 B`, `sha256=1a88e1fe3ae9cafc2bd8a49b941f42c08b02aa15d8a9daadc57fa151f4922ac6`), and `C_DRIVE_DEEP_CLEAN_RECEIPT.json` (`48,134 B`, `sha256=ee08c5a0fdd87b67ff3e8b04630d6f62ca249e20fbd6b7af802440fd354060eb`, `+166.1357 GiB` physical -> `189.60 GiB` free).
   - **Commit #5 GitHub Push & Zero-Bloat Clean-Clone C++20 Receipt**: Bound externally in `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json` (`HEAD === origin/master`, unified Release CMake/Ninja build + `35/35` `ctest --output-on-failure` PASS, temporary clone and build directories immediately purged).
 
-## Wave 5 (`Steer #14`) Full Native Rust migration progress — 2026-11-15
+## Wave 5 (`Steer #14..#15`) Full Native Rust 17-crate & Phase 0 baseline — 2026-11-24
 
-- **Pre-Full-Rust C++20 Backup (`D:\OmniaData\backups\pre-full-rust-20261115\`)**: Verified SHA-256 backup manifest `manifest.sha256.json` covering `55` superseded Wave 4 C++20/CMake files (`head: d5536ecd1381e45f16146406d70f13584fdf0d4f`, `branch: codex/omnia-context-integration`, `patch_bytes: 361065`). Active source tree contains **`0` `.cpp`/`.hpp`/`CMake*`** files.
-- **13-Crate Full Native Rust Cargo Workspace (`Cargo.toml`, `Cargo.lock`, `rust/*`)**:
-  - Core & subsystem crates: `omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-media-capture`, `omnia-remote-control` (compiled out-of-source via `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`; `serde = { version = "1", default-features = false, features = ["std"] }` manual `Serialize`/`Deserialize` offline).
-  - Binary & shell crates: `omnia-runtime` (`omnia-runtime.exe`, AdGuard RFC 9110 multi-`Cookie` coalescing + `30_000 ms` proxy budget), `omnia-studio` (`omnia-studio.exe`, active Wave 2 implementation wiring `/api/*` + [`../../ui/`](../../ui/)), and `omnia-native` (`omnia-native.exe` + `omnia_qa_seed.exe`, embedding [`../../native/app.manifest`](../../native/app.manifest), active Wave 2 implementation).
-- **Hygiene, 19-Skill Parity & Cross-Host `/learn` Sync (`lane_f2_docs_hygiene_learn`)**:
-  - Stripped `440` trailing-whitespace lines across `DYNAMIC_ROUTING_REQUIREMENTS.md` and `13` files under `kdense-citation-management` & `kdense-literature-review`; tightened `deep-cpp-native` (`short_description` <= 64 chars + Full Native Rust scope note preserving historical/general C++ diagnostics).
-  - Reached **`19/19` repository skills valid with `cross_host_drift_count: 0`** via `python -B tools/omnia-skill-parity/validate_skills.py --strict-all-skills` (`13` curated + `6` `kdense-*` projections across `D:\Omnia\.agents\skills`, `~/.codex/skills`, `~/.agents/skills`).
-  - Updated `DISJOINT_OWNERSHIP.json` (`schema_version: 5`) + synchronized cross-host `/learn` notes into `~/.gemini/GEMINI.md`, `~/.codex/AGENTS.md`, and `~/.codex/memories_v2/extensions/ad_hoc/notes/2026-11-15-omnia-full-native-rust-migration.md`.
-- **Remaining Wave 2 -> Wave 3 Verification Gates (blocking `SESSION_ADMISSION.json` `READY`)**:
-  1. Complete `rust/omnia-studio` and `rust/omnia-native` Wave 2 implementations + `ui/` alignment.
-  2. Run unified `cargo check --workspace --offline --locked`, `cargo clippy --workspace --offline --locked`, `cargo test --workspace --offline --locked`, `cargo build --workspace --release --offline --locked`.
-  3. Run all `7/7` PowerShell 7 (`pwsh -NoProfile -File native/qa-*.ps1`) Win32 QA workflows and live Edge `/browser` CDP QA against Rust `omnia-studio.exe`.
-  4. Run `python -B tools/omnia-consolidated-audit/audit.py --secret-scope all --strict --strict-scope full` and `3` consecutive frozen-snapshot cleanroom audit rounds before advancing `SESSION_ADMISSION.json` from `DEFERRED` to `READY`.
+- **Pre-Full-Rust C++20 Backup (`D:\OmniaData\backups\pre-full-rust-20261115\`)**: Verified SHA-256 backup manifest `manifest.sha256.json` covering `55` superseded Wave 4 C++20/CMake files (`patch_bytes: 361065`). Active source tree contains **`0` `.cpp`/`.hpp`/`CMake*`** files.
+- **17-Crate Full Native Rust Cargo Workspace (`Cargo.toml`, `Cargo.lock`, `rust/*`, branch `omnia-sota-harness`)**:
+  - Core & subsystem crates (`13`): `omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-media-capture`, `omnia-remote-control`, `omnia-agent` (`27` `*.rs`), `omnia-downloader` (`15` `*.rs`), `omnia-notebook` (`13` `*.rs`).
+  - Binary & shell crates (`4`): `omnia-cli` (`omnia.exe`), `omnia-runtime` (`omnia-runtime.exe`), `omnia-studio` (`omnia-studio.exe`), `omnia-native` (`omnia-native.exe` + `omnia_qa_seed.exe`).
+  - Maintained Python/Node tooling added since Nov 15: `tools/omnia-benchmark/` and `tools/omnia-gemini-extractor/`.
+- **Phase 0 Hygiene & 19-Skill Parity (`2026-11-24`, `@hygiene-gov`)**:
+  - Removed forbidden in-tree `D:\Omnia\target\` (`3,009` files, `1,114,962,395` B, `0` reparse/tracked) and `D:\Omnia\tools\omnia-benchmark\__pycache__\` (`13` `.pyc` files, `296,328` B), freeing `+1,108,557,824` bytes on `D:`.
+  - Relocated `D:\Omnia\Roaming\` (`5` files, `1,576,297` B, `0` reparse/tracked, verified SHA-256 readback) to `D:\OmniaData\quarantine\roaming-20261124\Roaming` (`RELOCATION_RECEIPT.json`, same-volume `0` capacity credit).
+  - Updated `D:\Omnia\.gitattributes` with explicit `text eol=lf` rules for all source/doc/config/script/UI files.
+  - Shortened `deep-general-graph-orchestration` `SKILL.md` `metadata.short-description` and `agents/openai.yaml` `interface.short_description` to `60` chars (`<= 64`), updated `validate_skills.py` cross-drive profile resolution (`E:\Users\khang`) + `E:\Users\khang\.gemini\config\skills.json`, and verified **`19/19` skills valid, `0` cross-host drift, `17/17` validator tests OK**.
+  - Updated governance & handoff docs to remove dead `cpp/`/`CMakeLists.txt` links and document all 17 crates, `tools/omnia-benchmark`, `tools/omnia-gemini-extractor`, and `Steer #15` Omnia v5 objective.
+  - Flagged remaining cross-lane blockers for baseline commit: CRLF in `ui/app/atelier.js` (`@studio-ui-ide`) & `tools/omnia-benchmark/suite/manifest.json` (`@research-bench`), plus 8 test-fixture secret-scanner matches (`rust/omnia-agent/src/engine.rs`, `rust/omnia-connector-gateway/src/gemini_share.rs`, `rust/omnia-agent/src/supervisor.rs`, `rust/omnia-downloader/src/privacy.rs`, `tools/omnia-gemini-extractor/test_extractor.py`).
+- **Remaining Steer #15 Gates (blocking `SESSION_ADMISSION.json` `READY`)**:
+  1. Clean Nov 24 baseline commit on `omnia-sota-harness` (`@build-gate` after cross-lane CRLF/fixture cleanup).
+  2. Unified 17-crate `cargo check/clippy/test/build --workspace --offline --locked`, `ui-v5` -> `ui/` external build (`D:\OmniaData\build\ui-dist`), `ratatui` `omnia-cli` TUI, `omnia-native --studio`.
+  3. All `7/7` PowerShell 7 (`pwsh -NoProfile -File native/qa-*.ps1`) Win32 QA workflows + isolated Playwright E2E + 4x-CPU layout continuity CDP QA + Suite v5 (`33` tasks) & AA/public benchmarks (`htmustc.id.vn` GPT & Claude only, NO `agy`).
+  4. `python -B tools/omnia-consolidated-audit/audit.py --secret-scope all --strict --strict-scope full` and `3` consecutive frozen-snapshot cleanroom audit rounds before advancing `SESSION_ADMISSION.json` from `DEFERRED` to `READY`.

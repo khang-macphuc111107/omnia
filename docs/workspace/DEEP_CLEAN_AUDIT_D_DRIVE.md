@@ -66,7 +66,7 @@
 | `D:\Omnia\.gitattributes` | `file` | `1` | `0` | `888` B | `retained` — Pure `LF` line-ending normalization rules across source & governance docs |
 | `D:\Omnia\.gitignore` | `file` | `1` | `0` | `1,067` B | `retained_updated` — Native C++20 CMake/MSVC/Clang ignore contract (`sha256=34b53acc...`) |
 | `D:\Omnia\AGENTS.md` | `file` | `1` | `0` | `10,456` B | `retained` — Repository autonomous execution, C++20 build boundary, and peer-mesh governance contract |
-| `D:\Omnia\CMakeLists.txt` | `file` | `1` | `0` | `1,053` B | `retained` — Top-level C++20 CMake build graph ([CMakeLists.txt](../../CMakeLists.txt)) |
+| `D:\Omnia\CMakeLists.txt` | `file` | `1` | `0` | `1,053` B | `retained` — Historical Wave 4 top-level C++20 CMake build graph (`CMakeLists.txt`, now archived under `D:\OmniaData\backups\pre-full-rust-20261115\`) |
 | `D:\Omnia\CMakePresets.json` | `file` | `1` | `0` | `1,956` B | `retained` — Out-of-source Ninja Debug/Release presets targeting `D:\OmniaData\build\*` |
 | `D:\Omnia\cpp` | `dir` | `35` | `18` | `359,205` B | `retained` — Native C++20 core & HTTP/JSON-RPC studio host (`omnia-studio.exe`), 5 static `.lib` targets (`omnia_core`, `omnia_storage`, `omnia_routing`, `omnia_graph`, `omnia_harness`), and `ctest` suite (`cpp/**`) |
 | `D:\Omnia\docs` | `dir` | `42` | `3` | `795,369` B | `retained_updated` — Workspace ledgers, UI direction specs, collaborator handoff, and C:/D: deep-clean audits |

@@ -14,6 +14,7 @@ Zero-dependency Python 3 standard-library validator for Omnia repository skills,
    - Validates `.agents/skills.json` (and optional `~/.gemini/config/skills.json` Windows drive-absolute `C:/...` or `D:/...` paths without unexpanded `~` or `$HOME`).
 4. **Cross-Host Parity & Duplicate Detection**:
    - Compares `SKILL.md` and `agents/openai.yaml` SHA-256 digests across workspace, Codex, and `~/.agents/skills`, detecting reparse points, drift, missing mirrors, intra-root frontmatter `name:` collisions, and prefixed/unprefixed twins (`kdense-*` vs unprefixed).
+   - The report states how many configured peer roots were available. No available peer root means parity was not measured; zero observed drift is not proof of synchronization.
 5. **UTF-8, `0` CRLF, and Byte-Level Mojibake Detection**:
    - Enforces strict UTF-8, zero BOM, zero CRLF/stray CR, zero disallowed control bytes, and detects double-encoded UTF-8 sequences (`\xc3\xa2\xe2\x82\xac`, `Ã`/`Â`/`Ä`/`Æ` CP1252/Latin-1 double-encodings, `\ufffd`) without false-positives on clean UTF-8 em-dashes (`\xe2\x80\x94`) or Vietnamese text.
 

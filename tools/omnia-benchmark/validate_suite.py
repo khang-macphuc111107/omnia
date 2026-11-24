@@ -57,12 +57,12 @@ def main() -> int:
 
             ok = True
             notes = []
-            if passed or rc == 0:
+            if passed or rc != 1:
                 ok = False
-                notes.append(f"baseline unexpectedly PASSED (passed={passed}, rc={rc})")
-            if err and "non-JSON" in str(err):
+                notes.append(f"expected graded failure (passed=False, rc=1); got passed={passed}, rc={rc}")
+            if err or not any(c.get("passed") is False for c in res.get("checks", [])):
                 ok = False
-                notes.append(f"verifier error: {err}")
+                notes.append(f"verifier error: {err}" if err else "no failed grading check")
             if task.get("grading_type") == "fail_to_pass":
                 if not p2p.get("total") or p2p.get("passed") != p2p.get("total"):
                     ok = False
@@ -89,6 +89,11 @@ def main() -> int:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    if failures:
+        print("FAILURES:")
+        for f in failures:
+            print("  -", f)
+        return 1
     manifest_path = BENCH_ROOT / "suite" / "manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -97,14 +102,9 @@ def main() -> int:
         "axes_covered": sorted({int(t["axis"]) for t in manifest_tasks}),
         "tasks": manifest_tasks,
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
 
     print(f"\nValidated {len(manifest_tasks)}/{len(tasks)} tasks. Manifest: {manifest_path}")
-    if failures:
-        print("FAILURES:")
-        for f in failures:
-            print("  -", f)
-        return 1
     return 0
 
 

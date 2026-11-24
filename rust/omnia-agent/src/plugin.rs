@@ -117,7 +117,11 @@ impl PluginRegistry {
     }
 
     /// Reversible enable/disable toggle (Cordis disposable semantics).
-    pub fn toggle(&mut self, plugin_id: &str, enabled: bool) -> anyhow::Result<Vec<HarnessPluginInfo>> {
+    pub fn toggle(
+        &mut self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> anyhow::Result<Vec<HarnessPluginInfo>> {
         let entry = self
             .plugins
             .iter_mut()
@@ -415,7 +419,8 @@ impl HarnessPlugin for GraphLocatorPlugin {
     fn tools(&self) -> Vec<ToolSpec> {
         vec![ToolSpec {
             name: "workspace_map".into(),
-            description: "Query PageRank AST RepoMap by subpath, query, or `focus_symbol` ego-graph.".into(),
+            description:
+                "Query PageRank AST RepoMap by subpath, query, or `focus_symbol` ego-graph.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -490,7 +495,8 @@ impl HarnessPlugin for SelfVerifyGatePlugin {
     fn tools(&self) -> Vec<ToolSpec> {
         vec![ToolSpec {
             name: "load_skill".into(),
-            description: "Load full instructions from a workspace progressive SKILL.md by skill name.".into(),
+            description:
+                "Load full instructions from a workspace progressive SKILL.md by skill name.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -674,11 +680,12 @@ impl DeferredToolRegistry {
             })
             .collect();
 
-        scored.sort_by(|a, b| {
-            b.0.total_cmp(&a.0)
-                .then_with(|| a.1.name.cmp(&b.1.name))
-        });
-        scored.into_iter().take(cap).map(|(_, s)| s.clone()).collect()
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        scored
+            .into_iter()
+            .take(cap)
+            .map(|(_, s)| s.clone())
+            .collect()
     }
 
     /// Two tiny static meta-tools (~160 tokens fixed) registered ONLY when deferred tools > 0.
@@ -758,7 +765,10 @@ mod tests {
         reg.toggle("host_tools_lazy", true).unwrap();
         assert!(!reg.is_enabled("apply_patch"));
         assert!(reg.is_enabled("host_tools_lazy"));
-        assert!(!reg.active_tools(false).iter().any(|t| t.name == "apply_patch"));
+        assert!(!reg
+            .active_tools(false)
+            .iter()
+            .any(|t| t.name == "apply_patch"));
         assert!(reg
             .active_tools(false)
             .iter()

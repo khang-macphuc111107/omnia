@@ -2675,7 +2675,7 @@ mod tests {
         }
 
         assert!(matches!(
-            validate_gemini_share_url("https://user:pass@share.gemini.google/1f2021de30e9"),
+            validate_gemini_share_url("https://user:dummy_password@share.gemini.google/1f2021de30e9"),
             Err(GeminiShareError::PolicyRejected {
                 reason: GeminiShareBlockReason::EmbeddedCredentials,
                 ..

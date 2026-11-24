@@ -101,7 +101,7 @@ class GeminiShareExtractorTests(unittest.TestCase):
         self.assertFalse(bad_scheme.valid)
         self.assertEqual(bad_scheme.reason, "insecure_scheme")
 
-        bad_creds = validate_share_url("https://user:pass@share.gemini.google/1f2021de30e9")
+        bad_creds = validate_share_url("https://user:dummy_password@share.gemini.google/1f2021de30e9")
         self.assertFalse(bad_creds.valid)
         self.assertEqual(bad_creds.reason, "embedded_credentials")
 

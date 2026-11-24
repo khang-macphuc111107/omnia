@@ -44,6 +44,7 @@ def p95(vals: List[float]) -> float:
 def bench_version_startup(harness: str, binary: Path, n: int = 10) -> Dict[str, Any]:
     lat_ms: List[float] = []
     rss_mb: List[float] = []
+    (BENCH_ROOT / "env").mkdir(parents=True, exist_ok=True)
     tmp_home = Path(tempfile.mkdtemp(prefix=f"mb_ver_{harness}_", dir=str(BENCH_ROOT / "env")))
     env = {
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
@@ -106,6 +107,7 @@ def bench_mock_first_request(harness: str, n: int = 10, omnia_bin: Path | None =
     cpu_ms: List[float] = []
     failures = 0
 
+    (BENCH_ROOT / "workspaces").mkdir(parents=True, exist_ok=True)
     for i in range(n):
         ws = Path(tempfile.mkdtemp(prefix=f"mb_ws_{harness}_", dir=str(BENCH_ROOT / "workspaces")))
         (ws / "hello.txt").write_text("hello\n", encoding="utf-8")
@@ -175,7 +177,7 @@ def bench_mock_first_request(harness: str, n: int = 10, omnia_bin: Path | None =
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--harnesses", nargs="+", default=["codex", "claude", "opencode", "agy"])
+    ap.add_argument("--harnesses", nargs="+", default=["codex", "claude", "opencode", "goose", "omp", "dsh"])
     ap.add_argument("--repeats", type=int, default=10)
     ap.add_argument("--out", default=str(BENCH_ROOT / "results" / "microbench_stage0.json"))
     ap.add_argument("--merge", action="store_true")
@@ -207,6 +209,9 @@ def main() -> int:
             binary = Path(info.get("binary") or (HARNESS_ROOT / h / "bin" / f"{h}.exe"))
         if not binary.exists():
             print(f"[SKIP] {h}: binary missing at {binary}", flush=True)
+            continue
+        if h == "agy":
+            print("[SKIP] agy is strictly excluded from v5 benchmarks", flush=True)
             continue
         print(f"=== Microbench: {h} ({info.get('version', '?')}, {info.get('disk_mb', '?')} MB) ===", flush=True)
         ver_stats = bench_version_startup(h, binary, n=args.repeats)

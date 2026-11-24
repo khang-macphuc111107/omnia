@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "settlement": {
+      "command": "python",
+      "args": [
+        "-B",
+        "policy_mcp_server.py"
+      ]
+    }
+  }
+}

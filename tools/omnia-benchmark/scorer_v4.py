@@ -132,12 +132,21 @@ def summarize_harness(harness: str, recs: List[Dict[str, Any]], mb: dict) -> Dic
     gen_tps = [float(r["wire"]["wire_gen_tokens_per_sec"]) for r in recs if (r.get("wire") or {}).get("wire_gen_tokens_per_sec", 0) > 0]
 
     # Efficiency & footprint
-    tot_tokens = sum(int((r.get("wire") or {}).get("wire_total_tokens", 0)) for r in recs)
-    tok_per_solved = round(tot_tokens / solved, 1) if solved > 0 else None
+    def per_solved(field: str) -> Optional[float]:
+        if not solved:
+            return None
+        total = 0
+        for record in recs:
+            value = (record.get("wire") or {}).get(field)
+            if value is None:
+                return None  # Missing observations cannot be priced as free attempts.
+            total += value
+        return round(total / solved, 1)
+
+    tok_per_solved = per_solved("wire_total_tokens")
     t1_prompts = [int(r["wire"]["wire_turn1_prompt_tokens"]) for r in recs if (r.get("wire") or {}).get("wire_turn1_prompt_tokens", 0) > 0]
     kv_hits = [float(r["wire"]["wire_kv_cache_hit_rate_ge2"]) for r in recs if (r.get("wire") or {}).get("wire_requests", 0) >= 2]
-    eff_cost_sum = sum(float((r.get("wire") or {}).get("wire_effective_cost_units", 0.0)) for r in recs)
-    cost_per_solved = round(eff_cost_sum / solved, 1) if solved > 0 else None
+    cost_per_solved = per_solved("wire_effective_cost_units")
 
     h_rss = [float(r["resources"]["peak_harness_rss_mb"]) for r in recs if (r.get("resources") or {}).get("peak_harness_rss_mb", 0) > 0]
     job_mem = [float(r["resources"]["peak_job_memory_mb"]) for r in recs if (r.get("resources") or {}).get("peak_job_memory_mb", 0) > 0]

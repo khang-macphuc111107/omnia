@@ -1,0 +1,18 @@
+{
+  "id": "mem_01_bitemporal_ledger",
+  "axis": 12,
+  "axis_name": "Long-Horizon Memory & Context Compaction",
+  "title": "Bi-temporal policy reconstruction across 6 noisy session transcripts",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "json"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "memory_state",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

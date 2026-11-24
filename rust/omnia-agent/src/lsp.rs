@@ -271,7 +271,9 @@ impl LazyLspManager {
 
     /// Check whether a language server binary is discoverable on `PATH` without spawning it.
     #[must_use]
-    pub fn detect_binary(lang: LspLanguage) -> Option<(PathBuf, &'static str, &'static [&'static str])> {
+    pub fn detect_binary(
+        lang: LspLanguage,
+    ) -> Option<(PathBuf, &'static str, &'static [&'static str])> {
         for &(bin, args) in lang.candidate_commands() {
             if let Ok(path) = which::which(bin) {
                 return Some((path, bin, args));
@@ -292,19 +294,20 @@ impl LazyLspManager {
         symbol_hint: Option<&str>,
         graph: &Arc<Mutex<WorkspaceGraphIndex>>,
     ) -> LspQueryResult {
-        let abs_path = match crate::path_guard::ensure_within_workspace(&self.workspace_root, rel_path) {
-            Ok(p) => p,
-            Err(e) => {
-                return LspQueryResult {
-                    backend: "path-guard-blocked".into(),
-                    action: action.to_string(),
-                    symbol: symbol_hint.map(String::from),
-                    locations: Vec::new(),
-                    diagnostics: Vec::new(),
-                    notes: Some(format!("Blocked unsafe path: {e}")),
-                };
-            }
-        };
+        let abs_path =
+            match crate::path_guard::ensure_within_workspace(&self.workspace_root, rel_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return LspQueryResult {
+                        backend: "path-guard-blocked".into(),
+                        action: action.to_string(),
+                        symbol: symbol_hint.map(String::from),
+                        locations: Vec::new(),
+                        diagnostics: Vec::new(),
+                        notes: Some(format!("Blocked unsafe path: {e}")),
+                    };
+                }
+            };
         let lang_opt = LspLanguage::from_path(&abs_path);
 
         if let Some(lang) = lang_opt {
@@ -329,16 +332,24 @@ impl LazyLspManager {
                                 "character": character_0based
                             });
                             let method = match action {
-                                "definition" => Some(("textDocument/definition", json!({ "textDocument": { "uri": uri }, "position": pos }))),
-                                "references" => Some(("textDocument/references", json!({
-                                    "textDocument": { "uri": uri },
-                                    "position": pos,
-                                    "context": { "includeDeclaration": true }
-                                }))),
+                                "definition" => Some((
+                                    "textDocument/definition",
+                                    json!({ "textDocument": { "uri": uri }, "position": pos }),
+                                )),
+                                "references" => Some((
+                                    "textDocument/references",
+                                    json!({
+                                        "textDocument": { "uri": uri },
+                                        "position": pos,
+                                        "context": { "includeDeclaration": true }
+                                    }),
+                                )),
                                 _ => None,
                             };
                             if let Some((m, params)) = method {
-                                if let Ok(res) = client.request(m, params, Duration::from_secs(4)).await {
+                                if let Ok(res) =
+                                    client.request(m, params, Duration::from_secs(4)).await
+                                {
                                     let locs = parse_lsp_locations(&res, &self.workspace_root);
                                     if !locs.is_empty() {
                                         return LspQueryResult {
@@ -371,19 +382,20 @@ impl LazyLspManager {
     ) -> LspQueryResult {
         let mut locations = Vec::new();
         let mut diagnostics = Vec::new();
-        let abs_checked = match crate::path_guard::ensure_within_workspace(&self.workspace_root, rel_path) {
-            Ok(p) => p,
-            Err(e) => {
-                return LspQueryResult {
-                    backend: "path-guard-blocked".into(),
-                    action: action.to_string(),
-                    symbol: symbol_hint.map(String::from),
-                    locations: Vec::new(),
-                    diagnostics: Vec::new(),
-                    notes: Some(format!("Blocked unsafe path: {e}")),
-                };
-            }
-        };
+        let abs_checked =
+            match crate::path_guard::ensure_within_workspace(&self.workspace_root, rel_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return LspQueryResult {
+                        backend: "path-guard-blocked".into(),
+                        action: action.to_string(),
+                        symbol: symbol_hint.map(String::from),
+                        locations: Vec::new(),
+                        diagnostics: Vec::new(),
+                        notes: Some(format!("Blocked unsafe path: {e}")),
+                    };
+                }
+            };
         if let Ok(mut g) = graph.lock() {
             let _ = g.refresh();
             if action == "diagnostics" {
@@ -473,7 +485,9 @@ fn parse_lsp_locations(val: &Value, root: &Path) -> Vec<LspLocation> {
             .or_else(|| uri.strip_prefix("file://"))
             .unwrap_or(uri);
         let rel = if trimmed.to_ascii_lowercase().starts_with(&root_norm) {
-            trimmed[root_norm.len()..].trim_start_matches('/').to_string()
+            trimmed[root_norm.len()..]
+                .trim_start_matches('/')
+                .to_string()
         } else {
             trimmed.to_string()
         };

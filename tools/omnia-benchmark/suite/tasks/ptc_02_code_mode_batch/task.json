@@ -1,0 +1,18 @@
+{
+  "id": "ptc_02_code_mode_batch",
+  "axis": 13,
+  "axis_name": "MCP & PTC Code Mode Multi-Tool Composition",
+  "title": "64-service graph cycle detection & batch api_v1->api_v2 manifest codemod",
+  "difficulty": "hard",
+  "languages": [
+    "python",
+    "json"
+  ],
+  "timeout_s": 300,
+  "max_turns": 25,
+  "grading_type": "mcp_ptc_composition",
+  "prompt_file": "prompt.md",
+  "workspace_dir": "workspace",
+  "setup_script": null,
+  "verify_script": "verify.py"
+}

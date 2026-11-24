@@ -395,23 +395,13 @@ mod tests {
         assert_eq!(r1.decision, PermissionDecision::Deny);
         assert_eq!(r1.matched_rule_id.as_deref(), Some("builtin-deny-env"));
 
-        let r2 = PermissionsEngine::evaluate(
-            &rules,
-            false,
-            "bash",
-            "npm test",
-            ApprovalMode::AlwaysAsk,
-        );
+        let r2 =
+            PermissionsEngine::evaluate(&rules, false, "bash", "npm test", ApprovalMode::AlwaysAsk);
         assert_eq!(r2.decision, PermissionDecision::Ask);
         assert!(r2.untrusted_override);
 
-        let r3 = PermissionsEngine::evaluate(
-            &rules,
-            true,
-            "bash",
-            "npm test",
-            ApprovalMode::AlwaysAsk,
-        );
+        let r3 =
+            PermissionsEngine::evaluate(&rules, true, "bash", "npm test", ApprovalMode::AlwaysAsk);
         assert_eq!(r3.decision, PermissionDecision::Allow);
         assert_eq!(r3.matched_rule_id.as_deref(), Some("ws-allow-bash"));
     }
@@ -421,7 +411,13 @@ mod tests {
         assert_eq!(ApprovalMode::parse_flag("yollo"), ApprovalMode::AlwaysAsk);
         assert_eq!(ApprovalMode::parse_flag(""), ApprovalMode::AlwaysAsk);
         assert!(ApprovalMode::try_parse_flag("yollo").is_err());
-        assert_eq!(ApprovalMode::try_parse_flag("yolo").unwrap(), ApprovalMode::Yolo);
-        assert_eq!(ApprovalMode::try_parse_flag("plan").unwrap(), ApprovalMode::Plan);
+        assert_eq!(
+            ApprovalMode::try_parse_flag("yolo").unwrap(),
+            ApprovalMode::Yolo
+        );
+        assert_eq!(
+            ApprovalMode::try_parse_flag("plan").unwrap(),
+            ApprovalMode::Plan
+        );
     }
 }

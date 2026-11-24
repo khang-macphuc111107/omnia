@@ -8,16 +8,16 @@ use anyhow::Result;
 use std::process::{Child, Command};
 use std::sync::atomic::Ordering;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(windows)]
-use std::sync::atomic::AtomicPtr;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 use std::sync::atomic::AtomicI32;
+#[cfg(windows)]
+use std::sync::atomic::AtomicPtr;
 
 /// Win32 creation flag preventing console window flash for child spawns.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -41,9 +41,7 @@ use windows_sys::Win32::System::JobObjects::{
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::ProcessStatus::{
-    K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
-};
+use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, OpenThread, ResumeThread, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -407,16 +405,20 @@ mod tests {
     #[test]
     fn supervised_command_strips_provider_api_keys_from_child_env() {
         let mut cmd = Command::new("cmd.exe");
-        cmd.env("OMNIA_API_KEY", "sk-test-must-not-leak-12345678")
-            .env("OPENAI_API_KEY", "sk-test-must-not-leak-87654321")
-            .args(["/d", "/c", "echo OMNIA=[%OMNIA_API_KEY%] OPENAI=[%OPENAI_API_KEY%]"])
+        cmd.env("OMNIA_API_KEY", "sk-dummy-not-leak-12345678")
+            .env("OPENAI_API_KEY", "sk-dummy-not-leak-12345699")
+            .args([
+                "/d",
+                "/c",
+                "echo OMNIA=[%OMNIA_API_KEY%] OPENAI=[%OPENAI_API_KEY%]",
+            ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         let (child, _sup) = spawn_supervised_command(&mut cmd).expect("spawn supervised");
         let out = child.wait_with_output().expect("wait output");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
-            !stdout.contains("sk-test-must-not-leak"),
+            !stdout.contains("sk-dummy-not-leak"),
             "child shell must NEVER inherit provider API keys: {stdout}"
         );
     }

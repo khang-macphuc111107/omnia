@@ -7,6 +7,7 @@
 //! - Every `shell` command runs inside a Win32 Job Object (`spawn_supervised_command`) with
 //!   closed stdin, concurrent stdout/stderr draining, hard timeout, and guaranteed 0 orphans.
 
+use crate::agent_store::AgentStore;
 use crate::checkpoint::TurnCheckpointStore;
 use crate::context::WorkspaceContextBundle;
 use crate::edit::{
@@ -17,15 +18,14 @@ use crate::graph_locator::{verify_syntax_delta, WorkspaceGraphIndex};
 use crate::lakeview::offload_large_observation;
 use crate::lsp::LazyLspManager;
 use crate::patch::{apply_codex_patch, parse_codex_patch, FilePatchOp};
+use crate::path_guard::{ensure_within_workspace, sanitize_windows_path};
+use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
 use crate::plugin::{builtin_deferred_semantic_tools, DeferredToolRegistry};
 use crate::sanitizer::{atomic_write_bom_free, format_fail_fast_error, sanitize_untrusted_text};
 use crate::search::SearchMode;
+use crate::supervisor::spawn_supervised_command;
 use aho_corasick::AhoCorasickBuilder;
 use anyhow::{bail, Context, Result};
-use crate::path_guard::{ensure_within_workspace, sanitize_windows_path};
-use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
-use crate::supervisor::spawn_supervised_command;
-use crate::agent_store::AgentStore;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
@@ -51,7 +51,10 @@ pub type InteractiveApprover = Arc<
 
 /// Pluggable async callback for external MCP / Studio host extension tools registered in `DeferredToolRegistry`.
 pub type ExtensionToolHandler = Arc<
-    dyn Fn(String, Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>
+    dyn Fn(
+            String,
+            Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>
         + Send
         + Sync,
 >;
@@ -397,7 +400,10 @@ impl ToolRuntime {
         let lines: Vec<&str> = if text.is_empty() {
             Vec::new()
         } else {
-            text.strip_suffix('\n').unwrap_or(&text).split('\n').collect()
+            text.strip_suffix('\n')
+                .unwrap_or(&text)
+                .split('\n')
+                .collect()
         };
         let total = lines.len();
 
@@ -443,10 +449,7 @@ impl ToolRuntime {
                         "AST symbol not found in file",
                         "symbol",
                         &format!("{sym_q} in {rel}"),
-                        &format!(
-                            "Use start_line/end_line or one of: [{}]",
-                            avail.join(", ")
-                        )
+                        &format!("Use start_line/end_line or one of: [{}]", avail.join(", "))
                     )
                 );
             }
@@ -569,20 +572,17 @@ impl ToolRuntime {
             }
         }
 
-        let rel = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{}",
-                    format_fail_fast_error(
-                        "missing required file path",
-                        "path",
-                        "missing",
-                        "Provide string `path` or array `paths`"
-                    )
+        let rel = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}",
+                format_fail_fast_error(
+                    "missing required file path",
+                    "path",
+                    "missing",
+                    "Provide string `path` or array `paths`"
                 )
-            })?;
+            )
+        })?;
         let start_opt = args
             .get("start_line")
             .and_then(|v| v.as_u64())
@@ -686,16 +686,16 @@ impl ToolRuntime {
                 "find",
             ])
             .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "{}",
-                        format_fail_fast_error(
-                            "edit_file requires start_anchor, symbol, or old_string",
-                            "old_string",
-                            "missing",
-                            "Pass `start_anchor` (e.g. '42:a3f'), `symbol`, or exact `old_string`"
-                        )
+                anyhow::anyhow!(
+                    "{}",
+                    format_fail_fast_error(
+                        "edit_file requires start_anchor, symbol, or old_string",
+                        "old_string",
+                        "missing",
+                        "Pass `start_anchor` (e.g. '42:a3f'), `symbol`, or exact `old_string`"
                     )
-                })?;
+                )
+            })?;
             let replace_all = args
                 .get("replace_all")
                 .and_then(|v| v.as_bool())
@@ -787,7 +787,10 @@ impl ToolRuntime {
 
         // Phase 2: If any file requires Ask (AlwaysAsk, untrusted workspace, or D6 provenance taint), prompt ONCE
         let tainted = self.tainted_by_injection_signal.load(Ordering::Relaxed);
-        if tainted && ask_targets.is_empty() && matches!(self.approval_mode, ApprovalMode::Yolo | ApprovalMode::Write) {
+        if tainted
+            && ask_targets.is_empty()
+            && matches!(self.approval_mode, ApprovalMode::Yolo | ApprovalMode::Write)
+        {
             ask_targets = touched_rel.clone();
         }
         if !ask_targets.is_empty() {
@@ -899,7 +902,8 @@ impl ToolRuntime {
         } else {
             content.strip_prefix('\u{FEFF}').unwrap_or(content)
         };
-        self.read_tracker.record_read(&abs, clean_content.as_bytes());
+        self.read_tracker
+            .record_read(&abs, clean_content.as_bytes());
 
         // D1: Zero-cost post-write AST & config syntax verification
         let diags = verify_syntax_delta(rel, &before_text, clean_content, None).format_lines();
@@ -925,7 +929,10 @@ impl ToolRuntime {
         if query.trim().is_empty() {
             bail!("search_code query must not be empty");
         }
-        let literal = args.get("literal").and_then(|v| v.as_bool()).unwrap_or(false);
+        let literal = args
+            .get("literal")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let mode = SearchMode::parse(args.get("mode").and_then(|v| v.as_str()), literal, &query);
         let case_sensitive = args
             .get("case_sensitive")
@@ -1130,10 +1137,7 @@ impl ToolRuntime {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .context("invoke_extension_tool requires string parameter 'name'")?;
-        let ext_args = args
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let ext_args = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
         match name {
             "lsp_query" => {
@@ -1178,10 +1182,7 @@ impl ToolRuntime {
                     .get("query")
                     .and_then(|v| v.as_str())
                     .context("search_entity requires string parameter 'query'")?;
-                let limit = ext_args
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(15) as usize;
+                let limit = ext_args.get("limit").and_then(|v| v.as_u64()).unwrap_or(15) as usize;
                 let hits = {
                     let mut g = self.graph_index.lock().unwrap();
                     let _ = g.refresh();
@@ -1292,7 +1293,11 @@ fn build_shell_command(shell_choice: &str, command: &str) -> Command {
             }
             "bash" => {
                 let (_, def) = detect_default_shell();
-                let prog = if def.to_string_lossy().to_ascii_lowercase().ends_with("bash.exe") {
+                let prog = if def
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with("bash.exe")
+                {
                     def
                 } else {
                     PathBuf::from(r"C:\Program Files\Git\bin\bash.exe")
@@ -1429,7 +1434,8 @@ fn run_supervised_shell(
         combined.push_str(&stderr);
     }
     let scrubbed = scrub_shell_output(&combined);
-    let compacted = compact_shell_output(command, &scrubbed, exit_code, Some(&std::env::temp_dir()));
+    let compacted =
+        compact_shell_output(command, &scrubbed, exit_code, Some(&std::env::temp_dir()));
     let capped = cap_output_traceback_preserving(&compacted, MAX_SHELL_OUTPUT_CHARS);
 
     if cancelled {
@@ -1583,13 +1589,16 @@ fn compact_test_runner_output(text: &str) -> String {
 
     for line in text.lines() {
         let t = line.trim();
-        if t.starts_with("===") && (t.contains("FAILURES") || t.contains("ERRORS") || t.contains("short test summary")) {
+        if t.starts_with("===")
+            && (t.contains("FAILURES") || t.contains("ERRORS") || t.contains("short test summary"))
+        {
             in_fail_section = true;
         }
         if !in_fail_section {
-            let is_pass_line = (t.contains(" PASSED") && !t.contains("FAILED") && !t.contains("ERROR"))
-                || (t.starts_with('✓') || t.starts_with("PASS "))
-                || (t.ends_with(" ... ok") && !t.contains("FAIL"));
+            let is_pass_line =
+                (t.contains(" PASSED") && !t.contains("FAILED") && !t.contains("ERROR"))
+                    || (t.starts_with('✓') || t.starts_with("PASS "))
+                    || (t.ends_with(" ... ok") && !t.contains("FAIL"));
             if is_pass_line {
                 passed_lines += 1;
                 continue;
@@ -1623,14 +1632,18 @@ fn compact_git_diff_lockfiles(text: &str) -> String {
     let mut lock_adds = 0usize;
     let mut lock_dels = 0usize;
 
-    let flush_lock = |out: &mut Vec<String>, skipping: &mut bool, adds: &mut usize, dels: &mut usize| {
-        if *skipping {
-            out.push(format!("[lockfile diff omitted: +{} / -{} lines]", *adds, *dels));
-            *skipping = false;
-            *adds = 0;
-            *dels = 0;
-        }
-    };
+    let flush_lock =
+        |out: &mut Vec<String>, skipping: &mut bool, adds: &mut usize, dels: &mut usize| {
+            if *skipping {
+                out.push(format!(
+                    "[lockfile diff omitted: +{} / -{} lines]",
+                    *adds, *dels
+                ));
+                *skipping = false;
+                *adds = 0;
+                *dels = 0;
+            }
+        };
 
     for line in text.lines() {
         if line.starts_with("diff --git ") {
@@ -1675,7 +1688,9 @@ fn compact_pkg_install_output(text: &str) -> String {
         out.push(line.to_string());
     }
     if omitted > 0 {
-        let mut res = vec![format!("[... {omitted} package install progress lines omitted ...]")];
+        let mut res = vec![format!(
+            "[... {omitted} package install progress lines omitted ...]"
+        )];
         res.extend(out);
         res.join("\n")
     } else {
@@ -1730,11 +1745,7 @@ pub fn scrub_shell_output(raw: &str) -> String {
     let mut collapsed_lines: Vec<&str> = Vec::new();
     for line in lf.split('\n') {
         if line.contains('\r') {
-            let final_seg = line
-                .split('\r')
-                .rev()
-                .find(|s| !s.is_empty())
-                .unwrap_or("");
+            let final_seg = line.split('\r').rev().find(|s| !s.is_empty()).unwrap_or("");
             collapsed_lines.push(final_seg);
         } else {
             collapsed_lines.push(line);
@@ -1889,9 +1900,7 @@ mod tests {
         assert!(r_env.content.contains("Permission denied"));
 
         // 3. Deny rule blocks `rm -rf /` in shell even in YOLO mode!
-        let r_rm = rt
-            .execute("shell", &json!({ "command": "rm -rf /" }))
-            .await;
+        let r_rm = rt.execute("shell", &json!({ "command": "rm -rf /" })).await;
         assert!(r_rm.is_error);
         assert!(r_rm.content.contains("Permission denied"));
 
@@ -1908,7 +1917,10 @@ mod tests {
 
         // 5. Supervised shell execution works cleanly and returns stdout
         let r_sh = rt
-            .execute("shell", &json!({ "command": "echo SUPER_HARNESS_SHELL_OK" }))
+            .execute(
+                "shell",
+                &json!({ "command": "echo SUPER_HARNESS_SHELL_OK" }),
+            )
             .await;
         assert!(!r_sh.is_error, "shell failed: {}", r_sh.content);
         assert!(r_sh.content.contains("SUPER_HARNESS_SHELL_OK"));
@@ -1987,14 +1999,22 @@ mod tests {
         let r1 = rt
             .execute("shell", &json!({ "command": "echo ONCE_TEST" }))
             .await;
-        assert!(!r1.is_error, "shell should succeed after 1 approval: {}", r1.content);
+        assert!(
+            !r1.is_error,
+            "shell should succeed after 1 approval: {}",
+            r1.content
+        );
         assert_eq!(prompt_count.load(Ordering::SeqCst), 1);
 
         // Security Fix #4b: global Allow rule on "bash" allows "shell" with 0 additional prompts
         let r2 = rt
             .execute("shell", &json!({ "command": "echo ALLOW_ALIAS_OK" }))
             .await;
-        assert!(!r2.is_error, "bash allow rule must allow shell: {}", r2.content);
+        assert!(
+            !r2.is_error,
+            "bash allow rule must allow shell: {}",
+            r2.content
+        );
         assert_eq!(prompt_count.load(Ordering::SeqCst), 1);
 
         // Security Fix #5a: apply_patch in UNTRUSTED workspace succeeds with 1 approval
@@ -2008,7 +2028,11 @@ mod tests {
         let r3 = rt
             .execute("apply_patch", &json!({ "patch": ok_patch }))
             .await;
-        assert!(!r3.is_error, "untrusted apply_patch should succeed after user approves: {}", r3.content);
+        assert!(
+            !r3.is_error,
+            "untrusted apply_patch should succeed after user approves: {}",
+            r3.content
+        );
         assert_eq!(prompt_count.load(Ordering::SeqCst), 2);
         assert_eq!(fs::read_to_string(tmp.join("a.txt")).unwrap(), "new\n");
 
@@ -2055,12 +2079,13 @@ mod tests {
         );
 
         let out = rt
-            .execute(
-                "read_file",
-                &json!({ "paths": ["a.py", ".env", "b.py"] }),
-            )
+            .execute("read_file", &json!({ "paths": ["a.py", ".env", "b.py"] }))
             .await;
-        assert!(!out.is_error, "batch read with valid files should succeed: {}", out.content);
+        assert!(
+            !out.is_error,
+            "batch read with valid files should succeed: {}",
+            out.content
+        );
         assert!(out.content.contains("=== a.py ==="));
         assert!(out.content.contains("=== b.py ==="));
         assert!(out.content.contains("def alpha():"));
@@ -2084,7 +2109,11 @@ mod tests {
                 }),
             )
             .await;
-        assert!(!ed.is_error, "edit after batch read should pass Pre-Read Guard: {}", ed.content);
+        assert!(
+            !ed.is_error,
+            "edit after batch read should pass Pre-Read Guard: {}",
+            ed.content
+        );
         assert!(ed.content.contains("+") && ed.content.contains("return 22"));
 
         let _ = fs::remove_dir_all(&tmp);
@@ -2141,9 +2170,7 @@ mod tests {
 -    return a + b
 +    return int(a + b)
 *** End Patch";
-        let pr = rt
-            .execute("apply_patch", &json!({ "patch": patch }))
-            .await;
+        let pr = rt.execute("apply_patch", &json!({ "patch": patch })).await;
         assert!(!pr.is_error, "patch failed: {}", pr.content);
         assert!(pr.content.contains("--- calc.py"));
         assert!(pr.content.contains("+   2:"));
@@ -2165,11 +2192,15 @@ mod tests {
         // Large output with traceback buried in the middle
         let mut big = String::new();
         for i in 0..120 {
-            big.push_str(&format!("verbose build header log line {i:03} padding padding padding\n"));
+            big.push_str(&format!(
+                "verbose build header log line {i:03} padding padding padding\n"
+            ));
         }
         big.push_str("Traceback (most recent call last):\n  File \"pkg/app.py\", line 42\nAssertionError: expected 99 got 1\n");
         for i in 0..200 {
-            big.push_str(&format!("noisy filler output line {i:03} padding padding padding padding\n"));
+            big.push_str(&format!(
+                "noisy filler output line {i:03} padding padding padding padding\n"
+            ));
         }
         big.push_str("SUMMARY: 1 failed, 12 passed in 0.42s\n");
 
@@ -2207,14 +2238,23 @@ mod tests {
     fn pytest_compactor_preserves_full_traceback_and_short_summary_while_collapsing_passed() {
         let mut raw = String::new();
         for i in 0..60 {
-            raw.push_str(&format!("tests/test_suite.py::test_ok_{i:02} PASSED [ {:>2}%]\n", i));
+            raw.push_str(&format!(
+                "tests/test_suite.py::test_ok_{i:02} PASSED [ {:>2}%]\n",
+                i
+            ));
         }
         raw.push_str("tests/test_suite.py::test_bad FAILED [100%]\n");
-        raw.push_str("=================================== FAILURES ===================================\n");
+        raw.push_str(
+            "=================================== FAILURES ===================================\n",
+        );
         raw.push_str("def test_bad():\n>   assert 1 == 2\nE   AssertionError: assert 1 == 2\n");
-        raw.push_str("=========================== short test summary info ============================\n");
+        raw.push_str(
+            "=========================== short test summary info ============================\n",
+        );
         raw.push_str("FAILED tests/test_suite.py::test_bad - AssertionError: assert 1 == 2\n");
-        raw.push_str("========================= 1 failed, 60 passed in 0.4s ==========================\n");
+        raw.push_str(
+            "========================= 1 failed, 60 passed in 0.4s ==========================\n",
+        );
         let comp = compact_shell_output("pytest -v", &raw, 1, None);
         assert!(comp.contains("60 passing test lines omitted"));
         assert!(comp.contains("AssertionError: assert 1 == 2"));
@@ -2264,7 +2304,10 @@ mod tests {
 
         // 1. Symbol jump goes straight to func_080 with Hashlines!
         let r_sym = rt
-            .execute("read_file", &json!({ "path": "big.py", "symbol": "func_080" }))
+            .execute(
+                "read_file",
+                &json!({ "path": "big.py", "symbol": "func_080" }),
+            )
             .await;
         assert!(!r_sym.is_error, "symbol read failed: {}", r_sym.content);
         assert!(r_sym.content.contains("[symbol: func_080"));
@@ -2353,7 +2396,10 @@ mod tests {
         );
 
         let disc = rt
-            .execute("discover_tools", &json!({ "query": "symbol graph lsp", "limit": 5 }))
+            .execute(
+                "discover_tools",
+                &json!({ "query": "symbol graph lsp", "limit": 5 }),
+            )
             .await;
         assert!(!disc.is_error, "discover_tools failed: {}", disc.content);
         assert!(disc.content.contains("search_entity"));
@@ -2382,7 +2428,11 @@ mod tests {
                 }),
             )
             .await;
-        assert!(!inv_lsp.is_error, "lsp_query deferred tool failed: {}", inv_lsp.content);
+        assert!(
+            !inv_lsp.is_error,
+            "lsp_query deferred tool failed: {}",
+            inv_lsp.content
+        );
         assert!(inv_lsp.content.contains("calculate_tax"));
 
         let _ = fs::remove_dir_all(&tmp);
@@ -2413,7 +2463,9 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
 
-        let _ = rt.execute("read_file", &json!({ "path": "math_ops.py" })).await;
+        let _ = rt
+            .execute("read_file", &json!({ "path": "math_ops.py" }))
+            .await;
         let edited = rt
             .execute(
                 "edit_file",
@@ -2424,7 +2476,11 @@ mod tests {
                 }),
             )
             .await;
-        assert!(!edited.is_error, "symbol BlockDiff edit failed: {}", edited.content);
+        assert!(
+            !edited.is_error,
+            "symbol BlockDiff edit failed: {}",
+            edited.content
+        );
         assert!(edited.content.contains("block_diff(mul"));
         assert!(fs::read_to_string(tmp.join("math_ops.py"))
             .unwrap()
@@ -2455,7 +2511,9 @@ mod tests {
             None,
             Arc::new(AtomicBool::new(false)),
         );
-        let out = rt.execute("read_file", &json!({ "path": "huge.log" })).await;
+        let out = rt
+            .execute("read_file", &json!({ "path": "huge.log" }))
+            .await;
         assert!(
             out.is_error && out.content.contains("4 MiB"),
             "read_file must reject >4 MiB file upfront: {}",
@@ -2484,7 +2542,11 @@ mod tests {
         );
 
         let sh = rt.execute("shell", &json!({ "command": "exit 3" })).await;
-        assert!(!sh.is_error, "non-zero exit must not be a tool failure: {}", sh.content);
+        assert!(
+            !sh.is_error,
+            "non-zero exit must not be a tool failure: {}",
+            sh.content
+        );
         assert!(sh.content.starts_with("exit_code: 3"), "{}", sh.content);
 
         // GPT/Gemini-style alias arguments, editing a file that was never read_file'd
@@ -2495,7 +2557,10 @@ mod tests {
             )
             .await;
         assert!(!ed.is_error, "alias edit failed: {}", ed.content);
-        assert_eq!(fs::read_to_string(tmp.join("cfg.py")).unwrap(), "RATE = 0.15\n");
+        assert_eq!(
+            fs::read_to_string(tmp.join("cfg.py")).unwrap(),
+            "RATE = 0.15\n"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 }

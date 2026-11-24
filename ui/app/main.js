@@ -420,8 +420,8 @@
     }
 
     listEl.innerHTML = appState.sessions.map((s) => (
-      '<button type="button" class="session-item ' + (s.id === appState.activeSessionId ? "is-active" : "") +
-        '" data-session-id="' + escapeHtml(s.id) + '">' +
+      '<button type="button" class="session-item" data-session-id="' + escapeHtml(s.id) + '"' +
+        (s.id === appState.activeSessionId ? ' aria-current="true"' : '') + '>' +
         '<span class="session-item-title">' + escapeHtml(s.title) + "</span>" +
         '<span class="session-item-meta">' + escapeHtml(s.modelId || "model unavailable") + " • " + escapeHtml(s.effort || "effort unavailable") + "</span>" +
       "</button>"
@@ -469,6 +469,8 @@
       });
     }
 
+    switchView("chat");
+
     // Bind Left Rail View Navigation
     document.querySelectorAll("[data-nav-view]").forEach((btn) => {
       btn.addEventListener("click", () => switchView(btn.getAttribute("data-nav-view")));
@@ -510,8 +512,10 @@
       sessList.addEventListener("click", (e) => {
         const item = e.target.closest("[data-session-id]");
         if (!item) return;
+        const previous = sessList.querySelector('[aria-current="true"]');
+        if (previous && previous !== item) previous.removeAttribute("aria-current");
+        item.setAttribute("aria-current", "true");
         appState.activeSessionId = item.getAttribute("data-session-id");
-        refreshSessions();
         switchView("chat");
       });
     }
@@ -574,7 +578,6 @@
       Studio.atelier ? Studio.atelier.init() : Promise.resolve()
     ]);
     Studio.commandPalette.init();
-    switchView("chat");
   }
 
   Studio.setTheme = setTheme;

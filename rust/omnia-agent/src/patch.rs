@@ -8,13 +8,13 @@
 //! - 100% atomic in-memory dry-run validation + backup rollback + workspace containment preserved!
 
 use crate::edit::{
-    find_unique_histogram_window, format_compact_unified_diff, line_hash_tag, parse_hashline_anchor,
-    strip_accidental_hashline_prefixes,
+    find_unique_histogram_window, format_compact_unified_diff, line_hash_tag,
+    parse_hashline_anchor, strip_accidental_hashline_prefixes,
 };
 use crate::graph_locator::verify_syntax_delta;
+use crate::path_guard::ensure_within_workspace;
 use crate::sanitizer::atomic_write_bytes;
 use anyhow::{bail, Context, Result};
-use crate::path_guard::ensure_within_workspace;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -308,8 +308,8 @@ where
                 if abs.exists() && virtual_files.get(&abs).map(|o| o.is_some()).unwrap_or(true) {
                     bail!("Add File target already exists: {path}");
                 }
-                let raw_clean = strip_accidental_hashline_prefixes(content)
-                    .unwrap_or_else(|| content.clone());
+                let raw_clean =
+                    strip_accidental_hashline_prefixes(content).unwrap_or_else(|| content.clone());
                 let clean = raw_clean
                     .strip_prefix('\u{FEFF}')
                     .unwrap_or(&raw_clean)
@@ -368,12 +368,8 @@ where
                     verify_syntax_delta(target_rel, &current_text, &updated_text, None)
                         .format_lines(),
                 );
-                let diff = format_compact_unified_diff(
-                    target_rel,
-                    &current_text,
-                    &updated_text,
-                    24,
-                );
+                let diff =
+                    format_compact_unified_diff(target_rel, &current_text, &updated_text, 24);
                 if !diff.is_empty() && diff_chunks.len() < 4 {
                     diff_chunks.push(diff);
                 }
@@ -562,7 +558,11 @@ fn find_anchor_line(doc: &[String], anchor: &str, start: usize) -> Option<usize>
             if idx0 >= doc_refs.len() {
                 return false;
             }
-            let prev = if idx0 > 0 { doc_refs[idx0 - 1].trim() } else { "" };
+            let prev = if idx0 > 0 {
+                doc_refs[idx0 - 1].trim()
+            } else {
+                ""
+            };
             let curr = doc_refs[idx0].trim();
             let next = if idx0 + 1 < doc_refs.len() {
                 doc_refs[idx0 + 1].trim()

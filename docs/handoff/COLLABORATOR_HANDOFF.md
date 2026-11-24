@@ -4,22 +4,26 @@ Welcome to **Omnia** (`https://github.com/khang-macphuc111107/omnia`). This docu
 
 ---
 
-## 1. Executive Vision & Full Native Rust 13-Crate Architecture (`Steer #14`)
+## 1. Executive Vision & Full Native Rust 17-Crate Architecture (`Steer #14..#15`)
 
-Omnia is a **sovereign, native-first Windows 11 AI Agent, Peer-Mesh Harness, Flagship Studio Workbench, Embedded IDE, Sovereign Browser Host, and Multi-Segment Downloader** engineered for instant responsiveness, zero runtime bloat, and uninterrupted human-in-the-loop control.
+Omnia is a **sovereign, native-first Windows 11 AI Agent, Peer-Mesh Harness, Flagship Studio Workbench, Embedded IDE, Sovereign Browser Host, Research Notebook, and Multi-Segment Downloader** engineered for instant responsiveness, zero runtime bloat, and uninterrupted human-in-the-loop control.
 
 ### Full Native Rust Migration (`0` C++ / CMake in Active Tree)
-Under **Steer #14 (`Wave 5`)**, Omnia's active product codebase runs as a unified **13-crate Cargo workspace** ([`Cargo.toml`](../../Cargo.toml), [`Cargo.lock`](../../Cargo.lock), `edition = "2021"`, `windows-sys = "0.61"`, `winsqlite3` FFI, `0` `.cpp`/`.hpp`/`CMake*` files in active source):
-- **Offline `serde` Discipline**: Root `Cargo.toml` sets `serde = { version = "1", default-features = false, features = ["std"] }` (no `serde_derive` proc-macro offline); structs implement `Serialize`/`Deserialize` manually or through `omnia-core::json`.
+Under **Steer #14 -> Steer #15 (`Wave 5`, branch `omnia-sota-harness`)**, Omnia's active product codebase runs as a unified **17-crate Cargo workspace** ([`Cargo.toml`](../../Cargo.toml), [`Cargo.lock`](../../Cargo.lock), `edition = "2021"`, `windows-sys = "0.61"`, `winsqlite3` FFI, `0` `.cpp`/`.hpp`/`CMake*` files in active source) alongside Windows-native Python/Node tooling ([`tools/omnia-benchmark/`](../../tools/omnia-benchmark/), [`tools/omnia-gemini-extractor/`](../../tools/omnia-gemini-extractor/)):
+- **Cargo Workspace & `serde` Discipline**: Root `Cargo.toml` defines shared workspace dependencies (`serde` with `derive`, `tokio`, `reqwest` `rustls-tls`, `tree-sitter`, `imara-diff`, `blake3`, `windows-sys`) compiled strictly out-of-source via `CARGO_TARGET_DIR=D:\OmniaData\build\omnia-rust-workspace`.
 - **External Archival Preservation**: The superseded Wave 4 C++20/CMake snapshot (`55` files, `patch_bytes: 361065`) is backed up externally under `D:\OmniaData\backups\pre-full-rust-20261115\manifest.sha256.json`, and 100% of the pre-Wave-4 Rust/Tauri snapshot (`c3033728abe6f0a4906a796bf7652c84408356d7`) stays preserved on pushed Git tag `archive/pre-cpp-rust-snapshot-20261112`.
 
-### Native Rust Executables & Subsystem Crates (`rust/`)
+### Native Rust Executables & Subsystem Crates (`rust/`, `17` Crates)
 1. **`omnia-studio.exe` ([rust/omnia-studio/](../../rust/omnia-studio/))**:
-   - Loopback HTTP/JSON-RPC & static asset host (`127.0.0.1`, `Origin`/`Host` + traversal guards) wiring core crates (`omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`) to the **Flagship Studio UI ("Obsidian Kinetic Atelier", [ui/](../../ui/), [FLAGSHIP_STUDIO_UI_SPEC.md](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md))** across `5` interactive views × `3` Studio themes (`Obsidian`, `Alabaster`, `Blueprint`).
-2. **`omnia-runtime.exe` ([rust/omnia-runtime/](../../rust/omnia-runtime/))**:
+   - Loopback HTTP/JSON-RPC/SSE/WebSocket & static asset host (`127.0.0.1`, `Origin`/`Host` + traversal guards) wiring core crates (`omnia-winsqlite`, `omnia-core`, `omnia-storage`, `omnia-routing`, `omnia-graph`, `omnia-harness`, `omnia-connector-gateway`, `omnia-workspace-ops`, `omnia-agent`, `omnia-downloader`, `omnia-notebook`) to the **Flagship Studio UI ("Obsidian Kinetic Atelier", [ui/](../../ui/), [FLAGSHIP_STUDIO_UI_SPEC.md](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md))** and Steer #15 `ui-v5/` (`Chat | IDE | Browser` OMP Desktop/CLI/`omp-omni` + Trae + VS Code fusion).
+2. **`omnia.exe` ([rust/omnia-cli/](../../rust/omnia-cli/)) & `omnia-agent` ([rust/omnia-agent/](../../rust/omnia-agent/))**:
+   - Ultra-lightweight `mimalloc` headless CLI + `ratatui` TUI (`omnia.exe`) powered by the `omnia-agent` SOTA coding-agent engine (`SuperHarnessManager`, `NativeSuperEngine`, ACP stdio/HTTP/WS server, Tree-sitter CST `WorkspaceGraphIndex`, `LazyLspManager`, Hashline/BlockDiff/`apply_patch` adaptive edits, `TurnCheckpointStore`, `PermissionsEngine`, `Sanitizer`, MCP/PTC/ConPTY/DAP/Hooks/PeerMesh swarm integration).
+3. **`omnia-runtime.exe` ([rust/omnia-runtime/](../../rust/omnia-runtime/))**:
    - Provider/connector HTTP sidecar implementing AdGuard-tolerant loopback HTTP request-line parsing, multi-`Cookie` coalescing (`RFC 9110 §5.3` `; `, tested up to 15 headers), `30_000` ms default timeout, `NVIDIA` catalog bridge, and runtime skills index.
-3. **`omnia-native.exe` + `omnia_qa_seed.exe` ([rust/omnia-native/](../../rust/omnia-native/), embedding [`native/app.manifest`](../../native/app.manifest))**:
-   - Windows 11 Win32 + DWM Mica + Direct2D desktop shell, `winsqlite3` WAL persistence with cooperative `(pid, start_filetime)` leases, server-side COM UIA (`Edit` + `Document` + `WH_CBT` `#32770` modal button), `7` PowerShell 7 (`pwsh`) Win32 QA workflows (`native/qa-*.ps1`), and 125-row SQLite fixture seeder `omnia_qa_seed.exe`.
+4. **`omnia-native.exe` + `omnia_qa_seed.exe` ([rust/omnia-native/](../../rust/omnia-native/), embedding [`native/app.manifest`](../../native/app.manifest))**:
+   - Windows 11 Win32 + DWM Mica + Direct2D desktop shell (plus `--studio` WebView2 host under Steer #15), `winsqlite3` WAL persistence with cooperative `(pid, start_filetime)` leases, server-side COM UIA (`Edit` + `Document` + `WH_CBT` `#32770` modal button), `7` PowerShell 7 (`pwsh`) Win32 QA workflows (`native/qa-*.ps1`), and 125-row SQLite fixture seeder `omnia_qa_seed.exe`.
+5. **Domain & Infrastructure Crates (`omnia-downloader`, `omnia-notebook`, `omnia-media-capture`, `omnia-remote-control`, `omnia-workspace-ops`, `omnia-harness`, `omnia-graph`, `omnia-routing`, `omnia-storage`, `omnia-core`, `omnia-winsqlite`)**:
+   - Full Native Rust multi-stream HTTP/Google Drive/HLS/DASH downloader (`omnia-downloader`), Gemini Notebook & Atelier Research Studio engine (`omnia-notebook`), CDP browser + OBS v5 + DPI capture (`omnia-media-capture`), paired remote control (`omnia-remote-control`), canonical path containment (`omnia-workspace-ops`), `MemoryGraph`/`ProactiveRag`/`SkillRegistry`/`RichComposer`/`SteerQueue` (`omnia-harness`), `PeerMeshGraph`/`GraphifyIndex` (`omnia-graph`), and `DynamicProviderRouter` (`omnia-routing`).
 
 ### Seven Non-Negotiable Product Pillars
 1. **Flagship Anti-AI-Slop Studio & Win32 UI (`PRODUCT-WORKSPACE`)**: Measurable typography/contrast/hit-target tokens (`87/87` WCAG 2.2 pairs `>= 5.12:1` across 3 themes), `0` purple-pink gradients, `0` `backdrop-filter` blur soup, `0` `9999px` pill badges, `0 px` horizontal overflow, and `0` clipped controls.
@@ -37,44 +41,53 @@ Under **Steer #14 (`Wave 5`)**, Omnia's active product codebase runs as a unifie
 A strict repository hygiene boundary governs all development ([GOAL.md](../workspace/GOAL.md), [DOD.md](../workspace/DOD.md)):
 
 - **`D:\Omnia` (Tracked Product Repository ONLY)**:
-  - Contains root [Cargo.toml](../../Cargo.toml) & [Cargo.lock](../../Cargo.lock), `13` Rust crates ([rust/](../../rust/)), Win32 manifest & `7` `pwsh` QA workflows ([native/](../../native/)), Flagship Studio UI ([ui/](../../ui/)), packaging targets ([platform/](../../platform/)), `19` cross-host skills ([.agents/skills/](../../.agents/skills/) — `13` curated + `6` `kdense-*` projections), Python sync/audit tooling ([tools/](../../tools/)), and governance/UI/handoff docs (`docs/{workspace,ui-direction,handoff}/`).
-  - **NEVER** emit `target/`, `build/`, `out/`, `*.exe`, `*.pdb`, `__pycache__/`, SQLite runtime DBs, or QA screenshots inside `D:\Omnia`.
+  - Contains root [Cargo.toml](../../Cargo.toml) & [Cargo.lock](../../Cargo.lock), [`.gitattributes`](../../.gitattributes), `17` Rust crates ([rust/](../../rust/)), Win32 manifest & `7` `pwsh` QA workflows ([native/](../../native/)), Flagship Studio UI ([ui/](../../ui/)), packaging targets ([platform/](../../platform/)), `19` cross-host skills ([.agents/skills/](../../.agents/skills/) — `13` curated + `6` `kdense-*` projections), Python/Node tooling ([tools/](../../tools/), incl. `omnia-benchmark`, `omnia-gemini-extractor`, `agy-history-sync`, `omnia-consolidated-audit`, `omnia-skill-parity`), and governance/UI/architecture/handoff docs (`docs/{workspace,ui-direction,architecture,handoff}/`).
+  - **NEVER** emit `target/`, `build/`, `out/`, `*.exe`, `*.pdb`, `__pycache__/`, `Roaming/`, SQLite runtime DBs, or QA screenshots inside `D:\Omnia`.
 - **`D:\OmniaData` (Externalized Build, Runtime, QA, Backup, Research & History Root)**:
-  - `D:\OmniaData\build\omnia-rust-workspace` (and `omnia-rust-native-{release,debug}`) — all out-of-source Cargo target directories and staged test binaries.
-  - `D:\OmniaData\backups\pre-full-rust-20261115\` — SHA-256 backup archive of the `55` superseded Wave 4 C++20/CMake files.
+  - `D:\OmniaData\build\omnia-rust-workspace` (`omnia-rust-native-{release,debug}`, `ui-dist`) — all out-of-source Cargo target directories, UI dist builds, and staged test binaries.
+  - `D:\OmniaData\backups\pre-full-rust-20261115\` & `D:\OmniaData\quarantine\roaming-20261124\` — SHA-256 backup archive of the `55` superseded Wave 4 C++20/CMake files and quarantined legacy `Roaming/` test cache.
   - `D:\OmniaData\runtime\` — `winsqlite3` WAL session databases, cooperative lease records, and SHA-256 content-addressed blobs.
-  - `D:\OmniaData\qa\` — Win32 UIA/capture receipts, Edge CDP captures, independent audit ledgers, and `C:`/`D:` deep-clean receipts (`deep-clean-20261112/`). See `docs/workspace/DEEP_CLEAN_AUDIT_D_DRIVE.md`, `docs/workspace/DEEP_CLEAN_AUDIT_C_DRIVE.md`, and [CLEANUP_STATUS_20261112.md](../workspace/CLEANUP_STATUS_20261112.md).
+  - `D:\OmniaData\qa\` — Win32 UIA/capture receipts, Edge/Playwright CDP captures, independent audit ledgers, and `C:`/`D:` deep-clean receipts (`deep-clean-20261112/`). See `docs/workspace/DEEP_CLEAN_AUDIT_D_DRIVE.md`, `docs/workspace/DEEP_CLEAN_AUDIT_C_DRIVE.md`, and [CLEANUP_STATUS_20261112.md](../workspace/CLEANUP_STATUS_20261112.md).
   - `D:\OmniaData\research\` & `D:\OmniaData\exports\history\` — externalized URL qualification ledgers (`103 + 9` URLs, `100`-category catalog) and redacted multi-host chat history archives (`unified_agy_history.sqlite` `1,102` threads).
 
 ```mermaid
 flowchart TB
     subgraph Repo["D:\Omnia (Full Native Rust & Flagship Studio Repo)"]
-        StudioUI["ui/ (Obsidian Kinetic Atelier — 5 Views x 3 Themes)"]
-        Native["rust/omnia-native/ + native/ (Win32 + DWM + Direct2D + COM UIA + pwsh QA)"]
+        StudioUI["ui/ & ui-v5/ (OMP + Trae + VS Code Studio)"]
+        CLI["rust/omnia-cli/ (omnia.exe Headless + ratatui TUI)"]
+        Native["rust/omnia-native/ + native/ (Win32 + DWM + COM UIA + --studio + pwsh QA)"]
         Runtime["rust/omnia-runtime/ + omnia-connector-gateway/ (HTTP/SSE + AdGuard Proxy)"]
-        subgraph RustCore["rust/ Core & Studio Workspace (13 Cargo Crates)"]
-            StudioSrv["omnia-studio (127.0.0.1 HTTP/JSON-RPC Host)"]
+        Tools["tools/ (omnia-benchmark, omnia-gemini-extractor, parity, audit)"]
+        subgraph RustCore["rust/ Core, Agent & Studio Workspace (17 Cargo Crates)"]
+            StudioSrv["omnia-studio (127.0.0.1 HTTP/SSE/WS Host)"]
+            Agent["omnia-agent (SuperHarnessManager, ACP, MCP, PTC, LSP/AST)"]
+            Notebook["omnia-notebook + omnia-downloader (Atelier + OmniDrive)"]
             Harness["omnia-harness (MemoryGraph, ProactiveRag, SkillRegistry, Composer, SteerQueue)"]
             Graph["omnia-graph (2-Way PeerMeshGraph + GraphifyIndex)"]
             Routing["omnia-routing (DynamicProviderRouter, Circuit Breakers, Quota Reservations)"]
             Storage["omnia-storage + omnia-winsqlite (WAL SessionStore + Process Leases)"]
-            Core["omnia-core (JSON, SHA-256, UTF-8, SecretRedactor)"]
+            Core["omnia-core (JSON, SHA-256, UTF-8, SecretRedactor, CredMan)"]
         end
     end
 
     subgraph Ext["D:\OmniaData (Externalized Build, Runtime, Backup & QA Root)"]
-        BuildDir["build/omnia-rust-workspace (CARGO_TARGET_DIR)"]
-        Backup["backups/pre-full-rust-20261115/ (Wave 4 C++20 Archive)"]
+        BuildDir["build/omnia-rust-workspace + build/ui-dist"]
+        Backup["backups/pre-full-rust-20261115/ & quarantine/roaming-20261124/"]
         RuntimeData["runtime/ (SQLite WAL + Blobs)"]
-        QA["qa/ (Win32 Captures + Edge CDP + Audit Receipts)"]
+        QA["qa/ (Win32 Captures + Playwright CDP + Benchmarks + Audit Receipts)"]
     end
 
-    StudioUI <-->|"Origin-Guarded HTTP JSON-RPC"| StudioSrv
+    StudioUI <-->|"Origin-Guarded HTTP/SSE/WS"| StudioSrv
+    StudioSrv --> Agent
+    StudioSrv --> Notebook
     StudioSrv --> Runtime
     StudioSrv --> Harness
     StudioSrv --> Graph
     StudioSrv --> Routing
     StudioSrv --> Storage
+    CLI --> Agent
+    Agent --> Core
+    Notebook --> Core
     Harness --> Core
     Graph --> Core
     Routing --> Core
@@ -111,7 +124,7 @@ Per Omnia's anti-overconfidence rule, every row distinguishes **migrated Wave 5 
 
 ### Fast Build & Verification Commands
 
-1. **Unified 13-Crate Cargo Workspace (`--offline --locked`)**:
+1. **Unified 17-Crate Cargo Workspace (`--offline --locked`)**:
    ```powershell
    $env:CARGO_TARGET_DIR = 'D:\OmniaData\build\omnia-rust-workspace'
    cargo check --workspace --offline --locked
@@ -120,8 +133,9 @@ Per Omnia's anti-overconfidence rule, every row distinguishes **migrated Wave 5 
    cargo build --workspace --release --offline --locked
    ```
 
-2. **Launch Flagship Studio (`omnia-studio.exe`), Runtime Sidecar & Native Shell**:
+2. **Launch Omnia CLI/TUI (`omnia.exe`), Flagship Studio (`omnia-studio.exe`), Runtime Sidecar & Native Shell**:
    ```powershell
+   D:\OmniaData\build\omnia-rust-workspace\release\omnia.exe --version
    D:\OmniaData\build\omnia-rust-workspace\release\omnia-studio.exe
    D:\OmniaData\build\omnia-rust-workspace\release\omnia-runtime.exe
    D:\OmniaData\build\omnia-rust-workspace\release\omnia-native.exe
@@ -140,9 +154,11 @@ Per Omnia's anti-overconfidence rule, every row distinguishes **migrated Wave 5 
    pwsh -NoProfile -File "D:\Omnia\native\qa-ownership.ps1"
    ```
 
-4. **Skill Parity, Audit, JS Syntax & Repository Cleanliness Gate**:
+4. **Skill Parity, Python Suites, Audit, JS Syntax & Repository Cleanliness Gate**:
    ```powershell
    python -B "D:\Omnia\tools\omnia-skill-parity\validate_skills.py" --strict-all-skills
+   python -B -m unittest discover -s "D:\Omnia\tools\omnia-benchmark" -p "test_*.py"
+   python -B -m unittest discover -s "D:\Omnia\tools\omnia-gemini-extractor" -p "test_*.py"
    python -B "D:\Omnia\tools\omnia-consolidated-audit\audit.py" --secret-scope all --strict --strict-scope full
    node --check D:\Omnia\ui\app\*.js
    git -C "D:\Omnia" diff --check
@@ -170,10 +186,10 @@ Per Omnia's anti-overconfidence rule, every row distinguishes **migrated Wave 5 
 
 | Document | Purpose |
 |---|---|
-| [USER_PROMPT_REQUIREMENTS_MATRIX.md](./USER_PROMPT_REQUIREMENTS_MATRIX.md) | Exhaustive, session-traceable matrix of every product, UI, Steer #14 Full Native Rust migration, routing, memory, RAG, composer, deep-clean, and governance requirement across all hosts. |
+| [USER_PROMPT_REQUIREMENTS_MATRIX.md](./USER_PROMPT_REQUIREMENTS_MATRIX.md) | Exhaustive, session-traceable matrix of every product, UI, Steer #14..#15 Full Native Rust 17-crate & Omnia v5 requirement across all hosts. |
 | [BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md](./BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md) | Rust 2-way all-to-all `PeerMeshGraph` (`peer_mesh.rs`) and `GraphifyIndex` (`graphify_index.rs`) architecture + Studio canvas (`ui/app/peer-graph.js`). |
-| [LESSONS_LEARNED_AND_ANTIPATTERNS.md](./LESSONS_LEARNED_AND_ANTIPATTERNS.md) | 16 provenance-backed engineering postmortems across Codex, Antigravity, and Claude—including Cargo out-of-source `CARGO_TARGET_DIR`, `pwsh` QA, offline `serde`, AdGuard multi-`Cookie`, reparse-safe cleanup, and `19`-skill parity. |
+| [LESSONS_LEARNED_AND_ANTIPATTERNS.md](./LESSONS_LEARNED_AND_ANTIPATTERNS.md) | Engineering postmortems across Codex, Antigravity, and Claude—including Cargo out-of-source `CARGO_TARGET_DIR`, `pwsh` QA, `.gitattributes` LF, AdGuard multi-`Cookie`, reparse-safe cleanup, zero-secret test fixtures, and `19`-skill parity. |
 | [FLAGSHIP_STUDIO_UI_SPEC.md](../ui-direction/FLAGSHIP_STUDIO_UI_SPEC.md) & [DIRECTION_DECISION.md](../ui-direction/DIRECTION_DECISION.md) | "Obsidian Kinetic Atelier" visual specification, semantic token architecture, WCAG 2.2 contrast matrix, and anti-AI-slop invariants. |
 | [GOAL.md](../workspace/GOAL.md) & [DOD.md](../workspace/DOD.md) | Canonical program goal tree and hard Definition of Done gates (`DOD-01`..`DOD-16`, including [Final audit rounds](../workspace/DOD.md#final-audit-rounds)). |
 | [COMPOSER_REQUIREMENTS.md](../workspace/COMPOSER_REQUIREMENTS.md) & [DYNAMIC_ROUTING_REQUIREMENTS.md](../workspace/DYNAMIC_ROUTING_REQUIREMENTS.md) | Normative specifications for the rich Word-grade composer, dual-mode attachments, and dynamic multi-provider/quota/latency router. |
-| [CHECKPOINT.md](../workspace/CHECKPOINT.md) & [DECISIONS.md](../workspace/DECISIONS.md) | Operational state ledger, architectural decision log (`Steer #14` Wave 5 ADR), and pointers to `docs/workspace/DEEP_CLEAN_AUDIT_D_DRIVE.md` and `docs/workspace/DEEP_CLEAN_AUDIT_C_DRIVE.md`. |
+| [CHECKPOINT.md](../workspace/CHECKPOINT.md) & [DECISIONS.md](../workspace/DECISIONS.md) | Operational state ledger, architectural decision log (`Steer #14..#15` Wave 5 ADR), and pointers to `docs/workspace/DEEP_CLEAN_AUDIT_D_DRIVE.md` and `docs/workspace/DEEP_CLEAN_AUDIT_C_DRIVE.md`. |

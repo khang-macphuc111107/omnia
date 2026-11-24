@@ -38,6 +38,20 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    // Goose resolves ACP adapters by binary name (SearchPaths), so copy/symlink this
+    // exe as `pi-acp.exe` (or `omnia-acp.exe`) and it serves stdio ACP with no argv.
+    if args.is_empty() {
+        let invoked_as = env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()))
+            .unwrap_or_default();
+        if matches!(
+            invoked_as.as_str(),
+            "pi-acp" | "omnia-acp" | "goose-acp" | "agy-acp"
+        ) {
+            return run_acp_stdio_from_args(&[]);
+        }
+    }
 
     // Launch interactive TUI when invoked with no arguments (`omnia`) or `omnia tui ...`!
     let Some(first) = args.first().map(String::as_str) else {
@@ -61,29 +75,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        "--acp" | "acp" => {
-            let rt = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("omnia runtime error: {}", redact_secrets(&format!("{e:#}")));
-                    return ExitCode::FAILURE;
-                }
-            };
-            let rest = &args[1..];
-            let model = arg_value(rest, "--model");
-            let base_url = arg_value(rest, "--base-url").or_else(|| arg_value(rest, "--api-base"));
-            let api_key = arg_value(rest, "--api-key");
-            match rt.block_on(run_acp_stdio_server(model, base_url, api_key)) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("omnia --acp error: {}", redact_secrets(&format!("{e:#}")));
-                    ExitCode::FAILURE
-                }
-            }
-        }
+        "--acp" | "acp" => run_acp_stdio_from_args(&args[1..]),
         "--acp-http" | "acp-http" => {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -177,6 +169,35 @@ fn main() -> ExitCode {
     }
 }
 
+/// Shared stdio-ACP entry for `omnia --acp` AND the `pi-acp.exe`/`omnia-acp.exe`
+/// argv[0] shims goose resolves by binary name.
+fn run_acp_stdio_from_args(rest: &[String]) -> ExitCode {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("omnia runtime error: {}", redact_secrets(&format!("{e:#}")));
+            return ExitCode::FAILURE;
+        }
+    };
+    let model = arg_value(rest, "--model").or_else(|| env::var("OMNIA_MODEL").ok());
+    let base_url = arg_value(rest, "--base-url")
+        .or_else(|| arg_value(rest, "--api-base"))
+        .or_else(|| env::var("OMNIA_BASE_URL").ok());
+    let api_key = arg_value(rest, "--api-key")
+        .or_else(|| env::var("OMNIA_API_KEY").ok())
+        .or_else(|| env::var("HTMUSTC_API_KEY").ok());
+    match rt.block_on(run_acp_stdio_server(model, base_url, api_key)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("omnia --acp error: {}", redact_secrets(&format!("{e:#}")));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn print_help() {
     println!(
         "\
@@ -187,6 +208,7 @@ USAGE:
   omnia --profile-startup [--out <json>]
   omnia run --workspace <dir> --model <id> --base-url <url> [OPTIONS] \"<prompt>\"
   omnia --acp [--model <id>] [--base-url <url>] [--api-key <key>]
+  omnia --acp-http [--host <ip>] [--port <n>] [--secret <key>]
   omnia rewind --workspace <dir> --turn <n> [--session <id>]
 
 RUN OPTIONS:
