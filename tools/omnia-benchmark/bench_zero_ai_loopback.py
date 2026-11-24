@@ -58,7 +58,6 @@ class ScriptedSseServer:
         self.req_count = 0
         self.first_req_perf: float | None = None
         self.lock = threading.Lock()
-        self.port = free_port()
         parent = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -91,7 +90,8 @@ class ScriptedSseServer:
             daemon_threads = True
             allow_reuse_address = True
 
-        self._srv = ThreadedServer(("127.0.0.1", self.port), Handler)
+        self._srv = ThreadedServer(("127.0.0.1", 0), Handler)
+        self.port = self._srv.server_port
         self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
 
     def start(self) -> None:
@@ -226,6 +226,10 @@ def bench_1req_mock(n: int = 10) -> Dict[str, Any]:
             res = mon.stop().to_dict()
             assert proc.returncode == 0, f"rc={proc.returncode} err={stderr}"
             assert srv.first_req_perf is not None
+            events = (json.loads(line) for line in stdout.splitlines())
+            reply = "".join(e["textDelta"] for e in events if e.get("type") == "delta")
+            if srv.req_count != 1 or reply != "MOCK_OK":
+                raise ValueError(f"expected one request and MOCK_OK; got {srv.req_count}, {reply!r}")
             first_reqs.append((srv.first_req_perf - t0) * 1000.0)
             e2es.append(e2e_ms)
             rsss.append(res["peak_harness_rss_mb"])
@@ -247,7 +251,7 @@ def bench_1req_mock(n: int = 10) -> Dict[str, Any]:
 
 
 def bench_multiturn_coding_loop(n: int = 5) -> Dict[str, Any]:
-    """Full 5-turn agent loop: read_file -> search_files -> edit_file -> shell(python) -> finish."""
+    """Full 5-turn agent loop: read_file -> search_code -> edit_file -> shell(python) -> finish."""
     e2es, rsss, jobs, cpus = [], [], [], []
     verified_all = 0
     for _ in range(n):
@@ -255,10 +259,13 @@ def bench_multiturn_coding_loop(n: int = 5) -> Dict[str, Any]:
         ws = tmp / "ws"
         ws.mkdir()
         (ws / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
-        (ws / "test_calc.py").write_text("from calc import add\nassert add(2, 3) == 5\nprint('1 passed, 0 failed')\n", encoding="utf-8")
+        (ws / "test_calc.py").write_text(
+            "from pathlib import Path\nfrom calc import add\nassert add(2, 3) == 5\n"
+            "Path('test.passed').touch()\nprint('1 passed, 0 failed')\n", encoding="utf-8"
+        )
         turns = [
             sse_tool("c1", "read_file", {"path": "calc.py"}, 300, 15),
-            sse_tool("c2", "search_files", {"query": "def add"}, 500, 15),
+            sse_tool("c2", "search_code", {"mode": "regex", "query": "def add"}, 500, 15),
             sse_tool("c3", "edit_file", {"path": "calc.py", "old_text": "return a - b", "new_text": "return a + b"}, 700, 25),
             sse_tool("c4", "shell", {"command": "python test_calc.py"}, 950, 15),
             sse_text("Fixed calc.py and verified 1 passed, 0 failed.", 1150, 12),
@@ -289,6 +296,11 @@ def bench_multiturn_coding_loop(n: int = 5) -> Dict[str, Any]:
             fixed = (ws / "calc.py").read_text(encoding="utf-8")
             assert "return a + b" in fixed, f"edit failed: {fixed!r}"
             assert srv.req_count == 5, f"expected 5 turns (anti-termination-lag skip!), got {srv.req_count}"
+            events = (json.loads(line) for line in stdout.splitlines())
+            completed = [(e["toolName"], e["isError"]) for e in events if e.get("type") == "tool_end"]
+            expected = [(tool, False) for tool in ("read_file", "search_code", "edit_file", "shell")]
+            if completed != expected or not (ws / "test.passed").is_file():
+                raise ValueError(f"coding loop failed independent verification: {completed!r}")
             verified_all += 1
             e2es.append(e2e_ms)
             rsss.append(res["peak_harness_rss_mb"])

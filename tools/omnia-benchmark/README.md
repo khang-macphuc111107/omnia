@@ -12,6 +12,7 @@ Zero-Docker, Windows-native, publication-grade 10-axis evaluation suite comparin
 - `runner.py` — Isolated per-task benchmark executor capturing exact streaming telemetry, normalized tokens, live RSS/CPU, and hidden verifier scores into `results/raw/<phase>/<harness>/<model>/<task_id>.json`.
 - `scorer.py` — 10-axis Artificial Analysis-style aggregator generating `results/summary/<phase>/scoreboard.json` and `SCOREBOARD.md`.
 - `validate_suite.py` — Automated integrity checker confirming all tasks fail cleanly on baseline workspaces (with 100% `PASS_TO_PASS` and 0% `FAIL_TO_PASS` on Axis 1 SWE-bench tasks).
+- `bench_zero_ai_loopback.py` — Local release-binary timing, not model evaluation. The one-turn case checks the actual reply. The five-turn case requires successful read, search, edit and shell results and a marker created by the passing workspace test. Mock usage does not measure provider cost, cache hits or decode speed.
 
 ## Quick Commands
 
