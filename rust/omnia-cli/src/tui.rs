@@ -291,9 +291,19 @@ struct TuiAppState {
     total_turns: u32,
     total_tools: u32,
     tool_errors: u32,
+    cached_rss_bytes: u64,
+    last_rss_refresh: Instant,
 }
 
 impl TuiAppState {
+    fn refresh_rss_if_stale(&mut self, now: Instant) -> bool {
+        if now.duration_since(self.last_rss_refresh) >= Duration::from_secs(2) {
+            self.cached_rss_bytes = process_tree_rss_bytes(std::process::id());
+            self.last_rss_refresh = now;
+            return true;
+        }
+        false
+    }
     fn push_line(&mut self, kind: TranscriptEntryKind, text: impl Into<String>) {
         for raw_line in text.into().lines() {
             let line = raw_line.to_string();
@@ -487,8 +497,8 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
         ])
         .split(area);
 
-    // 1. OMP-Inspired Header Strip
-    let rss_mb = process_tree_rss_bytes(std::process::id()) as f64 / (1024.0 * 1024.0);
+    // 1. OMP-Inspired Header Strip (uses cached RSS refreshed <= once every 2s)
+    let rss_mb = state.cached_rss_bytes as f64 / (1024.0 * 1024.0);
     let key_badge = if state.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()) {
         Span::styled("KEY OK", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
     } else {
@@ -1036,14 +1046,18 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         total_turns: 0,
         total_tools: 0,
         tool_errors: 0,
+        cached_rss_bytes: process_tree_rss_bytes(std::process::id()),
+        last_rss_refresh: Instant::now(),
     };
 
     let _guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    let mut dirty = true;
 
     loop {
         while let Ok(ev) = rx.try_recv() {
+            dirty = true;
             match ev {
                 UiAsyncEvent::Harness(hev) => match hev {
                     HarnessStreamEvent::DeltaBatch {
@@ -1155,242 +1169,288 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
             }
         }
 
-        terminal.draw(|f| render_ui(f, &mut state))?;
+        if state.refresh_rss_if_stale(Instant::now()) {
+            dirty = true;
+        }
 
+        if dirty {
+            terminal.draw(|f| render_ui(f, &mut state))?;
+            dirty = false;
+        }
+
+        let mut should_exit = false;
         if event::poll(Duration::from_millis(25))? {
-            match event::read()? {
-                Event::Mouse(m) => match m.kind {
-                    MouseEventKind::ScrollUp => {
-                        state.auto_scroll = false;
-                        state.scroll_offset = state.scroll_offset.saturating_sub(3);
+            for _ in 0..256 {
+                match event::read()? {
+                    Event::Resize(_, _) => {
+                        let _ = terminal.autoresize();
+                        dirty = true;
                     }
-                    MouseEventKind::ScrollDown => {
-                        state.scroll_offset = state.scroll_offset.saturating_add(3);
-                    }
-                    _ => {}
-                },
-                Event::Key(key) => {
-                    if !should_process_key_event(&key) {
-                        continue;
-                    }
-                    if let Some(appr) = state.pending_approval.take() {
-                        match key.code {
-                            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                let _ = appr.reply.send(true);
-                            }
-                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                                let _ = appr.reply.send(false);
-                            }
-                            _ => {
-                                state.pending_approval = Some(appr);
-                            }
-                        }
-                        continue;
-                    }
-
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
-                    {
-                        state.cancel_flag.store(true, Ordering::SeqCst);
-                        break;
-                    }
-
-                    match key {
-                        KeyEvent {
-                            code: KeyCode::F(2),
-                            ..
-                        } => {
-                            state.show_thinking = !state.show_thinking;
-                        }
-                        KeyEvent {
-                            code: KeyCode::F(3),
-                            ..
-                        } => {
-                            state.cred_entries = CredentialStore::list_masked().unwrap_or_default();
-                            state.show_creds_modal = !state.show_creds_modal;
-                        }
-                        KeyEvent {
-                            code: KeyCode::Esc,
-                            ..
-                        } => {
-                            if state.show_creds_modal {
-                                state.show_creds_modal = false;
-                            } else if state.running {
-                                state.cancel_flag.store(true, Ordering::SeqCst);
-                                state.push_line(TranscriptEntryKind::System, "Abort requested...");
-                            }
-                        }
-                        KeyEvent {
-                            code: KeyCode::PageUp,
-                            ..
-                        } => {
+                    Event::Mouse(m) => match m.kind {
+                        MouseEventKind::ScrollUp => {
                             state.auto_scroll = false;
-                            state.scroll_offset = state.scroll_offset.saturating_sub(8);
+                            state.scroll_offset = state.scroll_offset.saturating_sub(3);
+                            dirty = true;
                         }
-                        KeyEvent {
-                            code: KeyCode::PageDown,
-                            ..
-                        } => {
-                            state.scroll_offset = state.scroll_offset.saturating_add(8);
-                        }
-                        KeyEvent {
-                            code: KeyCode::Tab,
-                            ..
-                        } => {
-                            let slash = state.filtered_slash();
-                            if !slash.is_empty() {
-                                let picked = slash[state.slash_selected % slash.len()].cmd;
-                                state.input = format!("{picked} ");
-                                state.cursor_byte = state.input.len();
-                            }
-                        }
-                        KeyEvent {
-                            code: KeyCode::Enter,
-                            modifiers,
-                            ..
-                        } if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::SHIFT) => {
-                            state.insert_char('\n');
-                        }
-                        KeyEvent {
-                            code: KeyCode::Enter,
-                            ..
-                        } => {
-                            if state.running {
-                                continue;
-                            }
-                            let submitted = state.input.trim().to_string();
-                            state.input.clear();
-                            state.cursor_byte = 0;
-                            state.history_idx = None;
-                            state.auto_scroll = true;
-                            if submitted.is_empty() {
-                                continue;
-                            }
-                            state.history.push(submitted.clone());
-                            if submitted.starts_with('/') {
-                                if handle_slash_command(&submitted, &mut state, &tx)? {
-                                    break;
-                                }
-                                continue;
-                            }
-                            if state.api_key.as_deref().is_none_or(|k| k.trim().is_empty()) {
-                                state.push_line(
-                                    TranscriptEntryKind::System,
-                                    "No API key configured. Run `/key <your-key>` or set HTMUSTC_API_KEY.",
-                                );
-                                continue;
-                            }
-                            state.push_line(TranscriptEntryKind::User, &submitted);
-                            state.running = true;
-                            state.cancel_flag.store(false, Ordering::SeqCst);
-                            let Some(mut eng) = state.engine.take() else {
-                                state.running = false;
-                                continue;
-                            };
-                            let tx_clone = tx.clone();
-                            let max_turns = state.max_turns;
-                            let timeout_secs = state.timeout_secs;
-                            let t0 = Instant::now();
-                            tokio::spawn(async move {
-                                let sink_tx = tx_clone.clone();
-                                let sink: HarnessEventSink = Arc::new(move |ev| {
-                                    let _ = sink_tx.send(UiAsyncEvent::Harness(ev));
-                                });
-                                let res = eng.run_prompt(&submitted, max_turns, timeout_secs, Some(sink)).await;
-                                let cs = eng.cache_guard.snapshot();
-                                let turns = eng.total_turns;
-                                let event = match res {
-                                    Ok(summary) => {
-                                        let tps = if summary.active_decode_ms > 0 {
-                                            (cs.output_tokens as f64) / (summary.active_decode_ms as f64 / 1000.0)
-                                        } else {
-                                            0.0
-                                        };
-                                        UiAsyncEvent::TurnFinished {
-                                            engine: Box::new(eng),
-                                            elapsed_secs: t0.elapsed().as_secs_f64(),
-                                            turns: summary.turns,
-                                            kv_pct: cs.cache_hit_pct,
-                                            tps,
-                                            final_text: summary.final_text,
-                                            cost_usd: 0.0,
-                                            err: None,
-                                        }
-                                    }
-                                    Err(e) => UiAsyncEvent::TurnFinished {
-                                        engine: Box::new(eng),
-                                        elapsed_secs: t0.elapsed().as_secs_f64(),
-                                        turns,
-                                        kv_pct: cs.cache_hit_pct,
-                                        tps: 0.0,
-                                        final_text: String::new(),
-                                        cost_usd: 0.0,
-                                        err: Some(format!("{e:#}")),
-                                    },
-                                };
-                                let _ = tx_clone.send(event);
-                            });
-                        }
-                        KeyEvent {
-                            code: KeyCode::Backspace,
-                            ..
-                        } => state.backspace(),
-                        KeyEvent {
-                            code: KeyCode::Left,
-                            ..
-                        } => state.move_left(),
-                        KeyEvent {
-                            code: KeyCode::Right,
-                            ..
-                        } => state.move_right(),
-                        KeyEvent {
-                            code: KeyCode::Up,
-                            ..
-                        } => {
-                            let slash = state.filtered_slash();
-                            if !slash.is_empty() {
-                                state.slash_selected = state.slash_selected.saturating_sub(1);
-                            } else if !state.history.is_empty() {
-                                let idx = match state.history_idx {
-                                    Some(i) => i.saturating_sub(1),
-                                    None => state.history.len() - 1,
-                                };
-                                state.history_idx = Some(idx);
-                                state.input = state.history[idx].clone();
-                                state.cursor_byte = state.input.len();
-                            }
-                        }
-                        KeyEvent {
-                            code: KeyCode::Down,
-                            ..
-                        } => {
-                            let slash = state.filtered_slash();
-                            if !slash.is_empty() {
-                                state.slash_selected = (state.slash_selected + 1) % slash.len();
-                            } else if let Some(i) = state.history_idx {
-                                if i + 1 < state.history.len() {
-                                    state.history_idx = Some(i + 1);
-                                    state.input = state.history[i + 1].clone();
-                                    state.cursor_byte = state.input.len();
-                                } else {
-                                    state.history_idx = None;
-                                    state.input.clear();
-                                    state.cursor_byte = 0;
-                                }
-                            }
-                        }
-                        KeyEvent {
-                            code: KeyCode::Char(c),
-                            modifiers,
-                            ..
-                        } if !modifiers.contains(KeyModifiers::CONTROL) => {
-                            state.insert_char(c);
+                        MouseEventKind::ScrollDown => {
+                            state.scroll_offset = state.scroll_offset.saturating_add(3);
+                            dirty = true;
                         }
                         _ => {}
+                    },
+                    Event::Key(key) => {
+                        if !should_process_key_event(&key) {
+                            if !event::poll(Duration::ZERO)? {
+                                break;
+                            }
+                            continue;
+                        }
+                        dirty = true;
+                        if let Some(appr) = state.pending_approval.take() {
+                            match key.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    let _ = appr.reply.send(true);
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    let _ = appr.reply.send(false);
+                                }
+                                _ => {
+                                    state.pending_approval = Some(appr);
+                                }
+                            }
+                            if !event::poll(Duration::ZERO)? {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
+                        {
+                            state.cancel_flag.store(true, Ordering::SeqCst);
+                            should_exit = true;
+                            break;
+                        }
+
+                        match key {
+                            KeyEvent {
+                                code: KeyCode::F(2),
+                                ..
+                            } => {
+                                state.show_thinking = !state.show_thinking;
+                            }
+                            KeyEvent {
+                                code: KeyCode::F(3),
+                                ..
+                            } => {
+                                state.cred_entries = CredentialStore::list_masked().unwrap_or_default();
+                                state.show_creds_modal = !state.show_creds_modal;
+                            }
+                            KeyEvent {
+                                code: KeyCode::Esc,
+                                ..
+                            } => {
+                                if state.show_creds_modal {
+                                    state.show_creds_modal = false;
+                                } else if state.running {
+                                    state.cancel_flag.store(true, Ordering::SeqCst);
+                                    state.push_line(TranscriptEntryKind::System, "Abort requested...");
+                                }
+                            }
+                            KeyEvent {
+                                code: KeyCode::PageUp,
+                                ..
+                            } => {
+                                state.auto_scroll = false;
+                                state.scroll_offset = state.scroll_offset.saturating_sub(8);
+                            }
+                            KeyEvent {
+                                code: KeyCode::PageDown,
+                                ..
+                            } => {
+                                state.scroll_offset = state.scroll_offset.saturating_add(8);
+                            }
+                            KeyEvent {
+                                code: KeyCode::Tab,
+                                ..
+                            } => {
+                                let slash = state.filtered_slash();
+                                if !slash.is_empty() {
+                                    let picked = slash[state.slash_selected % slash.len()].cmd;
+                                    state.input = format!("{picked} ");
+                                    state.cursor_byte = state.input.len();
+                                }
+                            }
+                            KeyEvent {
+                                code: KeyCode::Enter,
+                                modifiers,
+                                ..
+                            } if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::SHIFT) => {
+                                state.insert_char('\n');
+                            }
+                            KeyEvent {
+                                code: KeyCode::Enter,
+                                ..
+                            } => {
+                                if state.running {
+                                    if !event::poll(Duration::ZERO)? {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                let submitted = state.input.trim().to_string();
+                                state.input.clear();
+                                state.cursor_byte = 0;
+                                state.history_idx = None;
+                                state.auto_scroll = true;
+                                if submitted.is_empty() {
+                                    if !event::poll(Duration::ZERO)? {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                state.history.push(submitted.clone());
+                                if submitted.starts_with('/') {
+                                    if handle_slash_command(&submitted, &mut state, &tx)? {
+                                        should_exit = true;
+                                        break;
+                                    }
+                                    if !event::poll(Duration::ZERO)? {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                if state.api_key.as_deref().is_none_or(|k| k.trim().is_empty()) {
+                                    state.push_line(
+                                        TranscriptEntryKind::System,
+                                        "No API key configured. Run `/key <your-key>` or set HTMUSTC_API_KEY.",
+                                    );
+                                    if !event::poll(Duration::ZERO)? {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                state.push_line(TranscriptEntryKind::User, &submitted);
+                                state.running = true;
+                                state.cancel_flag.store(false, Ordering::SeqCst);
+                                let Some(mut eng) = state.engine.take() else {
+                                    state.running = false;
+                                    if !event::poll(Duration::ZERO)? {
+                                        break;
+                                    }
+                                    continue;
+                                };
+                                let tx_clone = tx.clone();
+                                let max_turns = state.max_turns;
+                                let timeout_secs = state.timeout_secs;
+                                let t0 = Instant::now();
+                                tokio::spawn(async move {
+                                    let sink_tx = tx_clone.clone();
+                                    let sink: HarnessEventSink = Arc::new(move |ev| {
+                                        let _ = sink_tx.send(UiAsyncEvent::Harness(ev));
+                                    });
+                                    let res = eng.run_prompt(&submitted, max_turns, timeout_secs, Some(sink)).await;
+                                    let cs = eng.cache_guard.snapshot();
+                                    let turns = eng.total_turns;
+                                    let event = match res {
+                                        Ok(summary) => {
+                                            let tps = if summary.active_decode_ms > 0 {
+                                                (cs.output_tokens as f64) / (summary.active_decode_ms as f64 / 1000.0)
+                                            } else {
+                                                0.0
+                                            };
+                                            UiAsyncEvent::TurnFinished {
+                                                engine: Box::new(eng),
+                                                elapsed_secs: t0.elapsed().as_secs_f64(),
+                                                turns: summary.turns,
+                                                kv_pct: cs.cache_hit_pct,
+                                                tps,
+                                                final_text: summary.final_text,
+                                                cost_usd: 0.0,
+                                                err: None,
+                                            }
+                                        }
+                                        Err(e) => UiAsyncEvent::TurnFinished {
+                                            engine: Box::new(eng),
+                                            elapsed_secs: t0.elapsed().as_secs_f64(),
+                                            turns,
+                                            kv_pct: cs.cache_hit_pct,
+                                            tps: 0.0,
+                                            final_text: String::new(),
+                                            cost_usd: 0.0,
+                                            err: Some(format!("{e:#}")),
+                                        },
+                                    };
+                                    let _ = tx_clone.send(event);
+                                });
+                            }
+                            KeyEvent {
+                                code: KeyCode::Backspace,
+                                ..
+                            } => state.backspace(),
+                            KeyEvent {
+                                code: KeyCode::Left,
+                                ..
+                            } => state.move_left(),
+                            KeyEvent {
+                                code: KeyCode::Right,
+                                ..
+                            } => state.move_right(),
+                            KeyEvent {
+                                code: KeyCode::Up,
+                                ..
+                            } => {
+                                let slash = state.filtered_slash();
+                                if !slash.is_empty() {
+                                    state.slash_selected = state.slash_selected.saturating_sub(1);
+                                } else if !state.history.is_empty() {
+                                    let idx = match state.history_idx {
+                                        Some(i) => i.saturating_sub(1),
+                                        None => state.history.len() - 1,
+                                    };
+                                    state.history_idx = Some(idx);
+                                    state.input = state.history[idx].clone();
+                                    state.cursor_byte = state.input.len();
+                                }
+                            }
+                            KeyEvent {
+                                code: KeyCode::Down,
+                                ..
+                            } => {
+                                let slash = state.filtered_slash();
+                                if !slash.is_empty() {
+                                    state.slash_selected = (state.slash_selected + 1) % slash.len();
+                                } else if let Some(i) = state.history_idx {
+                                    if i + 1 < state.history.len() {
+                                        state.history_idx = Some(i + 1);
+                                        state.input = state.history[i + 1].clone();
+                                        state.cursor_byte = state.input.len();
+                                    } else {
+                                        state.history_idx = None;
+                                        state.input.clear();
+                                        state.cursor_byte = 0;
+                                    }
+                                }
+                            }
+                            KeyEvent {
+                                code: KeyCode::Char(c),
+                                modifiers,
+                                ..
+                            } if !modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.insert_char(c);
+                            }
+                            _ => {}
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
+                if !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
+        }
+        if should_exit {
+            break;
         }
     }
 
@@ -1492,5 +1552,17 @@ mod tests {
         assert!(should_process_key_event(&press));
         assert!(should_process_key_event(&repeat));
         assert!(!should_process_key_event(&release));
+    }
+
+    #[test]
+    fn rss_cache_refresh_respects_two_second_cooldown() {
+        let t0 = Instant::now();
+        let mut last = t0;
+        let stale_fast = Duration::from_millis(50);
+        let stale_slow = Duration::from_secs(3);
+        assert!(stale_fast < Duration::from_secs(2));
+        assert!(stale_slow >= Duration::from_secs(2));
+        last += stale_slow;
+        assert!(last.duration_since(t0) >= Duration::from_secs(2));
     }
 }

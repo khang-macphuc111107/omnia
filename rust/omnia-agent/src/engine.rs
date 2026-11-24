@@ -2412,9 +2412,9 @@ impl NativeSuperEngine {
                                 | TestOutcomeTransition::AllGreen { .. }
                         );
                         match transition {
-                            TestOutcomeTransition::Regression(reg_alert) => {
+                            TestOutcomeTransition::Regression(ref reg_alert) => {
                                 tool_text.push_str("\n\n");
-                                tool_text.push_str(&reg_alert);
+                                tool_text.push_str(reg_alert);
                                 progress.escalate_reasoning = true;
                                 progress.test_suite_passed_since_last_mutation = false;
                             }
@@ -2447,9 +2447,16 @@ impl NativeSuperEngine {
                             progress.last_failed_shell = Some((fp_hex, err_kind, symptom));
                         } else {
                             progress.last_shell_exit_code = Some(0);
+                            let cmd = arg_val
+                                .get("command")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("shell");
                             if !progress.files_mutated.is_empty() {
                                 progress.verified_since_last_mutation = true;
-                                if transition_passed_suite {
+                                if transition_passed_suite
+                                    || (!matches!(transition, TestOutcomeTransition::Regression(_))
+                                        && is_test_script_invocation(cmd, &tool_text))
+                                {
                                     progress.test_suite_passed_since_last_mutation = true;
                                 }
                             }
@@ -2457,10 +2464,6 @@ impl NativeSuperEngine {
                                 progress.last_failed_shell.take()
                             {
                                 if let Some(ref db) = self.tool_runtime.db {
-                                    let cmd = arg_val
-                                        .get("command")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("shell");
                                     let fix_summary = if progress.files_mutated.is_empty() {
                                         format!("Verified command succeeded: `{cmd}`")
                                     } else {
@@ -6269,6 +6272,37 @@ fn parse_shell_exit_code(content: &str) -> Option<i32> {
     first.strip_prefix("exit_code:")?.trim().parse::<i32>().ok()
 }
 
+/// Detect clean `exit_code=0` invocations of standalone test/verify scripts (e.g. `test_sample.py`,
+/// `verify.py`, `suite.test.mjs`) whose assertions print minimal or custom output.
+fn is_test_script_invocation(cmd: &str, output: &str) -> bool {
+    let low_out = output.to_ascii_lowercase();
+    if low_out.contains("traceback")
+        || low_out.contains("assertionerror")
+        || low_out.contains("failed")
+        || low_out.contains("error[e")
+    {
+        return false;
+    }
+    let low_cmd = cmd.to_ascii_lowercase();
+    low_cmd
+        .split(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';' | '"' | '\''))
+        .any(|tok| {
+            let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
+            let test_stem = base.starts_with("test_")
+                || base.starts_with("verify")
+                || base.contains("_test.")
+                || base.contains(".test.")
+                || base.contains(".spec.");
+            let script_ext = base.ends_with(".py")
+                || base.ends_with(".mjs")
+                || base.ends_with(".js")
+                || base.ends_with(".ts")
+                || base.ends_with(".ps1")
+                || base.ends_with(".sh");
+            test_stem && script_ext
+        })
+}
+
 /// Extract Gemini `thought_signature` / `thoughtSignature` verbatim from SSE delta or part JSON.
 fn extract_thought_signature(v: &Value) -> Option<String> {
     v.get("thought_signature")
@@ -9385,5 +9419,26 @@ data: [DONE]\n\n";
         assert_eq!(sum.cache_stats.output_tokens, 45);
         assert!(sum.cache_stats.cache_hit_pct > 90.0);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn custom_test_script_invocation_recognizes_clean_scripts_without_masking_echo_or_errors() {
+        assert!(is_test_script_invocation(
+            "python test_sample.py && python -c \"assert 1\"",
+            "exit_code: 0\nOK"
+        ));
+        assert!(is_test_script_invocation(
+            "node tests/algo.test.mjs",
+            "exit_code: 0\nall checks ok"
+        ));
+        assert!(!is_test_script_invocation("echo OK", "exit_code: 0\nOK"));
+        assert!(!is_test_script_invocation(
+            "python solution.py",
+            "exit_code: 0\ndone"
+        ));
+        assert!(!is_test_script_invocation(
+            "python test_sample.py",
+            "exit_code: 0\nTraceback: AssertionError"
+        ));
     }
 }

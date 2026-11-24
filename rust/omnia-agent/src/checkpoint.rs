@@ -296,7 +296,8 @@ fn inflate_bytes(compressed: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Extract `(passed, failed)` counts from `pytest`, `cargo test`, `jest`/`vitest`/`bun test`, or Python `unittest`.
+/// Extract `(passed, failed)` counts from `pytest`, `cargo test`, `jest`/`vitest`/`bun test`,
+/// Python `unittest`, `node --test` TAP, `go test`, or custom test/verification scripts.
 pub fn parse_test_pass_counts(output: &str) -> Option<TestPassCounts> {
     static CARGO_RE: OnceLock<Regex> = OnceLock::new();
     static PYTEST_PASS_RE: OnceLock<Regex> = OnceLock::new();
@@ -304,6 +305,16 @@ pub fn parse_test_pass_counts(output: &str) -> Option<TestPassCounts> {
     static JEST_PASS_RE: OnceLock<Regex> = OnceLock::new();
     static JEST_FAIL_RE: OnceLock<Regex> = OnceLock::new();
     static UNITTEST_RE: OnceLock<Regex> = OnceLock::new();
+    static TAP_PASS_RE: OnceLock<Regex> = OnceLock::new();
+    static TAP_FAIL_RE: OnceLock<Regex> = OnceLock::new();
+    static GO_PASS_RE: OnceLock<Regex> = OnceLock::new();
+    static GO_FAIL_RE: OnceLock<Regex> = OnceLock::new();
+    static NONZERO_EXIT_RE: OnceLock<Regex> = OnceLock::new();
+    static FAILURE_MARKER_RE: OnceLock<Regex> = OnceLock::new();
+    static CUSTOM_COUNT_BEFORE_RE: OnceLock<Regex> = OnceLock::new();
+    static CUSTOM_COUNT_AFTER_RE: OnceLock<Regex> = OnceLock::new();
+    static CUSTOM_OK_RE: OnceLock<Regex> = OnceLock::new();
+    static CUSTOM_BANNER_RE: OnceLock<Regex> = OnceLock::new();
 
     // 1. Cargo test: `test result: ok. 12 passed; 0 failed;`
     let cargo_re = CARGO_RE.get_or_init(|| {
@@ -350,7 +361,7 @@ pub fn parse_test_pass_counts(output: &str) -> Option<TestPassCounts> {
     let py_p = PYTEST_PASS_RE.get_or_init(|| Regex::new(r"\b(\d+)\s+passed\b").unwrap());
     let py_f =
         PYTEST_FAIL_RE.get_or_init(|| Regex::new(r"\b(\d+)\s+(?:failed|error|errors)\b").unwrap());
-    for line in output.lines().rev().take(15) {
+    for line in output.lines().rev().take(25) {
         if line.contains("passed") || line.contains("failed") || line.contains("error") {
             let p = py_p
                 .captures(line)
@@ -387,6 +398,88 @@ pub fn parse_test_pass_counts(output: &str) -> Option<TestPassCounts> {
             return Some(TestPassCounts {
                 passed: total.saturating_sub(failed),
                 failed,
+            });
+        }
+    }
+
+    // 5. Node `--test` / TAP summary (`# pass 14` / `# fail 0`)
+    let tap_p_re = TAP_PASS_RE.get_or_init(|| Regex::new(r"(?im)^#\s+pass\s+(\d+)\b").unwrap());
+    let tap_f_re = TAP_FAIL_RE.get_or_init(|| Regex::new(r"(?im)^#\s+fail\s+(\d+)\b").unwrap());
+    if let Some(cap) = tap_p_re.captures(output) {
+        let p = cap[1].parse::<u32>().unwrap_or(0);
+        let f = tap_f_re
+            .captures(output)
+            .and_then(|c| c[1].parse::<u32>().ok())
+            .unwrap_or(0);
+        if p > 0 || f > 0 {
+            return Some(TestPassCounts {
+                passed: p,
+                failed: f,
+            });
+        }
+    }
+
+    // 6. Go test (`--- PASS:` / `--- FAIL:` or package `ok ... 0.123s` / `FAIL ...`)
+    let go_p_re = GO_PASS_RE.get_or_init(|| Regex::new(r"(?m)^(?:---\s+PASS:|ok\s+\S+\s+\d)").unwrap());
+    let go_f_re = GO_FAIL_RE.get_or_init(|| Regex::new(r"(?m)^(?:---\s+FAIL:|FAIL\s+\S+)").unwrap());
+    let go_p = go_p_re.find_iter(output).count() as u32;
+    let go_f = go_f_re.find_iter(output).count() as u32;
+    if go_p > 0 || go_f > 0 {
+        return Some(TestPassCounts {
+            passed: go_p,
+            failed: go_f,
+        });
+    }
+
+    // 7. Custom test/verification scripts (`3000 exhaustive-oracle randomized cases passed`,
+    //    `passed 12 assertions`, `OK (12 tests)`, `ALL TESTS PASSED`) ONLY when zero
+    //    failure markers and zero non-zero exit codes appear in the output.
+    let nonzero_exit = NONZERO_EXIT_RE
+        .get_or_init(|| Regex::new(r"(?m)^exit_code:\s*(?:-\d+|[1-9]\d*)\b").unwrap());
+    let failure_marker = FAILURE_MARKER_RE.get_or_init(|| {
+        Regex::new(
+            r"(?im)(?:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|Traceback \(most recent call last\)|AssertionError\b|^\s*(?:FAIL|FAILED)\b)",
+        )
+        .unwrap()
+    });
+    if nonzero_exit.is_match(output) || failure_marker.is_match(output) {
+        return None;
+    }
+
+    let before_re = CUSTOM_COUNT_BEFORE_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(\d+)\s+(?:[\w-]+\s+){0,4}(?:tests?|cases?|checks?|assertions?|specs?|examples?|benchmarks?|scenarios?)\s+passed\b",
+        )
+        .unwrap()
+    });
+    let after_re = CUSTOM_COUNT_AFTER_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\bpassed\s+(\d+)\s+(?:[\w-]+\s+){0,3}(?:tests?|cases?|checks?|assertions?|specs?|examples?)\b",
+        )
+        .unwrap()
+    });
+    let ok_re = CUSTOM_OK_RE.get_or_init(|| Regex::new(r"(?i)\bOK\s*\(\s*(\d+)\s+tests?\s*\)").unwrap());
+    let banner_re = CUSTOM_BANNER_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)^(?:===+\s*)?(?:all\s+(?:[\w-]+\s+){0,3}(?:tests?|cases?|checks?|assertions?|suites?)\s+passed|tests?\s+passed|all\s+passed)\b[.!=\s]*$",
+        )
+        .unwrap()
+    });
+
+    for line in output.lines().rev().map(str::trim).filter(|l| !l.is_empty()).take(25) {
+        if let Some(cap) = before_re.captures(line).or_else(|| after_re.captures(line)).or_else(|| ok_re.captures(line)) {
+            let count = cap[1].parse::<u32>().unwrap_or(0);
+            if count > 0 {
+                return Some(TestPassCounts {
+                    passed: count,
+                    failed: 0,
+                });
+            }
+        }
+        if banner_re.is_match(line) {
+            return Some(TestPassCounts {
+                passed: 1,
+                failed: 0,
             });
         }
     }
@@ -510,5 +603,63 @@ mod tests {
         assert_eq!(fs::read_to_string(&app).unwrap(), "version = 1\n");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_test_pass_counts_supports_custom_scripts_tap_go_and_rejects_failures() {
+        assert_eq!(
+            parse_test_pass_counts("exit_code: 0\n3000 exhaustive-oracle randomized cases passed"),
+            Some(TestPassCounts {
+                passed: 3000,
+                failed: 0
+            })
+        );
+        assert_eq!(
+            parse_test_pass_counts("exit_code: 0\n10 cases passed, 0 failed"),
+            Some(TestPassCounts {
+                passed: 10,
+                failed: 0
+            })
+        );
+        assert_eq!(
+            parse_test_pass_counts("exit_code: 0\npassed 12 assertions\n"),
+            Some(TestPassCounts {
+                passed: 12,
+                failed: 0
+            })
+        );
+        assert_eq!(
+            parse_test_pass_counts("exit_code: 0\nALL TESTS PASSED\n"),
+            Some(TestPassCounts {
+                passed: 1,
+                failed: 0
+            })
+        );
+        assert_eq!(
+            parse_test_pass_counts("# tests 14\n# pass 14\n# fail 0\n"),
+            Some(TestPassCounts {
+                passed: 14,
+                failed: 0
+            })
+        );
+        assert_eq!(
+            parse_test_pass_counts("--- PASS: TestAlpha (0.00s)\n--- PASS: TestBeta (0.00s)\nok\texample/pkg\t0.12s\n"),
+            Some(TestPassCounts {
+                passed: 3,
+                failed: 0
+            })
+        );
+        assert_eq!(
+            parse_test_pass_counts("exit_code: 1\nAssertionError\n10 cases passed\n"),
+            None
+        );
+        assert_eq!(
+            parse_test_pass_counts("exit_code: 0\nTraceback (most recent call last):\n10 cases passed\n"),
+            None
+        );
+        assert_eq!(
+            parse_test_pass_counts("exit_code: 0\npassed arguments cleanly without flags\n"),
+            None
+        );
     }
 }
