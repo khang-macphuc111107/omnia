@@ -57,10 +57,17 @@ pub fn blake3_hex(data: &[u8]) -> String {
     hex_encode_32(&blake3_bytes(data))
 }
 
-/// Backward-compatible alias backed by BLAKE3 SIMD hashing.
+/// Cryptographic SHA-256 raw 32-byte digest (`omnia_core::sha256_bytes`).
+#[must_use]
+pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    omnia_core::sha256_bytes(data)
+}
+
+/// Genuine lowercase 64-char hexadecimal SHA-256 digest (`omnia_core::sha256_hex`)
+/// used for Instruction Delta Epochs and cryptographic content identity.
 #[must_use]
 pub fn sha256_hex(data: &[u8]) -> String {
-    blake3_hex(data)
+    omnia_core::sha256_hex(data)
 }
 
 /// Recursively canonicalize any JSON value so all object keys are emitted in deterministic
@@ -302,5 +309,11 @@ mod tests {
 
         assert!(!guard.verify_turn_prefix("mutated prompt", &tools));
         assert_eq!(guard.snapshot().prefix_mutations, 1);
+
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_ne!(sha256_hex(b"abc"), blake3_hex(b"abc"));
     }
 }

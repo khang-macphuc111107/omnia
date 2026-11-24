@@ -8,25 +8,39 @@
 //!   closed stdin, concurrent stdout/stderr draining, hard timeout, and guaranteed 0 orphans.
 
 use crate::agent_store::AgentStore;
+use crate::ast_edit::{ast_edit_source, ast_grep_path, AstLang, AstRewriteOp};
 use crate::checkpoint::TurnCheckpointStore;
 use crate::context::WorkspaceContextBundle;
+use crate::dap::{DapAttachRequest, DapInitialBreakpoint, DapLaunchRequest, DapManager};
+use crate::dynamic_plugins::{CordisPluginManager, DynamicPluginToolDef};
 use crate::edit::{
     edit_file_by_hashline, edit_file_by_symbol_block, edit_file_guarded, format_hashline,
     line_hash_tag, run_fast_compiler_syntax_check, FileReadTracker,
 };
 use crate::graph_locator::{verify_syntax_delta, WorkspaceGraphIndex};
+use crate::hooks::{HookEvent, HookRegistry};
 use crate::lakeview::offload_large_observation;
 use crate::lsp::LazyLspManager;
+use crate::mcp_client::{McpManager, McpServerConfig};
+use crate::memory_engine::{dispatch_memory_tool_json, MemoryEngine};
+use crate::output_compressor::compress_tool_output;
 use crate::patch::{apply_codex_patch, parse_codex_patch, FilePatchOp};
 use crate::path_guard::{ensure_within_workspace, sanitize_windows_path};
 use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
-use crate::plugin::{builtin_deferred_semantic_tools, DeferredToolRegistry};
+use crate::plugin::{builtin_deferred_semantic_tools, DeferredToolRegistry, ToolSpec};
+use crate::ptc::{run_code_sandbox, PtcInnerToolOutput, PtcRunRequest, PtcToolInvoker};
+use crate::pty_session::{PtyCreateRequest, PtyKind, PtyManager};
+use crate::recipes::{discover_recipes, parse_recipe_yaml, validate_and_render_recipe};
 use crate::sanitizer::{atomic_write_bom_free, format_fail_fast_error, sanitize_untrusted_text};
 use crate::search::SearchMode;
 use crate::supervisor::spawn_supervised_command;
+use crate::swarm_runtime::{dispatch_swarm_tool_json, SwarmRuntime};
+use crate::test_time_scaling::{dispatch_test_scale_tool_json, TestTimeScalingConfig};
+use crate::web_tools::{web_fetch, web_search, BrowserToolManager};
 use aho_corasick::AhoCorasickBuilder;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -37,6 +51,8 @@ use std::time::{Duration, Instant};
 
 const MAX_READ_LINES_DEFAULT: usize = 400;
 const MAX_READ_CHARS: usize = 20_000;
+const MAX_BATCH_READ_CHARS: usize = 56_000;
+const MIN_BATCH_FILE_READ_CHARS: usize = 8_000;
 const MAX_BATCH_READ_FILES: usize = 8;
 const MAX_SHELL_OUTPUT_CHARS: usize = 20_000;
 const MAX_TOOL_OUTPUT_CHARS: usize = 20_000;
@@ -93,6 +109,28 @@ pub struct ToolRuntime {
     pub extension_handler: Option<ExtensionToolHandler>,
     /// Current active turn index stamped by `NativeSuperEngine`.
     pub current_turn: Arc<AtomicU32>,
+    /// MCP 2026-07-28 client manager (stdio zero-flash, HTTP/SSE, OAuth PKCE/CIMD, tasks, search).
+    pub mcp_manager: Arc<McpManager>,
+    /// Persistent ConPTY interactive shell + Python REPL manager.
+    pub pty_manager: Arc<PtyManager>,
+    /// Debug Adapter Protocol client (`debugpy`, `lldb-dap`, `dlv`).
+    pub dap_manager: Arc<DapManager>,
+    /// Isolated WebSocket CDP browser manager (never touches Thorium).
+    pub browser_manager: Arc<BrowserToolManager>,
+    /// 25-event lifecycle hook registry (`exit 2` deterministic block).
+    pub hook_registry: Arc<HookRegistry>,
+    /// Cordis dynamic reversible plugin + Creator Mode manager.
+    pub dynamic_plugins: Arc<CordisPluginManager>,
+    /// Hindsight/Graphiti/HippoRAG/ACE memory engine.
+    pub memory: Option<Arc<MemoryEngine>>,
+    /// Bidirectional all-to-all peer-mesh swarm & advisor watchdog runtime.
+    pub swarm: Arc<SwarmRuntime>,
+    /// Test-time scaling configuration.
+    pub tts_config: TestTimeScalingConfig,
+    /// Explicit per-tool handlers registered via `register_deferred_tool`.
+    pub deferred_handlers: Arc<Mutex<HashMap<String, ExtensionToolHandler>>>,
+    /// Dynamic read-only flag overrides for deferred tools.
+    pub read_only_overrides: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ToolRuntime {
@@ -138,13 +176,51 @@ impl ToolRuntime {
     ) -> Self {
         let clean_root = sanitize_windows_path(&workspace_root);
         let cp_store = TurnCheckpointStore::new(session_key.clone(), db.clone());
+        let hook_registry = Arc::new(
+            HookRegistry::load_from_workspace(&clean_root)
+                .unwrap_or_else(|_| HookRegistry::new(&clean_root)),
+        );
+        let dynamic_plugins = Arc::new(CordisPluginManager::new(&clean_root));
+        let _ = dynamic_plugins.discover(Some(&hook_registry));
+
         let mut deferred = DeferredToolRegistry::new();
         for spec in builtin_deferred_semantic_tools() {
             deferred.register(spec);
         }
+        let mut ro_overrides = HashSet::new();
+        for (tool_name, def) in dynamic_plugins.active_tools() {
+            if def.read_only {
+                ro_overrides.insert(tool_name.clone());
+            }
+            deferred.register(ToolSpec {
+                name: tool_name,
+                description: def.description,
+                parameters: def.parameters,
+                read_only: def.read_only,
+            });
+        }
+        let memory = if cfg!(test) && db.is_none() {
+            MemoryEngine::open_in_memory().ok().map(Arc::new)
+        } else {
+            MemoryEngine::open_default(db.clone())
+                .or_else(|_| MemoryEngine::open_in_memory())
+                .ok()
+                .map(Arc::new)
+        };
+        let swarm = Arc::new(SwarmRuntime::new(6, memory.clone()));
+
         Self {
             session_key,
             lsp_manager: LazyLspManager::new(clean_root.clone()),
+            mcp_manager: Arc::new(McpManager::new(&clean_root)),
+            pty_manager: Arc::new(PtyManager::new(&clean_root)),
+            dap_manager: Arc::new(DapManager::new(&clean_root)),
+            browser_manager: Arc::new(BrowserToolManager::new()),
+            hook_registry,
+            dynamic_plugins,
+            memory,
+            swarm,
+            tts_config: TestTimeScalingConfig::default(),
             workspace_root: clean_root,
             approval_mode,
             workspace_trusted,
@@ -160,6 +236,23 @@ impl ToolRuntime {
             deferred_tools: Arc::new(deferred),
             extension_handler: None,
             current_turn: Arc::new(AtomicU32::new(1)),
+            deferred_handlers: Arc::new(Mutex::new(HashMap::new())),
+            read_only_overrides: Arc::new(Mutex::new(ro_overrides)),
+        }
+    }
+
+    /// Registers a live deferred extension tool schema + executable async handler.
+    pub fn register_deferred_tool(
+        &mut self,
+        spec: ToolSpec,
+        read_only: bool,
+        handler: ExtensionToolHandler,
+    ) {
+        let name = spec.name.clone();
+        Arc::make_mut(&mut self.deferred_tools).register(spec);
+        self.deferred_handlers.lock().unwrap().insert(name.clone(), handler);
+        if read_only {
+            self.read_only_overrides.lock().unwrap().insert(name);
         }
     }
 
@@ -174,9 +267,45 @@ impl ToolRuntime {
                 | "lsp_query"
                 | "graph_traverse"
                 | "search_entity"
+                | "ast_grep"
+                | "web_fetch"
+                | "web_search"
+                | "memory_recall"
+                | "swarm_read"
+                | "advisor_check"
                 | "omni_kanban_list"
                 | "omni_kb_search"
         )
+    }
+
+    #[must_use]
+    pub fn is_tool_read_only(&self, name: &str) -> bool {
+        Self::is_read_only_tool(name) || self.read_only_overrides.lock().unwrap().contains(name)
+    }
+
+    fn format_post_edit_diagnostics(&self, abs: &Path, run_compiler_check: bool) -> Option<String> {
+        let mut notes = Vec::new();
+        if run_compiler_check {
+            if let Some(compiler_diag) = run_fast_compiler_syntax_check(&self.workspace_root, abs) {
+                notes.push(compiler_diag);
+            }
+        }
+        let diags = self.lsp_manager.diagnostics_for_file(abs, 200);
+        for d in diags.into_iter().take(12) {
+            notes.push(format!(
+                "[{}] {}:{}:{}: {}",
+                d.source.as_deref().unwrap_or(&d.severity),
+                d.severity,
+                d.line,
+                d.column,
+                d.message
+            ));
+        }
+        if notes.is_empty() {
+            None
+        } else {
+            Some(notes.join("\n"))
+        }
     }
 
     fn sanitize_and_track_taint(&self, raw: &str, label: &str) -> String {
@@ -285,43 +414,209 @@ impl ToolRuntime {
 
     pub async fn execute(&self, tool_name: &str, args: &Value) -> ToolExecOutput {
         let t0 = Instant::now();
-        let is_host = tool_name.starts_with("omni_");
-        let res = match tool_name {
+        let is_host = tool_name.starts_with("omni_") || tool_name.starts_with("mcp__");
+        let (pre, effective_args) = match self.run_pre_tool_hook(tool_name, args, is_host, t0).await {
+            Ok(pair) => pair,
+            Err(blocked_out) => return blocked_out,
+        };
+        let res = if tool_name == "run_code" {
+            self.exec_run_code(&effective_args).await
+        } else {
+            self.dispatch_non_ptc_tool(tool_name, &effective_args).await
+        };
+        self.finish_hooked_exec(tool_name, is_host, t0, pre, effective_args, res)
+            .await
+    }
+
+    async fn execute_non_ptc(&self, tool_name: &str, args: &Value) -> ToolExecOutput {
+        let t0 = Instant::now();
+        let is_host = tool_name.starts_with("omni_") || tool_name.starts_with("mcp__");
+        let (pre, effective_args) = match self.run_pre_tool_hook(tool_name, args, is_host, t0).await {
+            Ok(pair) => pair,
+            Err(blocked_out) => return blocked_out,
+        };
+        let res = if tool_name == "run_code" {
+            Err(anyhow::anyhow!("recursive run_code inside PTC sandbox is forbidden"))
+        } else {
+            self.dispatch_non_ptc_tool(tool_name, &effective_args).await
+        };
+        self.finish_hooked_exec(tool_name, is_host, t0, pre, effective_args, res)
+            .await
+    }
+
+    async fn run_pre_tool_hook(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        is_host: bool,
+        t0: Instant,
+    ) -> std::result::Result<(crate::hooks::HookDispatchOutcome, Value), ToolExecOutput> {
+        let pre = self
+            .hook_registry
+            .dispatch(
+                HookEvent::PreToolUse,
+                Some(tool_name),
+                json!({ "tool": tool_name, "arguments": args }),
+            )
+            .await;
+        if pre.blocked {
+            return Err(ToolExecOutput {
+                content: format!(
+                    "Error: blocked by PreToolUse hook ({}): {}",
+                    pre.blocking_hook_id.as_deref().unwrap_or("hook"),
+                    pre.block_reason
+                        .clone()
+                        .unwrap_or_else(|| "deterministic exit 2 block".into())
+                ),
+                is_error: true,
+                is_host_tool: is_host,
+                duration_ms: t0.elapsed().as_millis() as u64,
+            });
+        }
+        let effective_args = pre
+            .revised_input
+            .as_ref()
+            .and_then(|v| v.get("arguments").cloned().or_else(|| Some(v.clone())))
+            .unwrap_or_else(|| args.clone());
+        Ok((pre, effective_args))
+    }
+
+    async fn finish_hooked_exec(
+        &self,
+        tool_name: &str,
+        is_host: bool,
+        t0: Instant,
+        pre: crate::hooks::HookDispatchOutcome,
+        effective_args: Value,
+        res: Result<String>,
+    ) -> ToolExecOutput {
+        let duration_ms = t0.elapsed().as_millis() as u64;
+        match res {
+            Ok(mut content) => {
+                let post = self
+                    .hook_registry
+                    .dispatch(
+                        HookEvent::PostToolUse,
+                        Some(tool_name),
+                        json!({
+                            "tool": tool_name,
+                            "arguments": effective_args,
+                            "duration_ms": duration_ms
+                        }),
+                    )
+                    .await;
+                let mut ctx_notes = pre.additional_context;
+                ctx_notes.extend(post.additional_context);
+                if !ctx_notes.is_empty() {
+                    content.push_str("\n[hooks] ");
+                    content.push_str(&ctx_notes.join(" | "));
+                }
+                let out_cap = if tool_name == "read_file"
+                    && effective_args.get("paths").and_then(Value::as_array).is_some()
+                {
+                    MAX_BATCH_READ_CHARS
+                } else {
+                    MAX_TOOL_OUTPUT_CHARS
+                };
+                ToolExecOutput {
+                    content: cap_output_traceback_preserving(&content, out_cap),
+                    is_error: false,
+                    is_host_tool: is_host,
+                    duration_ms,
+                }
+            }
+            Err(err) => {
+                let _ = self
+                    .hook_registry
+                    .dispatch(
+                        HookEvent::PostToolUseFailure,
+                        Some(tool_name),
+                        json!({
+                            "tool": tool_name,
+                            "error": err.to_string(),
+                            "duration_ms": duration_ms
+                        }),
+                    )
+                    .await;
+                ToolExecOutput {
+                    content: format!("Error: {err}"),
+                    is_error: true,
+                    is_host_tool: is_host,
+                    duration_ms,
+                }
+            }
+        }
+    }
+
+    async fn dispatch_non_ptc_tool(&self, tool_name: &str, args: &Value) -> Result<String> {
+        match tool_name {
+            "invoke_extension_tool" => self.exec_invoke_extension_tool(args).await,
+            _ => self.dispatch_leaf_tool(tool_name, args).await,
+        }
+    }
+
+    async fn dispatch_leaf_tool(&self, tool_name: &str, args: &Value) -> Result<String> {
+        match tool_name {
             "read_file" => self.exec_read_file(args).await,
             "edit_file" => self.exec_edit_file(args).await,
-            "apply_patch" => self.exec_apply_patch(args).await,
+            "apply_patch" | "patch_file" => self.exec_apply_patch(args).await,
             "write_file" => self.exec_write_file(args).await,
             "search_code" => self.exec_search_code(args).await,
             "workspace_map" => self.exec_workspace_map(args).await,
             "shell" => self.exec_shell(args).await,
             "load_skill" => self.exec_load_skill(args).await,
             "discover_tools" => self.exec_discover_tools(args).await,
-            "invoke_extension_tool" => self.exec_invoke_extension_tool(args).await,
-            other if other.starts_with("omni_") => self.exec_host_tool(other, args).await,
-            unknown => Err(anyhow::anyhow!(
-                "{}",
-                format_fail_fast_error(
-                    "unknown tool",
-                    "tool_name",
-                    unknown,
-                    "Use one of the active workspace tools or discover_tools"
-                )
-            )),
-        };
-        let duration_ms = t0.elapsed().as_millis() as u64;
-        match res {
-            Ok(content) => ToolExecOutput {
-                content: cap_output_traceback_preserving(&content, MAX_TOOL_OUTPUT_CHARS),
-                is_error: false,
-                is_host_tool: is_host,
-                duration_ms,
-            },
-            Err(err) => ToolExecOutput {
-                content: format!("Error: {err}"),
-                is_error: true,
-                is_host_tool: is_host,
-                duration_ms,
-            },
+            "lsp_query" => self.exec_lsp_query(args).await,
+            "graph_traverse" => self.exec_graph_traverse(args),
+            "search_entity" => self.exec_search_entity(args),
+            "ast_grep" => self.exec_ast_grep(args).await,
+            "ast_edit" => self.exec_ast_edit(args).await,
+            "pty_exec" => self.exec_pty_exec(args).await,
+            "dap" => self.exec_dap(args).await,
+            "web_fetch" => self.exec_web_fetch(args).await,
+            "web_search" => self.exec_web_search(args).await,
+            "browser" => self.exec_browser(args).await,
+            "mcp_call" => self.exec_mcp_call(args).await,
+            "mcp_manage" => self.exec_mcp_manage(args).await,
+            "recipe_run" => self.exec_recipe_run(args).await,
+            "plugin_manage" => self.exec_plugin_manage(args).await,
+            "memory_recall" | "memory_retain" | "memory_reflect" | "memory_edit" => {
+                let mem = self
+                    .memory
+                    .as_ref()
+                    .context("memory engine unavailable")?;
+                dispatch_memory_tool_json(mem, &self.workspace_root, tool_name, args)
+            }
+            "swarm_register" | "swarm_message" | "swarm_read" | "auto_parallel_plan"
+            | "advisor_check" => dispatch_swarm_tool_json(&self.swarm, tool_name, args),
+            "test_scale_run" => dispatch_test_scale_tool_json(&self.tts_config, args),
+            other => {
+                let handler_opt = self.deferred_handlers.lock().unwrap().get(other).cloned();
+                if let Some(h) = handler_opt {
+                    self.authorize("extension", other).await?;
+                    return h(other.to_owned(), args.clone()).await;
+                }
+                if other.starts_with("mcp__") || other.starts_with("omni_") {
+                    return self.exec_host_tool(other, args).await;
+                }
+                if let Some((_, def)) = self
+                    .dynamic_plugins
+                    .active_tools()
+                    .into_iter()
+                    .find(|(n, _)| n == other)
+                {
+                    return self.exec_dynamic_plugin_tool(other, &def, args).await;
+                }
+                Err(anyhow::anyhow!(
+                    "{}",
+                    format_fail_fast_error(
+                        "unknown tool",
+                        "tool_name",
+                        other,
+                        "Use one of the active workspace tools, run_code, or discover_tools"
+                    )
+                ))
+            }
         }
     }
 
@@ -537,14 +832,15 @@ impl ToolRuntime {
                 let overflow = rels.len().saturating_sub(MAX_BATCH_READ_FILES);
                 rels.truncate(MAX_BATCH_READ_FILES);
                 let mut sections = Vec::with_capacity(rels.len());
-                let mut remaining_budget = MAX_READ_CHARS;
+                let mut remaining_budget = MAX_BATCH_READ_CHARS;
                 let mut ok_count = 0usize;
                 let mut err_count = 0usize;
                 let count = rels.len();
 
                 for (i, rel) in rels.iter().enumerate() {
                     let files_left = (count - i).max(1);
-                    let file_budget = (remaining_budget / files_left).clamp(1_024, MAX_READ_CHARS);
+                    let file_budget = (remaining_budget / files_left)
+                        .clamp(MIN_BATCH_FILE_READ_CHARS, MAX_READ_CHARS);
                     match self
                         .read_single_file_formatted(rel, None, None, None, file_budget)
                         .await
@@ -721,11 +1017,12 @@ impl ToolRuntime {
         if !res.syntax_diagnostics.is_empty() {
             msg.push('\n');
             msg.push_str(&res.syntax_diagnostics.join("\n"));
-        } else if let Some(compiler_diag) =
-            run_fast_compiler_syntax_check(&self.workspace_root, &abs)
+        }
+        if let Some(live_diag) =
+            self.format_post_edit_diagnostics(&abs, res.syntax_diagnostics.is_empty())
         {
             msg.push('\n');
-            msg.push_str(&compiler_diag);
+            msg.push_str(&live_diag);
         }
         Ok(msg)
     }
@@ -869,6 +1166,16 @@ impl ToolRuntime {
             summary.push('\n');
             summary.push_str(&report.syntax_diagnostics.join("\n"));
         }
+        for p in &report.touched_paths {
+            if p.exists() {
+                if let Some(live_diag) =
+                    self.format_post_edit_diagnostics(p, report.syntax_diagnostics.is_empty())
+                {
+                    summary.push('\n');
+                    summary.push_str(&live_diag);
+                }
+            }
+        }
         Ok(summary)
     }
 
@@ -905,7 +1212,7 @@ impl ToolRuntime {
         self.read_tracker
             .record_read(&abs, clean_content.as_bytes());
 
-        // D1: Zero-cost post-write AST & config syntax verification
+        // D1: Zero-cost post-write AST, compiler & live LSP syntax verification
         let diags = verify_syntax_delta(rel, &before_text, clean_content, None).format_lines();
         let mut msg = format!(
             "Wrote '{}' ({} bytes, {} lines).",
@@ -916,6 +1223,10 @@ impl ToolRuntime {
         if !diags.is_empty() {
             msg.push('\n');
             msg.push_str(&diags.join("\n"));
+        }
+        if let Some(live_diag) = self.format_post_edit_diagnostics(&abs, diags.is_empty()) {
+            msg.push('\n');
+            msg.push_str(&live_diag);
         }
         Ok(msg)
     }
@@ -1081,16 +1392,31 @@ impl ToolRuntime {
 
         let cwd = self.workspace_root.clone();
         let cmd_str = command.to_string();
+        let cmd_for_run = cmd_str.clone();
         let cancel_flag = Arc::clone(&self.cancel_flag);
 
         let res = tokio::task::spawn_blocking(move || {
-            run_supervised_shell(&cwd, &cmd_str, &shell_choice, timeout_secs, &cancel_flag)
+            run_supervised_shell(&cwd, &cmd_for_run, &shell_choice, timeout_secs, &cancel_flag)
         })
         .await?;
 
         match res {
             Ok(out) => {
-                let sanitized = self.sanitize_and_track_taint(&out, "shell");
+                let maybe_compressed = if out.len() > SHELL_COMPACT_MIN_CHARS {
+                    let comp = compress_tool_output(&cmd_str, &out, "", None, None);
+                    if let Some(first_line) = out.lines().next().filter(|l| l.starts_with("exit_code:")) {
+                        if !comp.content.starts_with("exit_code:") {
+                            format!("{first_line}\n{}", comp.content)
+                        } else {
+                            comp.content
+                        }
+                    } else {
+                        comp.content
+                    }
+                } else {
+                    out
+                };
+                let sanitized = self.sanitize_and_track_taint(&maybe_compressed, "shell");
                 let (bounded, _spill) =
                     offload_large_observation(&self.session_key, "shell", &sanitized, 6_144);
                 Ok(bounded)
@@ -1118,16 +1444,23 @@ impl ToolRuntime {
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
-            .map(|n| (n as usize).clamp(1, 5))
+            .map(|n| (n as usize).clamp(1, 10))
             .unwrap_or(5);
         let hits = self.deferred_tools.discover(query, limit);
-        if hits.is_empty() {
+        let mcp_hits = self.mcp_manager.search_tools(query, limit);
+        if hits.is_empty() && mcp_hits.is_empty() {
             return Ok(format!(
                 "No deferred extension tools matched '{query}' (total deferred: {}).",
                 self.deferred_tools.len()
             ));
         }
-        Ok(serde_json::to_string_pretty(&hits)?)
+        if mcp_hits.is_empty() {
+            return Ok(serde_json::to_string_pretty(&hits)?);
+        }
+        Ok(serde_json::to_string_pretty(&json!({
+            "builtin_deferred": hits,
+            "mcp_tools": mcp_hits,
+        }))?)
     }
 
     async fn exec_invoke_extension_tool(&self, args: &Value) -> Result<String> {
@@ -1137,65 +1470,57 @@ impl ToolRuntime {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .context("invoke_extension_tool requires string parameter 'name'")?;
+        if name == "invoke_extension_tool" || name == "discover_tools" || name == "run_code" {
+            bail!("meta-tool `{name}` cannot be nested inside invoke_extension_tool");
+        }
         let ext_args = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
-        match name {
-            "lsp_query" => {
-                let action = ext_args
-                    .get("action")
-                    .or_else(|| ext_args.get("operation"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("references");
-                let rel_path = ext_args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .context("lsp_query requires string parameter 'path'")?;
-                let abs = ensure_within_workspace(&self.workspace_root, rel_path)?;
-                self.authorize("read", &abs.to_string_lossy()).await?;
-                let line = ext_args.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-                let ch = ext_args
-                    .get("character")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-                let sym = ext_args.get("symbol").and_then(|v| v.as_str());
-                let res = self
-                    .lsp_manager
-                    .query(action, rel_path, line, ch, sym, &self.graph_index)
-                    .await;
-                return Ok(serde_json::to_string_pretty(&res)?);
-            }
-            "graph_traverse" => {
-                let seed = ext_args
-                    .get("seed")
-                    .and_then(|v| v.as_str())
-                    .context("graph_traverse requires string parameter 'seed'")?;
-                let hops = ext_args.get("hops").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
-                let rep = {
-                    let mut g = self.graph_index.lock().unwrap();
-                    let _ = g.refresh();
-                    g.traverse_graph(seed, hops)
-                };
-                return Ok(serde_json::to_string_pretty(&rep)?);
-            }
-            "search_entity" => {
-                let query = ext_args
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .context("search_entity requires string parameter 'query'")?;
-                let limit = ext_args.get("limit").and_then(|v| v.as_u64()).unwrap_or(15) as usize;
-                let hits = {
-                    let mut g = self.graph_index.lock().unwrap();
-                    let _ = g.refresh();
-                    g.search_entity(query, limit)
-                };
-                return Ok(serde_json::to_string_pretty(&hits)?);
-            }
-            _ => {}
+        let known_builtin = matches!(
+            name,
+            "lsp_query"
+                | "graph_traverse"
+                | "search_entity"
+                | "ast_grep"
+                | "ast_edit"
+                | "pty_exec"
+                | "dap"
+                | "web_fetch"
+                | "web_search"
+                | "browser"
+                | "mcp_call"
+                | "mcp_manage"
+                | "recipe_run"
+                | "plugin_manage"
+                | "memory_recall"
+                | "memory_retain"
+                | "memory_reflect"
+                | "memory_edit"
+                | "swarm_register"
+                | "swarm_message"
+                | "swarm_read"
+                | "auto_parallel_plan"
+                | "advisor_check"
+                | "test_scale_run"
+        );
+        if known_builtin {
+            return self.dispatch_leaf_tool(name, &ext_args).await;
         }
-
-        self.authorize("extension", name).await?;
-        if name.starts_with("omni_") {
+        let handler_opt = self.deferred_handlers.lock().unwrap().get(name).cloned();
+        if let Some(h) = handler_opt {
+            self.authorize("extension", name).await?;
+            return h(name.to_string(), ext_args).await;
+        }
+        if name.starts_with("mcp__") || name.starts_with("omni_") {
+            self.authorize("extension", name).await?;
             return self.exec_host_tool(name, &ext_args).await;
+        }
+        if let Some((_, def)) = self
+            .dynamic_plugins
+            .active_tools()
+            .into_iter()
+            .find(|(n, _)| n == name)
+        {
+            return self.exec_dynamic_plugin_tool(name, &def, &ext_args).await;
         }
         if self.deferred_tools.get(name).is_none() {
             bail!(
@@ -1208,26 +1533,935 @@ impl ToolRuntime {
                 )
             );
         }
+        self.authorize("extension", name).await?;
         if let Some(ref handler) = self.extension_handler {
             return handler(name.to_string(), ext_args).await;
         }
+        bail!("deferred tool `{name}` has no registered executable handler (fail-closed)")
+    }
+
+    async fn exec_run_code(&self, args: &Value) -> Result<String> {
+        let code = args
+            .get("code")
+            .and_then(Value::as_str)
+            .context("run_code requires string parameter 'code'")?;
+        self.authorize("extension", "run_code").await?;
+
+        let req = PtcRunRequest {
+            code: code.to_owned(),
+            language: args
+                .get("language")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            timeout_ms: args.get("timeout_ms").and_then(Value::as_u64),
+            max_parallel_sub_calls: args
+                .get("max_parallel_sub_calls")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize),
+        };
+        let rt = self.clone();
+        let invoker: PtcToolInvoker = Arc::new(move |tool_name, tool_args| {
+            let rt = rt.clone();
+            Box::pin(async move {
+                if tool_name == "run_code" {
+                    return PtcInnerToolOutput {
+                        content: "recursive run_code inside PTC sandbox is forbidden".into(),
+                        is_error: true,
+                        duration_ms: 0,
+                    };
+                }
+                let out = rt.execute_non_ptc(&tool_name, &tool_args).await;
+                PtcInnerToolOutput {
+                    content: out.content,
+                    is_error: out.is_error,
+                    duration_ms: out.duration_ms,
+                }
+            })
+        });
+        let res = run_code_sandbox(req, invoker).await?;
+        let serialized = serde_json::to_string_pretty(&res)?;
+        if !res.ok {
+            bail!("{serialized}");
+        }
+        Ok(serialized)
+    }
+
+    async fn exec_lsp_query(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .or_else(|| args.get("operation"))
+            .and_then(Value::as_str)
+            .unwrap_or("references");
+        let rel_path = args
+            .get("path")
+            .and_then(Value::as_str)
+            .context("lsp_query requires string parameter 'path'")?;
+        let abs = ensure_within_workspace(&self.workspace_root, rel_path)?;
+        let line = args.get("line").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let ch = args.get("character").and_then(Value::as_u64).unwrap_or(0) as u32;
+        if action == "rename" {
+            self.authorize("write", &abs.to_string_lossy()).await?;
+            let new_name = args
+                .get("new_name")
+                .and_then(Value::as_str)
+                .context("lsp_query rename requires string parameter 'new_name'")?
+                .to_owned();
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+            let mgr = self.lsp_manager.clone();
+            let rel_owned = rel_path.to_owned();
+            let outcome = tokio::task::spawn_blocking(move || {
+                mgr.rename_symbol(
+                    &rel_owned,
+                    line.max(1) as usize,
+                    (ch as usize).saturating_add(1),
+                    &new_name,
+                    apply,
+                )
+            })
+            .await??;
+            if outcome.edits_applied > 0 {
+                for mf in &outcome.files_modified {
+                    if let Ok(mabs) = ensure_within_workspace(&self.workspace_root, mf) {
+                        self.read_tracker.refresh_from_disk(&mabs);
+                    }
+                }
+            }
+            return Ok(serde_json::to_string_pretty(&outcome)?);
+        }
+
+        self.authorize("read", &abs.to_string_lossy()).await?;
+        let sym = args.get("symbol").and_then(Value::as_str);
+        let res = self
+            .lsp_manager
+            .query(action, rel_path, line, ch, sym, &self.graph_index)
+            .await;
+        Ok(serde_json::to_string_pretty(&res)?)
+    }
+
+    fn exec_graph_traverse(&self, args: &Value) -> Result<String> {
+        let seed = args
+            .get("seed")
+            .and_then(Value::as_str)
+            .context("graph_traverse requires string parameter 'seed'")?;
+        let hops = args.get("hops").and_then(Value::as_u64).unwrap_or(2) as usize;
+        let rep = {
+            let mut g = self.graph_index.lock().unwrap();
+            let _ = g.refresh();
+            g.traverse_graph(seed, hops)
+        };
+        Ok(serde_json::to_string_pretty(&rep)?)
+    }
+
+    fn exec_search_entity(&self, args: &Value) -> Result<String> {
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .context("search_entity requires string parameter 'query'")?;
+        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(15) as usize;
+        let hits = {
+            let mut g = self.graph_index.lock().unwrap();
+            let _ = g.refresh();
+            g.search_entity(query, limit)
+        };
+        Ok(serde_json::to_string_pretty(&hits)?)
+    }
+
+    async fn exec_ast_grep(&self, args: &Value) -> Result<String> {
+        let pattern = args
+            .get("pattern")
+            .and_then(Value::as_str)
+            .context("ast_grep requires string parameter 'pattern'")?
+            .to_owned();
+        let lang = args
+            .get("lang")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+        let target_abs = if let Some(rel) = args.get("path").and_then(Value::as_str) {
+            let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+            self.authorize("read", &abs.to_string_lossy()).await?;
+            Some(abs)
+        } else {
+            self.authorize("read", &self.workspace_root.to_string_lossy())
+                .await?;
+            None
+        };
+        let root = self.workspace_root.clone();
+        let hits = tokio::task::spawn_blocking(move || {
+            ast_grep_path(&root, target_abs.as_deref(), lang.as_deref(), &pattern, limit)
+        })
+        .await??;
+        Ok(serde_json::to_string_pretty(&hits)?)
+    }
+
+    async fn exec_ast_edit(&self, args: &Value) -> Result<String> {
+        let rel = args
+            .get("path")
+            .and_then(Value::as_str)
+            .context("ast_edit requires string parameter 'path'")?;
+        let pattern = args
+            .get("pattern")
+            .and_then(Value::as_str)
+            .context("ast_edit requires string parameter 'pattern'")?;
+        let rewrite = args
+            .get("rewrite")
+            .and_then(Value::as_str)
+            .context("ast_edit requires string parameter 'rewrite'")?;
+        let dry_run = args.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+
+        let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+        if dry_run {
+            self.authorize("read", &abs.to_string_lossy()).await?;
+        } else {
+            self.authorize("write", &abs.to_string_lossy()).await?;
+        }
+        let lang = args
+            .get("lang")
+            .and_then(Value::as_str)
+            .and_then(AstLang::from_name)
+            .or_else(|| AstLang::from_path(&abs))
+            .ok_or_else(|| anyhow::anyhow!("unable to determine AST language for `{rel}`"))?;
+        let before = fs::read_to_string(&abs)
+            .with_context(|| format!("failed reading `{rel}` for ast_edit"))?;
+        let had_bom = before.starts_with('\u{FEFF}');
+        let (updated, receipt) = ast_edit_source(
+            lang,
+            &before,
+            rel,
+            &[AstRewriteOp {
+                pat: pattern.to_owned(),
+                out: rewrite.to_owned(),
+            }],
+        )?;
+        let mut live_diag: Option<String> = None;
+        if !dry_run && receipt.replacements > 0 {
+            let turn = self.current_turn.load(Ordering::Relaxed);
+            self.checkpoint_store
+                .lock()
+                .unwrap()
+                .record_pre_mutation(turn, rel, &abs);
+            atomic_write_bom_free(&abs, &updated, had_bom)?;
+            self.read_tracker.record_read(&abs, updated.as_bytes());
+            live_diag = self.format_post_edit_diagnostics(&abs, true);
+        }
         Ok(serde_json::to_string_pretty(&json!({
-            "status": "deferred_tool_registered_without_external_handler",
-            "tool": name,
-            "availableBuiltinExtensions": ["lsp_query", "graph_traverse", "search_entity"]
+            "dry_run": dry_run,
+            "receipt": receipt,
+            "diagnostics": live_diag,
         }))?)
+    }
+
+    async fn exec_pty_exec(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("pty_exec requires string parameter 'action'")?;
+        match action {
+            "list" => {
+                self.authorize("ls", &self.workspace_root.to_string_lossy())
+                    .await?;
+                Ok(serde_json::to_string_pretty(&self.pty_manager.list())?)
+            }
+            "create" => {
+                self.authorize_any(&["bash", "shell"], "pty:create").await?;
+                let kind = match args.get("kind").and_then(Value::as_str).unwrap_or("shell") {
+                    "python_repl" | "python" => PtyKind::PythonRepl,
+                    "custom" => PtyKind::Custom,
+                    _ => PtyKind::Shell,
+                };
+                let req = PtyCreateRequest {
+                    kind,
+                    command: args
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    args: args
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    cwd: args.get("cwd").and_then(Value::as_str).map(str::to_owned),
+                    cols: args.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16,
+                    rows: args.get("rows").and_then(Value::as_u64).unwrap_or(36) as u16,
+                };
+                let info = self.pty_manager.create(req)?;
+                Ok(serde_json::to_string_pretty(&info)?)
+            }
+            "exec" => {
+                let sid = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("pty_exec exec requires 'session_id'")?;
+                let input = args
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .context("pty_exec exec requires 'input'")?;
+                self.authorize_any(&["bash", "shell"], input).await?;
+                let timeout_ms = args
+                    .get("timeout_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(15_000);
+                let mut res = self.pty_manager.exec_and_wait(sid, input, timeout_ms).await?;
+                if res.output.len() > SHELL_COMPACT_MIN_CHARS {
+                    res.output =
+                        compress_tool_output("pty_exec", &res.output, "", res.exit_code, None)
+                            .content;
+                }
+                res.output = self.sanitize_and_track_taint(&res.output, "pty_exec");
+                Ok(serde_json::to_string_pretty(&res)?)
+            }
+            "write" => {
+                let sid = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("pty_exec write requires 'session_id'")?;
+                let input = args
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .context("pty_exec write requires 'input'")?;
+                self.authorize_any(&["bash", "shell"], input).await?;
+                self.pty_manager.write(sid, input.as_bytes())?;
+                Ok(serde_json::to_string_pretty(&json!({ "ok": true, "session_id": sid }))?)
+            }
+            "read" => {
+                let sid = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("pty_exec read requires 'session_id'")?;
+                self.authorize("read", sid).await?;
+                let max_bytes = args
+                    .get("max_bytes")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(65_536) as usize;
+                let txt = self.pty_manager.read_scrollback(sid, max_bytes)?;
+                Ok(self.sanitize_and_track_taint(&txt, "pty_read"))
+            }
+            "resize" => {
+                let sid = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("pty_exec resize requires 'session_id'")?;
+                let cols = args.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
+                let rows = args.get("rows").and_then(Value::as_u64).unwrap_or(36) as u16;
+                self.pty_manager.resize(sid, cols, rows)?;
+                Ok(serde_json::to_string_pretty(
+                    &json!({ "ok": true, "session_id": sid, "cols": cols, "rows": rows }),
+                )?)
+            }
+            "kill" => {
+                let sid = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("pty_exec kill requires 'session_id'")?;
+                let killed = self.pty_manager.kill(sid);
+                Ok(serde_json::to_string_pretty(
+                    &json!({ "killed": killed, "session_id": sid }),
+                )?)
+            }
+            other => bail!("unsupported pty_exec action `{other}`"),
+        }
+    }
+
+    async fn exec_dap(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("dap requires string parameter 'action'")?;
+        self.authorize("extension", &format!("dap:{action}")).await?;
+        let sid_opt = args.get("session_id").and_then(Value::as_str);
+        match action {
+            "list" => Ok(serde_json::to_string_pretty(&self.dap_manager.list_sessions())?),
+            "launch" => {
+                let adapter = args
+                    .get("adapter")
+                    .and_then(Value::as_str)
+                    .context("dap launch requires 'adapter'")?
+                    .to_owned();
+                let program = args
+                    .get("program")
+                    .and_then(Value::as_str)
+                    .context("dap launch requires 'program'")?
+                    .to_owned();
+                let req = DapLaunchRequest {
+                    adapter,
+                    program,
+                    args: args
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    cwd: args.get("cwd").and_then(Value::as_str).map(str::to_owned),
+                    env: HashMap::new(),
+                    stop_on_entry: args
+                        .get("stop_on_entry")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    adapter_command: None,
+                    breakpoints: Vec::new(),
+                };
+                let summary = self.dap_manager.launch(req).await?;
+                Ok(serde_json::to_string_pretty(&summary)?)
+            }
+            "attach" => {
+                let adapter = args
+                    .get("adapter")
+                    .and_then(Value::as_str)
+                    .context("dap attach requires 'adapter'")?
+                    .to_owned();
+                let req = DapAttachRequest {
+                    adapter,
+                    pid: args.get("pid").and_then(Value::as_u64).map(|n| n as u32),
+                    host: args.get("host").and_then(Value::as_str).map(str::to_owned),
+                    port: args.get("port").and_then(Value::as_u64).map(|n| n as u16),
+                    cwd: args.get("cwd").and_then(Value::as_str).map(str::to_owned),
+                    adapter_command: None,
+                };
+                let summary = self.dap_manager.attach(req).await?;
+                Ok(serde_json::to_string_pretty(&summary)?)
+            }
+            "set_breakpoints" => {
+                let sid = sid_opt.context("dap set_breakpoints requires 'session_id'")?;
+                let file = args
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .context("dap set_breakpoints requires 'file'")?;
+                let abs = ensure_within_workspace(&self.workspace_root, file)?;
+                let lines = args
+                    .get("lines")
+                    .and_then(Value::as_array)
+                    .context("dap set_breakpoints requires 'lines' array")?;
+                let bps: Vec<DapInitialBreakpoint> = lines
+                    .iter()
+                    .filter_map(Value::as_u64)
+                    .map(|ln| DapInitialBreakpoint {
+                        file: abs.to_string_lossy().into_owned(),
+                        line: ln as u32,
+                        condition: None,
+                    })
+                    .collect();
+                let res = self
+                    .dap_manager
+                    .set_breakpoints(sid, &abs.to_string_lossy(), &bps)
+                    .await?;
+                Ok(serde_json::to_string_pretty(&res)?)
+            }
+            "continue" => {
+                let sid = sid_opt.context("dap continue requires 'session_id'")?;
+                let tid = args.get("thread_id").and_then(Value::as_i64);
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.continue_exec(sid, tid).await?,
+                )?)
+            }
+            "next" => {
+                let sid = sid_opt.context("dap next requires 'session_id'")?;
+                let tid = args.get("thread_id").and_then(Value::as_i64);
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.step_over(sid, tid).await?,
+                )?)
+            }
+            "step_in" => {
+                let sid = sid_opt.context("dap step_in requires 'session_id'")?;
+                let tid = args.get("thread_id").and_then(Value::as_i64);
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.step_in(sid, tid).await?,
+                )?)
+            }
+            "step_out" => {
+                let sid = sid_opt.context("dap step_out requires 'session_id'")?;
+                let tid = args.get("thread_id").and_then(Value::as_i64);
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.step_out(sid, tid).await?,
+                )?)
+            }
+            "stack_trace" => {
+                let sid = sid_opt.context("dap stack_trace requires 'session_id'")?;
+                let tid = args.get("thread_id").and_then(Value::as_i64);
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.stack_trace(sid, tid, 20).await?,
+                )?)
+            }
+            "scopes" => {
+                let sid = sid_opt.context("dap scopes requires 'session_id'")?;
+                let fid = args
+                    .get("frame_id")
+                    .and_then(Value::as_i64)
+                    .context("dap scopes requires 'frame_id'")?;
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.scopes(sid, fid).await?,
+                )?)
+            }
+            "variables" => {
+                let sid = sid_opt.context("dap variables requires 'session_id'")?;
+                let vref = args
+                    .get("variables_reference")
+                    .and_then(Value::as_i64)
+                    .context("dap variables requires 'variables_reference'")?;
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.variables(sid, vref).await?,
+                )?)
+            }
+            "evaluate" => {
+                let sid = sid_opt.context("dap evaluate requires 'session_id'")?;
+                let expr = args
+                    .get("expression")
+                    .and_then(Value::as_str)
+                    .context("dap evaluate requires 'expression'")?;
+                let fid = args.get("frame_id").and_then(Value::as_i64);
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.evaluate(sid, expr, fid, None).await?,
+                )?)
+            }
+            "summary" => {
+                let sid = sid_opt.context("dap summary requires 'session_id'")?;
+                Ok(serde_json::to_string_pretty(
+                    &self.dap_manager.summary(sid)?,
+                )?)
+            }
+            "terminate" => {
+                let sid = sid_opt.context("dap terminate requires 'session_id'")?;
+                let ok = self.dap_manager.terminate(sid).await;
+                Ok(serde_json::to_string_pretty(&json!({ "terminated": ok, "session_id": sid }))?)
+            }
+            other => bail!("unsupported dap action `{other}`"),
+        }
+    }
+
+    async fn exec_web_fetch(&self, args: &Value) -> Result<String> {
+        let url = args
+            .get("url")
+            .and_then(Value::as_str)
+            .context("web_fetch requires string parameter 'url'")?;
+        self.authorize("web_fetch", url).await?;
+        let raw = args.get("raw").and_then(Value::as_bool).unwrap_or(false);
+        let max_chars = args
+            .get("max_chars")
+            .and_then(Value::as_u64)
+            .unwrap_or(16_000) as usize;
+        let out = web_fetch(url, raw, max_chars).await?;
+        let serialized = serde_json::to_string_pretty(&out)?;
+        Ok(self.sanitize_and_track_taint(&serialized, "web_fetch"))
+    }
+
+    async fn exec_web_search(&self, args: &Value) -> Result<String> {
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .context("web_search requires string parameter 'query'")?;
+        self.authorize("web_search", query).await?;
+        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize;
+        let out = web_search(query, limit).await?;
+        let serialized = serde_json::to_string_pretty(&out)?;
+        Ok(self.sanitize_and_track_taint(&serialized, "web_search"))
+    }
+
+    async fn exec_browser(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("browser requires string parameter 'action'")?;
+        self.authorize("browser", action).await?;
+        let sid_opt = args.get("session_id").and_then(Value::as_str);
+        match action {
+            "launch" => {
+                let headless = args
+                    .get("headless")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let url = args.get("url").and_then(Value::as_str).map(str::to_owned);
+                Ok(serde_json::to_string_pretty(
+                    &self.browser_manager.launch(headless, url).await?,
+                )?)
+            }
+            "navigate" => {
+                let sid = sid_opt.context("browser navigate requires 'session_id'")?;
+                let url = args
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .context("browser navigate requires 'url'")?;
+                let res = self.browser_manager.navigate(sid, url).await?;
+                Ok(self.sanitize_and_track_taint(&serde_json::to_string_pretty(&res)?, "browser"))
+            }
+            "click" => {
+                let sid = sid_opt.context("browser click requires 'session_id'")?;
+                let selector = args.get("selector").and_then(Value::as_str);
+                let x = args.get("x").and_then(Value::as_f64);
+                let y = args.get("y").and_then(Value::as_f64);
+                Ok(serde_json::to_string_pretty(
+                    &self.browser_manager.click(sid, selector, x, y).await?,
+                )?)
+            }
+            "type" => {
+                let sid = sid_opt.context("browser type requires 'session_id'")?;
+                let text = args
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .context("browser type requires 'text'")?;
+                Ok(serde_json::to_string_pretty(
+                    &self.browser_manager.type_text(sid, text).await?,
+                )?)
+            }
+            "eval" => {
+                let sid = sid_opt.context("browser eval requires 'session_id'")?;
+                let expr = args
+                    .get("expression")
+                    .and_then(Value::as_str)
+                    .context("browser eval requires 'expression'")?;
+                let res = self.browser_manager.eval_js(sid, expr).await?;
+                Ok(self.sanitize_and_track_taint(&serde_json::to_string_pretty(&res)?, "browser"))
+            }
+            "screenshot" => {
+                let sid = sid_opt.context("browser screenshot requires 'session_id'")?;
+                let b64 = self.browser_manager.screenshot(sid).await?;
+                Ok(serde_json::to_string_pretty(&json!({
+                    "session_id": sid,
+                    "mime_type": "image/png",
+                    "png_base64": b64,
+                }))?)
+            }
+            "close" => {
+                let sid = sid_opt.context("browser close requires 'session_id'")?;
+                let closed = self.browser_manager.close(sid).await;
+                Ok(serde_json::to_string_pretty(
+                    &json!({ "closed": closed, "session_id": sid }),
+                )?)
+            }
+            other => bail!("unsupported browser action `{other}`"),
+        }
+    }
+
+    async fn exec_mcp_call(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| {
+                if args.get("tool").is_some() {
+                    "call"
+                } else {
+                    "search"
+                }
+            });
+        match action {
+            "search" => {
+                let q = args.get("query").and_then(Value::as_str).unwrap_or("");
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
+                Ok(serde_json::to_string_pretty(
+                    &self.mcp_manager.search_tools(q, limit),
+                )?)
+            }
+            "list_servers" => Ok(serde_json::to_string_pretty(&self.mcp_manager.list_servers())?),
+            "task_get" => {
+                let srv = args
+                    .get("server")
+                    .and_then(Value::as_str)
+                    .context("mcp_call task_get requires 'server'")?;
+                let tid = args
+                    .get("task_id")
+                    .and_then(Value::as_str)
+                    .context("mcp_call task_get requires 'task_id'")?;
+                self.authorize("extension", srv).await?;
+                Ok(serde_json::to_string_pretty(
+                    &self.mcp_manager.get_task(srv, tid).await?,
+                )?)
+            }
+            "task_cancel" => {
+                let srv = args
+                    .get("server")
+                    .and_then(Value::as_str)
+                    .context("mcp_call task_cancel requires 'server'")?;
+                let tid = args
+                    .get("task_id")
+                    .and_then(Value::as_str)
+                    .context("mcp_call task_cancel requires 'task_id'")?;
+                self.authorize("extension", srv).await?;
+                Ok(serde_json::to_string_pretty(
+                    &self.mcp_manager.cancel_task(srv, tid).await?,
+                )?)
+            }
+            "call" => {
+                let tool = args
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .context("mcp_call call requires 'tool'")?;
+                let server = args.get("server").and_then(Value::as_str);
+                let server_tool = args.get("server_tool").and_then(Value::as_str);
+                let call_args = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                let (target, explicit) = if let Some(st) = server_tool {
+                    (tool, Some(st))
+                } else if let Some(srv) = server {
+                    (srv, Some(tool))
+                } else {
+                    (tool, None)
+                };
+                self.authorize("extension", target).await?;
+                let res = self.mcp_manager.call_tool(target, explicit, call_args).await?;
+                let out = serde_json::to_string_pretty(&res)?;
+                Ok(self.sanitize_and_track_taint(&out, "mcp_call"))
+            }
+            other => bail!("unsupported mcp_call action `{other}`"),
+        }
+    }
+
+    async fn exec_mcp_manage(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("mcp_manage requires string parameter 'action'")?;
+        self.authorize("extension", &format!("mcp_manage:{action}"))
+            .await?;
+        match action {
+            "list" => Ok(serde_json::to_string_pretty(&self.mcp_manager.list_servers())?),
+            "connect" => {
+                let mut cfg_val = args
+                    .get("config")
+                    .cloned()
+                    .context("mcp_manage connect requires 'config' object")?;
+                if cfg_val.get("type").is_none() && cfg_val.get("command").is_some() {
+                    cfg_val["type"] = json!("stdio");
+                }
+                let cfg: McpServerConfig = serde_json::from_value(cfg_val)?;
+                let status = self.mcp_manager.connect_server(cfg).await?;
+                Ok(serde_json::to_string_pretty(&status)?)
+            }
+            "disconnect" => {
+                let name = args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("mcp_manage disconnect requires 'name'")?;
+                let removed = self.mcp_manager.disconnect_server(name).await;
+                Ok(serde_json::to_string_pretty(
+                    &json!({ "disconnected": removed, "name": name }),
+                )?)
+            }
+            "refresh" => {
+                let name = args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("mcp_manage refresh requires 'name'")?;
+                let count = self.mcp_manager.refresh_tools(name).await?;
+                Ok(serde_json::to_string_pretty(
+                    &json!({ "name": name, "tools_count": count }),
+                )?)
+            }
+            other => bail!("unsupported mcp_manage action `{other}`"),
+        }
+    }
+
+    async fn exec_recipe_run(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("recipe_run requires string parameter 'action'")?;
+        self.authorize("read", &self.workspace_root.to_string_lossy())
+            .await?;
+        match action {
+            "list" => {
+                let list = discover_recipes(&self.workspace_root);
+                Ok(serde_json::to_string_pretty(&list)?)
+            }
+            "render" => {
+                let spec = if let Some(yaml) = args.get("yaml").and_then(Value::as_str) {
+                    parse_recipe_yaml(yaml, None)?
+                } else if let Some(rel) = args.get("path").and_then(Value::as_str) {
+                    let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+                    let raw = fs::read_to_string(&abs)?;
+                    parse_recipe_yaml(&raw, Some(abs))?
+                } else {
+                    bail!("recipe_run render requires 'yaml' or 'path'");
+                };
+                let supplied: HashMap<String, String> = args
+                    .get("params")
+                    .and_then(Value::as_object)
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|(k, v)| {
+                                v.as_str().map(|s| (k.clone(), s.to_owned())).or_else(|| {
+                                    Some((k.clone(), v.to_string()))
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let rendered = validate_and_render_recipe(&spec, &supplied)?;
+                Ok(serde_json::to_string_pretty(&rendered)?)
+            }
+            other => bail!("unsupported recipe_run action `{other}`"),
+        }
+    }
+
+    async fn exec_plugin_manage(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("plugin_manage requires string parameter 'action'")?;
+        self.authorize("extension", &format!("plugin_manage:{action}"))
+            .await?;
+        match action {
+            "list" => Ok(serde_json::to_string_pretty(&self.dynamic_plugins.list())?),
+            "discover" => {
+                let found = self.dynamic_plugins.discover(Some(&self.hook_registry))?;
+                Ok(serde_json::to_string_pretty(&found)?)
+            }
+            "create" => {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("plugin_manage create requires 'id'")?;
+                let name = args.get("name").and_then(Value::as_str).unwrap_or(id);
+                let desc = args
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Omnia Cordis dynamic plugin");
+                let tool = match (
+                    args.get("tool_name").and_then(Value::as_str),
+                    args.get("command").and_then(Value::as_str),
+                ) {
+                    (Some(tn), Some(cmd)) => Some(DynamicPluginToolDef {
+                        name: tn.to_owned(),
+                        description: desc.to_owned(),
+                        parameters: json!({"type": "object", "additionalProperties": true}),
+                        command: cmd.to_owned(),
+                        read_only: false,
+                        timeout_ms: 15_000,
+                    }),
+                    _ => None,
+                };
+                let state = self.dynamic_plugins.create_scaffold(
+                    id,
+                    name,
+                    desc,
+                    tool,
+                    None,
+                    Some(&self.hook_registry),
+                )?;
+                Ok(serde_json::to_string_pretty(&state)?)
+            }
+            "enable" | "disable" => {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("plugin_manage enable/disable requires 'id'")?;
+                let state = self.dynamic_plugins.set_enabled(
+                    id,
+                    action == "enable",
+                    Some(&self.hook_registry),
+                )?;
+                Ok(serde_json::to_string_pretty(&state)?)
+            }
+            "rollback" => {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("plugin_manage rollback requires 'id'")?;
+                let state = self
+                    .dynamic_plugins
+                    .rollback(id, Some(&self.hook_registry))?;
+                Ok(serde_json::to_string_pretty(&state)?)
+            }
+            other => bail!("unsupported plugin_manage action `{other}`"),
+        }
+    }
+
+    async fn exec_dynamic_plugin_tool(
+        &self,
+        tool_name: &str,
+        def: &DynamicPluginToolDef,
+        args: &Value,
+    ) -> Result<String> {
+        self.authorize("extension", tool_name).await?;
+        let plugin_id = self
+            .dynamic_plugins
+            .list()
+            .into_iter()
+            .find(|p| p.manifest.tools.iter().any(|t| t.name == tool_name))
+            .map(|p| p.manifest.id);
+
+        let cwd = self.workspace_root.clone();
+        let command = def.command.clone();
+        let payload = serde_json::to_vec(args)?;
+        let timeout_secs = (def.timeout_ms / 1000).clamp(1, 120);
+        let cancel_flag = Arc::clone(&self.cancel_flag);
+        let run_res = tokio::task::spawn_blocking(move || -> Result<String> {
+            use std::io::Write;
+            let mut cmd = build_shell_command("auto", &command);
+            cmd.current_dir(&cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let (mut child, _sup) = spawn_supervised_command(&mut cmd)?;
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(&payload);
+            }
+            let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+            loop {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = child.kill();
+                    bail!("plugin execution cancelled");
+                }
+                if let Some(status) = child.try_wait()? {
+                    let mut out = String::new();
+                    let mut err = String::new();
+                    if let Some(mut r) = child.stdout.take() {
+                        let _ = r.read_to_string(&mut out);
+                    }
+                    if let Some(mut r) = child.stderr.take() {
+                        let _ = r.read_to_string(&mut err);
+                    }
+                    if !status.success() {
+                        bail!(
+                            "dynamic plugin exited {}: {}",
+                            status.code().unwrap_or(-1),
+                            err.trim()
+                        );
+                    }
+                    return Ok(out);
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    bail!("dynamic plugin timed out after {timeout_secs}s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })
+        .await?;
+
+        match (&plugin_id, &run_res) {
+            (Some(pid), Ok(_)) => self.dynamic_plugins.record_success(pid),
+            (Some(pid), Err(e)) => {
+                let _ = self.dynamic_plugins.record_fault(
+                    pid,
+                    &e.to_string(),
+                    Some(&self.hook_registry),
+                );
+            }
+            _ => {}
+        }
+        run_res.map(|s| self.sanitize_and_track_taint(&s, tool_name))
     }
 
     async fn exec_host_tool(&self, tool_name: &str, args: &Value) -> Result<String> {
         if let Some(ref handler) = self.extension_handler {
             return handler(tool_name.to_string(), args.clone()).await;
         }
-        Ok(serde_json::to_string_pretty(&json!({
-            "tool": tool_name,
-            "workspace": self.workspace_root.to_string_lossy(),
-            "args": args,
-            "status": "ok"
-        }))?)
+        if tool_name.starts_with("mcp__") {
+            let res = self
+                .mcp_manager
+                .call_tool(tool_name, None, args.clone())
+                .await?;
+            return Ok(serde_json::to_string_pretty(&res)?);
+        }
+        anyhow::bail!(
+            "host/extension tool `{tool_name}` has no registered live MCP or extension handler (fail-closed)"
+        )
     }
 }
 
@@ -1351,7 +2585,7 @@ fn run_supervised_shell(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let (mut child, supervisor) =
+    let (mut child, mut supervisor) =
         spawn_supervised_command(&mut cmd).context("failed to spawn supervised shell command")?;
 
     let mut out_pipe = child.stdout.take();
@@ -2561,6 +3795,231 @@ mod tests {
             fs::read_to_string(tmp.join("cfg.py")).unwrap(),
             "RATE = 0.15\n"
         );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn ptc_run_code_hooks_exit2_block_ast_edit_and_fail_closed_host_tools() {
+        let tmp = std::env::temp_dir().join(format!("omni_v5_tools_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("sample.rs"), "pub fn old_add(x: i32) -> i32 { x + 1 }\n").unwrap();
+
+        let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let mut rt = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Yolo,
+            true,
+            PermissionsEngine::default_rules(),
+            graph,
+            ctx,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        // 1. Registered deferred handler executes cleanly via both direct & invoke_extension_tool.
+        rt.register_deferred_tool(
+            ToolSpec {
+                name: "omni_custom_probe".into(),
+                description: "Custom probe tool".into(),
+                parameters: json!({"type": "object"}),
+                read_only: true,
+            },
+            true,
+            Arc::new(|_n, a| {
+                Box::pin(async move { Ok(json!({"echo": a["msg"]}).to_string()) })
+            }),
+        );
+        let ext = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({ "name": "omni_custom_probe", "arguments": { "msg": "hi" } }),
+            )
+            .await;
+        assert!(!ext.is_error && ext.content.contains("hi"), "{}", ext.content);
+
+        // 2. Unregistered omni_* host tool fails closed instead of returning fake ok.
+        let fake = rt.execute("omni_kanban_create", &json!({})).await;
+        assert!(fake.is_error, "unregistered omni_* must fail closed: {}", fake.content);
+
+        // 3. PTC run_code batches read_file + ast_grep & isolates OS globals.
+        let ptc_out = rt
+            .execute(
+                "run_code",
+                &json!({
+                    "code": r#"
+                        const batch = tools.parallel([
+                            ["read_file", { path: "sample.rs" }],
+                            ["ast_grep", { pattern: "pub fn $NAME", path: "sample.rs" }]
+                        ]);
+                        return {
+                            batchLen: batch.length,
+                            ok0: batch[0].ok,
+                            ok1: batch[1].ok,
+                            hasProcess: typeof process !== "undefined"
+                        };
+                    "#
+                }),
+            )
+            .await;
+        assert!(!ptc_out.is_error, "ptc failed: {}", ptc_out.content);
+        let parsed: Value = serde_json::from_str(&ptc_out.content).unwrap();
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["value"]["batchLen"], 2);
+        assert_eq!(parsed["value"]["ok0"], true);
+        assert_eq!(parsed["value"]["hasProcess"], false);
+
+        // 4. PreToolUse inline exit-2 deterministic block rejects write_file cleanly.
+        rt.hook_registry.register_inline(
+            "deny_secret_write",
+            HookEvent::PreToolUse,
+            Some("write_file".to_owned()),
+            Arc::new(|_ev, payload| {
+                let is_blocked = payload["arguments"]["path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("blocked");
+                crate::hooks::InlineHookDecision {
+                    block: is_blocked,
+                    reason: is_blocked.then(|| "blocked by deterministic policy".to_owned()),
+                    ..Default::default()
+                }
+            }),
+        );
+        let blocked = rt
+            .execute(
+                "write_file",
+                &json!({ "path": "blocked.txt", "content": "nope" }),
+            )
+            .await;
+        assert!(blocked.is_error && blocked.content.contains("PreToolUse"), "{}", blocked.content);
+        assert!(!tmp.join("blocked.txt").exists());
+
+        // 5. Deferred tools are discoverable via discover_tools (<=10) & run ast_edit cleanly.
+        let disc = rt
+            .execute("discover_tools", &json!({ "query": "ast_edit syntax rewrite" }))
+            .await;
+        assert!(!disc.is_error && disc.content.contains("ast_edit"), "{}", disc.content);
+
+        let ast_res = rt
+            .execute(
+                "ast_edit",
+                &json!({
+                    "path": "sample.rs",
+                    "pattern": "$A + 1",
+                    "rewrite": "$A + 2"
+                }),
+            )
+            .await;
+        assert!(!ast_res.is_error, "ast_edit failed: {}", ast_res.content);
+        assert!(
+            fs::read_to_string(tmp.join("sample.rs"))
+                .unwrap()
+                .contains("x + 2"),
+            "sample.rs should be rewritten"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn batch_read_file_preserves_full_medium_files_within_batch_budget() {
+        let tmp = std::env::temp_dir().join(format!("omni_batch_read_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let mut paths = Vec::new();
+        for idx in 0..6 {
+            let rel = format!("mod_{idx}.py");
+            let mut body = String::new();
+            for line_i in 1..=180 {
+                body.push_str(&format!("def fn_{idx}_{line_i}(x): return x + {line_i}\n"));
+            }
+            body.push_str(&format!("SENTINEL_END_{idx} = True\n"));
+            fs::write(tmp.join(&rel), &body).unwrap();
+            paths.push(rel);
+        }
+
+        let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Yolo,
+            true,
+            PermissionsEngine::default_rules(),
+            graph,
+            ctx,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let out = rt.execute("read_file", &json!({ "paths": paths })).await;
+        assert!(!out.is_error, "batch read failed: {}", out.content);
+        for idx in 0..6 {
+            assert!(
+                out.content.contains(&format!("SENTINEL_END_{idx}")),
+                "batch read truncated file {idx} prematurely"
+            );
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn ptc_sdk_exposes_shell_apply_patch_workspace_map_and_propagates_errors() {
+        let tmp = std::env::temp_dir().join(format!("omni_ptc_sdk_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("hello.py"), "VAL = 1\n").unwrap();
+
+        let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Yolo,
+            true,
+            PermissionsEngine::default_rules(),
+            graph,
+            ctx,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let ok = rt
+            .execute(
+                "run_code",
+                &json!({
+                    "code": r#"
+                        const map = tools.workspace_map({ query: "hello" });
+                        const sh1 = tools.run_shell("echo PTC_SHELL_OK");
+                        const sh2 = tools.shell({ command: "echo PTC_SHELL2_OK" });
+                        const patched = tools.apply_patch("*** Begin Patch\n*** Update File: hello.py\n@@\n-VAL = 1\n+VAL = 2\n*** End Patch\n");
+                        return {
+                            hasMap: typeof map === "string" && map.includes("hello.py"),
+                            hasSh1: typeof sh1 === "string" && sh1.includes("PTC_SHELL_OK"),
+                            hasSh2: typeof sh2 === "string" && sh2.includes("PTC_SHELL2_OK"),
+                            patched: typeof patched === "string" && patched.includes("updated: hello.py")
+                        };
+                    "#
+                }),
+            )
+            .await;
+        assert!(!ok.is_error, "ptc shell/apply_patch/workspace_map failed: {}", ok.content);
+        let v: Value = serde_json::from_str(&ok.content).unwrap();
+        assert_eq!(v["value"]["hasMap"], true);
+        assert_eq!(v["value"]["hasSh1"], true);
+        assert_eq!(v["value"]["hasSh2"], true);
+        assert_eq!(v["value"]["patched"], true);
+        assert_eq!(fs::read_to_string(tmp.join("hello.py")).unwrap(), "VAL = 2\n");
+
+        // Uncaught JS exception / tool failure (`!res.ok`) must set `is_error = true`!
+        let err = rt
+            .execute(
+                "run_code",
+                &json!({ "code": r#"throw new Error("boom_ptc_err");"# }),
+            )
+            .await;
+        assert!(err.is_error, "!res.ok must propagate as is_error=true: {}", err.content);
+        assert!(err.content.contains("boom_ptc_err"), "{}", err.content);
+
         let _ = fs::remove_dir_all(&tmp);
     }
 }

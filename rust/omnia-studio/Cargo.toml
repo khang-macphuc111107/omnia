@@ -9,9 +9,15 @@ description = "Full Native Rust HTTP/JSON-RPC Flagship Studio server hosting ui/
 name = "omnia-studio"
 path = "src/main.rs"
 
+[features]
+default = []
+embed-ui = ["dep:rust-embed"]
+
 [dependencies]
 base64.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
+omnia-agent.workspace = true
 omnia-connector-gateway = { path = "../omnia-connector-gateway" }
 omnia-core = { path = "../omnia-core" }
 omnia-downloader.workspace = true
@@ -22,12 +28,16 @@ omnia-notebook.workspace = true
 omnia-remote-control = { path = "../omnia-remote-control" }
 omnia-routing = { path = "../omnia-routing" }
 omnia-storage.workspace = true
+omnia-winsqlite.workspace = true
 omnia-workspace-ops = { path = "../omnia-workspace-ops" }
+parking_lot.workspace = true
 reqwest.workspace = true
+rust-embed = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 url.workspace = true
 windows-sys.workspace = true

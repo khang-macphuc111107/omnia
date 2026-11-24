@@ -15,26 +15,39 @@ mod acp_history;
 pub mod acp_http;
 pub mod acp_proto;
 pub mod agent_store;
+pub mod ast_edit;
 pub mod cache_guard;
 pub mod checkpoint;
 pub mod context;
+pub mod dap;
+pub mod dynamic_plugins;
 pub mod edit;
 pub mod engine;
 pub mod git_forensics;
 pub mod graph_locator;
+pub mod hooks;
 pub mod lakeview;
 pub mod lsp;
+pub mod mcp_client;
+pub mod memory_engine;
 pub mod merkle;
+pub mod output_compressor;
 pub mod patch;
 pub mod path_guard;
 pub mod permissions;
 pub mod plugin;
+pub mod ptc;
+pub mod pty_session;
+pub mod recipes;
 pub mod sanitizer;
 pub mod sap_json;
 pub mod search;
 pub mod supervisor;
+pub mod swarm_runtime;
+pub mod test_time_scaling;
 pub mod tools;
 pub mod trajectory;
+pub mod web_tools;
 
 /// Crate identity string for diagnostics and startup checks.
 pub const CRATE_NAME: &str = "omnia-agent";
@@ -57,6 +70,7 @@ pub use checkpoint::{
     TurnCheckpointStore,
 };
 pub use context::{DiscoveredRule, SkillMetadata, WorkspaceContextBundle};
+pub use dap::DapManager;
 pub use edit::{
     edit_file_by_hashline, edit_file_by_symbol_block, edit_file_guarded, line_hash_tag,
     run_fast_compiler_syntax_check, EditFileResult, FileReadSnapshot, FileReadTracker,
@@ -78,7 +92,12 @@ pub use lakeview::{
     RepetitionLoopGuard, SemanticLoopGuard, ToolCallRecord,
 };
 pub use lsp::{LazyLspManager, LspLanguage, LspLocation, LspQueryResult};
+pub use memory_engine::{MemoryEngine, RecallQuery, RecallResponse, RetainItemInput};
 pub use merkle::{HarnessMerkleStatus, MerkleFileEntry, MerkleIndex, MerkleRefreshDelta};
+pub use output_compressor::{
+    compress_text_output, compress_tool_output, strip_ansi_and_progress, CompressedOutput,
+    CompressionStats, OutputCompressor, OutputCompressorConfig,
+};
 pub use patch::{apply_codex_patch, parse_codex_patch, ApplyPatchReport, FilePatchOp, PatchHunk};
 pub use path_guard::{
     ensure_within_workspace, sanitize_windows_path, strip_verbatim_prefix, validate_workspace_dir,
@@ -100,6 +119,10 @@ pub use search::{HybridSearchIndex, SearchMode, SearchOutcome, SearchQueryOption
 pub use supervisor::{
     pid_is_alive, process_tree_rss_bytes, spawn_supervised_command, strip_provider_secrets,
     strip_provider_secrets_tokio, ProcessSupervisor,
+};
+pub use swarm_runtime::{AdvisorEmissionGuard, AutoresearchSession, SwarmRuntime, WorktreeManager};
+pub use test_time_scaling::{
+    run_best_of_n, run_mcts_tree_search, run_tex_cross_validation, TestTimeScalingConfig,
 };
 pub use tools::{
     compact_shell_output, detect_default_shell, ExtensionToolHandler, InteractiveApprover,
@@ -315,7 +338,7 @@ impl SuperHarnessManager {
                 format!("{p}/{m}")
             }
             (_, Some(m)) if !m.trim().is_empty() => m.clone(),
-            _ => "htmustc-gemini/gemini-3.8-flash".to_string(),
+            _ => "htmustc-claude/claude-sonnet-5-5".to_string(),
         };
 
         let pending_confirm: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>> =

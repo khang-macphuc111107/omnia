@@ -1,0 +1,436 @@
+@import "tailwindcss";
+@import "@fontsource/be-vietnam-pro";
+@import "@fontsource/plus-jakarta-sans";
+@import "@fontsource/jetbrains-mono";
+@import "katex/dist/katex.min.css";
+@import "@xterm/xterm/css/xterm.css";
+
+/* ============================================================================
+ * Omnia Studio v5 — Obsidian Kinetic Atelier + OMP 19.1 Theme Fusion
+ * Strict luminance layering, 1px hairline borders, zero gradients/backdrop blur
+ * ============================================================================ */
+
+:root,
+:root[data-theme="obsidian"] {
+  --bg-canvas: #080A0F;
+  --bg-rail: #0C0F16;
+  --bg-panel: #111621;
+  --bg-elevated: #171E2C;
+  --bg-interactive: #1E2738;
+  --bg-code: #0B0E15;
+
+  --ink-primary: #F2F5FA;
+  --ink-secondary: #C3CDDE;
+  --ink-muted: #8E9BB2;
+
+  --accent-amber: #F0B44C;
+  --accent-cyan: #38BDF8;
+  --accent-dim: rgba(56, 189, 248, 0.14);
+  --accent-amber-dim: rgba(240, 180, 76, 0.14);
+
+  --status-emerald: #34D399;
+  --status-emerald-dim: rgba(52, 211, 153, 0.12);
+  --status-coral: #FB7185;
+  --status-coral-dim: rgba(251, 113, 133, 0.14);
+  --status-warning: #F0B44C;
+
+  --border-subtle: rgba(255, 255, 255, 0.085);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --border-specular: rgba(255, 255, 255, 0.12);
+  --border-accent: rgba(56, 189, 248, 0.45);
+
+  --omp-user-msg-bg: #121B28;
+  --omp-user-msg-border: #243752;
+  --omp-tool-pending-bg: #111621;
+  --omp-tool-success-bg: rgba(52, 211, 153, 0.06);
+  --omp-tool-error-bg: rgba(251, 113, 133, 0.08);
+  --omp-selection-bg: rgba(56, 189, 248, 0.25);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.48);
+  color-scheme: dark;
+}
+
+:root[data-theme="titanium"] {
+  /* Calibrated OMP Slate/Titanium fusion — verified >= 5.0:1 muted contrast */
+  --bg-canvas: #1F2328;
+  --bg-rail: #191D21;
+  --bg-panel: #252A30;
+  --bg-elevated: #2E343C;
+  --bg-interactive: #373F49;
+  --bg-code: #1B1F24;
+
+  --ink-primary: #EDF0F2;
+  --ink-secondary: #C8D1D7;
+  --ink-muted: #B0BCC4;
+
+  --accent-amber: #E5B976;
+  --accent-cyan: #9AC6D6;
+  --accent-dim: rgba(154, 198, 214, 0.14);
+  --accent-amber-dim: rgba(229, 185, 118, 0.14);
+
+  --status-emerald: #8CCFB0;
+  --status-emerald-dim: rgba(140, 207, 176, 0.12);
+  --status-coral: #F2A29D;
+  --status-coral-dim: rgba(236, 154, 148, 0.14);
+  --status-warning: #E5B976;
+
+  --border-subtle: #353D45;
+  --border-strong: #53606B;
+  --border-specular: rgba(255, 255, 255, 0.10);
+  --border-accent: rgba(154, 198, 214, 0.48);
+
+  --omp-user-msg-bg: #293037;
+  --omp-user-msg-border: #3F4A54;
+  --omp-tool-pending-bg: #252A30;
+  --omp-tool-success-bg: rgba(140, 207, 176, 0.06);
+  --omp-tool-error-bg: rgba(236, 154, 148, 0.08);
+  --omp-selection-bg: rgba(154, 198, 214, 0.24);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.36);
+  color-scheme: dark;
+}
+
+:root[data-theme="alabaster"] {
+  --bg-canvas: #F6F5F0;
+  --bg-rail: #EEECE4;
+  --bg-panel: #FFFFFF;
+  --bg-elevated: #F9F8F4;
+  --bg-interactive: #EAE8E0;
+  --bg-code: #F1EFE8;
+
+  --ink-primary: #11141C;
+  --ink-secondary: #2E3646;
+  --ink-muted: #4A5468;
+
+  --accent-amber: #7D4400;
+  --accent-cyan: #0A539B;
+  --accent-dim: rgba(10, 83, 155, 0.10);
+  --accent-amber-dim: rgba(125, 68, 0, 0.10);
+
+  --status-emerald: #085B3E;
+  --status-emerald-dim: rgba(8, 91, 62, 0.10);
+  --status-coral: #9E1630;
+  --status-coral-dim: rgba(158, 22, 48, 0.10);
+  --status-warning: #7D4400;
+
+  --border-subtle: #DCD8CE;
+  --border-strong: #B4AEA0;
+  --border-specular: rgba(255, 255, 255, 0.9);
+  --border-accent: rgba(11, 92, 171, 0.45);
+
+  --omp-user-msg-bg: #EBF2FA;
+  --omp-user-msg-border: #C4D9EE;
+  --omp-tool-pending-bg: #F6F5F0;
+  --omp-tool-success-bg: rgba(11, 107, 73, 0.06);
+  --omp-tool-error-bg: rgba(184, 29, 58, 0.06);
+  --omp-selection-bg: rgba(11, 92, 171, 0.18);
+
+  --shadow-sm: 0 1px 2px rgba(17, 20, 28, 0.06);
+  --shadow-md: 0 8px 24px rgba(17, 20, 28, 0.12);
+  color-scheme: light;
+}
+
+:root[data-theme="blueprint"] {
+  --bg-canvas: #070E1B;
+  --bg-rail: #0A1324;
+  --bg-panel: #0E1A30;
+  --bg-elevated: #13223D;
+  --bg-interactive: #192D4F;
+  --bg-code: #081020;
+
+  --ink-primary: #EDF5FF;
+  --ink-secondary: #BFD2EC;
+  --ink-muted: #8BA3C7;
+
+  --accent-amber: #F4BE58;
+  --accent-cyan: #4CC9FF;
+  --accent-dim: rgba(76, 201, 255, 0.14);
+  --accent-amber-dim: rgba(244, 190, 88, 0.14);
+
+  --status-emerald: #3CE0A6;
+  --status-emerald-dim: rgba(60, 224, 166, 0.12);
+  --status-coral: #FF7D90;
+  --status-coral-dim: rgba(255, 125, 144, 0.14);
+  --status-warning: #F4BE58;
+
+  --border-subtle: rgba(140, 185, 255, 0.14);
+  --border-strong: rgba(140, 185, 255, 0.28);
+  --border-specular: rgba(140, 185, 255, 0.16);
+  --border-accent: rgba(76, 201, 255, 0.5);
+
+  --omp-user-msg-bg: #11233F;
+  --omp-user-msg-border: #254778;
+  --omp-tool-pending-bg: #0E1A30;
+  --omp-tool-success-bg: rgba(60, 224, 166, 0.06);
+  --omp-tool-error-bg: rgba(255, 125, 144, 0.08);
+  --omp-selection-bg: rgba(76, 201, 255, 0.25);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  color: var(--ink-primary);
+  font-family: "Be Vietnam Pro", "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--omp-selection-bg);
+  color: var(--ink-primary);
+}
+
+.font-mono-num {
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Master 3-Row 100dvh Shell */
+.omnia-shell {
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr) 28px;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  color: var(--ink-primary);
+}
+
+.omnia-topbar {
+  background-color: var(--bg-rail);
+  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: inset 0 1px 0 var(--border-specular);
+}
+
+.omnia-statusbar {
+  background-color: var(--bg-rail);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.omnia-surface-panel {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  box-shadow: inset 0 1px 0 var(--border-specular);
+}
+
+.omnia-surface-elevated {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  box-shadow: inset 0 1px 0 var(--border-specular);
+}
+
+/* Custom hairline scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+/* OMP Segmented control */
+.omp-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background-color: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+}
+
+.omp-segmented > button {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.omp-segmented > button:hover {
+  color: var(--ink-primary);
+}
+
+.omp-segmented > button[aria-pressed="true"] {
+  background-color: var(--bg-elevated);
+  color: var(--ink-primary);
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Compact button & badge chamfers (2px-6px, zero candy gradients) */
+.omnia-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background-color: var(--bg-elevated);
+  color: var(--ink-primary);
+  border: 1px solid var(--border-subtle);
+  box-shadow: inset 0 1px 0 var(--border-specular);
+}
+
+.omnia-btn:hover:not(:disabled) {
+  background-color: var(--bg-interactive);
+  border-color: var(--border-strong);
+}
+
+.omnia-btn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.omnia-btn-primary {
+  background-color: var(--accent-cyan);
+  color: #06101B;
+  border-color: var(--accent-cyan);
+  box-shadow: none;
+}
+
+.omnia-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+:root[data-theme="alabaster"] .omnia-btn-primary {
+  color: #FFFFFF;
+}
+
+.omnia-btn-danger {
+  background-color: var(--status-coral-dim);
+  color: var(--status-coral);
+  border-color: var(--status-coral);
+}
+
+.omnia-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  background-color: var(--bg-elevated);
+  color: var(--ink-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Prose / Markdown styling */
+.omnia-prose {
+  font-size: 14px;
+  line-height: 1.62;
+  color: var(--ink-primary);
+  word-break: break-word;
+}
+
+.omnia-prose pre {
+  background-color: var(--bg-code);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+
+.omnia-prose code:not(pre code) {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 0.88em;
+  color: var(--accent-amber);
+}
+
+.omnia-prose blockquote {
+  border-left: 3px solid var(--accent-cyan);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--ink-secondary);
+}
+
+.omnia-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.omnia-prose th,
+.omnia-prose td {
+  border: 1px solid var(--border-subtle);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.omnia-prose th {
+  background-color: var(--bg-elevated);
+  font-weight: 600;
+}
+
+/* Highlight.js minimal semantic colors using calibrated theme tokens */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.hljs-string,
+.hljs-attr {
+  color: var(--status-emerald);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-type {
+  color: var(--accent-amber);
+}
+
+.hljs-comment {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.hljs-title,
+.hljs-function {
+  color: var(--ink-primary);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

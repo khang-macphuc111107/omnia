@@ -186,6 +186,7 @@ pub async fn dispatch_capability_route(
         ("POST", "/api/connectors/validate") => Some(handle_connectors_validate(state, req).await),
 
         ("GET", "/api/media/capabilities") => Some(handle_media_capabilities(req).await),
+        ("GET", "/api/media/windows") => Some(handle_media_windows()),
         ("GET", "/api/media/browser/cdp") => Some(handle_media_cdp(req).await),
         ("GET", "/api/media/obs/status") => Some(handle_media_obs(req).await),
         ("POST", "/api/media/capture/window") => Some(handle_media_window_capture(req)),
@@ -205,6 +206,7 @@ pub async fn dispatch_capability_route(
             | "/api/connectors/status"
             | "/api/connectors/validate"
             | "/api/media/capabilities"
+            | "/api/media/windows"
             | "/api/media/browser/cdp"
             | "/api/media/obs/status"
             | "/api/media/capture/window"
@@ -1377,6 +1379,17 @@ fn parse_window_identity(val: &Value) -> Result<WindowIdentity, String> {
     })
 }
 
+fn handle_media_windows() -> HttpResponse {
+    match omnia_workspace_ops::win32_window::list_visible_windows() {
+        Ok(windows) => HttpResponse::ok(json!({
+            "ok": true,
+            "count": windows.len(),
+            "windows": windows,
+        })),
+        Err(err) => HttpResponse::error(500, "window_enum_failed", &err.to_string()),
+    }
+}
+
 fn handle_media_window_capture(req: &HttpRequest) -> HttpResponse {
     let obj = match req.json_object() {
         Ok(m) => m,
@@ -1387,6 +1400,48 @@ fn handle_media_window_capture(req: &HttpRequest) -> HttpResponse {
         .get("receipt")
         .and_then(Value::as_object)
         .unwrap_or(&obj);
+
+    let has_raw_frame = receipt_obj.get("frame_bytes").is_some()
+        || receipt_obj.get("frameBytes").is_some()
+        || receipt_obj.get("frame_bytes_base64").is_some()
+        || receipt_obj.get("frameBytesBase64").is_some();
+
+    if !has_raw_frame {
+        if let Some(hwnd) = receipt_obj
+            .get("hwnd")
+            .or_else(|| obj.get("hwnd"))
+            .and_then(Value::as_u64)
+            .filter(|&h| h > 0)
+        {
+            let max_dim = receipt_obj
+                .get("maxDim")
+                .or_else(|| receipt_obj.get("max_dim"))
+                .and_then(Value::as_u64)
+                .map(|d| d as u32)
+                .unwrap_or(1920)
+                .clamp(64, 8192);
+            return match omnia_workspace_ops::win32_window::capture_window_png(
+                isize::try_from(hwnd).unwrap_or(0),
+                max_dim,
+            ) {
+                Ok(cap) => {
+                    let digest = sha256_hex(&cap.png_bytes);
+                    HttpResponse::ok(json!({
+                        "ok": true,
+                        "verified": true,
+                        "hwnd": cap.hwnd,
+                        "width": cap.width,
+                        "height": cap.height,
+                        "mimeType": "image/png",
+                        "byteLen": cap.png_bytes.len(),
+                        "sha256Hex": digest,
+                        "pngBase64": omnia_core::base64_encode(&cap.png_bytes),
+                    }))
+                }
+                Err(err) => HttpResponse::error(422, "win32_capture_failed", &err.to_string()),
+            };
+        }
+    }
 
     let expected_val = receipt_obj
         .get("expected_target")
@@ -2240,27 +2295,60 @@ fn handle_remote_frame(state: &StudioState, req: &HttpRequest) -> HttpResponse {
         .or_else(|| obj.get("preview_base64"))
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let byte_len = match u32::try_from(
-        obj.get("byteLen")
-            .or_else(|| obj.get("byte_len"))
-            .and_then(Value::as_u64)
-            .unwrap_or(1024),
-    ) {
-        Ok(len) => len,
-        Err(_) => {
-            return HttpResponse::error(
-                400,
-                "invalid_byte_len",
-                "Field 'byteLen' exceeds u32 range.",
-            );
-        }
+    let decoded_preview = match preview_base64.as_deref() {
+        Some(b64) if !b64.trim().is_empty() => match decode_base64(b64.trim()) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                return HttpResponse::error(400, "invalid_preview_base64", &err.to_string());
+            }
+        },
+        _ => None,
     };
-    let sha256_hex_val = obj
+    let explicit_byte_len = obj
+        .get("byteLen")
+        .or_else(|| obj.get("byte_len"))
+        .and_then(Value::as_u64);
+    let byte_len = match explicit_byte_len {
+        Some(raw) => match u32::try_from(raw) {
+            Ok(len) if len > 0 => len,
+            _ => {
+                return HttpResponse::error(
+                    400,
+                    "invalid_byte_len",
+                    "Field 'byteLen' must be a positive u32 integer.",
+                );
+            }
+        },
+        None => match decoded_preview.as_ref() {
+            Some(bytes) if !bytes.is_empty() => u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+            _ => {
+                return HttpResponse::error(
+                    400,
+                    "missing_byte_len",
+                    "Provide real 'byteLen' or non-empty 'previewBase64' frame bytes.",
+                );
+            }
+        },
+    };
+    let sha256_hex_val = match obj
         .get("sha256Hex")
         .or_else(|| obj.get("sha256_hex"))
         .and_then(Value::as_str)
-        .map(ToString::to_string)
-        .unwrap_or_else(|| sha256_hex(format!("frame-{frame_id}-{width}x{height}").as_bytes()));
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(h) => h.to_string(),
+        None => match decoded_preview.as_ref() {
+            Some(bytes) if !bytes.is_empty() => sha256_hex(bytes),
+            _ => {
+                return HttpResponse::error(
+                    400,
+                    "missing_frame_digest",
+                    "Provide real 'sha256Hex' or non-empty 'previewBase64' frame bytes (no fabricated digests).",
+                );
+            }
+        },
+    };
     let keyframe = obj.get("keyframe").and_then(Value::as_bool).unwrap_or(true);
 
     let payload = FramePayload::ScreenFrameHeader {

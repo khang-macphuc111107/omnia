@@ -429,6 +429,7 @@ pub fn parse_dash_manifest(xml_content: &str, base_url: &str) -> Result<DashMani
     let mut in_base_url = false;
     let mut current_as: Option<DashAdaptationSet> = None;
     let mut as_template: Option<SegmentTemplateCtx> = None;
+    let mut as_init_uri: Option<String> = None;
     let mut current_rep: Option<DashRepresentation> = None;
     let mut rep_template: Option<SegmentTemplateCtx> = None;
     let mut rep_segment_urls: Vec<String> = Vec::new();
@@ -457,6 +458,7 @@ pub fn parse_dash_manifest(xml_content: &str, base_url: &str) -> Result<DashMani
                             representations: Vec::new(),
                         });
                         as_template = None;
+                        as_init_uri = None;
                     }
                     "Representation" => {
                         current_rep = Some(DashRepresentation {
@@ -508,6 +510,16 @@ pub fn parse_dash_manifest(xml_content: &str, base_url: &str) -> Result<DashMani
                     "SegmentURL" => {
                         if let Some(media) = attrs.get("media") {
                             rep_segment_urls.push(media.clone());
+                        }
+                    }
+                    "Initialization" => {
+                        if let Some(src) = attrs.get("sourceURL") {
+                            let resolved = resolve_relative_url(&current_base, src)?;
+                            if let Some(ref mut rep) = current_rep {
+                                rep.init_uri = Some(resolved);
+                            } else if current_as.is_some() {
+                                as_init_uri = Some(resolved);
+                            }
                         }
                     }
                     _ => {}
@@ -574,6 +586,16 @@ pub fn parse_dash_manifest(xml_content: &str, base_url: &str) -> Result<DashMani
                             rep_segment_urls.push(media.clone());
                         }
                     }
+                    "Initialization" => {
+                        if let Some(src) = attrs.get("sourceURL") {
+                            let resolved = resolve_relative_url(&current_base, src)?;
+                            if let Some(ref mut rep) = current_rep {
+                                rep.init_uri = Some(resolved);
+                            } else if current_as.is_some() {
+                                as_init_uri = Some(resolved);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -594,6 +616,9 @@ pub fn parse_dash_manifest(xml_content: &str, base_url: &str) -> Result<DashMani
                     "BaseURL" => in_base_url = false,
                     "Representation" => {
                         if let Some(mut rep) = current_rep.take() {
+                            if rep.init_uri.is_none() {
+                                rep.init_uri = as_init_uri.clone();
+                            }
                             let effective_tpl = rep_template.take().or_else(|| as_template.clone());
                             if let Some(tpl) = effective_tpl {
                                 populate_rep_from_template(&mut rep, &tpl, &current_base)?;
@@ -619,6 +644,7 @@ pub fn parse_dash_manifest(xml_content: &str, base_url: &str) -> Result<DashMani
                             adaptation_sets.push(a);
                         }
                         as_template = None;
+                        as_init_uri = None;
                     }
                     _ => {}
                 }

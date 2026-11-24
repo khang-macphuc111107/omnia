@@ -16,31 +16,50 @@
 //!   targeted compiler checks) + `PASTE`-lite speculative read pool + Anti-Termination-Lag
 //!   (`FAIL -> PASS`) + Ring-Buffer Oscillation Detector + Atomic `/rewind`
 
-use crate::agent_store::{read_models_config, AgentStore, ModelEntryConfig, ProviderConfig};
+use crate::agent_store::{default_omnia_data_dir, read_models_config, AgentStore};
+use crate::{ModelEntryConfig, ProviderConfig};
 use crate::cache_guard::{
     blake3_hex, canonicalize_openai_tools, HarnessCacheStats, PrefixCacheGuard, BASE_SYSTEM_PROMPT,
     BASE_SYSTEM_PROMPT_NO_VERIFY,
 };
 use crate::checkpoint::TestOutcomeTransition;
-use crate::context::WorkspaceContextBundle;
+use crate::context::{InstructionEpochState, WorkspaceContextBundle};
 use crate::edit::ModelEditAffinity;
 use crate::graph_locator::WorkspaceGraphIndex;
+use crate::hooks::{HookEvent, HookRegistry};
 use crate::lakeview::{
-    classify_tool_error, error_fingerprint, AnchoredSummary, EpochMaskingState, HarnessMessage,
-    OscillationDetector, SemanticLoopGuard, ToolCallRecord, DEFAULT_MAX_TOOL_REPETITIONS,
+    bound_multimodal_images, classify_tool_error, error_fingerprint,
+    render_snapcompact_archive_text, AnchoredSummary, BackgroundCompactionCoordinator,
+    ContentBlock, EpochMaskingState, FoldAgentState, HarnessMessage, OscillationDetector,
+    SemanticLoopGuard, ToolCallRecord, DEFAULT_MAX_TOOL_REPETITIONS,
 };
+use crate::memory_engine::MemoryEngine;
+use crate::output_compressor::compress_text_output;
 use crate::path_guard::sanitize_windows_path;
 use crate::permissions::{ApprovalMode, PermissionRule};
 use crate::plugin::{PluginRegistry, TurnHookContext};
 use crate::sap_json::repair_tool_json;
 use crate::supervisor::process_tree_rss_bytes;
+use crate::test_time_scaling::{
+    distill_tex_matrix_pdr, TestTimeScalingConfig, TexCrossValidationReport,
+};
 use crate::tools::{detect_default_shell, InteractiveApprover, ToolExecOutput, ToolRuntime};
 use crate::trajectory::TrajectoryRecorder;
 use anyhow::{bail, Result};
 use bytes::Bytes;
 use chrono::Utc;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use memchr::memchr;
+use omnia_connector_gateway::htmustc_wire::{
+    classify_upstream_failure, conversation_fingerprint, evaluate_proactive_quota_gate,
+    inspect_sse_pre_commit, restore_responses_namespaces_value, sanitize_gemini_wire_payload,
+    QuotaProbeSnapshot, UpstreamFailureScope,
+};
+use omnia_routing::{
+    apply_reasoning_effort_wire, clamp_effort_for_model, effort_spec_for_model, AcceptanceState,
+    CandidateResourceState, DynamicProviderRouter, EffortLevel, ModelCapabilities, ModelRole,
+    OutcomeReport, RouteCandidate, RouteRequestPolicy,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -50,11 +69,24 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest, http::HeaderValue, Message as WsMessage,
+};
 
 const MAX_INTERLEAVED_REASONING_CHARS: usize = 6_000;
 const ACTIVE_DECODE_GAP_CAP_MS: u64 = 5_000;
+/// Persistent `/v1/responses` WebSocket connection rotation ceiling (`55` minutes, OpenCode transport).
+const WS_CONTINUATION_ROTATE_AFTER: Duration = Duration::from_secs(55 * 60);
+/// Maximum consecutive WS failures before permanently downgrading session to HTTP SSE.
+const WS_MAX_STREAM_FAILURES: u32 = 5;
+/// Separate 1-hour retry window for unreachable network/DNS outages (`ENOTFOUND`/`EAI_AGAIN`/`ENETUNREACH`).
+const UNREACHABLE_RETRY_WINDOW: Duration = Duration::from_secs(60 * 60);
+const UNREACHABLE_RETRY_INITIAL_MS: u64 = 2_000;
+const UNREACHABLE_RETRY_MAX_MS: u64 = 30_000;
+/// Active keepalive ceiling while waiting pre-TTFT on long reasoning turns (`gpt-6.2-sol` 186s / Claude 233s).
+const HEAVY_THINKING_KEEPALIVE_CAP_SECS: u64 = 240;
 
-/// Multi-dialect wire routing mode (`--wire-api auto|chat|responses|messages|gemini`).
+/// Multi-dialect wire routing mode (`--wire-api auto|chat|responses|responses-ws|messages|gemini`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WireApiMode {
@@ -62,6 +94,8 @@ pub enum WireApiMode {
     Auto,
     Chat,
     Responses,
+    #[serde(alias = "responses-ws", alias = "responses_ws", alias = "ws")]
+    ResponsesWs,
     Messages,
     Gemini,
 }
@@ -72,6 +106,7 @@ impl WireApiMode {
         match s.trim().to_ascii_lowercase().as_str() {
             "chat" | "openai-completions" | "completions" => Self::Chat,
             "responses" | "openai-responses" => Self::Responses,
+            "responses-ws" | "responses_ws" | "openai-responses-ws" | "ws" => Self::ResponsesWs,
             "messages" | "anthropic" | "anthropic-messages" => Self::Messages,
             "gemini" | "google-gemini" => Self::Gemini,
             _ => Self::Auto,
@@ -83,7 +118,7 @@ impl WireApiMode {
     pub fn resolve_api_kind(self, model_id: &str, configured_api: &str) -> &'static str {
         match self {
             Self::Chat => "openai-completions",
-            Self::Responses => "openai-responses",
+            Self::Responses | Self::ResponsesWs => "openai-responses",
             Self::Messages => "anthropic-messages",
             Self::Gemini => "google-gemini",
             Self::Auto => {
@@ -97,7 +132,10 @@ impl WireApiMode {
                     || m.contains("/gemini")
                 {
                     "anthropic-messages"
-                } else if configured_api == "openai-responses" || is_openai_responses_family(&m) {
+                } else if configured_api == "openai-responses"
+                    || configured_api == "openai-responses-ws"
+                    || is_openai_responses_family(&m)
+                {
                     "openai-responses"
                 } else if configured_api == "google-gemini" {
                     "google-gemini"
@@ -141,15 +179,14 @@ pub struct StreamBudgetConfig {
 impl Default for StreamBudgetConfig {
     fn default() -> Self {
         Self {
-            // Calibrated on 105-run htmustc Stage 1 wire traces: the proxy burst-flushes whole
-            // responses (gen window ~1ms) after 12-188s of upstream wait, sending NO bytes
-            // (not even headers) before the flush. Pre-delta budgets must cover that wait.
+            // Calibrated on 105-run htmustc Stage 1 wire traces + gpt-6.2-sol 186s & Claude 233s silent thinking:
+            // the proxy burst-flushes or emits 4096B keepalives while upstream thinks up to ~233s.
             header_timeout: Duration::from_secs(90),
             heavy_header_timeout: Duration::from_secs(150),
             first_delta_timeout: Duration::from_secs(90),
             heavy_first_delta_timeout: Duration::from_secs(150),
             inter_chunk_timeout: Duration::from_secs(65),
-            per_attempt_deadline: Duration::from_secs(180),
+            per_attempt_deadline: Duration::from_secs(240),
             max_retries_per_turn: 3,
             retry_base_backoff_ms: 800,
             // Opt-in only: upstream keeps processing aborted requests and serializes per-family
@@ -193,9 +230,12 @@ impl StreamBudgetConfig {
         let m = model_id.to_ascii_lowercase();
         m.contains("claude")
             || m.contains("opus")
-            || m.contains("gpt-6.2")
-            || m.contains("gpt-6-luna")
+            || m.contains("gpt-6")
+            || m.contains("gpt-5.6")
+            || m.contains("gpt-5-6")
             || m.contains("gemini-4")
+            || m.contains("gemini-3")
+            || m.contains("o4")
             || m.contains("o3")
             || m.contains("o1")
             || m.contains("sonnet")
@@ -237,11 +277,11 @@ impl StreamBudgetConfig {
     }
 }
 
-/// Token-Progress SSE Watchdog (`SOTA v4` Critical Fix #1):
-/// Computes the exact remaining wait budget strictly from `last_meaningful_delta_at`
-/// (or `stream_started_at` pre-TTFT). Empty lines and `: ping` SSE keepalives NEVER
-/// reset this deadline! Returns `Err(StreamTurnError::Retryable { kind: ChunkStall })`
-/// the instant token progress stalls past the budget.
+/// Token-Progress SSE Watchdog (`SOTA v4` + `v5` keepalive-aware extension):
+/// - Tracks `last_meaningful_delta_at` post-TTFT (`: ping` keepalives NEVER extend post-TTFT stalls).
+/// - Pre-TTFT, dead/quiet sockets fail at `first_delta_timeout`; when production keepalives/lifecycle
+///   events are actively arriving (`last_wire_activity_at`), healthy silent reasoning extends up to `240s`.
+/// - Overall turn-deadline expiry returns `Fatal` (never mislabeled as an `<18s` `ChunkStall`).
 fn compute_token_progress_wait(
     stream_started_at: Instant,
     last_meaningful_delta_at: Option<Instant>,
@@ -250,20 +290,107 @@ fn compute_token_progress_wait(
     turn_deadline: Instant,
     dialect_label: &str,
 ) -> std::result::Result<Duration, StreamTurnError> {
+    compute_token_progress_wait_with_wire(
+        stream_started_at,
+        last_meaningful_delta_at,
+        None,
+        first_delta_timeout,
+        post_delta_token_timeout,
+        turn_deadline,
+        dialect_label,
+    )
+}
+
+fn has_fresh_wire_keepalive(
+    now: Instant,
+    first_delta_timeout: Duration,
+    post_delta_token_timeout: Duration,
+    last_wire_activity_at: Option<Instant>,
+) -> bool {
+    first_delta_timeout >= Duration::from_secs(60)
+        && last_wire_activity_at.is_some_and(|wire_ts| {
+            now.saturating_duration_since(wire_ts)
+                <= post_delta_token_timeout.max(Duration::from_secs(45))
+        })
+}
+
+fn compute_token_progress_wait_with_wire(
+    stream_started_at: Instant,
+    last_meaningful_delta_at: Option<Instant>,
+    last_wire_activity_at: Option<Instant>,
+    first_delta_timeout: Duration,
+    post_delta_token_timeout: Duration,
+    turn_deadline: Instant,
+    dialect_label: &str,
+) -> std::result::Result<Duration, StreamTurnError> {
+    compute_token_progress_wait_with_phase(
+        stream_started_at,
+        last_meaningful_delta_at,
+        last_wire_activity_at,
+        first_delta_timeout,
+        post_delta_token_timeout,
+        turn_deadline,
+        dialect_label,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_token_progress_wait_with_phase(
+    stream_started_at: Instant,
+    last_meaningful_delta_at: Option<Instant>,
+    last_wire_activity_at: Option<Instant>,
+    first_delta_timeout: Duration,
+    post_delta_token_timeout: Duration,
+    turn_deadline: Instant,
+    dialect_label: &str,
+    in_reasoning_only: bool,
+) -> std::result::Result<Duration, StreamTurnError> {
     let now = Instant::now();
     let rem_turn = turn_deadline.saturating_duration_since(now);
     if rem_turn.is_zero() {
-        return Err(StreamTurnError::Retryable {
-            status: None,
-            retry_after_secs: None,
-            kind: RetryKind::ChunkStall,
-            detail: format!("{dialect_label} turn deadline exceeded"),
-        });
+        return Err(StreamTurnError::Fatal(format!(
+            "Timed out waiting for {dialect_label} turn deadline"
+        )));
     }
 
-    let (anchor, budget, phase) = match last_meaningful_delta_at {
-        None => (stream_started_at, first_delta_timeout, "pre-TTFT"),
-        Some(ts) => (ts, post_delta_token_timeout, "post-TTFT token-progress"),
+    let (anchor, budget, phase) = match (last_meaningful_delta_at, in_reasoning_only) {
+        (None, _) => {
+            let cap = if has_fresh_wire_keepalive(
+                now,
+                first_delta_timeout,
+                post_delta_token_timeout,
+                last_wire_activity_at,
+            ) {
+                first_delta_timeout.max(Duration::from_secs(HEAVY_THINKING_KEEPALIVE_CAP_SECS))
+            } else if last_wire_activity_at.is_none()
+                && first_delta_timeout >= Duration::from_secs(60)
+                && dialect_label.starts_with("OpenAI Responses")
+            {
+                // Healthy /v1/responses emits `response.created` immediately; zero wire bytes
+                // means an upstream hang (drop at 60s max for fast fresh-socket retry).
+                first_delta_timeout.min(Duration::from_secs(60))
+            } else {
+                first_delta_timeout
+            };
+            (stream_started_at, cap, "pre-TTFT")
+        }
+        (Some(ts), true) => {
+            // Reasoning-only phase (`text.is_empty() && tool_calls.is_empty()`): preserve full
+            // heavy thinking / keepalive budget (`150s` / `240s`) instead of aborting at 65s.
+            let cap = if has_fresh_wire_keepalive(
+                now,
+                first_delta_timeout,
+                post_delta_token_timeout,
+                last_wire_activity_at,
+            ) {
+                first_delta_timeout.max(Duration::from_secs(HEAVY_THINKING_KEEPALIVE_CAP_SECS))
+            } else {
+                first_delta_timeout.max(post_delta_token_timeout)
+            };
+            (ts, cap, "reasoning-phase")
+        }
+        (Some(ts), false) => (ts, post_delta_token_timeout, "post-TTFT token-progress"),
     };
     let elapsed = now.saturating_duration_since(anchor);
     if elapsed >= budget {
@@ -745,6 +872,8 @@ struct TurnStreamResult {
     reasoning: String,
     reasoning_signature: Option<String>,
     redacted_thinking: Vec<String>,
+    reasoning_encrypted_items: Vec<Value>,
+    response_id: Option<String>,
     tool_calls: Vec<ToolCallRecord>,
     /// Pre-spawned speculative read-only tool handles keyed by positional index in `tool_calls`.
     speculative_results: HashMap<usize, tokio::task::JoinHandle<ToolExecOutput>>,
@@ -754,6 +883,44 @@ struct TurnStreamResult {
     turn_gen_ms: u64,
     turn_active_decode_ms: u64,
     http_retries: u32,
+}
+
+type AgentWsStream = tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+/// Stateful 55-minute Persistent WebSocket Continuation transport state (`opencode` transport).
+#[derive(Default)]
+struct ResponsesWsContinuationState {
+    stream: Option<AgentWsStream>,
+    connected_at: Option<Instant>,
+    endpoint_url: String,
+    last_response_id: Option<String>,
+    last_model: Option<String>,
+    last_instructions_hash: Option<String>,
+    last_tools_hash: Option<String>,
+    last_prefix_hash: Option<String>,
+    last_input_len: usize,
+    consecutive_failures: u32,
+    disabled: bool,
+}
+
+impl ResponsesWsContinuationState {
+    fn reset_connection(&mut self) {
+        self.stream = None;
+        self.connected_at = None;
+        self.last_response_id = None;
+        self.last_prefix_hash = None;
+        self.last_input_len = 0;
+    }
+
+    fn record_failure(&mut self, disable_immediately: bool) {
+        self.reset_connection();
+        self.consecutive_failures += 1;
+        if disable_immediately || self.consecutive_failures >= WS_MAX_STREAM_FAILURES {
+            self.disabled = true;
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -777,15 +944,17 @@ struct ExecutionProgressState {
     last_failed_edit: Option<(String, String, String)>,
 }
 
-/// Stateful native Rust SOTA v4 Super-Harness engine usable for CLI, Studio, and ACP!
+/// Stateful native Rust SOTA v5 Super-Harness engine usable for CLI, Studio, and ACP.
 pub struct NativeSuperEngine {
     pub session_key: String,
+    pub conversation_fp: String,
     pub workspace_root: PathBuf,
     pub workspace_hash: String,
     pub endpoint: ResolvedModelEndpoint,
     pub wire_api_mode: WireApiMode,
     pub anthropic_fallback_to_openai: bool,
     pub responses_fallback_to_chat: bool,
+    pub responses_ws_enabled: bool,
     pub edit_affinity: ModelEditAffinity,
     pub thinking_level: Option<String>,
     pub plugins: PluginRegistry,
@@ -794,9 +963,17 @@ pub struct NativeSuperEngine {
     pub cache_guard: PrefixCacheGuard,
     pub epoch_masker: EpochMaskingState,
     pub anchored_summary: AnchoredSummary,
+    pub instruction_epoch: InstructionEpochState,
+    pub fold_agent: FoldAgentState,
+    pub background_compactor: BackgroundCompactionCoordinator,
     pub loop_guard: SemanticLoopGuard,
     pub oscillation_detector: OscillationDetector,
     pub trajectory: TrajectoryRecorder,
+    pub hooks: HookRegistry,
+    pub memory_engine: Option<Arc<MemoryEngine>>,
+    pub tts_config: TestTimeScalingConfig,
+    pub dynamic_router: Option<Arc<DynamicProviderRouter>>,
+    pub role_endpoints: BTreeMap<ModelRole, ResolvedModelEndpoint>,
     pub system_prompt: String,
     pub canonical_tools: Vec<Value>,
     pub tool_schemas_by_name: HashMap<String, Value>,
@@ -813,8 +990,14 @@ pub struct NativeSuperEngine {
     pub total_gen_duration_ms: u64,
     pub total_active_decode_ms: u64,
     pub total_http_retries: u32,
+    pub total_unreachable_retries: u32,
     pub total_truncated_stream_retries: u32,
     pub total_stall_retries: u32,
+    pub total_ws_turns: u32,
+    pub total_ws_fallbacks: u32,
+    pub total_rtk_compressions: u32,
+    pub total_rtk_spills: u32,
+    pub total_fold_compressions: u32,
     pub total_verify_gate_nudges: u32,
     pub total_narration_nudges: u32,
     pub total_interleaved_reasoning_turns: u32,
@@ -828,6 +1011,8 @@ pub struct NativeSuperEngine {
     pub last_context_tokens: u64,
     http: reqwest::Client,
     fresh_http: reqwest::Client,
+    ws_state: ResponsesWsContinuationState,
+    last_prompt_cache_hit_at: Option<Instant>,
     first_prompt_sent: bool,
     shell_label: &'static str,
 }
@@ -892,20 +1077,21 @@ impl NativeSuperEngine {
         let canonical_tools = canonicalize_openai_tools(&active_tools);
         let cache_guard =
             PrefixCacheGuard::new(Some(session_key.clone()), &system_prompt, &canonical_tools);
+        let conversation_fp = conversation_fingerprint(Some(&session_key), &system_prompt, "");
 
         let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(15))
             .pool_idle_timeout(Duration::from_secs(30))
             .tcp_nodelay(true)
             .tcp_keepalive(Duration::from_secs(30))
-            .user_agent("omnia-agent/4.0.0")
+            .user_agent("omnia-agent/5.0.0")
             .build()?;
         let fresh_http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(15))
             .pool_max_idle_per_host(0)
             .http1_only()
             .tcp_nodelay(true)
-            .user_agent("omnia-agent/4.0.0")
+            .user_agent("omnia-agent/5.0.0")
             .build()?;
 
         let (shell_label, _) = detect_default_shell();
@@ -913,16 +1099,46 @@ impl NativeSuperEngine {
         let trajectory = TrajectoryRecorder::new(session_key.clone(), trajectory_path);
         let epoch_masker = EpochMaskingState::for_context_window(endpoint.context_window);
         let edit_affinity = ModelEditAffinity::for_model(&endpoint.model_id);
-        let wire_api_mode = WireApiMode::Auto;
+        let wire_api_mode = if endpoint.api.eq_ignore_ascii_case("openai-responses-ws") {
+            WireApiMode::ResponsesWs
+        } else {
+            WireApiMode::Auto
+        };
+        let responses_ws_enabled = endpoint.api.eq_ignore_ascii_case("openai-responses-ws")
+            || endpoint.base_url.starts_with("ws://")
+            || endpoint.base_url.starts_with("wss://")
+            || std::env::var("OMNIA_RESPONSES_WS").ok().is_some_and(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
+        let background_compactor = BackgroundCompactionCoordinator::new(endpoint.context_window);
+        let hooks = if workspace_trusted {
+            HookRegistry::load_from_workspace(&clean_ws)
+                .unwrap_or_else(|_| HookRegistry::new(&clean_ws))
+        } else {
+            HookRegistry::new(&clean_ws)
+        };
+        let default_mem_db = default_omnia_data_dir()
+            .join("memory")
+            .join("omnia_memory.db");
+        let memory_engine = if default_mem_db.is_file() {
+            MemoryEngine::open_default(None).ok().map(Arc::new)
+        } else {
+            None
+        };
 
         Ok(Self {
             session_key,
+            conversation_fp,
             workspace_root: clean_ws,
             workspace_hash,
             endpoint,
             wire_api_mode,
             anthropic_fallback_to_openai: false,
             responses_fallback_to_chat: false,
+            responses_ws_enabled,
             edit_affinity,
             thinking_level,
             plugins,
@@ -931,9 +1147,17 @@ impl NativeSuperEngine {
             cache_guard,
             epoch_masker,
             anchored_summary: AnchoredSummary::default(),
+            instruction_epoch: InstructionEpochState::new(),
+            fold_agent: FoldAgentState::new(),
+            background_compactor,
             loop_guard: SemanticLoopGuard::new(DEFAULT_MAX_TOOL_REPETITIONS),
             oscillation_detector: OscillationDetector::new(32),
             trajectory,
+            hooks,
+            memory_engine,
+            tts_config: TestTimeScalingConfig::default(),
+            dynamic_router: None,
+            role_endpoints: BTreeMap::new(),
             system_prompt,
             canonical_tools,
             tool_schemas_by_name,
@@ -950,8 +1174,14 @@ impl NativeSuperEngine {
             total_gen_duration_ms: 0,
             total_active_decode_ms: 0,
             total_http_retries: 0,
+            total_unreachable_retries: 0,
             total_truncated_stream_retries: 0,
             total_stall_retries: 0,
+            total_ws_turns: 0,
+            total_ws_fallbacks: 0,
+            total_rtk_compressions: 0,
+            total_rtk_spills: 0,
+            total_fold_compressions: 0,
             total_verify_gate_nudges: 0,
             total_narration_nudges: 0,
             total_interleaved_reasoning_turns: 0,
@@ -964,12 +1194,235 @@ impl NativeSuperEngine {
             last_context_tokens: 0,
             http,
             fresh_http,
+            ws_state: ResponsesWsContinuationState::default(),
+            last_prompt_cache_hit_at: None,
             first_prompt_sent: false,
             shell_label,
         })
     }
 
-    /// Resolve active wire dialect honoring `wire_api_mode` and automatic Anthropic -> OpenAI fallback.
+    /// Attach a configured `DynamicProviderRouter` (optionally WAL SQLite-backed).
+    pub fn bind_dynamic_router(&mut self, router: Arc<DynamicProviderRouter>) {
+        self.dynamic_router = Some(router);
+    }
+
+    /// Initialize WAL SQLite-backed `DynamicProviderRouter` from `omnia_router.db` and `models.yml`.
+    pub fn init_default_sqlite_router(&mut self, db_path: Option<&Path>) -> Result<()> {
+        let resolved_path = db_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_omnia_data_dir().join("omnia_router.db"));
+        let now_ms = Utc::now().timestamp_millis();
+        let router = Arc::new(
+            DynamicProviderRouter::open_sqlite(&resolved_path, now_ms)
+                .map_err(|e| anyhow::anyhow!("open router sqlite failed: {e}"))?,
+        );
+        Self::register_endpoint_candidate(&router, &self.endpoint);
+        if let Some(cfg_dir) = detect_default_models_dir() {
+            if let Ok(cfg) = read_models_config(Some(&cfg_dir)) {
+                for p in &cfg.providers {
+                    for m in &p.models {
+                        let cid = format!("{}::{}", p.id, m.id);
+                        let low = m.id.to_ascii_lowercase();
+                        let roles = if low.contains("haiku") || low.contains("flash") || low.contains("mini") {
+                            vec![ModelRole::Fast, ModelRole::FastApply]
+                        } else if low.contains("opus") || low.contains("gpt-6") || low.contains("sonnet") {
+                            vec![ModelRole::Main, ModelRole::Architect, ModelRole::Advisor, ModelRole::Verifier]
+                        } else {
+                            vec![ModelRole::Main]
+                        };
+                        let cand = RouteCandidate {
+                            candidate_id: cid,
+                            provider_id: p.id.clone(),
+                            model_id: m.id.clone(),
+                            capabilities: ModelCapabilities::standard_candidate(),
+                            context_limit_tokens: m.context_window.max(32_000),
+                            max_output_tokens: m.max_tokens.clamp(1024, 128_000),
+                            input_cost_per_million_microunits: Some((m.cost.input * 1_000_000.0) as i64),
+                            output_cost_per_million_microunits: Some((m.cost.output * 1_000_000.0) as i64),
+                            credential_present: !p.api_key.trim().is_empty() || !m.api_key.trim().is_empty(),
+                            enabled: true,
+                            supported_roles: roles,
+                            ..RouteCandidate::default()
+                        };
+                        let _ = router.upsert_candidate(cand, CandidateResourceState::default());
+                    }
+                }
+            }
+        }
+        self.dynamic_router = Some(router);
+        Ok(())
+    }
+
+    fn register_endpoint_candidate(router: &DynamicProviderRouter, ep: &ResolvedModelEndpoint) {
+        let cid = format!("{}::{}", ep.provider_id, ep.model_id);
+        let cand = RouteCandidate {
+            candidate_id: cid,
+            provider_id: ep.provider_id.clone(),
+            model_id: ep.model_id.clone(),
+            capabilities: ModelCapabilities::standard_candidate(),
+            context_limit_tokens: ep.context_window.max(32_000),
+            max_output_tokens: ep.max_tokens.clamp(1024, 128_000),
+            input_cost_per_million_microunits: Some((ep.cost_input_per_m * 1_000_000.0) as i64),
+            output_cost_per_million_microunits: Some((ep.cost_output_per_m * 1_000_000.0) as i64),
+            credential_present: !ep.api_key.trim().is_empty(),
+            enabled: true,
+            ..RouteCandidate::default()
+        };
+        let _ = router.upsert_candidate(cand, CandidateResourceState::default());
+    }
+
+    /// Explicitly register an endpoint override for a functional role (`main`, `architect`, `fast`, `advisor`, `verifier`, `fast_apply`).
+    pub fn register_role_endpoint(&mut self, role: ModelRole, ep: ResolvedModelEndpoint) {
+        if let Some(ref router) = self.dynamic_router {
+            Self::register_endpoint_candidate(router, &ep);
+            let spec = format!("{}/{}", ep.provider_id, ep.model_id);
+            let _ = router.bind_role(
+                role,
+                &format!("{}::{}", ep.provider_id, ep.model_id),
+                &spec,
+                Utc::now().timestamp_millis(),
+            );
+        }
+        self.role_endpoints.insert(role, ep);
+    }
+
+    /// Resolve an endpoint for a functional `ModelRole` via bound endpoint -> `DynamicProviderRouter` -> active `endpoint`.
+    #[must_use]
+    pub fn resolve_role_endpoint(&self, role: ModelRole) -> ResolvedModelEndpoint {
+        if let Some(ep) = self.role_endpoints.get(&role) {
+            return ep.clone();
+        }
+        if let Some(ref router) = self.dynamic_router {
+            let mut policy = RouteRequestPolicy::default();
+            policy.request_id = format!("role-{}-{}", role.as_str(), self.total_turns);
+            policy.idempotency_key = format!("{}:{}", self.session_key, policy.request_id);
+            policy.allow_unknown_quota_without_emergency = true;
+            policy.session_affinity_key = Some(self.session_key.clone());
+            if let Ok(res) = router.select_for_role(role, policy) {
+                if let Some(grant) = res.reservation {
+                    let spec = format!("{}/{}", grant.provider_id, grant.model_id);
+                    if let Ok(resolved) = resolve_model_endpoint(&spec, None, None, None) {
+                        return resolved;
+                    }
+                }
+            }
+        }
+        self.endpoint.clone()
+    }
+
+    /// Open a Context-Folding exploration branch (`FoldAgent`, arXiv:2510.11967).
+    pub fn branch_context_fold(&mut self, branch_id: &str, objective: &str) {
+        self.fold_agent
+            .branch_subtask(branch_id, objective, self.messages.len(), self.total_turns);
+    }
+
+    /// Collapse a completed Context-Folding branch back into main history with Prefix-0 intact.
+    pub fn complete_context_fold(
+        &mut self,
+        branch_id: &str,
+        verified_summary: &str,
+        kept_files: &[String],
+    ) -> Option<crate::lakeview::FoldResult> {
+        let res = self.fold_agent.return_and_fold(
+            branch_id,
+            &mut self.messages,
+            verified_summary,
+            kept_files,
+            self.total_turns,
+        );
+        if res.is_some() {
+            self.total_fold_compressions += 1;
+        }
+        res
+    }
+
+    /// Attach a `MemoryEngine` for Prefix-0-safe message-tail `<recalled_memories>` retrieval.
+    pub fn bind_memory_engine(&mut self, engine: Arc<MemoryEngine>) {
+        self.memory_engine = Some(engine);
+    }
+
+    /// Configure opt-in Test-Time Scaling (`Best-of-N` / `TEX` / `MCTS`; disabled by default).
+    pub fn enable_test_time_scaling(&mut self, cfg: TestTimeScalingConfig) {
+        self.tts_config = cfg;
+    }
+
+    /// Distill a Parallel-Distill-Refine (PDR) digest from an opt-in TEX $K \times K$ matrix report.
+    #[must_use]
+    pub fn summarize_tex_pdr(
+        &self,
+        report: &TexCrossValidationReport,
+        max_chars: usize,
+    ) -> Option<String> {
+        if !self.tts_config.enabled {
+            return None;
+        }
+        Some(distill_tex_matrix_pdr(report, max_chars))
+    }
+
+    /// Evaluate a proactive `quota_gate` snapshot and update SQLite router exhaustion before hitting 429.
+    pub fn apply_proactive_quota_snapshot(
+        &self,
+        candidate_id: &str,
+        snapshot: &QuotaProbeSnapshot,
+        now_ms: i64,
+    ) -> bool {
+        let verdict = evaluate_proactive_quota_gate(snapshot, now_ms);
+        if let Some(ref router) = self.dynamic_router {
+            let buckets: Vec<(String, i64, i64, bool, Option<i64>)> = snapshot
+                .buckets
+                .iter()
+                .map(|b| {
+                    (
+                        b.name.clone(),
+                        b.total,
+                        b.remaining,
+                        b.unlimited,
+                        b.reset_at_epoch_ms,
+                    )
+                })
+                .collect();
+            if let Ok(exh) =
+                router.apply_quota_probe(candidate_id, snapshot.limit_reached, &buckets, now_ms)
+            {
+                return exh;
+            }
+        }
+        verdict.exhausted
+    }
+
+    /// Resolve per-turn adaptive reasoning effort (unlocked through `max`).
+    #[must_use]
+    pub fn resolve_effort_for_turn(
+        &self,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
+    ) -> Option<EffortLevel> {
+        if force_low_reasoning {
+            return clamp_effort_for_model(&self.endpoint.model_id, EffortLevel::Low);
+        }
+        if let Some(ref raw) = self.thinking_level {
+            if let Ok(parsed) = raw.trim().parse::<EffortLevel>() {
+                return clamp_effort_for_model(&self.endpoint.model_id, parsed)
+                    .or(Some(parsed));
+            }
+        }
+        let spec = effort_spec_for_model(&self.endpoint.model_id);
+        let base = spec.default_level?;
+        if escalate_reasoning {
+            let bumped = match base {
+                EffortLevel::Minimal | EffortLevel::Low => EffortLevel::Medium,
+                EffortLevel::Medium => EffortLevel::High,
+                EffortLevel::High => EffortLevel::XHigh,
+                EffortLevel::XHigh | EffortLevel::Max => EffortLevel::Max,
+                EffortLevel::None => EffortLevel::None,
+            };
+            clamp_effort_for_model(&self.endpoint.model_id, bumped).or(Some(base))
+        } else {
+            Some(base)
+        }
+    }
+
+    /// Resolve active wire dialect honoring `wire_api_mode` and automatic fallback.
     #[must_use]
     pub fn active_wire_dialect(&self) -> &'static str {
         let resolved = self
@@ -982,6 +1435,19 @@ impl NativeSuperEngine {
         } else {
             resolved
         }
+    }
+
+    #[must_use]
+    fn should_use_responses_ws(&self) -> bool {
+        !self.ws_state.disabled
+            && (self.responses_ws_enabled
+                || self.wire_api_mode == WireApiMode::ResponsesWs
+                || self
+                    .endpoint
+                    .api
+                    .eq_ignore_ascii_case("openai-responses-ws")
+                || self.endpoint.base_url.starts_with("ws://")
+                || self.endpoint.base_url.starts_with("wss://"))
     }
 
     /// D2 Atomic `/rewind`: roll back all file mutations made after `target_turn`, refresh Merkle/Graph,
@@ -1011,15 +1477,67 @@ impl NativeSuperEngine {
         timeout_secs: u64,
         sink: Option<HarnessEventSink>,
     ) -> Result<PromptRunSummary> {
+        self.run_prompt_with_blocks(user_prompt, Vec::new(), max_turns, timeout_secs, sink)
+            .await
+    }
+
+    /// Execute one user prompt with optional multimodal image/file content blocks.
+    pub async fn run_prompt_with_blocks(
+        &mut self,
+        user_prompt: &str,
+        user_blocks: Vec<ContentBlock>,
+        max_turns: u32,
+        timeout_secs: u64,
+        sink: Option<HarnessEventSink>,
+    ) -> Result<PromptRunSummary> {
         let prompt_start = Instant::now();
         let total_budget_secs = timeout_secs.max(5);
         let deadline = prompt_start + Duration::from_secs(total_budget_secs);
         let max_turns = max_turns.clamp(1, 120);
         self.active_prompt_start_turn = self.total_turns + 1;
 
+        let before_start = self
+            .hooks
+            .dispatch(
+                HookEvent::BeforeAgentStart,
+                None,
+                json!({ "sessionKey": self.session_key, "model": self.endpoint.model_id }),
+            )
+            .await;
+        if before_start.blocked {
+            bail!(
+                "Hook blocked agent start: {}",
+                before_start
+                    .block_reason
+                    .unwrap_or_else(|| "exit 2".into())
+            );
+        }
+        let prompt_hook = self
+            .hooks
+            .dispatch(
+                HookEvent::UserPromptSubmit,
+                None,
+                json!({ "prompt": user_prompt }),
+            )
+            .await;
+        if prompt_hook.blocked {
+            bail!(
+                "Hook blocked prompt: {}",
+                prompt_hook
+                    .block_reason
+                    .unwrap_or_else(|| "exit 2".into())
+            );
+        }
+        let effective_prompt = prompt_hook
+            .revised_input
+            .as_ref()
+            .and_then(|v| v.get("prompt").or(Some(v)).and_then(Value::as_str))
+            .unwrap_or(user_prompt)
+            .to_string();
+
         // Inject workspace context + query-seeded PPR AST RepoMap ONLY into Turn-1 user message
         // (NEVER mutating Token-0 system prompt!)
-        let user_content = if !self.first_prompt_sent {
+        let mut user_content = if !self.first_prompt_sent {
             self.first_prompt_sent = true;
             let mut extra_sections = Vec::new();
             self.plugins
@@ -1035,17 +1553,43 @@ impl NativeSuperEngine {
                     &self.workspace_root,
                     self.shell_label,
                     opt_g,
-                    user_prompt,
+                    &effective_prompt,
                     &extra_sections,
                 )
             };
-            format!("{turn1_prefix}{user_prompt}")
+            format!("{turn1_prefix}{effective_prompt}")
         } else {
-            user_prompt.to_string()
+            effective_prompt.clone()
         };
 
-        self.messages
-            .push(HarnessMessage::user(user_content, self.total_turns + 1));
+        for ctx_note in prompt_hook.additional_context {
+            if !ctx_note.trim().is_empty() {
+                user_content.push_str("\n\n");
+                user_content.push_str(ctx_note.trim());
+            }
+        }
+        if let Some(ref mem) = self.memory_engine {
+            if let Some(recalled_tail) =
+                mem.recall_tail_for_prompt(&self.workspace_root, &effective_prompt, 2_400)
+            {
+                user_content.push_str("\n\n");
+                user_content.push_str(&recalled_tail);
+            }
+        }
+
+        let user_msg = if user_blocks.is_empty() {
+            HarnessMessage::user(user_content, self.total_turns + 1)
+        } else {
+            HarnessMessage::user_multimodal(user_content, user_blocks, self.total_turns + 1)
+        };
+        self.messages.push(user_msg);
+        if self.conversation_fp.starts_with("fp:") {
+            self.conversation_fp = conversation_fingerprint(
+                Some(&self.session_key),
+                &self.system_prompt,
+                &effective_prompt,
+            );
+        }
 
         let mut prompt_turns = 0u32;
         let mut ttft_ms: Option<u64> = None;
@@ -1083,17 +1627,64 @@ impl NativeSuperEngine {
                 .current_turn
                 .store(cur_turn, Ordering::Relaxed);
 
-            // Cordis pre-turn hooks
+            // Cordis + external lifecycle pre-turn hooks
             let mut hook_ctx = TurnHookContext {
                 turn_index: cur_turn,
                 last_tool_errors: self.total_tool_errors,
                 injected_notes: Vec::new(),
             };
             self.plugins.run_before_turn(&mut hook_ctx);
+            let turn_hook = self
+                .hooks
+                .dispatch(
+                    HookEvent::TurnStart,
+                    None,
+                    json!({ "turn": cur_turn, "toolErrors": self.total_tool_errors }),
+                )
+                .await;
+            for ctx_note in turn_hook.additional_context {
+                if !ctx_note.trim().is_empty() {
+                    hook_ctx.injected_notes.push(ctx_note);
+                }
+            }
 
-            // Stage 1 Context-Scaled Epoch Observation Masking + Stage 2 Factory Anchored Summary
+            // SHA-256 Instruction Delta Epoch: freeze Turn-1 baseline, append Tier-3 delta ONLY on drift.
+            let instr_sources = self.collect_instruction_epoch_sources(&hook_ctx.injected_notes);
+            if let Some(delta_block) = self
+                .instruction_epoch
+                .observe_and_commit(&instr_sources, cur_turn)
+            {
+                self.messages
+                    .push(HarnessMessage::user(delta_block, cur_turn));
+            }
+
+            // 25 MiB -> 15 MiB multimodal image hysteresis bounding before compaction/serialization.
+            if self
+                .messages
+                .iter()
+                .any(|m| !m.content_blocks.is_empty())
+            {
+                self.messages = bound_multimodal_images(&self.messages);
+            }
+
+            // Compaction-ahead-of-Steers + Warm-Cache 200k Compaction + Stage 1/2 Lakeview:
+            let compact_cap = self.endpoint.context_window.min(200_000);
+            let total_est_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
+            let est_total_tokens =
+                self.last_context_tokens.max((total_est_chars as u64).div_ceil(4));
             let mut stage2_anchor_note: Option<String> = None;
-            if self.plugins.is_enabled("lakeview_compress") {
+            if est_total_tokens >= compact_cap
+                && self
+                    .background_compactor
+                    .try_swap_precomputed(&mut self.messages, cur_turn)
+            {
+                self.cache_guard.lakeview_compressions += 1;
+                self.trajectory.record(
+                    cur_turn,
+                    "warm_cache_compaction_swap",
+                    json!({ "ceilingTokens": compact_cap, "estTokens": est_total_tokens }),
+                );
+            } else if self.plugins.is_enabled("lakeview_compress") {
                 let comp = self.epoch_masker.maybe_fold(&mut self.messages, cur_turn);
                 if comp.compressed_count > 0 {
                     self.cache_guard.lakeview_compressions += comp.compressed_count;
@@ -1108,7 +1699,6 @@ impl NativeSuperEngine {
                         }),
                     );
                     // Stage 2: Factory Anchored Iterative Summarization when nearing context-rot knee (~68% of <=200k compact cap)
-                    let compact_cap = self.endpoint.context_window.min(200_000);
                     let rot_knee = (compact_cap * 68) / 100;
                     if self.last_context_tokens >= rot_knee
                         && self.epoch_masker.last_masked_turn > 0
@@ -1118,6 +1708,33 @@ impl NativeSuperEngine {
                         stage2_anchor_note = Some(self.anchored_summary.render_tail_block());
                     }
                 }
+                let cache_age_ms = self
+                    .last_prompt_cache_hit_at
+                    .map(|t| t.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                if self.background_compactor.should_start_precompute(
+                    est_total_tokens,
+                    0,
+                    &self.endpoint.model_id,
+                    cache_age_ms,
+                    None,
+                ) && self.messages.len() > 6
+                {
+                    let keep_idx = (self.messages.len() / 2).max(2);
+                    let kept_files: Vec<String> = progress.files_mutated.iter().cloned().collect();
+                    let snap_text = render_snapcompact_archive_text(
+                        &kept_files,
+                        &self.messages[..keep_idx],
+                        false,
+                    );
+                    self.background_compactor.store_precomputed(
+                        keep_idx,
+                        cur_turn,
+                        &self.endpoint.model_id,
+                        snap_text,
+                        Utc::now().timestamp_millis().max(0) as u64,
+                    );
+                }
             }
             if let Some(anchor_text) = stage2_anchor_note {
                 // Append strictly at Tier 3 (tail) to keep Tier 0..2 KV prefix hot!
@@ -1125,7 +1742,23 @@ impl NativeSuperEngine {
                     .push(HarnessMessage::user(anchor_text, cur_turn));
             }
 
-            // BLAKE3 Prefix-Cache Stability verification on EVERY turn
+            // Final-Step `tool_choice: "none"` (`prompt_turns == max_turns && max_turns > 1`):
+            // preserves `tools` schema prefix while guaranteeing clean textual closure.
+            let force_no_tools = prompt_turns >= max_turns && max_turns > 1;
+            if force_no_tools
+                && had_tool_result_this_prompt
+                && self
+                    .messages
+                    .last()
+                    .is_some_and(|m| !m.content.contains("[Max Steps Reached]"))
+            {
+                self.messages.push(HarnessMessage::user(
+                    "[Max Steps Reached] Tool execution is disabled for this final turn. Summarize completed work and remaining verification cleanly now.",
+                    cur_turn,
+                ));
+            }
+
+            // SHA-256 Prefix-Cache Stability verification on EVERY turn
             let _stable = self
                 .cache_guard
                 .verify_turn_prefix(&self.system_prompt, &self.canonical_tools);
@@ -1139,7 +1772,8 @@ impl NativeSuperEngine {
                 json!({
                     "model": self.endpoint.model_id,
                     "messageCount": self.messages.len(),
-                    "prefixStable": self.cache_guard.snapshot().prefix_stable
+                    "prefixStable": self.cache_guard.snapshot().prefix_stable,
+                    "forceNoTools": force_no_tools
                 }),
             );
 
@@ -1169,6 +1803,7 @@ impl NativeSuperEngine {
                     remaining,
                     force_low_reasoning,
                     progress.escalate_reasoning,
+                    force_no_tools,
                     sink.as_ref(),
                 )
                 .await
@@ -1213,6 +1848,9 @@ impl NativeSuperEngine {
                 saw_any_usage = true;
                 if turn_res.usage.reasoning.is_some() {
                     saw_any_reasoning_tokens = true;
+                }
+                if turn_res.usage.cache_read > 0 || turn_res.usage.cache_write > 0 {
+                    self.last_prompt_cache_hit_at = Some(Instant::now());
                 }
                 self.cache_guard.record_usage(
                     turn_res.usage.uncached_input,
@@ -1302,6 +1940,7 @@ impl NativeSuperEngine {
             if !turn_res.text.trim().is_empty()
                 || !sanitized_tcs.is_empty()
                 || !turn_res.redacted_thinking.is_empty()
+                || !turn_res.reasoning_encrypted_items.is_empty()
             {
                 let mut asst_msg = HarnessMessage::assistant_with_signature(
                     turn_res.text.clone(),
@@ -1313,8 +1952,10 @@ impl NativeSuperEngine {
                     turn_res.reasoning_signature.clone(),
                     sanitized_tcs,
                     cur_turn,
-                );
+                )
+                .with_origin(&self.endpoint.provider_id, &self.endpoint.model_id);
                 asst_msg.redacted_thinking = turn_res.redacted_thinking.clone();
+                asst_msg.reasoning_encrypted_items = turn_res.reasoning_encrypted_items.clone();
                 self.messages.push(asst_msg);
             }
 
@@ -1436,12 +2077,18 @@ impl NativeSuperEngine {
                 // Anti-Termination-Lag (arXiv:2611.14960): if a real test suite already ran green
                 // (`FailToPass` / `AllGreen`) after the last edit, do NOT force an extra turn.
                 let base_floor = (total_budget_secs / 5).max(45);
-                let heavy_floor =
-                    if self.stream_budget.first_delta_timeout >= Duration::from_secs(120) {
-                        base_floor.max(120)
-                    } else {
-                        base_floor
-                    };
+                let is_heavy = StreamBudgetConfig::is_heavy_model(
+                    &self.endpoint.model_id,
+                    self.last_context_tokens,
+                );
+                let heavy_floor = if (is_heavy
+                    && self.stream_budget.heavy_first_delta_timeout >= Duration::from_secs(120))
+                    || self.stream_budget.first_delta_timeout >= Duration::from_secs(120)
+                {
+                    base_floor.max(155)
+                } else {
+                    base_floor
+                };
                 let review_floor = Duration::from_secs(heavy_floor);
                 if self.final_review_gate
                     && !progress.files_mutated.is_empty()
@@ -1473,7 +2120,7 @@ impl NativeSuperEngine {
                 break;
             }
 
-            // Prefix-Parallel Mixed-Batch Tool Dispatch (using pre-repaired SAP `parsed_calls`)
+            // Prefix-Parallel Mixed-Batch Tool Dispatch (using pre-repaired SAP `parsed_calls` + PreToolUse hook)
             let mut spec_map = turn_res.speculative_results;
             let batches = partition_tool_batches(&parsed_calls);
             let mut outcomes = Vec::with_capacity(parsed_calls.len());
@@ -1494,11 +2141,51 @@ impl NativeSuperEngine {
                                         .unwrap_or_else(|_| json!({})),
                                 });
                             }
-                            let pre_handle = spec_map.remove(&idx);
+                            let pre_hook = self
+                                .hooks
+                                .dispatch(
+                                    HookEvent::PreToolUse,
+                                    Some(&tc.name),
+                                    json!({
+                                        "toolName": tc.name,
+                                        "arguments": parsed.as_ref().cloned().unwrap_or_else(|_| json!({}))
+                                    }),
+                                )
+                                .await;
+                            let mut pre_handle = spec_map.remove(&idx);
+                            let blocked_msg = if pre_hook.blocked {
+                                if let Some(h) = pre_handle.take() {
+                                    h.abort();
+                                }
+                                Some(format!(
+                                    "Error: Hook blocked '{}': {}",
+                                    tc.name,
+                                    pre_hook
+                                        .block_reason
+                                        .unwrap_or_else(|| "exit 2".into())
+                                ))
+                            } else {
+                                None
+                            };
+                            let arg_res = if let Some(rev) = pre_hook.revised_input {
+                                if let Some(h) = pre_handle.take() {
+                                    h.abort();
+                                }
+                                Ok(rev)
+                            } else {
+                                parsed.as_ref().cloned().map_err(|e| e.to_string())
+                            };
                             let rt = self.tool_runtime.clone();
                             let name = tc.name.clone();
-                            let arg_res = parsed.as_ref().cloned().map_err(|e| e.to_string());
                             futs.push(async move {
+                                if let Some(bmsg) = blocked_msg {
+                                    return ToolExecOutput {
+                                        content: bmsg,
+                                        is_error: true,
+                                        is_host_tool: name.starts_with("omni_"),
+                                        duration_ms: 0,
+                                    };
+                                }
                                 if let Some(h) = pre_handle {
                                     if let Ok(pre_out) = h.await {
                                         return pre_out;
@@ -1527,7 +2214,38 @@ impl NativeSuperEngine {
                                 arguments: parsed.as_ref().cloned().unwrap_or_else(|_| json!({})),
                             });
                         }
-                        let out = if let Some(h) = spec_map.remove(&idx) {
+                        let pre_hook = self
+                            .hooks
+                            .dispatch(
+                                HookEvent::PreToolUse,
+                                Some(&tc.name),
+                                json!({
+                                    "toolName": tc.name,
+                                    "arguments": parsed.as_ref().cloned().unwrap_or_else(|_| json!({}))
+                                }),
+                            )
+                            .await;
+                        let mut pre_handle = spec_map.remove(&idx);
+                        let out = if pre_hook.blocked {
+                            if let Some(h) = pre_handle.take() {
+                                h.abort();
+                            }
+                            ToolExecOutput {
+                                content: format!(
+                                    "Error: Hook blocked '{}': {}",
+                                    tc.name,
+                                    pre_hook.block_reason.unwrap_or_else(|| "exit 2".into())
+                                ),
+                                is_error: true,
+                                is_host_tool: tc.name.starts_with("omni_"),
+                                duration_ms: 0,
+                            }
+                        } else if let Some(rev) = pre_hook.revised_input {
+                            if let Some(h) = pre_handle.take() {
+                                h.abort();
+                            }
+                            self.tool_runtime.execute(&tc.name, &rev).await
+                        } else if let Some(h) = pre_handle {
                             match h.await {
                                 Ok(pre_out) => pre_out,
                                 Err(_) => match parsed {
@@ -1593,8 +2311,39 @@ impl NativeSuperEngine {
                 let target_path = extract_tool_target_path(&tc.name, &arg_val);
 
                 // Update ExecutionProgressState for Runtime Self-Verify Gate, Regression Detector,
-                // Anti-Termination-Lag, & ACE Playbook (covering BOTH shell AND edit/patch errors!)
-                let mut tool_text = out.content;
+                // Anti-Termination-Lag, & ACE Playbook + RTK stdout noise compression + >20KB spill.
+                let mut tool_text = if out.content.len() >= 1_800 && tc.name != "read_file" {
+                    let cmd_label = arg_val
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(tc.name.as_str());
+                    let exit_opt = if tc.name == "shell" {
+                        parse_shell_exit_code(&out.content)
+                    } else {
+                        None
+                    };
+                    let spill_dir = std::env::temp_dir().join("omnia_tool_spills");
+                    let rtk =
+                        compress_text_output(cmd_label, &out.content, exit_opt, Some(&spill_dir));
+                    if rtk.was_compressed {
+                        self.total_rtk_compressions += 1;
+                    }
+                    if rtk.spilled {
+                        self.total_rtk_spills += 1;
+                    }
+                    rtk.content
+                } else {
+                    if tc.name != "read_file"
+                        && (out.content.contains("\n... [repeated ")
+                            || out.content.contains("[rtk:"))
+                    {
+                        self.total_rtk_compressions += 1;
+                        if out.content.contains("[rtk: raw log spilled ->") {
+                            self.total_rtk_spills += 1;
+                        }
+                    }
+                    out.content
+                };
                 if tool_text.contains("[Syntax Check")
                     || tool_text.contains("[Compiler Syntax Check FAILED]")
                 {
@@ -1752,6 +2501,23 @@ impl NativeSuperEngine {
                         duration_ms: out.duration_ms,
                     });
                 }
+                let _ = self
+                    .hooks
+                    .dispatch(
+                        if out.is_error {
+                            HookEvent::PostToolUseFailure
+                        } else {
+                            HookEvent::PostToolUse
+                        },
+                        Some(&tc.name),
+                        json!({
+                            "toolCallId": tc.id,
+                            "toolName": tc.name,
+                            "isError": out.is_error,
+                            "durationMs": out.duration_ms
+                        }),
+                    )
+                    .await;
 
                 if self.plugins.is_enabled("lakeview_compress") {
                     if let Some(nudge) = self.loop_guard.observe_with_output(
@@ -1902,6 +2668,14 @@ impl NativeSuperEngine {
             }
 
             self.plugins.run_after_turn(&mut hook_ctx);
+            let _ = self
+                .hooks
+                .dispatch(
+                    HookEvent::TurnEnd,
+                    None,
+                    json!({ "turn": cur_turn, "toolCalls": self.total_tool_calls }),
+                )
+                .await;
             if let Some(ref s) = sink {
                 s(HarnessStreamEvent::TurnEnd { turn: cur_turn });
             }
@@ -1911,6 +2685,19 @@ impl NativeSuperEngine {
         if self.plugins.is_enabled("merkle_index") {
             let _ = self.tool_runtime.graph_index.lock().unwrap().refresh();
         }
+        let _ = self
+            .hooks
+            .dispatch(
+                HookEvent::AgentEnd,
+                None,
+                json!({
+                    "status": status,
+                    "turns": prompt_turns,
+                    "toolCalls": self.total_tool_calls,
+                    "toolErrors": self.total_tool_errors
+                }),
+            )
+            .await;
         self.emit_live_telemetry(sink.as_ref(), prompt_output_tokens, prompt_gen_ms);
 
         let snap = self.cache_guard.snapshot();
@@ -1984,12 +2771,42 @@ impl NativeSuperEngine {
         });
     }
 
+    fn collect_instruction_epoch_sources(
+        &self,
+        injected_notes: &[String],
+    ) -> Vec<(String, Option<String>)> {
+        let mut sources = Vec::new();
+        if self.tool_runtime.context_bundle.workspace_trusted {
+            for name in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
+                let path = self.workspace_root.join(name);
+                if let Ok(raw) = std::fs::read_to_string(&path) {
+                    let trimmed = raw.trim();
+                    let capped: String = trimmed.chars().take(6_000).collect();
+                    sources.push((
+                        name.to_string(),
+                        if capped.is_empty() { None } else { Some(capped) },
+                    ));
+                } else {
+                    sources.push((name.to_string(), None));
+                }
+            }
+        }
+        if !injected_notes.is_empty() {
+            sources.push((
+                "turn_hook_notes".to_string(),
+                Some(injected_notes.join("\n")),
+            ));
+        }
+        sources
+    }
+
     async fn call_llm_streaming(
         &mut self,
         msg_id: &str,
         remaining: Duration,
         force_low_reasoning: bool,
         escalate_reasoning: bool,
+        force_no_tools: bool,
         sink: Option<&HarnessEventSink>,
     ) -> Result<TurnStreamResult> {
         let max_retries = if self.plugins.is_enabled("empty_thinking_recovery") {
@@ -2006,6 +2823,8 @@ impl NativeSuperEngine {
         let mut retries = 0u32;
         let mut compat_bounces = 0u32;
         let mut attempt = 0u32;
+        let mut unreachable_started_at: Option<Instant> = None;
+        let mut unreachable_attempt = 0u32;
 
         loop {
             if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
@@ -2017,6 +2836,8 @@ impl NativeSuperEngine {
             }
             let rem_now = rem_run.min(self.stream_budget.per_attempt_deadline);
 
+            let router_grant = self.try_reserve_router_slot(msg_id, attempt);
+            let t_attempt = Instant::now();
             let api_kind = self.active_wire_dialect();
             let force_fresh_socket = attempt > 0;
             let (header_to, first_delta_to, inter_chunk_to) =
@@ -2031,7 +2852,8 @@ impl NativeSuperEngine {
             let max_hedges = ((self.total_turns.max(1) as f64) * 0.05).ceil() as u32;
             let allow_hedge = self.stream_budget.enable_pre_ttft_hedge
                 && attempt == 0
-                && api_kind == "openai-completions"
+                && (api_kind == "openai-completions"
+                    || (api_kind == "openai-responses" && !self.should_use_responses_ws()))
                 && self.total_hedges_issued < max_hedges
                 && rem_now > self.stream_budget.pre_ttft_hedge_delay + Duration::from_millis(250);
 
@@ -2044,8 +2866,23 @@ impl NativeSuperEngine {
                 let hedge_failed = AtomicBool::new(false);
                 let (res, hedge_won) = {
                     let primary_fut = async {
-                        let r = self
-                            .stream_openai_turn(
+                        let r = if api_kind == "openai-responses" {
+                            self.stream_openai_responses_turn(
+                                msg_id,
+                                rem_now,
+                                header_to,
+                                first_delta_to,
+                                inter_chunk_to,
+                                force_low_reasoning,
+                                escalate_reasoning,
+                                force_no_tools,
+                                force_fresh_socket,
+                                sink,
+                                Some((&winner, &notify, 1)),
+                            )
+                            .await
+                        } else {
+                            self.stream_openai_turn(
                                 msg_id,
                                 rem_now,
                                 header_to,
@@ -2054,11 +2891,13 @@ impl NativeSuperEngine {
                                 include_stream_options,
                                 force_low_reasoning,
                                 escalate_reasoning,
+                                force_no_tools,
                                 force_fresh_socket,
                                 sink,
                                 Some((&winner, &notify, 1)),
                             )
-                            .await;
+                            .await
+                        };
                         if r.is_err() {
                             primary_failed.store(true, Ordering::Release);
                             if winner.load(Ordering::Acquire) == 2
@@ -2081,8 +2920,23 @@ impl NativeSuperEngine {
                             std::future::pending::<()>().await;
                         }
                         hedge_fired.store(true, Ordering::Release);
-                        let r = self
-                            .stream_openai_turn(
+                        let r = if api_kind == "openai-responses" {
+                            self.stream_openai_responses_turn(
+                                msg_id,
+                                rem_now.saturating_sub(hedge_delay),
+                                header_to,
+                                first_delta_to,
+                                inter_chunk_to,
+                                force_low_reasoning,
+                                escalate_reasoning,
+                                force_no_tools,
+                                true,
+                                sink,
+                                Some((&winner, &notify, 2)),
+                            )
+                            .await
+                        } else {
+                            self.stream_openai_turn(
                                 msg_id,
                                 rem_now.saturating_sub(hedge_delay),
                                 header_to,
@@ -2091,11 +2945,13 @@ impl NativeSuperEngine {
                                 include_stream_options,
                                 force_low_reasoning,
                                 escalate_reasoning,
+                                force_no_tools,
                                 true,
                                 sink,
                                 Some((&winner, &notify, 2)),
                             )
-                            .await;
+                            .await
+                        };
                         if r.is_err() {
                             hedge_failed.store(true, Ordering::Release);
                             if winner.load(Ordering::Acquire) == 1
@@ -2132,13 +2988,16 @@ impl NativeSuperEngine {
                             header_to,
                             first_delta_to,
                             inter_chunk_to,
+                            force_low_reasoning,
+                            escalate_reasoning,
+                            force_no_tools,
                             force_fresh_socket,
                             sink,
                         )
                         .await
                     }
                     "openai-responses" => {
-                        self.stream_openai_responses_turn(
+                        self.stream_openai_responses_ws_or_http_turn(
                             msg_id,
                             rem_now,
                             header_to,
@@ -2146,6 +3005,7 @@ impl NativeSuperEngine {
                             inter_chunk_to,
                             force_low_reasoning,
                             escalate_reasoning,
+                            force_no_tools,
                             force_fresh_socket,
                             sink,
                         )
@@ -2158,6 +3018,8 @@ impl NativeSuperEngine {
                             header_to,
                             first_delta_to,
                             inter_chunk_to,
+                            force_low_reasoning,
+                            escalate_reasoning,
                             force_fresh_socket,
                             sink,
                         )
@@ -2173,6 +3035,7 @@ impl NativeSuperEngine {
                             include_stream_options,
                             force_low_reasoning,
                             escalate_reasoning,
+                            force_no_tools,
                             force_fresh_socket,
                             sink,
                             None,
@@ -2182,116 +3045,278 @@ impl NativeSuperEngine {
                 }
             };
 
+            let attempt_latency_ms = t_attempt.elapsed().as_millis() as f64;
             match attempt_res {
                 Ok(mut r) => {
+                    self.reconcile_router_slot(
+                        router_grant,
+                        true,
+                        AcceptanceState::Accepted,
+                        None,
+                        attempt_latency_ms,
+                        None,
+                        Some(&r.usage),
+                        "ok",
+                    );
                     r.http_retries = retries;
                     return Ok(r);
                 }
-                Err(StreamTurnError::EndpointUnsupported(detail))
-                    if api_kind == "anthropic-messages" && !self.anthropic_fallback_to_openai =>
-                {
-                    tracing::warn!(
-                        "Anthropic /v1/messages unsupported ({detail}); seamlessly falling back to /v1/chat/completions"
-                    );
-                    self.anthropic_fallback_to_openai = true;
-                    compat_bounces += 1;
-                    continue;
-                }
-                Err(StreamTurnError::EndpointUnsupported(detail))
-                    if api_kind == "openai-responses" && !self.responses_fallback_to_chat =>
-                {
-                    tracing::warn!(
-                        "OpenAI /v1/responses unsupported ({detail}); falling back to /v1/chat/completions"
-                    );
-                    self.responses_fallback_to_chat = true;
-                    compat_bounces += 1;
-                    continue;
-                }
-                Err(StreamTurnError::BadStreamOptions)
-                    if include_stream_options && compat_bounces < 4 =>
-                {
-                    include_stream_options = false;
-                    compat_bounces += 1;
-                    continue;
-                }
-                Err(StreamTurnError::BadReasoningEcho)
-                    if self.supports_reasoning_echo && compat_bounces < 4 =>
-                {
-                    self.supports_reasoning_echo = false;
-                    compat_bounces += 1;
-                    continue;
-                }
-                Err(StreamTurnError::BadPromptCacheKey)
-                    if self.supports_prompt_cache_key && compat_bounces < 4 =>
-                {
-                    self.supports_prompt_cache_key = false;
-                    compat_bounces += 1;
-                    continue;
-                }
-                Err(StreamTurnError::Retryable {
-                    status,
-                    retry_after_secs,
-                    kind,
-                    detail,
-                }) if attempt + 1 < max_attempts => {
-                    let rem_after = run_deadline.saturating_duration_since(Instant::now());
-                    if rem_after <= Duration::from_millis(500) {
-                        bail!("Timed out after retryable error: {detail}");
-                    }
-                    retries += 1;
-                    self.total_http_retries += 1;
-                    match kind {
-                        RetryKind::HeaderTimeout | RetryKind::ChunkStall => {
-                            self.total_stall_retries += 1;
-                        }
-                        RetryKind::TruncatedStream => {
-                            self.total_truncated_stream_retries += 1;
-                        }
-                        RetryKind::HttpStatus | RetryKind::Transport => {}
-                    }
-
-                    let base = self.stream_budget.retry_base_backoff_ms;
-                    let exp_ms = (base << attempt.min(3)).min(8_000);
-                    let jitter_ms = if base >= 200 {
-                        (Utc::now().timestamp_subsec_millis() as u64 % 250) + 50
-                    } else {
-                        0
+                Err(err) => {
+                    let is_non_claude_auto = api_kind == "anthropic-messages"
+                        && self.wire_api_mode == WireApiMode::Auto
+                        && !self
+                            .endpoint
+                            .model_id
+                            .to_ascii_lowercase()
+                            .contains("claude");
+                    let err_status_u16 = match &err {
+                        StreamTurnError::Retryable { status: Some(s), .. } => s.as_u16(),
+                        StreamTurnError::EndpointUnsupported(_) => 404,
+                        _ => 0,
                     };
-                    let wait_ms = retry_after_secs
-                        .map(|s| (s.min(20) * 1000).max(200))
-                        .unwrap_or(exp_ms + jitter_ms)
-                        .min(rem_after.as_millis().saturating_sub(250) as u64);
-
-                    tracing::warn!(
-                        "Retryable LLM error {:?} (status={:?}, attempt {}/{}): {}; backing off {}ms with fresh socket",
-                        kind,
-                        status,
-                        attempt + 1,
-                        max_attempts,
-                        detail,
-                        wait_ms
+                    let err_detail = match &err {
+                        StreamTurnError::EndpointUnsupported(d)
+                        | StreamTurnError::Retryable { detail: d, .. }
+                        | StreamTurnError::Fatal(d) => d.as_str(),
+                        StreamTurnError::BadStreamOptions => "provider rejected stream_options",
+                        StreamTurnError::BadReasoningEcho => "provider rejected reasoning_content",
+                        StreamTurnError::BadPromptCacheKey => "provider rejected prompt_cache_key",
+                    };
+                    let scope = classify_upstream_failure(err_status_u16, err_detail);
+                    self.reconcile_router_slot(
+                        router_grant,
+                        false,
+                        if err_status_u16 == 0 {
+                            AcceptanceState::NotSent
+                        } else {
+                            AcceptanceState::Accepted
+                        },
+                        Some(scope),
+                        attempt_latency_ms,
+                        match &err {
+                            StreamTurnError::Retryable {
+                                retry_after_secs: Some(s),
+                                ..
+                            } => Some((*s as i64) * 1000),
+                            _ => None,
+                        },
+                        None,
+                        err_detail,
                     );
-                    if wait_ms > 0 {
-                        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+
+                    match err {
+                        StreamTurnError::EndpointUnsupported(detail)
+                            if api_kind == "anthropic-messages"
+                                && !self.anthropic_fallback_to_openai =>
+                        {
+                            tracing::warn!(
+                                "Anthropic /v1/messages unsupported ({detail}); seamlessly falling back to /v1/chat/completions"
+                            );
+                            self.anthropic_fallback_to_openai = true;
+                            compat_bounces += 1;
+                            continue;
+                        }
+                        StreamTurnError::Retryable {
+                            status,
+                            kind,
+                            detail,
+                            ..
+                        } if is_non_claude_auto
+                            && !self.anthropic_fallback_to_openai
+                            && matches!(
+                                kind,
+                                RetryKind::TruncatedStream | RetryKind::HttpStatus
+                            )
+                            && status.is_none_or(|st| st.as_u16() >= 400) =>
+                        {
+                            tracing::warn!(
+                                "Non-Claude /v1/messages failed ({detail}); falling back to /v1/chat/completions"
+                            );
+                            self.anthropic_fallback_to_openai = true;
+                            compat_bounces += 1;
+                            continue;
+                        }
+                        StreamTurnError::EndpointUnsupported(detail)
+                            if api_kind == "openai-responses" && !self.responses_fallback_to_chat =>
+                        {
+                            tracing::warn!(
+                                "OpenAI /v1/responses unsupported ({detail}); falling back to /v1/chat/completions"
+                            );
+                            self.responses_fallback_to_chat = true;
+                            compat_bounces += 1;
+                            continue;
+                        }
+                        StreamTurnError::BadStreamOptions
+                            if include_stream_options && compat_bounces < 4 =>
+                        {
+                            include_stream_options = false;
+                            compat_bounces += 1;
+                            continue;
+                        }
+                        StreamTurnError::BadReasoningEcho
+                            if self.supports_reasoning_echo && compat_bounces < 4 =>
+                        {
+                            self.supports_reasoning_echo = false;
+                            compat_bounces += 1;
+                            continue;
+                        }
+                        StreamTurnError::BadPromptCacheKey
+                            if self.supports_prompt_cache_key && compat_bounces < 4 =>
+                        {
+                            self.supports_prompt_cache_key = false;
+                            compat_bounces += 1;
+                            continue;
+                        }
+                        StreamTurnError::Retryable {
+                            kind: RetryKind::Transport,
+                            detail,
+                            ..
+                        } if is_unreachable_network_error(&detail) => {
+                            let start = *unreachable_started_at.get_or_insert_with(Instant::now);
+                            let rem_after = run_deadline.saturating_duration_since(Instant::now());
+                            if start.elapsed() < UNREACHABLE_RETRY_WINDOW
+                                && rem_after > Duration::from_millis(500)
+                            {
+                                unreachable_attempt += 1;
+                                retries += 1;
+                                self.total_http_retries += 1;
+                                self.total_unreachable_retries += 1;
+                                let wait_ms = compute_unreachable_backoff_ms(unreachable_attempt)
+                                    .min(rem_after.as_millis().saturating_sub(250) as u64);
+                                tracing::warn!(
+                                    "Unreachable network retry #{unreachable_attempt} (separate 1h budget): {detail}; sleeping {wait_ms}ms"
+                                );
+                                if wait_ms > 0 {
+                                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                                }
+                                continue;
+                            }
+                            bail!("{detail}");
+                        }
+                        StreamTurnError::Retryable {
+                            status,
+                            retry_after_secs,
+                            kind,
+                            detail,
+                        } if attempt + 1 < max_attempts => {
+                            let rem_after = run_deadline.saturating_duration_since(Instant::now());
+                            if rem_after <= Duration::from_millis(500) {
+                                bail!("Timed out after retryable error: {detail}");
+                            }
+                            retries += 1;
+                            self.total_http_retries += 1;
+                            match kind {
+                                RetryKind::HeaderTimeout | RetryKind::ChunkStall => {
+                                    self.total_stall_retries += 1;
+                                }
+                                RetryKind::TruncatedStream => {
+                                    self.total_truncated_stream_retries += 1;
+                                }
+                                RetryKind::HttpStatus | RetryKind::Transport => {}
+                            }
+
+                            let base = self.stream_budget.retry_base_backoff_ms;
+                            let exp_ms = (base << attempt.min(3)).min(8_000);
+                            let jitter_ms = if base >= 200 {
+                                (Utc::now().timestamp_subsec_millis() as u64 % 250) + 50
+                            } else {
+                                0
+                            };
+                            let wait_ms = retry_after_secs
+                                .map(|s| (s.min(20) * 1000).max(200))
+                                .unwrap_or(exp_ms + jitter_ms)
+                                .min(rem_after.as_millis().saturating_sub(250) as u64);
+
+                            tracing::warn!(
+                                "Retryable LLM error {:?} (status={:?}, attempt {}/{}): {}; backing off {}ms with fresh socket",
+                                kind,
+                                status,
+                                attempt + 1,
+                                max_attempts,
+                                detail,
+                                wait_ms
+                            );
+                            if wait_ms > 0 {
+                                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                            }
+                            attempt += 1;
+                        }
+                        StreamTurnError::Retryable { detail, .. }
+                        | StreamTurnError::Fatal(detail)
+                        | StreamTurnError::EndpointUnsupported(detail) => {
+                            bail!("{detail}");
+                        }
+                        StreamTurnError::BadStreamOptions => {
+                            bail!("provider rejected stream_options");
+                        }
+                        StreamTurnError::BadReasoningEcho => {
+                            bail!("provider rejected reasoning_content");
+                        }
+                        StreamTurnError::BadPromptCacheKey => {
+                            bail!("provider rejected prompt_cache_key");
+                        }
                     }
-                    attempt += 1;
-                }
-                Err(StreamTurnError::Retryable { detail, .. })
-                | Err(StreamTurnError::Fatal(detail))
-                | Err(StreamTurnError::EndpointUnsupported(detail)) => {
-                    bail!("{detail}");
-                }
-                Err(StreamTurnError::BadStreamOptions) => {
-                    bail!("provider rejected stream_options");
-                }
-                Err(StreamTurnError::BadReasoningEcho) => {
-                    bail!("provider rejected reasoning_content");
-                }
-                Err(StreamTurnError::BadPromptCacheKey) => {
-                    bail!("provider rejected prompt_cache_key");
                 }
             }
         }
+    }
+
+    fn try_reserve_router_slot(&self, msg_id: &str, attempt: u32) -> Option<(String, u64)> {
+        let router = self.dynamic_router.as_ref()?;
+        Self::register_endpoint_candidate(router, &self.endpoint);
+        let cid = format!("{}::{}", self.endpoint.provider_id, self.endpoint.model_id);
+        let mut policy = RouteRequestPolicy::default();
+        policy.request_id = format!("{msg_id}:a{attempt}");
+        policy.idempotency_key = format!("{}:{msg_id}:a{attempt}", self.session_key);
+        policy.allow_unknown_quota_without_emergency = true;
+        policy.preferred_candidate_ids = vec![cid];
+        policy.session_affinity_key = Some(self.session_key.clone());
+        if let Ok(res) = router.decide_and_reserve(&policy) {
+            if let Some(grant) = res.reservation {
+                let _ = router.mark_dispatched(&grant.reservation_id, grant.fencing_token);
+                return Some((grant.reservation_id, grant.fencing_token));
+            }
+        }
+        None
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile_router_slot(
+        &self,
+        grant_opt: Option<(String, u64)>,
+        success: bool,
+        acceptance: AcceptanceState,
+        scope: Option<UpstreamFailureScope>,
+        latency_ms: f64,
+        retry_after_ms: Option<i64>,
+        usage: Option<&TurnLlmUsage>,
+        note: &str,
+    ) {
+        let (Some(router), Some((reservation_id, fencing_token))) =
+            (self.dynamic_router.as_ref(), grant_opt)
+        else {
+            return;
+        };
+        let mut report = OutcomeReport::default();
+        report.reservation_id = reservation_id;
+        report.fencing_token = fencing_token;
+        report.success = success;
+        report.acceptance = acceptance;
+        report.latency_ms = Some(latency_ms);
+        report.retry_after_ms = retry_after_ms;
+        report.diagnostic_note = note.chars().take(240).collect();
+        if let Some(u) = usage {
+            if u.saw_usage {
+                report.actual_input_tokens = Some(u.uncached_input + u.cache_read + u.cache_write);
+                report.actual_output_tokens = Some(u.output);
+            }
+        }
+        if let Some(sc) = scope {
+            report.is_request_scoped = matches!(sc, UpstreamFailureScope::RequestScoped);
+            report.model_entitlement_error =
+                matches!(sc, UpstreamFailureScope::ModelEntitlementLock);
+        }
+        let _ = router.reconcile_outcome(report);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2305,6 +3330,7 @@ impl NativeSuperEngine {
         include_stream_options: bool,
         force_low_reasoning: bool,
         escalate_reasoning: bool,
+        force_no_tools: bool,
         force_fresh_socket: bool,
         sink: Option<&HarnessEventSink>,
         hedge_slot: Option<(&AtomicU8, &Notify, u8)>,
@@ -2325,11 +3351,13 @@ impl NativeSuperEngine {
             .messages
             .iter()
             .map(|m| {
-                message_to_openai_json(
+                message_to_openai_json_for_target(
                     m,
                     self.active_prompt_start_turn,
                     echo_reasoning_text,
                     is_gemini,
+                    &self.endpoint.provider_id,
+                    &self.endpoint.model_id,
                 )
             })
             .collect();
@@ -2341,7 +3369,7 @@ impl NativeSuperEngine {
         });
         if !self.canonical_tools.is_empty() {
             body["tools"] = Value::Array(self.canonical_tools.clone());
-            body["tool_choice"] = Value::String("auto".into());
+            body["tool_choice"] = Value::String(if force_no_tools { "none" } else { "auto" }.into());
         }
         if include_stream_options {
             body["stream_options"] = json!({ "include_usage": true });
@@ -2352,24 +3380,30 @@ impl NativeSuperEngine {
                     && m.turn_index >= self.active_prompt_start_turn
                     && m.reasoning.as_deref().is_some_and(|r| !r.is_empty())
             });
-        // SOTA v4 Fix #3: Send session-stable `prompt_cache_key` on ALL model families (not just gpt-*)!
+        // Send session-stable `prompt_cache_key` on ALL model families.
         let sent_prompt_cache_key = self.supports_prompt_cache_key;
         if sent_prompt_cache_key {
             body["prompt_cache_key"] = Value::String(self.session_key.clone());
         }
 
-        // SOTA v4 Fix #2: Adaptive reasoning effort cap (default "medium" for Gemini coding turns,
-        // escalating to "high" on failure/retry; "low" on recovery!).
-        if force_low_reasoning {
+        if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning) {
+            apply_reasoning_effort_wire(
+                &mut body,
+                "openai-completions",
+                &self.endpoint.model_id,
+                effort,
+                Some(self.endpoint.max_tokens),
+            );
+        } else if force_low_reasoning {
             body["reasoning_effort"] = Value::String("low".into());
         } else if let Some(ref tl) = self.thinking_level {
             let low = tl.trim().to_ascii_lowercase();
-            if matches!(low.as_str(), "minimal" | "low" | "medium" | "high") {
+            if matches!(
+                low.as_str(),
+                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+            ) {
                 body["reasoning_effort"] = Value::String(low);
             }
-        } else if is_gemini {
-            let effort = if escalate_reasoning { "high" } else { "medium" };
-            body["reasoning_effort"] = Value::String(effort.into());
         }
 
         let client = if force_fresh_socket {
@@ -2391,8 +3425,7 @@ impl NativeSuperEngine {
         let t_req = Instant::now();
         let turn_deadline = t_req + total_remaining;
         let send_res = if let Some((winner, notify, slot)) = hedge_slot {
-            if let Some(w) = Some(winner.load(Ordering::Acquire)).filter(|&w| w != 0 && w != slot) {
-                let _ = w;
+            if winner.load(Ordering::Acquire) != 0 && winner.load(Ordering::Acquire) != slot {
                 return Err(StreamTurnError::Fatal("Pre-TTFT hedge superseded".into()));
             }
             tokio::select! {
@@ -2488,7 +3521,9 @@ impl NativeSuperEngine {
         let mut turn_ttft_ms: Option<u64> = None;
         let mut first_delta_at: Option<Instant> = None;
         let mut last_delta_at: Option<Instant> = None;
+        let mut last_wire_activity_at: Option<Instant> = None;
         let mut active_decode_ms = 0u64;
+        let mut raw_sse_log: Vec<u8> = Vec::new();
 
         let mut pending_text_delta = String::new();
         let mut pending_think_delta = String::new();
@@ -2499,14 +3534,15 @@ impl NativeSuperEngine {
         let mut line_buf = Vec::<u8>::new();
 
         'sse: loop {
-            // SOTA v4 Critical Fix #1: Token-Progress SSE Watchdog (NEVER reset on `: ping`!)
-            let chunk_budget = compute_token_progress_wait(
+            let chunk_budget = compute_token_progress_wait_with_phase(
                 stream_started_at,
                 last_delta_at,
+                last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
                 "OpenAI SSE",
+                text.is_empty() && tool_accum.is_empty(),
             )?;
 
             let next_res = if first_delta_at.is_none() {
@@ -2569,6 +3605,13 @@ impl NativeSuperEngine {
                 kind: RetryKind::Transport,
                 detail: format!("SSE stream read error: {e}"),
             })?;
+            if !chunk.is_empty() {
+                last_wire_activity_at = Some(Instant::now());
+                if raw_sse_log.len() < 256 * 1024 {
+                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                    raw_sse_log.extend_from_slice(&chunk[..take]);
+                }
+            }
             line_buf.extend_from_slice(&chunk);
 
             let mut cursor = 0usize;
@@ -2591,6 +3634,18 @@ impl NativeSuperEngine {
                 let Ok(val) = serde_json::from_str::<Value>(data) else {
                     continue;
                 };
+                if let Some(err_obj) = val.get("error").filter(|v| !v.is_null()) {
+                    let msg = err_obj
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("smuggled OpenAI SSE error");
+                    return Err(StreamTurnError::Retryable {
+                        status: None,
+                        retry_after_secs: None,
+                        kind: RetryKind::TruncatedStream,
+                        detail: crate::sanitizer::redact_secrets(msg),
+                    });
+                }
 
                 if let Some(u) = val.get("usage").filter(|u| u.is_object()) {
                     parse_openai_usage(u, &mut usage);
@@ -2744,13 +3799,25 @@ impl NativeSuperEngine {
             entry.handle.abort();
         }
 
-        // Strict Stream-Completion Integrity Proof with SAP Partial-JSON Recovery!
+        // Strict Stream-Completion Integrity Proof with SAP Partial-JSON Recovery + Pre-Commit Gate!
         let has_unrecoverable_tool_json = finalized_tools.iter().any(|tc| {
             let trimmed = tc.arguments.trim();
             !trimmed.is_empty()
                 && serde_json::from_str::<Value>(trimmed).is_err()
                 && repair_tool_json(trimmed, self.tool_schemas_by_name.get(&tc.name)).is_err()
         });
+        let nothing_emitted = text.is_empty() && reasoning.is_empty() && finalized_tools.is_empty();
+        if nothing_emitted {
+            let verdict = inspect_sse_pre_commit(&raw_sse_log);
+            if verdict.should_failover_before_commit() {
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::TruncatedStream,
+                    detail: format!("Pre-commit OpenAI SSE gate rejected empty stream: {verdict:?}"),
+                });
+            }
+        }
         if has_unrecoverable_tool_json || (!saw_done && finish_reason.is_none()) {
             for (_, h) in speculative_results {
                 h.abort();
@@ -2797,6 +3864,8 @@ impl NativeSuperEngine {
             reasoning,
             reasoning_signature: thought_signature,
             redacted_thinking: Vec::new(),
+            reasoning_encrypted_items: Vec::new(),
+            response_id: None,
             tool_calls: finalized_tools,
             speculative_results,
             finish_reason,
@@ -2808,38 +3877,80 @@ impl NativeSuperEngine {
         })
     }
 
-    /// Native OpenAI `/v1/responses` SSE streaming dialect (`--wire-api responses`).
-    #[allow(clippy::too_many_arguments)]
-    async fn stream_openai_responses_turn(
-        &self,
-        msg_id: &str,
-        total_remaining: Duration,
-        header_timeout: Duration,
-        first_delta_timeout: Duration,
-        inter_chunk_timeout: Duration,
-        force_low_reasoning: bool,
-        escalate_reasoning: bool,
-        force_fresh_socket: bool,
-        sink: Option<&HarnessEventSink>,
-    ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
-        let base = self.endpoint.base_url.trim_end_matches('/');
-        let url = if base.ends_with("/responses") {
-            base.to_string()
-        } else if base.ends_with("/chat/completions") {
-            format!("{}/responses", base.trim_end_matches("/chat/completions"))
-        } else {
-            format!("{base}/responses")
-        };
+    fn build_openai_responses_input_items(&self) -> Vec<Value> {
+        self.build_openai_responses_input_items_from_slice(&self.messages)
+    }
 
-        let mut input_items: Vec<Value> = Vec::new();
-        for m in &self.messages {
+    fn build_openai_responses_input_items_from_slice(&self, msgs: &[HarnessMessage]) -> Vec<Value> {
+        let mut input_items: Vec<Value> = Vec::with_capacity(msgs.len());
+        for m in msgs {
             match m.role.as_str() {
                 "system" => {}
-                "user" => input_items.push(json!({
-                    "role": "user",
-                    "content": m.content
-                })),
+                "user" => {
+                    if m.content_blocks.is_empty() {
+                        input_items.push(json!({
+                            "role": "user",
+                            "content": m.content
+                        }));
+                    } else {
+                        let mut parts: Vec<Value> = Vec::new();
+                        if !m.content.is_empty() {
+                            parts.push(json!({ "type": "input_text", "text": m.content }));
+                        }
+                        for blk in &m.content_blocks {
+                            match blk {
+                                ContentBlock::Text { text } => {
+                                    if !text.is_empty() {
+                                        parts.push(json!({ "type": "input_text", "text": text }));
+                                    }
+                                }
+                                ContentBlock::ImageBase64 {
+                                    media_type,
+                                    data_base64,
+                                    detail,
+                                    ..
+                                } => {
+                                    let mut obj = json!({
+                                        "type": "input_image",
+                                        "image_url": format!("data:{media_type};base64,{data_base64}")
+                                    });
+                                    if let Some(d) = detail {
+                                        obj["detail"] = Value::String(d.clone());
+                                    }
+                                    parts.push(obj);
+                                }
+                                ContentBlock::ImageUrl { url, detail } => {
+                                    let mut obj = json!({
+                                        "type": "input_image",
+                                        "image_url": url
+                                    });
+                                    if let Some(d) = detail {
+                                        obj["detail"] = Value::String(d.clone());
+                                    }
+                                    parts.push(obj);
+                                }
+                                ContentBlock::FileUri { uri, media_type, .. } => {
+                                    parts.push(json!({
+                                        "type": "input_text",
+                                        "text": format!("[file {media_type}: {uri}]")
+                                    }));
+                                }
+                            }
+                        }
+                        input_items.push(json!({ "role": "user", "content": parts }));
+                    }
+                }
                 "assistant" => {
+                    if !m.reasoning_encrypted_items.is_empty()
+                        && m.can_replay_cryptographic_proof(
+                            &self.endpoint.provider_id,
+                            &self.endpoint.model_id,
+                        )
+                    {
+                        for item in &m.reasoning_encrypted_items {
+                            input_items.push(item.clone());
+                        }
+                    }
                     if !m.content.is_empty() {
                         input_items.push(json!({
                             "role": "assistant",
@@ -2863,9 +3974,11 @@ impl NativeSuperEngine {
                 _ => {}
             }
         }
+        input_items
+    }
 
-        let resp_tools: Vec<Value> = self
-            .canonical_tools
+    fn build_openai_responses_tools(&self) -> Vec<Value> {
+        self.canonical_tools
             .iter()
             .map(|t| {
                 json!({
@@ -2875,7 +3988,474 @@ impl NativeSuperEngine {
                     "parameters": t["function"]["parameters"]
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    fn build_responses_name_maps(&self) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+        let mut short_to_full = BTreeMap::new();
+        let mut known_full = BTreeMap::new();
+        for name in self.tool_schemas_by_name.keys() {
+            known_full.insert(name.clone(), name.clone());
+            if name.len() > 64 {
+                let mut short: String = name.chars().take(64).collect();
+                short_to_full.insert(std::mem::take(&mut short), name.clone());
+            }
+        }
+        (short_to_full, known_full)
+    }
+
+    fn apply_openai_responses_fields(
+        &self,
+        body: &mut Value,
+        resp_tools: Vec<Value>,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
+        force_no_tools: bool,
+    ) {
+        if !resp_tools.is_empty() {
+            body["tools"] = Value::Array(resp_tools);
+            if force_no_tools {
+                body["tool_choice"] = Value::String("none".into());
+            }
+        }
+        if self.supports_prompt_cache_key {
+            body["prompt_cache_key"] = Value::String(self.session_key.clone());
+        }
+        body["include"] = json!(["reasoning.encrypted_content"]);
+        body["parallel_tool_calls"] = json!(true);
+        if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning) {
+            apply_reasoning_effort_wire(
+                body,
+                "openai-responses",
+                &self.endpoint.model_id,
+                effort,
+                Some(self.endpoint.max_tokens),
+            );
+        } else if force_low_reasoning {
+            body["reasoning"] = json!({ "effort": "low" });
+        } else if escalate_reasoning {
+            body["reasoning"] = json!({ "effort": "high" });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_openai_responses_ws_or_http_turn(
+        &mut self,
+        msg_id: &str,
+        total_remaining: Duration,
+        header_timeout: Duration,
+        first_delta_timeout: Duration,
+        inter_chunk_timeout: Duration,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
+        force_no_tools: bool,
+        force_fresh_socket: bool,
+        sink: Option<&HarnessEventSink>,
+    ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
+        let mut http_fresh_socket = force_fresh_socket;
+        if self.should_use_responses_ws() {
+            match self
+                .stream_openai_responses_ws_turn(
+                    msg_id,
+                    total_remaining,
+                    header_timeout,
+                    first_delta_timeout,
+                    inter_chunk_timeout,
+                    force_low_reasoning,
+                    escalate_reasoning,
+                    force_no_tools,
+                    force_fresh_socket,
+                    sink,
+                )
+                .await
+            {
+                Ok(res) => return Ok(res),
+                Err(StreamTurnError::Fatal(msg)) => return Err(StreamTurnError::Fatal(msg)),
+                Err(StreamTurnError::EndpointUnsupported(reason)) => {
+                    tracing::info!(
+                        "Responses WebSocket continuation falling back to HTTP SSE: {reason}"
+                    );
+                    http_fresh_socket = true;
+                }
+                Err(_other) if !self.ws_state.disabled => {
+                    tracing::warn!(
+                        "Responses WebSocket turn failed; degrading cleanly to fresh HTTP SSE socket"
+                    );
+                    self.ws_state.reset_connection();
+                    http_fresh_socket = true;
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        self.stream_openai_responses_turn(
+            msg_id,
+            total_remaining,
+            header_timeout,
+            first_delta_timeout,
+            inter_chunk_timeout,
+            force_low_reasoning,
+            escalate_reasoning,
+            force_no_tools,
+            http_fresh_socket,
+            sink,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_openai_responses_ws_turn(
+        &mut self,
+        msg_id: &str,
+        total_remaining: Duration,
+        header_timeout: Duration,
+        first_delta_timeout: Duration,
+        inter_chunk_timeout: Duration,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
+        force_no_tools: bool,
+        force_fresh_socket: bool,
+        sink: Option<&HarnessEventSink>,
+    ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
+        let ws_url = openai_responses_ws_url(&self.endpoint.base_url);
+        let t_req = Instant::now();
+        let turn_deadline = t_req + total_remaining;
+        let instructions_hash = blake3_hex(self.system_prompt.as_bytes());
+        let resp_tools = self.build_openai_responses_tools();
+        let tools_json = serde_json::to_string(&resp_tools).unwrap_or_default();
+        let tools_hash = blake3_hex(tools_json.as_bytes());
+        let input_items = self.build_openai_responses_input_items();
+        let (short_to_full, known_full) = self.build_responses_name_maps();
+
+        if force_fresh_socket
+            || self.ws_state.endpoint_url != ws_url
+            || self
+                .ws_state
+                .connected_at
+                .is_some_and(|ts| ts.elapsed() >= WS_CONTINUATION_ROTATE_AFTER)
+        {
+            self.ws_state.reset_connection();
+        }
+
+        let mut ws_retry_full = false;
+        let mut reconnected_on_stale = false;
+        loop {
+            let reused_existing_conn = self.ws_state.stream.is_some();
+            if self.ws_state.stream.is_none() {
+                let mut req = ws_url.as_str().into_client_request().map_err(|e| {
+                    self.ws_state.record_failure(true);
+                    self.total_ws_fallbacks += 1;
+                    StreamTurnError::EndpointUnsupported(format!("Invalid WS URL '{ws_url}': {e}"))
+                })?;
+                req.headers_mut().insert(
+                    "openai-beta",
+                    HeaderValue::from_static("responses_websockets=2026-02-06"),
+                );
+                if self.endpoint.auth_header && !self.endpoint.api_key.is_empty() {
+                    if let Ok(val) =
+                        HeaderValue::from_str(&format!("Bearer {}", self.endpoint.api_key))
+                    {
+                        req.headers_mut().insert("authorization", val);
+                    }
+                }
+                if let Ok(val) = HeaderValue::from_str(&self.session_key) {
+                    req.headers_mut().insert("x-session-id", val);
+                }
+
+                let conn_res =
+                    tokio::time::timeout(header_timeout, tokio_tungstenite::connect_async(req))
+                        .await
+                        .map_err(|_| {
+                            self.ws_state.record_failure(false);
+                            self.total_ws_fallbacks += 1;
+                            StreamTurnError::EndpointUnsupported("WS connect timeout".into())
+                        })?;
+                let (ws_stream, _) = match conn_res {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = crate::sanitizer::redact_secrets(&format!("{e}"));
+                        let permanent = msg.contains("TLS")
+                            || msg.contains("HTTP status")
+                            || msg.contains("404")
+                            || msg.contains("426");
+                        self.ws_state.record_failure(permanent);
+                        self.total_ws_fallbacks += 1;
+                        return Err(StreamTurnError::EndpointUnsupported(format!(
+                            "WS handshake unavailable: {msg}"
+                        )));
+                    }
+                };
+                self.ws_state.stream = Some(ws_stream);
+                self.ws_state.connected_at = Some(Instant::now());
+                self.ws_state.endpoint_url = ws_url.clone();
+            }
+
+            let prev_len = self.ws_state.last_input_len;
+            let delta_start = if self
+                .messages
+                .get(prev_len)
+                .is_some_and(|m| m.role == "assistant")
+            {
+                prev_len + 1
+            } else {
+                prev_len
+            };
+            let prefix_ok = prev_len <= self.messages.len()
+                && self.ws_state.last_prefix_hash.as_deref()
+                    == Some(messages_prefix_hash(&self.messages[..prev_len]).as_str());
+            let can_continue = !ws_retry_full
+                && self.ws_state.last_response_id.is_some()
+                && self.ws_state.last_model.as_deref() == Some(self.endpoint.model_id.as_str())
+                && self.ws_state.last_instructions_hash.as_deref()
+                    == Some(instructions_hash.as_str())
+                && self.ws_state.last_tools_hash.as_deref() == Some(tools_hash.as_str())
+                && prefix_ok
+                && delta_start < self.messages.len()
+                && !self.messages[delta_start..]
+                    .iter()
+                    .any(|m| m.role == "assistant");
+
+            let mut payload = if can_continue {
+                json!({
+                    "type": "response.create",
+                    "model": self.endpoint.model_id,
+                    "previous_response_id": self.ws_state.last_response_id,
+                    "input": self.build_openai_responses_input_items_from_slice(&self.messages[delta_start..]),
+                    "store": false,
+                    "max_output_tokens": self.endpoint.max_tokens,
+                })
+            } else {
+                json!({
+                    "type": "response.create",
+                    "model": self.endpoint.model_id,
+                    "instructions": self.system_prompt,
+                    "input": input_items,
+                    "store": false,
+                    "max_output_tokens": self.endpoint.max_tokens,
+                })
+            };
+            self.apply_openai_responses_fields(
+                &mut payload,
+                resp_tools.clone(),
+                force_low_reasoning,
+                escalate_reasoning,
+                force_no_tools,
+            );
+
+            let mut ws = match self.ws_state.stream.take() {
+                Some(s) => s,
+                None => {
+                    self.ws_state.record_failure(false);
+                    self.total_ws_fallbacks += 1;
+                    return Err(StreamTurnError::EndpointUnsupported(
+                        "WS stream unavailable".into(),
+                    ));
+                }
+            };
+            let payload_txt = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+            if let Err(e) = ws.send(WsMessage::Text(payload_txt.into())).await {
+                if reused_existing_conn && !reconnected_on_stale {
+                    reconnected_on_stale = true;
+                    ws_retry_full = true;
+                    self.ws_state.reset_connection();
+                    continue;
+                }
+                self.ws_state.record_failure(false);
+                self.total_ws_fallbacks += 1;
+                return Err(StreamTurnError::EndpointUnsupported(format!(
+                    "WS send failed: {e}"
+                )));
+            }
+
+            let mut acc = ResponsesFrameState::new(t_req);
+            let mut spec_pool = SpeculativeTaskPool::new();
+            let stream_started_at = Instant::now();
+            let mut retry_kind: Option<&'static str> = None;
+            let mut saw_ws_close = false;
+            let mut saw_data_frame = false;
+
+            loop {
+                let chunk_budget = compute_token_progress_wait_with_phase(
+                    stream_started_at,
+                    acc.last_delta_at,
+                    acc.last_wire_activity_at,
+                    first_delta_timeout,
+                    inter_chunk_timeout,
+                    turn_deadline,
+                    "OpenAI Responses WS",
+                    acc.in_reasoning_only(),
+                )?;
+                let next_frame = tokio::time::timeout(chunk_budget, ws.next())
+                    .await
+                    .map_err(|_| {
+                        self.ws_state.record_failure(false);
+                        self.total_ws_fallbacks += 1;
+                        StreamTurnError::Retryable {
+                            status: None,
+                            retry_after_secs: None,
+                            kind: RetryKind::ChunkStall,
+                            detail: format!(
+                                "Responses WS stall timeout after {}ms",
+                                chunk_budget.as_millis()
+                            ),
+                        }
+                    })?;
+                let Some(msg_res) = next_frame else {
+                    if reused_existing_conn && !reconnected_on_stale && !saw_data_frame {
+                        reconnected_on_stale = true;
+                        retry_kind = Some("rotate");
+                    } else {
+                        saw_ws_close = true;
+                    }
+                    break;
+                };
+                if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
+                    return Err(StreamTurnError::Fatal("Aborted by user".into()));
+                }
+                let ws_msg = match msg_res {
+                    Ok(m) => m,
+                    Err(e) => {
+                        if reused_existing_conn && !reconnected_on_stale && !saw_data_frame {
+                            reconnected_on_stale = true;
+                            retry_kind = Some("rotate");
+                            break;
+                        }
+                        self.ws_state.record_failure(false);
+                        self.total_ws_fallbacks += 1;
+                        return Err(StreamTurnError::Retryable {
+                            status: None,
+                            retry_after_secs: None,
+                            kind: RetryKind::Transport,
+                            detail: format!("Responses WS error: {e}"),
+                        });
+                    }
+                };
+                acc.last_wire_activity_at = Some(Instant::now());
+                let raw_txt = match ws_msg {
+                    WsMessage::Text(txt) => {
+                        saw_data_frame = true;
+                        txt.to_string()
+                    }
+                    WsMessage::Binary(bin) => {
+                        saw_data_frame = true;
+                        String::from_utf8_lossy(&bin).into_owned()
+                    }
+                    WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+                    WsMessage::Close(_) => {
+                        if reused_existing_conn && !reconnected_on_stale && !saw_data_frame {
+                            reconnected_on_stale = true;
+                            retry_kind = Some("rotate");
+                        } else {
+                            saw_ws_close = true;
+                        }
+                        break;
+                    }
+                    _ => continue,
+                };
+                let Ok(val) = serde_json::from_str::<Value>(&raw_txt) else {
+                    continue;
+                };
+                match acc.process_event(
+                    &val,
+                    msg_id,
+                    &self.tool_runtime,
+                    &mut spec_pool,
+                    &short_to_full,
+                    &known_full,
+                    sink,
+                    None,
+                ) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(StreamTurnError::Retryable { detail, .. })
+                        if !ws_retry_full
+                            && (detail.contains("previous_response_not_found")
+                                || detail.contains("websocket_connection_limit_reached")) =>
+                    {
+                        retry_kind = Some(if detail.contains("websocket_connection_limit_reached") {
+                            "rotate"
+                        } else {
+                            "retry_full"
+                        });
+                        break;
+                    }
+                    Err(e) => {
+                        self.ws_state.record_failure(false);
+                        self.total_ws_fallbacks += 1;
+                        return Err(e);
+                    }
+                }
+            }
+
+            if let Some(rk) = retry_kind {
+                ws_retry_full = true;
+                if rk == "rotate" {
+                    self.ws_state.reset_connection();
+                } else {
+                    if !saw_ws_close {
+                        self.ws_state.stream = Some(ws);
+                    }
+                    self.ws_state.last_response_id = None;
+                }
+                continue;
+            }
+
+            if !acc.saw_completed && acc.finish_reason.is_none() {
+                self.ws_state.record_failure(false);
+                self.total_ws_fallbacks += 1;
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::TruncatedStream,
+                    detail: "Truncated Responses WS stream before response.completed".into(),
+                });
+            }
+
+            if !saw_ws_close {
+                self.ws_state.stream = Some(ws);
+            }
+
+            self.ws_state.consecutive_failures = 0;
+            self.ws_state.last_response_id = acc.response_id.clone();
+            self.ws_state.last_model = Some(self.endpoint.model_id.clone());
+            self.ws_state.last_instructions_hash = Some(instructions_hash);
+            self.ws_state.last_tools_hash = Some(tools_hash);
+            self.ws_state.last_prefix_hash = Some(messages_prefix_hash(&self.messages));
+            self.ws_state.last_input_len = self.messages.len();
+            self.total_ws_turns += 1;
+
+            return Ok(acc.finish(spec_pool));
+        }
+    }
+
+    /// Native OpenAI `/v1/responses` SSE streaming dialect (`--wire-api responses`).
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_openai_responses_turn(
+        &self,
+        msg_id: &str,
+        total_remaining: Duration,
+        header_timeout: Duration,
+        first_delta_timeout: Duration,
+        inter_chunk_timeout: Duration,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
+        force_no_tools: bool,
+        force_fresh_socket: bool,
+        sink: Option<&HarnessEventSink>,
+        hedge_slot: Option<(&AtomicU8, &Notify, u8)>,
+    ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
+        let base = self.endpoint.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/responses") {
+            base.to_string()
+        } else if base.ends_with("/chat/completions") {
+            format!("{}/responses", base.trim_end_matches("/chat/completions"))
+        } else {
+            format!("{base}/responses")
+        };
+
+        let input_items = self.build_openai_responses_input_items();
+        let resp_tools = self.build_openai_responses_tools();
+        let (short_to_full, known_full) = self.build_responses_name_maps();
 
         let mut body = json!({
             "model": self.endpoint.model_id,
@@ -2885,22 +4465,13 @@ impl NativeSuperEngine {
             "store": false,
             "max_output_tokens": self.endpoint.max_tokens,
         });
-        if !resp_tools.is_empty() {
-            body["tools"] = Value::Array(resp_tools);
-        }
-        if self.supports_prompt_cache_key {
-            body["prompt_cache_key"] = Value::String(self.session_key.clone());
-        }
-        if force_low_reasoning {
-            body["reasoning"] = json!({ "effort": "low" });
-        } else if let Some(ref tl) = self.thinking_level {
-            let low = tl.trim().to_ascii_lowercase();
-            if matches!(low.as_str(), "low" | "medium" | "high") {
-                body["reasoning"] = json!({ "effort": low });
-            }
-        } else if escalate_reasoning {
-            body["reasoning"] = json!({ "effort": "high" });
-        }
+        self.apply_openai_responses_fields(
+            &mut body,
+            resp_tools,
+            force_low_reasoning,
+            escalate_reasoning,
+            force_no_tools,
+        );
 
         let client = if force_fresh_socket {
             &self.fresh_http
@@ -2920,8 +4491,28 @@ impl NativeSuperEngine {
 
         let t_req = Instant::now();
         let turn_deadline = t_req + total_remaining;
-        let resp = tokio::time::timeout(header_timeout, req.send())
-            .await
+        let send_res = if let Some((winner, notify, slot)) = hedge_slot {
+            if winner.load(Ordering::Acquire) != 0 && winner.load(Ordering::Acquire) != slot {
+                return Err(StreamTurnError::Fatal("Pre-TTFT hedge superseded".into()));
+            }
+            tokio::select! {
+                r = tokio::time::timeout(header_timeout, req.send()) => r,
+                _ = async {
+                    loop {
+                        notify.notified().await;
+                        let w = winner.load(Ordering::Acquire);
+                        if w != 0 && w != slot {
+                            break;
+                        }
+                    }
+                } => {
+                    return Err(StreamTurnError::Fatal("Pre-TTFT hedge superseded".into()));
+                }
+            }
+        } else {
+            tokio::time::timeout(header_timeout, req.send()).await
+        };
+        let resp = send_res
             .map_err(|_| StreamTurnError::Retryable {
                 status: None,
                 retry_after_secs: None,
@@ -2971,42 +4562,59 @@ impl NativeSuperEngine {
             )));
         }
 
-        let mut text = String::new();
-        let mut reasoning = String::new();
-        let mut tool_by_item_id: HashMap<String, usize> = HashMap::new();
-        let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
-        let mut finish_reason: Option<String> = None;
-        let mut saw_completed = false;
-        let mut usage = TurnLlmUsage::default();
-        let mut turn_ttft_ms: Option<u64> = None;
-        let mut first_delta_at: Option<Instant> = None;
-        let mut last_delta_at: Option<Instant> = None;
-        let mut active_decode_ms = 0u64;
-
+        let mut acc = ResponsesFrameState::new(t_req);
+        let mut spec_pool = SpeculativeTaskPool::new();
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
         let mut line_buf = Vec::<u8>::new();
+        let mut raw_sse_log: Vec<u8> = Vec::new();
 
         'resp_sse: loop {
-            let chunk_budget = compute_token_progress_wait(
+            let chunk_budget = compute_token_progress_wait_with_phase(
                 stream_started_at,
-                last_delta_at,
+                acc.last_delta_at,
+                acc.last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
                 "OpenAI Responses SSE",
+                acc.in_reasoning_only(),
             )?;
-            let next_opt = tokio::time::timeout(chunk_budget, stream.next())
-                .await
-                .map_err(|_| StreamTurnError::Retryable {
-                    status: None,
-                    retry_after_secs: None,
-                    kind: RetryKind::ChunkStall,
-                    detail: format!(
-                        "Responses SSE stall timeout after {}ms",
-                        chunk_budget.as_millis()
-                    ),
-                })?;
+            let next_res = if acc.first_delta_at.is_none() {
+                if let Some((winner, notify, slot)) = hedge_slot {
+                    let w = winner.load(Ordering::Acquire);
+                    if w != 0 && w != slot {
+                        return Err(StreamTurnError::Fatal("Pre-TTFT hedge superseded".into()));
+                    }
+                    tokio::select! {
+                        r = tokio::time::timeout(chunk_budget, stream.next()) => r,
+                        _ = async {
+                            loop {
+                                notify.notified().await;
+                                let w2 = winner.load(Ordering::Acquire);
+                                if w2 != 0 && w2 != slot {
+                                    break;
+                                }
+                            }
+                        } => {
+                            return Err(StreamTurnError::Fatal("Pre-TTFT hedge superseded".into()));
+                        }
+                    }
+                } else {
+                    tokio::time::timeout(chunk_budget, stream.next()).await
+                }
+            } else {
+                tokio::time::timeout(chunk_budget, stream.next()).await
+            };
+            let next_opt = next_res.map_err(|_| StreamTurnError::Retryable {
+                status: None,
+                retry_after_secs: None,
+                kind: RetryKind::ChunkStall,
+                detail: format!(
+                    "Responses SSE stall timeout after {}ms",
+                    chunk_budget.as_millis()
+                ),
+            })?;
             let Some(chunk_res) = next_opt else {
                 break;
             };
@@ -3019,6 +4627,13 @@ impl NativeSuperEngine {
                 kind: RetryKind::Transport,
                 detail: format!("Responses stream error: {e}"),
             })?;
+            if !chunk.is_empty() {
+                acc.last_wire_activity_at = Some(Instant::now());
+                if raw_sse_log.len() < 256 * 1024 {
+                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                    raw_sse_log.extend_from_slice(&chunk[..take]);
+                }
+            }
             line_buf.extend_from_slice(&chunk);
             let mut cursor = 0usize;
             while let Some(rel_nl) = memchr(b'\n', &line_buf[cursor..]) {
@@ -3034,182 +4649,23 @@ impl NativeSuperEngine {
                 };
                 let data = data.trim();
                 if data == "[DONE]" {
-                    saw_completed = true;
+                    acc.saw_completed = true;
                     break 'resp_sse;
                 }
                 let Ok(val) = serde_json::from_str::<Value>(data) else {
                     continue;
                 };
-                let ev_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let now = Instant::now();
-                let mut stamp_token = || {
-                    if turn_ttft_ms.is_none() {
-                        turn_ttft_ms = Some(t_req.elapsed().as_millis() as u64);
-                        first_delta_at = Some(now);
-                    } else if let Some(prev) = last_delta_at {
-                        let gap = now.saturating_duration_since(prev).as_millis() as u64;
-                        if gap <= ACTIVE_DECODE_GAP_CAP_MS {
-                            active_decode_ms += gap;
-                        }
-                    }
-                    last_delta_at = Some(now);
-                };
-                match ev_type {
-                    "response.output_text.delta" => {
-                        if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
-                            if !d.is_empty() {
-                                stamp_token();
-                                text.push_str(d);
-                                if let Some(s) = sink {
-                                    s(HarnessStreamEvent::DeltaBatch {
-                                        message_id: msg_id.to_string(),
-                                        text_delta: d.to_string(),
-                                        thinking_delta: String::new(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    "response.reasoning_summary_text.delta" | "response.reasoning.delta" => {
-                        if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
-                            if !d.is_empty() {
-                                stamp_token();
-                                reasoning.push_str(d);
-                                if let Some(s) = sink {
-                                    s(HarnessStreamEvent::DeltaBatch {
-                                        message_id: msg_id.to_string(),
-                                        text_delta: String::new(),
-                                        thinking_delta: d.to_string(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    "response.output_item.added" => {
-                        if let Some(item) = val.get("item") {
-                            if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
-                                stamp_token();
-                                let item_id = item
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let call_id = item
-                                    .get("call_id")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|s| !s.is_empty())
-                                    .map(String::from)
-                                    .unwrap_or_else(|| {
-                                        format!("call_{msg_id}_{}", tool_calls.len())
-                                    });
-                                let name = item
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let args = item
-                                    .get("arguments")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let idx = tool_calls.len();
-                                tool_calls.push(ToolCallRecord {
-                                    id: call_id,
-                                    name,
-                                    arguments: args,
-                                });
-                                if !item_id.is_empty() {
-                                    tool_by_item_id.insert(item_id, idx);
-                                }
-                            }
-                        }
-                    }
-                    "response.function_call_arguments.delta" => {
-                        if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
-                            if !d.is_empty() {
-                                stamp_token();
-                                let item_id =
-                                    val.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-                                if let Some(&idx) = tool_by_item_id.get(item_id) {
-                                    tool_calls[idx].arguments.push_str(d);
-                                } else if let Some(last) = tool_calls.last_mut() {
-                                    last.arguments.push_str(d);
-                                }
-                            }
-                        }
-                    }
-                    "response.output_item.done" => {
-                        // Authoritative final arguments (covers proxies that skip arg deltas).
-                        if let Some(item) = val.get("item") {
-                            if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
-                                let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let final_args =
-                                    item.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
-                                let idx_opt = tool_by_item_id.get(item_id).copied().or_else(|| {
-                                    let cid = item.get("call_id").and_then(|v| v.as_str())?;
-                                    tool_calls.iter().position(|t| t.id == cid)
-                                });
-                                match idx_opt {
-                                    Some(idx) => {
-                                        if !final_args.is_empty() {
-                                            tool_calls[idx].arguments = final_args.to_string();
-                                        }
-                                    }
-                                    None => {
-                                        stamp_token();
-                                        let call_id = item
-                                            .get("call_id")
-                                            .and_then(|v| v.as_str())
-                                            .filter(|s| !s.is_empty())
-                                            .map(String::from)
-                                            .unwrap_or_else(|| {
-                                                format!("call_{msg_id}_{}", tool_calls.len())
-                                            });
-                                        tool_calls.push(ToolCallRecord {
-                                            id: call_id,
-                                            name: item
-                                                .get("name")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("")
-                                                .to_string(),
-                                            arguments: final_args.to_string(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "response.completed" | "response.incomplete" => {
-                        saw_completed = true;
-                        finish_reason = Some(if ev_type == "response.incomplete" {
-                            "length".into()
-                        } else if tool_calls.is_empty() {
-                            "stop".into()
-                        } else {
-                            "tool_calls".into()
-                        });
-                        if let Some(u) = val.pointer("/response/usage") {
-                            parse_openai_usage(u, &mut usage);
-                        }
-                        break 'resp_sse;
-                    }
-                    "response.failed" | "error" => {
-                        let msg = val
-                            .pointer("/response/error/message")
-                            .or_else(|| val.pointer("/error/message"))
-                            .or_else(|| val.get("message"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("response.failed");
-                        return Err(StreamTurnError::Retryable {
-                            status: None,
-                            retry_after_secs: None,
-                            kind: RetryKind::TruncatedStream,
-                            detail: crate::sanitizer::redact_secrets(&format!(
-                                "OpenAI Responses stream failed: {msg}"
-                            )),
-                        });
-                    }
-                    _ => {}
+                if acc.process_event(
+                    &val,
+                    msg_id,
+                    &self.tool_runtime,
+                    &mut spec_pool,
+                    &short_to_full,
+                    &known_full,
+                    sink,
+                    hedge_slot,
+                )? {
+                    break 'resp_sse;
                 }
             }
             if cursor > 0 {
@@ -3217,7 +4673,21 @@ impl NativeSuperEngine {
             }
         }
 
-        if !saw_completed && finish_reason.is_none() {
+        if acc.text.is_empty() && acc.reasoning.is_empty() && acc.tool_calls.is_empty() {
+            let verdict = inspect_sse_pre_commit(&raw_sse_log);
+            if verdict.should_failover_before_commit() {
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::TruncatedStream,
+                    detail: format!(
+                        "Pre-commit OpenAI Responses SSE gate rejected empty stream: {verdict:?}"
+                    ),
+                });
+            }
+        }
+
+        if !acc.saw_completed && acc.finish_reason.is_none() {
             return Err(StreamTurnError::Retryable {
                 status: None,
                 retry_after_secs: None,
@@ -3227,33 +4697,7 @@ impl NativeSuperEngine {
             });
         }
 
-        let turn_gen_ms = compute_pure_gen_duration_ms(
-            t_req,
-            turn_ttft_ms,
-            first_delta_at,
-            last_delta_at,
-            usage.output,
-        );
-        let turn_active_decode_ms = if first_delta_at.is_some() {
-            active_decode_ms.max(1)
-        } else {
-            0
-        };
-
-        Ok(TurnStreamResult {
-            text,
-            reasoning,
-            reasoning_signature: None,
-            redacted_thinking: Vec::new(),
-            tool_calls,
-            speculative_results: HashMap::new(),
-            finish_reason,
-            usage,
-            turn_ttft_ms,
-            turn_gen_ms,
-            turn_active_decode_ms,
-            http_retries: 0,
-        })
+        Ok(acc.finish(spec_pool))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3264,6 +4708,9 @@ impl NativeSuperEngine {
         header_timeout: Duration,
         first_delta_timeout: Duration,
         inter_chunk_timeout: Duration,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
+        force_no_tools: bool,
         force_fresh_socket: bool,
         sink: Option<&HarnessEventSink>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
@@ -3273,13 +4720,36 @@ impl NativeSuperEngine {
             format!("{}/messages", self.endpoint.base_url)
         };
 
-        let mut ant_msgs = build_anthropic_messages(
+        let mut ant_msgs = build_anthropic_messages_for_target(
             &self.messages,
             self.supports_reasoning_echo,
             self.active_prompt_start_turn,
+            &self.endpoint.provider_id,
+            &self.endpoint.model_id,
         );
 
-        // Breakpoint #3: cache_control on last content block of penultimate user/tool_result message
+        let set_ephemeral = |msg: &mut Value| {
+            if let Some(s) = msg
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+            {
+                msg["content"] = json!([{
+                    "type": "text",
+                    "text": s,
+                    "cache_control": { "type": "ephemeral" }
+                }]);
+            } else if let Some(arr) = msg.get_mut("content").and_then(|v| v.as_array_mut()) {
+                if let Some(last_blk) = arr.last_mut() {
+                    if let Some(obj) = last_blk.as_object_mut() {
+                        obj.insert("cache_control".into(), json!({ "type": "ephemeral" }));
+                    }
+                }
+            }
+        };
+
+        // Breakpoint #3: cache_control on last block of penultimate user/tool_result message
+        // Breakpoint #4: cache_control on last block of trailing user/tool_result message when >= 3 messages
         let user_indices: Vec<usize> = ant_msgs
             .iter()
             .enumerate()
@@ -3291,24 +4761,19 @@ impl NativeSuperEngine {
                 }
             })
             .collect();
+        let mut bp3_idx = None;
         if user_indices.len() >= 2 {
             let target_idx = user_indices[user_indices.len() - 2];
             if let Some(msg) = ant_msgs.get_mut(target_idx) {
-                if let Some(s) = msg
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                {
-                    msg["content"] = json!([{
-                        "type": "text",
-                        "text": s,
-                        "cache_control": { "type": "ephemeral" }
-                    }]);
-                } else if let Some(arr) = msg.get_mut("content").and_then(|v| v.as_array_mut()) {
-                    if let Some(last_blk) = arr.last_mut() {
-                        if let Some(obj) = last_blk.as_object_mut() {
-                            obj.insert("cache_control".into(), json!({ "type": "ephemeral" }));
-                        }
+                set_ephemeral(msg);
+                bp3_idx = Some(target_idx);
+            }
+        }
+        if ant_msgs.len() >= 3 {
+            if let Some(&last_u) = user_indices.last() {
+                if Some(last_u) != bp3_idx {
+                    if let Some(msg) = ant_msgs.get_mut(last_u) {
+                        set_ephemeral(msg);
                     }
                 }
             }
@@ -3346,6 +4811,22 @@ impl NativeSuperEngine {
         });
         if !ant_tools.is_empty() {
             body["tools"] = Value::Array(ant_tools);
+            if force_no_tools {
+                body["tool_choice"] = json!({ "type": "none" });
+            }
+        }
+        let is_claude_model = self.endpoint.model_id.to_ascii_lowercase().contains("claude");
+        if is_claude_model {
+            if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning)
+            {
+                apply_reasoning_effort_wire(
+                    &mut body,
+                    "anthropic-messages",
+                    &self.endpoint.model_id,
+                    effort,
+                    Some(self.endpoint.max_tokens),
+                );
+            }
         }
 
         let client = if force_fresh_socket {
@@ -3387,14 +4868,14 @@ impl NativeSuperEngine {
 
         let status = resp.status();
         if !status.is_success() {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok());
             let err_body = resp.text().await.unwrap_or_default();
             let snippet: String = err_body.chars().take(400).collect();
-            let non_claude_auto = self.wire_api_mode == WireApiMode::Auto
-                && !self
-                    .endpoint
-                    .model_id
-                    .to_ascii_lowercase()
-                    .contains("claude");
+            let non_claude_auto = self.wire_api_mode == WireApiMode::Auto && !is_claude_model;
             if matches!(
                 status,
                 StatusCode::NOT_FOUND
@@ -3403,7 +4884,11 @@ impl NativeSuperEngine {
             ) || (non_claude_auto
                 && matches!(
                     status,
-                    StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+                    StatusCode::BAD_REQUEST
+                        | StatusCode::UNPROCESSABLE_ENTITY
+                        | StatusCode::INTERNAL_SERVER_ERROR
+                        | StatusCode::BAD_GATEWAY
+                        | StatusCode::SERVICE_UNAVAILABLE
                 ))
             {
                 return Err(StreamTurnError::EndpointUnsupported(format!(
@@ -3413,7 +4898,7 @@ impl NativeSuperEngine {
             if is_retryable_status(status) {
                 return Err(StreamTurnError::Retryable {
                     status: Some(status),
-                    retry_after_secs: None,
+                    retry_after_secs: retry_after,
                     kind: RetryKind::HttpStatus,
                     detail: format!("Anthropic HTTP {status}: {snippet}"),
                 });
@@ -3436,19 +4921,23 @@ impl NativeSuperEngine {
         let mut turn_ttft_ms: Option<u64> = None;
         let mut first_delta_at: Option<Instant> = None;
         let mut last_delta_at: Option<Instant> = None;
+        let mut last_wire_activity_at: Option<Instant> = None;
         let mut active_decode_ms = 0u64;
+        let mut raw_sse_log: Vec<u8> = Vec::new();
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
         let mut line_buf = Vec::<u8>::new();
 
         'ant: loop {
-            let chunk_budget = compute_token_progress_wait(
+            let chunk_budget = compute_token_progress_wait_with_phase(
                 stream_started_at,
                 last_delta_at,
+                last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
                 "Anthropic SSE",
+                text.is_empty() && tool_calls.is_empty(),
             )?;
             let next_opt = tokio::time::timeout(chunk_budget, stream.next())
                 .await
@@ -3501,6 +4990,13 @@ impl NativeSuperEngine {
                 kind: RetryKind::Transport,
                 detail: format!("Anthropic stream error: {e}"),
             })?;
+            if !chunk.is_empty() {
+                last_wire_activity_at = Some(Instant::now());
+                if raw_sse_log.len() < 256 * 1024 {
+                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                    raw_sse_log.extend_from_slice(&chunk[..take]);
+                }
+            }
             line_buf.extend_from_slice(&chunk);
             let mut cursor = 0usize;
             while let Some(rel_nl) = memchr(b'\n', &line_buf[cursor..]) {
@@ -3514,7 +5010,26 @@ impl NativeSuperEngine {
                     continue;
                 };
                 match val.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                    "ping" => {
+                        last_wire_activity_at = Some(Instant::now());
+                    }
+                    "error" => {
+                        let msg = val
+                            .pointer("/error/message")
+                            .or_else(|| val.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Anthropic SSE error");
+                        return Err(StreamTurnError::Retryable {
+                            status: None,
+                            retry_after_secs: None,
+                            kind: RetryKind::TruncatedStream,
+                            detail: crate::sanitizer::redact_secrets(&format!(
+                                "Anthropic SSE stream error: {msg}"
+                            )),
+                        });
+                    }
                     "message_start" => {
+                        last_wire_activity_at = Some(Instant::now());
                         if let Some(u) = val.pointer("/message/usage") {
                             usage.saw_usage = true;
                             usage.uncached_input =
@@ -3694,6 +5209,19 @@ impl NativeSuperEngine {
                 && serde_json::from_str::<Value>(trimmed).is_err()
                 && repair_tool_json(trimmed, self.tool_schemas_by_name.get(&tc.name)).is_err()
         });
+        if text.is_empty() && reasoning.is_empty() && tool_calls.is_empty() {
+            let verdict = inspect_sse_pre_commit(&raw_sse_log);
+            if verdict.should_failover_before_commit() {
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::TruncatedStream,
+                    detail: format!(
+                        "Pre-commit Anthropic SSE gate rejected empty stream: {verdict:?}"
+                    ),
+                });
+            }
+        }
         if has_truncated_tool_json || (!saw_message_stop && stop_reason.is_none()) {
             return Err(StreamTurnError::Retryable {
                 status: None,
@@ -3740,6 +5268,8 @@ impl NativeSuperEngine {
                 Some(reasoning_sig)
             },
             redacted_thinking,
+            reasoning_encrypted_items: Vec::new(),
+            response_id: None,
             tool_calls,
             speculative_results,
             finish_reason: stop_reason.or_else(|| Some("end_turn".into())),
@@ -3759,6 +5289,8 @@ impl NativeSuperEngine {
         header_timeout: Duration,
         first_delta_timeout: Duration,
         inter_chunk_timeout: Duration,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
         force_fresh_socket: bool,
         sink: Option<&HarnessEventSink>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
@@ -3771,20 +5303,56 @@ impl NativeSuperEngine {
         for m in &self.messages {
             match m.role.as_str() {
                 "user" => {
-                    contents.push(json!({ "role": "user", "parts": [{ "text": m.content }] }))
+                    let mut parts = Vec::new();
+                    if !m.content.is_empty() || m.content_blocks.is_empty() {
+                        parts.push(json!({ "text": m.content }));
+                    }
+                    for blk in &m.content_blocks {
+                        match blk {
+                            ContentBlock::Text { text } if !text.is_empty() => {
+                                parts.push(json!({ "text": text }));
+                            }
+                            ContentBlock::ImageBase64 {
+                                media_type,
+                                data_base64,
+                                ..
+                            } => {
+                                parts.push(json!({
+                                    "inlineData": {
+                                        "mimeType": media_type,
+                                        "data": data_base64
+                                    }
+                                }));
+                            }
+                            ContentBlock::ImageUrl { url, .. } => {
+                                parts.push(json!({ "fileData": { "fileUri": url } }));
+                            }
+                            ContentBlock::FileUri { uri, media_type, .. } => {
+                                parts.push(json!({
+                                    "fileData": { "mimeType": media_type, "fileUri": uri }
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    contents.push(json!({ "role": "user", "parts": parts }));
                 }
                 "assistant" => {
                     let mut parts = Vec::new();
                     if !m.content.is_empty() {
                         parts.push(json!({ "text": m.content }));
                     }
+                    let replay_sig = m.can_replay_cryptographic_proof(
+                        &self.endpoint.provider_id,
+                        &self.endpoint.model_id,
+                    );
                     for (idx, tc) in m.tool_calls.iter().enumerate() {
                         let args: Value =
                             serde_json::from_str(&tc.arguments).unwrap_or_else(|_| json!({}));
                         let mut part = json!({
                             "functionCall": { "name": tc.name, "args": args }
                         });
-                        if idx == 0 {
+                        if idx == 0 && replay_sig {
                             if let Some(ref sig) = m.reasoning_signature {
                                 if !sig.is_empty() {
                                     part["thoughtSignature"] = Value::String(sig.clone());
@@ -3832,12 +5400,22 @@ impl NativeSuperEngine {
                 })
             })
             .collect();
-        let body = json!({
+        let mut body = json!({
             "systemInstruction": { "parts": [{ "text": self.system_prompt }] },
             "contents": contents,
             "tools": [{ "functionDeclarations": decls }],
             "generationConfig": { "maxOutputTokens": self.endpoint.max_tokens }
         });
+        if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning) {
+            apply_reasoning_effort_wire(
+                &mut body,
+                "gemini",
+                &self.endpoint.model_id,
+                effort,
+                Some(self.endpoint.max_tokens),
+            );
+        }
+        sanitize_gemini_wire_payload(&mut body);
 
         let client = if force_fresh_socket {
             &self.fresh_http
@@ -3897,19 +5475,23 @@ impl NativeSuperEngine {
         let mut turn_ttft_ms = None;
         let mut first_delta_at = None;
         let mut last_delta_at = None;
+        let mut last_wire_activity_at = None;
         let mut active_decode_ms = 0u64;
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
         let mut line_buf = Vec::<u8>::new();
+        let mut raw_sse_log: Vec<u8> = Vec::new();
 
         loop {
-            let chunk_budget = compute_token_progress_wait(
+            let chunk_budget = compute_token_progress_wait_with_phase(
                 stream_started_at,
                 last_delta_at,
+                last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
                 "Gemini SSE",
+                text.is_empty() && tool_calls.is_empty(),
             )?;
             let next_opt = tokio::time::timeout(chunk_budget, stream.next())
                 .await
@@ -3934,6 +5516,13 @@ impl NativeSuperEngine {
                 kind: RetryKind::Transport,
                 detail: format!("Gemini stream error: {e}"),
             })?;
+            if !chunk.is_empty() {
+                last_wire_activity_at = Some(Instant::now());
+                if raw_sse_log.len() < 256 * 1024 {
+                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                    raw_sse_log.extend_from_slice(&chunk[..take]);
+                }
+            }
             line_buf.extend_from_slice(&chunk);
             let mut cursor = 0usize;
             while let Some(rel_nl) = memchr(b'\n', &line_buf[cursor..]) {
@@ -4048,6 +5637,19 @@ impl NativeSuperEngine {
             }
         }
 
+        if text.is_empty() && reasoning.is_empty() && tool_calls.is_empty() {
+            let verdict = inspect_sse_pre_commit(&raw_sse_log);
+            if verdict.should_failover_before_commit() {
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::TruncatedStream,
+                    detail: format!(
+                        "Pre-commit Gemini SSE gate rejected empty stream: {verdict:?}"
+                    ),
+                });
+            }
+        }
         if finish_reason.is_none() && tool_calls.is_empty() {
             return Err(StreamTurnError::Retryable {
                 status: None,
@@ -4074,6 +5676,8 @@ impl NativeSuperEngine {
             reasoning,
             reasoning_signature: thought_signature,
             redacted_thinking: Vec::new(),
+            reasoning_encrypted_items: Vec::new(),
+            response_id: None,
             tool_calls,
             speculative_results: HashMap::new(),
             finish_reason: finish_reason.or_else(|| Some("STOP".into())),
@@ -4084,6 +5688,432 @@ impl NativeSuperEngine {
             http_retries: 0,
         })
     }
+}
+
+/// Shared OpenAI `/v1/responses` SSE & WebSocket event state machine.
+struct ResponsesFrameState {
+    t_req: Instant,
+    text: String,
+    reasoning: String,
+    reasoning_encrypted_items: Vec<Value>,
+    response_id: Option<String>,
+    tool_by_item_id: HashMap<String, usize>,
+    tool_calls: Vec<ToolCallRecord>,
+    finish_reason: Option<String>,
+    saw_completed: bool,
+    usage: TurnLlmUsage,
+    turn_ttft_ms: Option<u64>,
+    first_delta_at: Option<Instant>,
+    last_delta_at: Option<Instant>,
+    last_wire_activity_at: Option<Instant>,
+    active_decode_ms: u64,
+}
+
+impl ResponsesFrameState {
+    fn new(t_req: Instant) -> Self {
+        Self {
+            t_req,
+            text: String::new(),
+            reasoning: String::new(),
+            reasoning_encrypted_items: Vec::new(),
+            response_id: None,
+            tool_by_item_id: HashMap::new(),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+            saw_completed: false,
+            usage: TurnLlmUsage::default(),
+            turn_ttft_ms: None,
+            first_delta_at: None,
+            last_delta_at: None,
+            last_wire_activity_at: None,
+            active_decode_ms: 0,
+        }
+    }
+
+    fn in_reasoning_only(&self) -> bool {
+        self.text.is_empty() && self.tool_calls.is_empty()
+    }
+
+    fn stamp_token(
+        &mut self,
+        now: Instant,
+        hedge_slot: Option<(&AtomicU8, &Notify, u8)>,
+    ) -> std::result::Result<(), StreamTurnError> {
+        if self.turn_ttft_ms.is_none() {
+            if let Some((winner, notify, slot)) = hedge_slot {
+                match winner.compare_exchange(0, slot, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => notify.notify_waiters(),
+                    Err(other) if other != slot => {
+                        return Err(StreamTurnError::Fatal(
+                            "Pre-TTFT hedge superseded".into(),
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            }
+            self.turn_ttft_ms = Some(self.t_req.elapsed().as_millis() as u64);
+            self.first_delta_at = Some(now);
+        } else if let Some(prev) = self.last_delta_at {
+            let gap = now.saturating_duration_since(prev).as_millis() as u64;
+            if gap <= ACTIVE_DECODE_GAP_CAP_MS {
+                self.active_decode_ms += gap;
+            }
+        }
+        self.last_delta_at = Some(now);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_event(
+        &mut self,
+        val: &Value,
+        msg_id: &str,
+        tool_runtime: &ToolRuntime,
+        spec_pool: &mut SpeculativeTaskPool,
+        short_to_full: &BTreeMap<String, String>,
+        known_full: &BTreeMap<String, String>,
+        sink: Option<&HarnessEventSink>,
+        hedge_slot: Option<(&AtomicU8, &Notify, u8)>,
+    ) -> std::result::Result<bool, StreamTurnError> {
+        let ev_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let now = Instant::now();
+        self.last_wire_activity_at = Some(now);
+        if self.response_id.is_none() {
+            if let Some(id) = val.pointer("/response/id").and_then(|v| v.as_str()) {
+                if !id.is_empty() {
+                    self.response_id = Some(id.to_string());
+                }
+            }
+        }
+
+        match ev_type {
+            "response.created" | "response.queued" | "response.in_progress" => {
+                self.last_wire_activity_at = Some(now);
+            }
+            "response.output_text.delta" | "response.refusal.delta" => {
+                if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
+                    if !d.is_empty() {
+                        self.stamp_token(now, hedge_slot)?;
+                        self.text.push_str(d);
+                        let allow_sink = hedge_slot
+                            .is_none_or(|(w, _, slot)| w.load(Ordering::Acquire) == slot);
+                        if allow_sink {
+                            if let Some(s) = sink {
+                                s(HarnessStreamEvent::DeltaBatch {
+                                    message_id: msg_id.to_string(),
+                                    text_delta: d.to_string(),
+                                    thinking_delta: String::new(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            "response.reasoning_text.delta"
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning.delta" => {
+                if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
+                    if !d.is_empty() {
+                        self.stamp_token(now, hedge_slot)?;
+                        self.reasoning.push_str(d);
+                        let allow_sink = hedge_slot
+                            .is_none_or(|(w, _, slot)| w.load(Ordering::Acquire) == slot);
+                        if allow_sink {
+                            if let Some(s) = sink {
+                                s(HarnessStreamEvent::DeltaBatch {
+                                    message_id: msg_id.to_string(),
+                                    text_delta: String::new(),
+                                    thinking_delta: d.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            "response.output_item.added" => {
+                if let Some(item_orig) = val.get("item") {
+                    let mut item = item_orig.clone();
+                    restore_responses_namespaces_value(&mut item, short_to_full, known_full);
+                    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if matches!(item_type, "function_call" | "custom_tool_call") {
+                        self.stamp_token(now, hedge_slot)?;
+                        if let Some(prev_idx) = self.tool_calls.len().checked_sub(1) {
+                            spec_pool.try_spawn_if_admissible(
+                                prev_idx,
+                                &self.tool_calls[prev_idx],
+                                tool_runtime,
+                                false,
+                            );
+                        }
+                        let item_id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                            .unwrap_or_else(|| format!("call_{msg_id}_{}", self.tool_calls.len()));
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let args = item
+                            .get("arguments")
+                            .or_else(|| item.get("input"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let idx = self.tool_calls.len();
+                        self.tool_calls.push(ToolCallRecord {
+                            id: call_id,
+                            name,
+                            arguments: args,
+                        });
+                        if !item_id.is_empty() {
+                            self.tool_by_item_id.insert(item_id, idx);
+                        }
+                    }
+                }
+            }
+            "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
+                if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
+                    if !d.is_empty() {
+                        self.stamp_token(now, hedge_slot)?;
+                        let item_id = val.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                        if let Some(&idx) = self.tool_by_item_id.get(item_id) {
+                            self.tool_calls[idx].arguments.push_str(d);
+                        } else if let Some(last) = self.tool_calls.last_mut() {
+                            last.arguments.push_str(d);
+                        }
+                    }
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item_orig) = val.get("item") {
+                    let mut item = item_orig.clone();
+                    restore_responses_namespaces_value(&mut item, short_to_full, known_full);
+                    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if item_type == "reasoning" {
+                        let has_enc = item
+                            .get("encrypted_content")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.is_empty());
+                        if has_enc {
+                            self.reasoning_encrypted_items.push(item);
+                        }
+                    } else if matches!(item_type, "function_call" | "custom_tool_call") {
+                        let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let final_name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let final_args = item
+                            .get("arguments")
+                            .or_else(|| item.get("input"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let idx_opt = self.tool_by_item_id.get(item_id).copied().or_else(|| {
+                            let cid = item.get("call_id").and_then(|v| v.as_str())?;
+                            self.tool_calls.iter().position(|t| t.id == cid)
+                        });
+                        let idx = match idx_opt {
+                            Some(idx) => {
+                                if !final_name.is_empty() {
+                                    self.tool_calls[idx].name = final_name.to_string();
+                                }
+                                if !final_args.is_empty() {
+                                    self.tool_calls[idx].arguments = final_args.to_string();
+                                }
+                                idx
+                            }
+                            None => {
+                                self.stamp_token(now, hedge_slot)?;
+                                let call_id = item
+                                    .get("call_id")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .map(String::from)
+                                    .unwrap_or_else(|| {
+                                        format!("call_{msg_id}_{}", self.tool_calls.len())
+                                    });
+                                let new_idx = self.tool_calls.len();
+                                self.tool_calls.push(ToolCallRecord {
+                                    id: call_id,
+                                    name: final_name.to_string(),
+                                    arguments: final_args.to_string(),
+                                });
+                                new_idx
+                            }
+                        };
+                        spec_pool.try_spawn_if_admissible(
+                            idx,
+                            &self.tool_calls[idx],
+                            tool_runtime,
+                            true,
+                        );
+                    }
+                }
+            }
+            "response.completed" | "response.incomplete" => {
+                self.saw_completed = true;
+                self.finish_reason = Some(if ev_type == "response.incomplete" {
+                    "length".into()
+                } else if self.tool_calls.is_empty() {
+                    "stop".into()
+                } else {
+                    "tool_calls".into()
+                });
+                if let Some(u) = val.pointer("/response/usage") {
+                    parse_openai_usage(u, &mut self.usage);
+                }
+                return Ok(true);
+            }
+            "response.failed" | "error" => {
+                let code = val
+                    .pointer("/response/error/code")
+                    .or_else(|| val.pointer("/error/code"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let msg = val
+                    .pointer("/response/error/message")
+                    .or_else(|| val.pointer("/error/message"))
+                    .or_else(|| val.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("response.failed");
+                let combined = if code.is_empty() {
+                    msg.to_string()
+                } else {
+                    format!("{code}: {msg}")
+                };
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::TruncatedStream,
+                    detail: crate::sanitizer::redact_secrets(&format!(
+                        "OpenAI Responses stream failed: {combined}"
+                    )),
+                });
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn finish(self, mut spec_pool: SpeculativeTaskPool) -> TurnStreamResult {
+        let mut raw_spec = spec_pool.take_all();
+        let mut speculative_results = HashMap::new();
+        for (idx, tc) in self.tool_calls.iter().enumerate() {
+            if let Some(entry) = raw_spec.remove(&idx) {
+                if entry.spawned_args == tc.arguments {
+                    speculative_results.insert(idx, entry.handle);
+                } else {
+                    entry.handle.abort();
+                }
+            }
+        }
+        for (_, entry) in raw_spec {
+            entry.handle.abort();
+        }
+        let turn_gen_ms = compute_pure_gen_duration_ms(
+            self.t_req,
+            self.turn_ttft_ms,
+            self.first_delta_at,
+            self.last_delta_at,
+            self.usage.output,
+        );
+        let turn_active_decode_ms = if self.first_delta_at.is_some() {
+            self.active_decode_ms.max(1)
+        } else {
+            0
+        };
+        TurnStreamResult {
+            text: self.text,
+            reasoning: self.reasoning,
+            reasoning_signature: None,
+            redacted_thinking: Vec::new(),
+            reasoning_encrypted_items: self.reasoning_encrypted_items,
+            response_id: self.response_id,
+            tool_calls: self.tool_calls,
+            speculative_results,
+            finish_reason: self.finish_reason,
+            usage: self.usage,
+            turn_ttft_ms: self.turn_ttft_ms,
+            turn_gen_ms,
+            turn_active_decode_ms,
+            http_retries: 0,
+        }
+    }
+}
+
+fn messages_prefix_hash(msgs: &[HarnessMessage]) -> String {
+    let mut buf = Vec::with_capacity(msgs.len().saturating_mul(64));
+    for m in msgs {
+        buf.extend_from_slice(&(m.role.len() as u32).to_le_bytes());
+        buf.extend_from_slice(m.role.as_bytes());
+        buf.extend_from_slice(&(m.content.len() as u32).to_le_bytes());
+        buf.extend_from_slice(m.content.as_bytes());
+        let tc_id = m.tool_call_id.as_deref().unwrap_or("");
+        buf.extend_from_slice(&(tc_id.len() as u32).to_le_bytes());
+        buf.extend_from_slice(tc_id.as_bytes());
+        buf.extend_from_slice(&(m.tool_calls.len() as u32).to_le_bytes());
+        for tc in &m.tool_calls {
+            buf.extend_from_slice(tc.id.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(tc.name.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(tc.arguments.as_bytes());
+            buf.push(0);
+        }
+        buf.extend_from_slice(&(m.content_blocks.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(m.reasoning_encrypted_items.len() as u32).to_le_bytes());
+    }
+    blake3_hex(&buf)
+}
+
+fn openai_responses_ws_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    let ws_scheme = if let Some(rest) = trimmed.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        trimmed.to_string()
+    };
+    if ws_scheme.ends_with("/responses") {
+        ws_scheme
+    } else if ws_scheme.ends_with("/chat/completions") {
+        format!("{}/responses", ws_scheme.trim_end_matches("/chat/completions"))
+    } else {
+        format!("{ws_scheme}/responses")
+    }
+}
+
+fn is_unreachable_network_error(detail: &str) -> bool {
+    let low = detail.to_ascii_lowercase();
+    [
+        "enotfound",
+        "eai_again",
+        "enetunreach",
+        "ehostunreach",
+        "enetdown",
+        "failed to lookup address information",
+        "dns error",
+        "no such host",
+        "name or service not known",
+        "network is unreachable",
+        "host is unreachable",
+    ]
+    .iter()
+    .any(|m| low.contains(m))
+}
+
+fn compute_unreachable_backoff_ms(attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(5);
+    let raw = UNREACHABLE_RETRY_INITIAL_MS.saturating_mul(1u64 << shift);
+    let capped = raw.min(UNREACHABLE_RETRY_MAX_MS);
+    let jitter = (Utc::now().timestamp_subsec_millis() as u64 % 500) + 100;
+    (capped + jitter).min(UNREACHABLE_RETRY_MAX_MS)
 }
 
 #[derive(Debug, Clone)]
@@ -4117,6 +6147,7 @@ enum RetryKind {
     TruncatedStream,
 }
 
+#[derive(Debug)]
 enum StreamTurnError {
     BadStreamOptions,
     BadReasoningEcho,
@@ -4265,21 +6296,80 @@ fn extract_thought_signature(v: &Value) -> Option<String> {
         .map(String::from)
 }
 
-/// Serialize a `HarnessMessage` into OpenAI Chat Completions wire JSON.
-///
-/// Interleaved thinking contract:
-/// - Preserves verbatim Gemini `thought_signature` on assistant tool-call turns (`extra_content.google.thought_signature`).
-/// - Echoes `reasoning_content` (capped at `MAX_INTERLEAVED_REASONING_CHARS`) ONLY on active-prompt
-///   tool-call turns when `include_reasoning_echo` is true (omitted on Gemini Flash to prevent blowup).
+/// Serialize a `HarnessMessage` into OpenAI Chat Completions wire JSON with
+/// cross-model cryptographic proof scoping and multimodal `ContentBlock` lowering.
 fn message_to_openai_json(
     m: &HarnessMessage,
     active_prompt_start_turn: u32,
     include_reasoning_echo: bool,
     is_gemini: bool,
 ) -> Value {
+    message_to_openai_json_for_target(
+        m,
+        active_prompt_start_turn,
+        include_reasoning_echo,
+        is_gemini,
+        "",
+        "",
+    )
+}
+
+fn message_to_openai_json_for_target(
+    m: &HarnessMessage,
+    active_prompt_start_turn: u32,
+    include_reasoning_echo: bool,
+    is_gemini: bool,
+    target_provider: &str,
+    target_model: &str,
+) -> Value {
     match m.role.as_str() {
         "system" => json!({ "role": "system", "content": m.content }),
-        "user" => json!({ "role": "user", "content": m.content }),
+        "user" => {
+            if m.content_blocks.is_empty() {
+                json!({ "role": "user", "content": m.content })
+            } else {
+                let mut parts: Vec<Value> = Vec::new();
+                if !m.content.is_empty() {
+                    parts.push(json!({ "type": "text", "text": m.content }));
+                }
+                for blk in &m.content_blocks {
+                    match blk {
+                        ContentBlock::Text { text } if !text.is_empty() => {
+                            parts.push(json!({ "type": "text", "text": text }));
+                        }
+                        ContentBlock::ImageBase64 {
+                            media_type,
+                            data_base64,
+                            detail,
+                            ..
+                        } => {
+                            let mut img = json!({
+                                "url": format!("data:{media_type};base64,{data_base64}")
+                            });
+                            if let Some(d) = detail {
+                                img["detail"] = Value::String(d.clone());
+                            }
+                            parts.push(json!({ "type": "image_url", "image_url": img }));
+                        }
+                        ContentBlock::ImageUrl { url, detail } => {
+                            let mut img = json!({ "url": url });
+                            if let Some(d) = detail {
+                                img["detail"] = Value::String(d.clone());
+                            }
+                            parts.push(json!({ "type": "image_url", "image_url": img }));
+                        }
+                        ContentBlock::FileUri { uri, media_type, .. } => {
+                            parts.push(json!({
+                                "type": "text",
+                                "text": format!("[file {media_type}: {uri}]")
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                json!({ "role": "user", "content": parts })
+            }
+        }
         "tool" => json!({
             "role": "tool",
             "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
@@ -4293,7 +6383,9 @@ fn message_to_openai_json(
             } else {
                 obj.insert("content".into(), Value::String(m.content.clone()));
             }
+            let same_model_untainted = m.can_replay_cryptographic_proof(target_provider, target_model);
             if include_reasoning_echo
+                && same_model_untainted
                 && m.turn_index >= active_prompt_start_turn
                 && !m.tool_calls.is_empty()
             {
@@ -4306,7 +6398,10 @@ fn message_to_openai_json(
                 }
             }
             if !m.tool_calls.is_empty() {
-                let sig_opt = if is_gemini && m.turn_index >= active_prompt_start_turn {
+                let sig_opt = if is_gemini
+                    && same_model_untainted
+                    && m.turn_index >= active_prompt_start_turn
+                {
                     m.reasoning_signature.as_deref().filter(|s| !s.is_empty())
                 } else {
                     None
@@ -4459,10 +6554,29 @@ fn parse_openai_usage(u: &Value, dst: &mut TurnLlmUsage) {
 /// - Merges any consecutive `user` / `tool` (`role: "user"`) turns into one content array
 ///   so Anthropic never rejects with HTTP 400 (`roles must alternate`).
 /// - Echoes verbatim `thinking`+`signature` AND `redacted_thinking` blocks within the active prompt.
+/// Build Anthropic `/v1/messages` array with strict role alternation:
+/// - Merges any consecutive `user` / `tool` (`role: "user"`) turns into one content array.
+/// - Enforces cross-model cryptographic proof scoping and multimodal `ContentBlock` lowering.
 fn build_anthropic_messages(
     messages: &[HarnessMessage],
     supports_reasoning_echo: bool,
     active_prompt_start_turn: u32,
+) -> Vec<Value> {
+    build_anthropic_messages_for_target(
+        messages,
+        supports_reasoning_echo,
+        active_prompt_start_turn,
+        "",
+        "",
+    )
+}
+
+fn build_anthropic_messages_for_target(
+    messages: &[HarnessMessage],
+    supports_reasoning_echo: bool,
+    active_prompt_start_turn: u32,
+    target_provider: &str,
+    target_model: &str,
 ) -> Vec<Value> {
     let mut ant_msgs: Vec<Value> = Vec::new();
     let push_user_block = |out: &mut Vec<Value>, block: Value| {
@@ -4489,25 +6603,61 @@ fn build_anthropic_messages(
         match m.role.as_str() {
             "system" => {}
             "user" => {
-                if let Some(last) = ant_msgs.last() {
-                    if last.get("role").and_then(|v| v.as_str()) == Some("user") {
+                if m.content_blocks.is_empty() {
+                    if let Some(last) = ant_msgs.last() {
+                        if last.get("role").and_then(|v| v.as_str()) == Some("user") {
+                            push_user_block(
+                                &mut ant_msgs,
+                                json!({ "type": "text", "text": m.content }),
+                            );
+                            continue;
+                        }
+                    }
+                    ant_msgs.push(json!({
+                        "role": "user",
+                        "content": [{ "type": "text", "text": m.content }]
+                    }));
+                } else {
+                    if !m.content.is_empty() {
                         push_user_block(
                             &mut ant_msgs,
                             json!({ "type": "text", "text": m.content }),
                         );
-                        continue;
+                    }
+                    for blk in &m.content_blocks {
+                        let rendered = match blk {
+                            ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
+                            ContentBlock::ImageBase64 {
+                                media_type,
+                                data_base64,
+                                ..
+                            } => json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": data_base64
+                                }
+                            }),
+                            ContentBlock::ImageUrl { url, .. } => json!({
+                                "type": "image",
+                                "source": { "type": "url", "url": url }
+                            }),
+                            ContentBlock::FileUri { uri, media_type, .. } => json!({
+                                "type": "text",
+                                "text": format!("[file {media_type}: {uri}]")
+                            }),
+                        };
+                        push_user_block(&mut ant_msgs, rendered);
                     }
                 }
-                // Always block-array form so moving cache_control breakpoints never flip an
-                // earlier message between string and array shapes (byte-stable prefix).
-                ant_msgs.push(json!({
-                    "role": "user",
-                    "content": [{ "type": "text", "text": m.content }]
-                }));
             }
             "assistant" => {
                 let mut blocks = Vec::new();
-                if supports_reasoning_echo && m.turn_index >= active_prompt_start_turn {
+                if supports_reasoning_echo
+                    && m.turn_index >= active_prompt_start_turn
+                    && m.can_replay_cryptographic_proof(target_provider, target_model)
+                {
                     if let (Some(ref r), Some(ref sig)) = (&m.reasoning, &m.reasoning_signature) {
                         if !r.is_empty() && !sig.is_empty() {
                             blocks.push(json!({
@@ -4575,13 +6725,34 @@ fn compute_pure_gen_duration_ms(
         .map(|t| total_req_ms.saturating_sub(t))
         .unwrap_or(total_req_ms);
 
-    if output_tokens >= 100 && stream_span_ms < 50 {
+    if output_tokens > 0 && stream_span_ms < 50 {
         req_post_ttft.max(stream_span_ms).max(50)
     } else if first_delta_at.is_some() {
         stream_span_ms.max(1)
     } else {
         0
     }
+}
+
+fn compute_eval_tps_metrics(
+    output_tokens: u64,
+    active_ms: u64,
+    gen_dur_ms: u64,
+    active_decode_ms: u64,
+) -> (f64, f64, f64) {
+    let e2e_tps = output_tokens as f64 / (active_ms.max(1) as f64 / 1000.0);
+    let gen_tps = output_tokens as f64 / (gen_dur_ms.max(1) as f64 / 1000.0);
+    // Keep `active_decode_tps` bounded by `gen_dur_ms` when `ACTIVE_DECODE_GAP_CAP_MS` (>5s pauses)
+    // omits most of the physical generation window (`< 25%` of `gen_dur_ms`).
+    let effective_active_ms =
+        if active_decode_ms > 0 && active_decode_ms.saturating_mul(4) >= gen_dur_ms {
+            active_decode_ms
+        } else {
+            gen_dur_ms
+        };
+    let active_decode_tps =
+        output_tokens as f64 / (effective_active_ms.max(1) as f64 / 1000.0);
+    (e2e_tps, gen_tps, active_decode_tps)
 }
 
 /// Execute a full headless `--eval-omni` run and produce the canonical `SuperEvalReport`.
@@ -4668,13 +6839,12 @@ pub async fn run_super_eval(opts: SuperEvalOptions) -> Result<SuperEvalReport> {
     } else {
         active_ms
     };
-    let e2e_tps = snap.output_tokens as f64 / (active_ms as f64 / 1000.0);
-    let active_decode_tps = if summary.active_decode_ms > 0 {
-        snap.output_tokens as f64 / (summary.active_decode_ms as f64 / 1000.0)
-    } else {
-        snap.output_tokens as f64 / (gen_dur_ms as f64 / 1000.0)
-    };
-    let gen_tps = active_decode_tps;
+    let (e2e_tps, gen_tps, active_decode_tps) = compute_eval_tps_metrics(
+        snap.output_tokens,
+        active_ms,
+        gen_dur_ms,
+        summary.active_decode_ms,
+    );
 
     let (merkle_root, merkle_refresh_ms, merkle_file_count, graph_symbol_count) = {
         let g = graph_index.lock().unwrap();
@@ -6612,5 +8782,556 @@ data: [DONE]\n\n";
         assert_eq!(eng.total_tool_calls, 1);
         assert_eq!(eng.total_tool_errors, 0);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unreachable_network_budget_helper_and_effort_max_unlocked() {
+        assert!(is_unreachable_network_error(
+            "HTTP transport error: dns error: failed to lookup address information (ENOTFOUND)"
+        ));
+        assert!(is_unreachable_network_error("connect ENETUNREACH 127.0.0.1"));
+        assert!(!is_unreachable_network_error("HTTP 500 Internal Server Error"));
+        assert!(compute_unreachable_backoff_ms(1) <= UNREACHABLE_RETRY_MAX_MS);
+        assert!(compute_unreachable_backoff_ms(10) <= UNREACHABLE_RETRY_MAX_MS);
+
+        let tmp = std::env::temp_dir().join(format!("omni_eff_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, "http://127.0.0.1:1/v1".into());
+        eng.endpoint.model_id = "gpt-6.2-sol".into();
+        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Medium));
+        assert_eq!(eng.resolve_effort_for_turn(false, true), Some(EffortLevel::High));
+        assert_eq!(eng.resolve_effort_for_turn(true, true), Some(EffortLevel::Low));
+        eng.thinking_level = Some("max".into());
+        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Max));
+        eng.endpoint.model_id = "claude-sonnet-5-5".into();
+        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Max));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cross_model_cryptographic_proof_scoping_blocks_foreign_model_and_taint() {
+        let mut msg = HarnessMessage::assistant_with_signature(
+            "checking",
+            Some("deep thought".into()),
+            Some("sig_claude_v1".into()),
+            vec![ToolCallRecord {
+                id: "tc_1".into(),
+                name: "read_file".into(),
+                arguments: "{\"path\":\"a.py\"}".into(),
+            }],
+            2,
+        )
+        .with_origin("anthropic", "claude-sonnet-5-5");
+        msg.redacted_thinking.push("opaque_blob".into());
+        msg.reasoning_encrypted_items
+            .push(json!({ "type": "reasoning", "encrypted_content": "enc_xyz" }));
+
+        let same_ant = build_anthropic_messages_for_target(
+            std::slice::from_ref(&msg),
+            true,
+            1,
+            "anthropic",
+            "claude-sonnet-5-5",
+        );
+        let same_blocks = same_ant[0]["content"].as_array().unwrap();
+        assert!(same_blocks.iter().any(|b| b["type"] == "thinking"));
+        assert!(same_blocks.iter().any(|b| b["type"] == "redacted_thinking"));
+
+        let foreign_ant = build_anthropic_messages_for_target(
+            std::slice::from_ref(&msg),
+            true,
+            1,
+            "openai",
+            "gpt-6.2-sol",
+        );
+        let foreign_blocks = foreign_ant[0]["content"].as_array().unwrap();
+        assert!(!foreign_blocks.iter().any(|b| b["type"] == "thinking"));
+        assert!(!foreign_blocks.iter().any(|b| b["type"] == "redacted_thinking"));
+
+        let tainted = msg.clone().mark_reasoning_error_tainted();
+        let tainted_ant = build_anthropic_messages_for_target(
+            std::slice::from_ref(&tainted),
+            true,
+            1,
+            "anthropic",
+            "claude-sonnet-5-5",
+        );
+        assert!(!tainted_ant[0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["type"] == "thinking"));
+
+        let tmp = std::env::temp_dir().join(format!("omni_xproof_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, "http://127.0.0.1:1/v1".into());
+        eng.endpoint.provider_id = "anthropic".into();
+        eng.endpoint.model_id = "claude-sonnet-5-5".into();
+        eng.messages.push(msg.clone());
+        let same_resp_items = eng.build_openai_responses_input_items();
+        assert!(same_resp_items.iter().any(|i| i["type"] == "reasoning"));
+
+        eng.endpoint.model_id = "gpt-6.2-sol".into();
+        let foreign_resp_items = eng.build_openai_responses_input_items();
+        assert!(!foreign_resp_items.iter().any(|i| i["type"] == "reasoning"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn ws_continuation_sends_previous_response_id_delta_and_falls_back_to_http() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ws_payloads = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let ws_bg = Arc::clone(&ws_payloads);
+
+        let srv = tokio::spawn(async move {
+            // Connection 1: persistent WS server handles Turn 1 (full) + Turn 2 (delta via previous_response_id)
+            let (sock1, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(sock1).await.unwrap();
+
+            // Turn 1 WS frame -> response.output_item (read_file a.py)
+            let m1 = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let v1: Value = serde_json::from_str(&m1).unwrap();
+            ws_bg.lock().unwrap().push(v1);
+            let f1 = [
+                json!({"type":"response.created","response":{"id":"resp_ws_1"}}),
+                json!({"type":"response.output_item.done","item":{"id":"it1","type":"function_call","call_id":"c_ws_1","name":"read_file","arguments":"{\"path\":\"a.py\"}"}}),
+                json!({"type":"response.completed","response":{"id":"resp_ws_1","usage":{"input_tokens":60,"output_tokens":8}}}),
+            ];
+            for ev in f1 {
+                ws.send(WsMessage::Text(ev.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+
+            // Turn 2 WS frame -> must carry previous_response_id="resp_ws_1" and incremental output only, then close cleanly
+            let m2 = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let v2: Value = serde_json::from_str(&m2).unwrap();
+            ws_bg.lock().unwrap().push(v2);
+            let f2 = [
+                json!({"type":"response.created","response":{"id":"resp_ws_2"}}),
+                json!({"type":"response.output_text.delta","delta":"WS_TURN2_OK"}),
+                json!({"type":"response.completed","response":{"id":"resp_ws_2","usage":{"input_tokens":80,"output_tokens":4,"input_tokens_details":{"cached_tokens":60}}}}),
+            ];
+            for ev in f2 {
+                ws.send(WsMessage::Text(ev.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+            let _ = ws.close(None).await;
+
+            // Prompt 2 reconnects over WS -> reject upgrade with HTTP 426 so engine degrades cleanly to HTTP SSE!
+            let (mut s_rej, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut s_rej).await;
+            let _ = s_rej
+                .write_all(b"HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\nuse http")
+                .await;
+            let _ = s_rej.shutdown().await;
+
+            let (mut s_http, _) = listener.accept().await.unwrap();
+            let req_http = read_http_request(&mut s_http).await;
+            assert!(req_http.starts_with("POST /v1/responses"));
+            let ok = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"HTTP_FALLBACK_AFTER_WS_OK\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":90,\"output_tokens\":5}}}\n\n";
+            let _ = s_http.write_all(ok.as_bytes()).await;
+            let _ = s_http.shutdown().await;
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_ws_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), "X = 42\n").unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "gpt-6.2-sol".into();
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.responses_ws_enabled = true;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+
+        let sum1 = eng.run_prompt("read a.py", 4, 20, None).await.unwrap();
+        assert_eq!(sum1.final_text, "WS_TURN2_OK");
+        assert_eq!(eng.total_ws_turns, 2);
+
+        let captured = ws_payloads.lock().unwrap().clone();
+        assert_eq!(captured.len(), 2);
+        assert!(captured[0].get("previous_response_id").is_none());
+        assert_eq!(captured[1]["previous_response_id"], json!("resp_ws_1"));
+        assert_eq!(captured[1]["input"].as_array().unwrap().len(), 1);
+        assert_eq!(captured[1]["input"][0]["type"], json!("function_call_output"));
+
+        // Second prompt encounters 426 on WS reconnect and falls back transparently to HTTP SSE
+        let sum2 = eng.run_prompt("next step", 4, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum2.final_text, "HTTP_FALLBACK_AFTER_WS_OK");
+        assert!(eng.total_ws_fallbacks >= 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn responses_sse_handles_reasoning_text_delta_encrypted_replay_and_tool_choice_none() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let reqs = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let reqs_bg = Arc::clone(&reqs);
+
+        let srv = tokio::spawn(async move {
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let r1 = http_body_json(&read_http_request(&mut s1).await);
+            reqs_bg.lock().unwrap().push(r1);
+            let sse1 = concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                ": keepalive\n\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r_1\"}}\n\n",
+                "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking step\"}\n\n",
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_item_abc\"}}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\"}}\n\n",
+                "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"path\\\":\\\"a.py\\\"}\"}\n\n",
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.py\\\"}\"}}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":25,\"output_tokens_details\":{\"reasoning_tokens\":12}}}}\n\n"
+            );
+            let _ = s1.write_all(sse1.as_bytes()).await;
+            let _ = s1.shutdown().await;
+
+            // Turn 2 (max_turns = 2 -> final turn must include tool_choice: "none" and replay encrypted reasoning)
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let r2 = http_body_json(&read_http_request(&mut s2).await);
+            reqs_bg.lock().unwrap().push(r2);
+            let sse2 = concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"FINAL_SUMMARY_OK\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":140,\"output_tokens\":8,\"input_tokens_details\":{\"cached_tokens\":100}}}}\n\n"
+            );
+            let _ = s2.write_all(sse2.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_resp_enc_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), "VAL = 1\n").unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "gpt-6.2-sol".into();
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+
+        let sum = eng.run_prompt("inspect a.py", 2, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "FINAL_SUMMARY_OK");
+
+        let captured = reqs.lock().unwrap().clone();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0]["reasoning"]["effort"], json!("medium"));
+        assert_eq!(
+            captured[0]["include"],
+            json!(["reasoning.encrypted_content"])
+        );
+        assert_eq!(captured[0]["tools"], captured[1]["tools"]);
+        assert_eq!(captured[1]["tool_choice"], json!("none"));
+        assert!(captured[1]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["type"] == "reasoning" && i["encrypted_content"] == "enc_item_abc"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn non_claude_anthropic_502_auto_falls_back_to_chat_completions() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let paths_bg = Arc::clone(&paths);
+
+        let srv = tokio::spawn(async move {
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let r1 = read_http_request(&mut s1).await;
+            paths_bg
+                .lock()
+                .unwrap()
+                .push(r1.lines().next().unwrap_or("").to_string());
+            let _ = s1
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nupstream error")
+                .await;
+            let _ = s1.shutdown().await;
+
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let r2 = read_http_request(&mut s2).await;
+            paths_bg
+                .lock()
+                .unwrap()
+                .push(r2.lines().next().unwrap_or("").to_string());
+            let ok = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"GEMINI_502_FAILOVER_OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":4}}\n\n\
+data: [DONE]\n\n";
+            let _ = s2.write_all(ok.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_gem_502_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "gemini-3.8-flash".into();
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("hello", 4, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "GEMINI_502_FAILOVER_OK");
+        assert!(eng.anthropic_fallback_to_openai);
+        let p = paths.lock().unwrap();
+        assert!(p[0].contains("POST /v1/messages"));
+        assert!(p[1].contains("POST /v1/chat/completions"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn multimodal_content_blocks_lower_across_dialects_and_hysteresis_bounds_images() {
+        let msg = HarnessMessage::user_multimodal(
+            "inspect screenshot",
+            vec![ContentBlock::ImageBase64 {
+                media_type: "image/png".into(),
+                data_base64: "AAAA".repeat(16),
+                detail: Some("high".into()),
+                filename: Some("snap.png".into()),
+            }],
+            1,
+        );
+
+        let openai_json = message_to_openai_json_for_target(
+            &msg,
+            1,
+            false,
+            false,
+            "openai",
+            "gpt-6.2-sol",
+        );
+        assert_eq!(openai_json["content"][0]["type"], json!("text"));
+        assert_eq!(openai_json["content"][1]["type"], json!("image_url"));
+
+        let ant_json = build_anthropic_messages_for_target(
+            std::slice::from_ref(&msg),
+            false,
+            1,
+            "anthropic",
+            "claude-sonnet-5-5",
+        );
+        let ant_blks = ant_json[0]["content"].as_array().unwrap();
+        assert_eq!(ant_blks[1]["type"], json!("image"));
+        assert_eq!(ant_blks[1]["source"]["media_type"], json!("image/png"));
+
+        let tmp = std::env::temp_dir().join(format!("omni_mm_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, "http://127.0.0.1:1/v1".into());
+        eng.messages.push(msg);
+        let resp_items = eng.build_openai_responses_input_items();
+        assert_eq!(resp_items[0]["content"][1]["type"], json!("input_image"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn router_sqlite_hooks_memory_tail_fold_and_rtk_compressor_integration() {
+        let tmp = std::env::temp_dir().join(format!("omni_v5_int_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let router_db = tmp.join("router.db");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let reqs = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let reqs_bg = Arc::clone(&reqs);
+
+        let srv = tokio::spawn(async move {
+            // Turn 1 triggers a noisy shell output (>2KB) to verify RTK output_compressor
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let r1 = http_body_json(&read_http_request(&mut s1).await);
+            reqs_bg.lock().unwrap().push(r1);
+            let cmd_payload = "python -B -c \"print('\\x1b[32mok line\\x1b[0m\\n' * 220 + 'AssertionError: line 7')\"";
+            let sse1 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"sh_rtk\",\"function\":{{\"name\":\"shell\",\"arguments\":{}}}}}]}} ,\"finish_reason\":\"tool_calls\"}}],\"usage\":{{\"prompt_tokens\":60,\"completion_tokens\":8}}}}\n\n\
+data: [DONE]\n\n",
+                serde_json::to_string(&json!({ "command": cmd_payload }).to_string()).unwrap()
+            );
+            let _ = s1.write_all(sse1.as_bytes()).await;
+            let _ = s1.shutdown().await;
+
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let r2 = http_body_json(&read_http_request(&mut s2).await);
+            reqs_bg.lock().unwrap().push(r2);
+            let sse2 = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"V5_INTEGRATED_OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":90,\"completion_tokens\":4}}\n\n\
+data: [DONE]\n\n";
+            let _ = s2.write_all(sse2.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.api_key = "dummy-fixture-key".into();
+        eng.init_default_sqlite_router(Some(&router_db)).unwrap();
+        assert!(router_db.exists());
+        eng.register_role_endpoint(ModelRole::Advisor, eng.endpoint.clone());
+        let adv = eng.resolve_role_endpoint(ModelRole::Advisor);
+        assert_eq!(adv.model_id, eng.endpoint.model_id);
+
+        // Proactive quota gate check
+        let probe = QuotaProbeSnapshot {
+            limit_reached: true,
+            buckets: vec![omnia_connector_gateway::htmustc_wire::QuotaBucket {
+                name: "daily".into(),
+                total: 100,
+                remaining: 0,
+                unlimited: false,
+                reset_at_epoch_ms: None,
+            }],
+        };
+        assert!(eng.apply_proactive_quota_snapshot("mock::mock-model", &probe, 1_000));
+
+        // MemoryEngine tail recall check
+        let mem = Arc::new(MemoryEngine::open_in_memory().unwrap());
+        let scope = MemoryEngine::compute_bank_scope(
+            "omnia",
+            "main",
+            crate::memory_engine::BankScopingMode::PerProjectTagged,
+            &tmp,
+        );
+        mem.retain(
+            &scope.bank_id,
+            crate::memory_engine::RetainItemInput {
+                namespace_path: "workspace/facts".into(),
+                key: "rtk_rule".into(),
+                content: "Always check AssertionError line anchors after running shell.".into(),
+                context: None,
+                tier: omnia_harness::MemoryTier::Durable,
+                kind: omnia_harness::MemoryKind::WorldFact,
+                scope: omnia_harness::MemoryScope::Project,
+                provenance: omnia_harness::MemoryProvenance::VerifiedUser,
+                importance_bps: 8_500,
+                tags: scope.project_tag.into_iter().collect(),
+                links: Vec::new(),
+                now_ms: Some(1_000),
+            },
+        )
+        .unwrap();
+        eng.bind_memory_engine(mem);
+
+        let sum = eng.run_prompt("check AssertionError shell output", 4, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "V5_INTEGRATED_OK");
+
+        let captured = reqs.lock().unwrap().clone();
+        assert!(captured[0]["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<recalled_memories"));
+        assert!(eng.total_rtk_compressions >= 1);
+        let tool_msg = captured[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(tool_msg.contains("AssertionError: line 7"));
+        assert!(!tool_msg.contains("\u{1b}[32m"));
+
+        // FoldAgent branch & fold check
+        eng.branch_context_fold("b1", "explore");
+        eng.messages.push(HarnessMessage::user("temp noise", 9));
+        let folded = eng.complete_context_fold("b1", "checked ok", &["a.py".into()]).unwrap();
+        assert_eq!(folded.folded_messages, 1);
+        assert_eq!(eng.total_fold_compressions, 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn responses_pre_ttft_zero_sse_caps_at_60s_while_keepalive_honors_240s() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(300);
+        // Case A: Hung /v1/responses socket with zero SSE bytes (`last_wire_activity_at = None`)
+        let silent_wait = compute_token_progress_wait_with_wire(
+            now,
+            None,
+            None,
+            Duration::from_secs(150),
+            Duration::from_secs(65),
+            deadline,
+            "OpenAI Responses SSE",
+        )
+        .unwrap();
+        assert!(silent_wait <= Duration::from_secs(60));
+
+        // Case B: Active wire keepalive / lifecycle event -> full 240s silent reasoning allowance
+        let active_wait = compute_token_progress_wait_with_wire(
+            now,
+            None,
+            Some(now),
+            Duration::from_secs(150),
+            Duration::from_secs(65),
+            deadline,
+            "OpenAI Responses SSE",
+        )
+        .unwrap();
+        assert!(active_wait > Duration::from_secs(200));
+    }
+
+    #[test]
+    fn reasoning_phase_keeps_150s_to_240s_allowance_until_visible_output_and_tps_avoids_burst_spike() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(240);
+        let reasoned_at = now - Duration::from_secs(70);
+        // Active reasoning-only phase (>65s since headline, zero text/tool_calls yet) must NOT stall at 65s
+        let with_wire = compute_token_progress_wait_with_phase(
+            now - Duration::from_secs(80),
+            Some(reasoned_at),
+            Some(now - Duration::from_secs(5)),
+            Duration::from_secs(150),
+            Duration::from_secs(65),
+            deadline,
+            "OpenAI Responses SSE",
+            true,
+        )
+        .unwrap();
+        assert!(with_wire > Duration::from_secs(100));
+
+        let quiet_reasoning = compute_token_progress_wait_with_phase(
+            now - Duration::from_secs(80),
+            Some(reasoned_at),
+            None,
+            Duration::from_secs(150),
+            Duration::from_secs(65),
+            deadline,
+            "OpenAI Responses SSE",
+            true,
+        )
+        .unwrap();
+        assert!(quiet_reasoning >= Duration::from_secs(75));
+
+        // Once non-reasoning text/tool output begins (`in_reasoning_only = false`), 65s stall applies
+        assert!(compute_token_progress_wait_with_phase(
+            now - Duration::from_secs(80),
+            Some(reasoned_at),
+            Some(now - Duration::from_secs(5)),
+            Duration::from_secs(150),
+            Duration::from_secs(65),
+            deadline,
+            "OpenAI Responses SSE",
+            false,
+        )
+        .is_err());
+
+        // Burst-flushed `<100` token turns must floor gen_ms at >= 50ms instead of 1ms (`78k TPS` artifact)
+        let gen_ms = compute_pure_gen_duration_ms(Instant::now(), Some(0), Some(now), Some(now), 65);
+        assert!(gen_ms >= 50);
+
+        // `gen_tokens_per_second` must reflect physical `gen_dur_ms` (not >5s-gap-truncated `active_decode_ms`)
+        let (_e2e, g_tps, a_tps) = compute_eval_tps_metrics(4_470, 120_000, 105_811, 4_438);
+        assert!((42.0..=42.5).contains(&g_tps), "g_tps={g_tps}");
+        assert!((42.0..=42.5).contains(&a_tps), "a_tps={a_tps}");
+
+        // Genuine non-gapped streaming retains distinct `active_decode_tps` alongside `gen_tps`
+        let (_e2e2, g2, a2) = compute_eval_tps_metrics(1_000, 20_000, 18_000, 12_000);
+        assert!((55.0..=56.0).contains(&g2));
+        assert!((83.0..=84.0).contains(&a2));
     }
 }

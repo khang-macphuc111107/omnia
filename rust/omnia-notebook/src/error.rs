@@ -89,6 +89,18 @@ pub enum NotebookError {
     /// JSON serialization/deserialization error.
     #[error("JSON serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// No LLM endpoint or credential configured for real notebook generation.
+    #[error("notebook LLM provider unconfigured: {0}")]
+    ProviderUnconfigured(String),
+
+    /// Upstream LLM wire call failed or returned invalid output.
+    #[error("notebook LLM request failed: {0}")]
+    LlmFailed(String),
+
+    /// Offline Whisper transcription binary/environment is unavailable or failed.
+    #[error("offline Whisper transcription unavailable: {0}")]
+    WhisperUnavailable(String),
 }
 
 impl NotebookError {
@@ -115,6 +127,9 @@ impl NotebookError {
             Self::Http(_) => "HTTP_TRANSPORT_ERROR",
             Self::Io(_) => "IO_ERROR",
             Self::Serialization(_) => "SERIALIZATION_ERROR",
+            Self::ProviderUnconfigured(_) => "PROVIDER_UNCONFIGURED",
+            Self::LlmFailed(_) => "LLM_REQUEST_FAILED",
+            Self::WhisperUnavailable(_) => "WHISPER_UNAVAILABLE",
         }
     }
 
@@ -138,7 +153,8 @@ impl NotebookError {
             ) => 429,
             Self::GeminiShare(_) => 422,
             Self::IngestionFailed { .. } => 422,
-            Self::Http(_) => 502,
+            Self::Http(_) | Self::LlmFailed(_) => 502,
+            Self::ProviderUnconfigured(_) | Self::WhisperUnavailable(_) => 503,
             Self::Storage(_) | Self::Io(_) => 500,
         }
     }

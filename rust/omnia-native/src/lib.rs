@@ -5,6 +5,7 @@ pub(crate) mod d2d;
 pub mod dpi;
 pub(crate) mod session_panel;
 pub mod sessions;
+pub mod studio_host;
 pub mod types;
 pub mod uia_provider;
 pub(crate) mod win32_shell;
@@ -34,4 +35,5 @@ pub use types::{
     ID_SYM_CHEM, ID_SYM_MATH, ID_SYM_PHYS, ID_TITLE_LABEL, MAX_SETTING_CHARS, STUDIO_BADGE_TEXT,
     UNCONFIGURED_MODEL_SENTINEL, WM_SESSION_WORKER_WAKE,
 };
+pub use studio_host::{parse_studio_args, run_studio_host, StudioHostOptions};
 pub use win32_shell::{run_native_shell, show_startup_error};

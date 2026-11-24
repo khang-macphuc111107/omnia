@@ -10,9 +10,18 @@ pub enum CoreError {
     #[error("invalid UTF-8 input: {0}")]
     InvalidUtf8(String),
 
+    #[error("invalid UTF-16 input: {0}")]
+    InvalidUtf16(String),
+
     #[error("invalid JSON input: {0}")]
     InvalidJson(String),
 
     #[error("OS CSPRNG failed: {0}")]
     RngFailed(String),
+
+    #[error("credential store error: {0}")]
+    CredentialError(String),
+
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }

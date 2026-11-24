@@ -7,8 +7,12 @@ description = "INT-07 browser CDP, Win32 window capture receipt, and OBS WebSock
 
 [dependencies]
 base64 = "0.23"
+futures-util.workspace = true
+omnia-workspace-ops.workspace = true
 serde = { version = "1", default-features = false, features = ["std"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tokio.workspace = true
+tokio-tungstenite.workspace = true
 url = "2"

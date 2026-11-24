@@ -97,6 +97,49 @@ fn memory_graph_cycles_and_erasure() {
 #[test]
 fn proactive_rag_bilingual_and_citation_gates() {
     let rag = ProactiveRag::new();
+    for src in [
+        omnia_harness::CorpusSource {
+            id: "src-dynamic-router".to_owned(),
+            title: "DynamicProviderRouter & Quota Truthfulness".to_owned(),
+            locator: "docs/workspace/DYNAMIC_ROUTING_REQUIREMENTS.md".to_owned(),
+            content: "Deterministic provider/model router with Known, Unknown, Stale, and Contradictory quota states, token_budget strictly defaulting to None, circuit breakers, fencing tokens, and secret-free JSON route receipts. Dinh tuyen dong va han muc.".to_owned(),
+            keywords: vec!["router", "quota", "circuit", "fallback", "fencing", "budget", "dinh tuyen", "han muc", "do thi"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            provenance: omnia_harness::SourceProvenance::Extracted,
+            is_superseded: false,
+            freshness_label: "current".to_owned(),
+        },
+        omnia_harness::CorpusSource {
+            id: "src-ambiguous-draft".to_owned(),
+            title: "Unverified Experimental Scratch Note".to_owned(),
+            locator: "docs/drafts/unverified.md".to_owned(),
+            content: "Speculative unverified router shortcut hypothesis pending verification.".to_owned(),
+            keywords: vec!["router", "quota", "draft", "speculative"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            provenance: omnia_harness::SourceProvenance::Ambiguous,
+            is_superseded: false,
+            freshness_label: "draft".to_owned(),
+        },
+        omnia_harness::CorpusSource {
+            id: "src-legacy-tauri-superseded".to_owned(),
+            title: "Retired Rust/Tauri Architecture Snapshot".to_owned(),
+            locator: "archive/pre-cpp-rust-snapshot-20261112".to_owned(),
+            content: "Superseded pre-migration Tauri webview IPC notes replaced by native Flagship Studio.".to_owned(),
+            keywords: vec!["tauri", "legacy", "router", "architecture"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            provenance: omnia_harness::SourceProvenance::Extracted,
+            is_superseded: true,
+            freshness_label: "superseded".to_owned(),
+        },
+    ] {
+        rag.upsert_source(src);
+    }
 
     // Accent-insensitive Vietnamese query AND accented Vietnamese query must both resolve!
     let vn_accented = rag.plan_and_retrieve(

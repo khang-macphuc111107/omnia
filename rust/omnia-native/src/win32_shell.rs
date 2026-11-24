@@ -792,6 +792,9 @@ pub fn show_startup_error(message: &str) {
 /// Launch the native Win32/D2D/UIA shell and run its Windows message loop until closed.
 pub fn run_native_shell() -> Result<(), StoreError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--studio") {
+        return crate::studio_host::run_studio_host(&args);
+    }
     let db_path = parse_session_db_args(&args)
         .map_err(|err| StoreError::new(err.code, err.message, false))?;
 

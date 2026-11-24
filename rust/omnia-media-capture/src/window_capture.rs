@@ -10,6 +10,18 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub use omnia_workspace_ops::win32_window::{CapturedWindowPng, LiveWindowInfo};
+
+/// Enumerates live visible top-level Win32 windows for capture selection.
+pub fn list_windows() -> Result<Vec<LiveWindowInfo>, String> {
+    omnia_workspace_ops::win32_window::list_visible_windows()
+}
+
+/// Captures an HWND to a lossless PNG clamped to [`DEFAULT_MAX_CAPTURE_DIMENSION`].
+pub fn capture_window_png(hwnd: isize) -> Result<CapturedWindowPng, String> {
+    omnia_workspace_ops::win32_window::capture_window_png(hwnd, DEFAULT_MAX_CAPTURE_DIMENSION)
+}
+
 /// Default maximum captured width or height in pixels, aligned with `native/qa-capture.ps1`.
 pub const DEFAULT_MAX_CAPTURE_DIMENSION: u32 = 8192;
 /// SHA-256 hex digest of an empty byte slice (`""`), always rejected for frame receipts.

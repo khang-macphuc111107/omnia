@@ -1,10 +1,78 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use omnia_core::{sha256_hex, SecretRedactor};
+use crate::{sha256_hex, SecretRedactor};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::proactive_rag::{fold_vietnamese_ascii, has_vietnamese_diacritics};
+/// Detect accented Vietnamese letters in precomposed or decomposed text, including đ/Đ.
+///
+/// ```
+/// use omnia_core::has_vietnamese_diacritics;
+///
+/// assert!(has_vietnamese_diacritics("m\u{00e1}")); // precomposed á
+/// assert!(has_vietnamese_diacritics("ma\u{0301}")); // decomposed á
+/// assert!(!has_vietnamese_diacritics("b\u{0301}")); // not a Vietnamese vowel
+/// ```
+#[must_use]
+pub fn has_vietnamese_diacritics(input: &str) -> bool {
+    let mut base = '\0';
+    for ch in input.chars() {
+        if ch.is_ascii() {
+            base = ch.to_ascii_lowercase();
+            continue;
+        }
+        if fold_vietnamese_char(ch).is_ascii() {
+            return true;
+        }
+        let accented = match ch {
+            '\u{0300}' | '\u{0301}' | '\u{0303}' | '\u{0309}' | '\u{0323}' => {
+                matches!(base, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+            }
+            '\u{0302}' => matches!(base, 'a' | 'e' | 'o'),
+            '\u{0306}' => base == 'a',
+            '\u{031B}' => matches!(base, 'o' | 'u'),
+            _ => false,
+        };
+        if accented {
+            return true;
+        }
+        base = '\0';
+    }
+    false
+}
+
+/// Fold accented Vietnamese characters (NFC or NFD) and uppercase ASCII into
+/// accent-insensitive lowercase ASCII for reliable bilingual matching.
+#[must_use]
+fn fold_vietnamese_char(ch: char) -> char {
+    match ch {
+        'á' | 'à' | 'ả' | 'ã' | 'ạ' | 'ă' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' | 'â' | 'ấ' | 'ầ'
+        | 'ẩ' | 'ẫ' | 'ậ' | 'Á' | 'À' | 'Ả' | 'Ã' | 'Ạ' | 'Ă' | 'Ắ' | 'Ằ' | 'Ẳ' | 'Ẵ' | 'Ặ'
+        | 'Â' | 'Ấ' | 'Ầ' | 'Ẩ' | 'Ẫ' | 'Ậ' => 'a',
+        'é' | 'è' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ế' | 'ề' | 'ể' | 'ễ' | 'ệ' | 'É' | 'È' | 'Ẻ'
+        | 'Ẽ' | 'Ẹ' | 'Ê' | 'Ế' | 'Ề' | 'Ể' | 'Ễ' | 'Ệ' => 'e',
+        'í' | 'ì' | 'ỉ' | 'ĩ' | 'ị' | 'Í' | 'Ì' | 'Ỉ' | 'Ĩ' | 'Ị' => 'i',
+        'ó' | 'ò' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ớ' | 'ờ'
+        | 'ở' | 'ỡ' | 'ợ' | 'Ó' | 'Ò' | 'Ỏ' | 'Õ' | 'Ọ' | 'Ô' | 'Ố' | 'Ồ' | 'Ổ' | 'Ỗ' | 'Ộ'
+        | 'Ơ' | 'Ớ' | 'Ờ' | 'Ở' | 'Ỡ' | 'Ợ' => 'o',
+        'ú' | 'ù' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự' | 'Ú' | 'Ù' | 'Ủ'
+        | 'Ũ' | 'Ụ' | 'Ư' | 'Ứ' | 'Ừ' | 'Ử' | 'Ữ' | 'Ự' => 'u',
+        'ý' | 'ỳ' | 'ỷ' | 'ỹ' | 'ỵ' | 'Ý' | 'Ỳ' | 'Ỷ' | 'Ỹ' | 'Ỵ' => 'y',
+        'đ' | 'Đ' => 'd',
+        other => other.to_ascii_lowercase(),
+    }
+}
+
+pub fn fold_vietnamese_ascii(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ('\u{0300}'..='\u{036F}').contains(&ch) {
+            continue;
+        }
+        out.push(fold_vietnamese_char(ch));
+    }
+    out
+}
 
 /// Canonical data-plane envelope tag preventing prompt injection into normalized records.
 pub const DATA_PLANE_SCHEMA_MODE: &str = "INERT_STRING_RECORD_ONLY";

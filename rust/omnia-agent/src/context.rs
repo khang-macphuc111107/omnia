@@ -8,15 +8,121 @@
 //! All discovered workspace context is injected ONLY into Turn-1 user context (NEVER into
 //! Token-0 System Prompt) so prefix caching across sessions and turns stays rock-solid!
 
+use crate::cache_guard::sha256_hex;
 use crate::graph_locator::WorkspaceGraphIndex;
 use crate::path_guard::sanitize_windows_path;
 use crate::sanitizer::sanitize_untrusted_text;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const MAX_RULE_FILE_CHARS: usize = 6_000;
 const MAX_TOTAL_RULES_CHARS: usize = 12_000;
+
+/// Diff status in a SHA-256 Instruction Delta Epoch (`opencode/packages/core/src/instructions/index.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionDeltaEntry {
+    Hash(String),
+    Removed,
+}
+
+/// Content-addressed SHA-256 tracker for instruction sources (`AGENTS.md`, `CLAUDE.md`, rules,
+/// dynamic hooks). Turn-1 establishes an immutable `initial_values` baseline; later turns emit ONLY
+/// Tier-3 tail deltas for keys whose canonical SHA-256 actually changed or disappeared so Prefix-0 stays cached.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionEpochState {
+    pub initialized: bool,
+    pub epoch: u64,
+    pub initial_values: BTreeMap<String, String>,
+    pub current_values: BTreeMap<String, String>,
+    pub blobs: BTreeMap<String, String>,
+}
+
+impl InstructionEpochState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Observe current instruction `(key, optional_body)` pairs.
+    /// First observation freezes `initial_values` & returns `None` (already in Turn-1 prefix).
+    /// Subsequent observations return `Some("<instructions_update ...>")` ONLY when >=1 key hash changed or was removed.
+    pub fn observe_and_commit(
+        &mut self,
+        sources: &[(String, Option<String>)],
+        turn_index: u32,
+    ) -> Option<String> {
+        let mut delta: BTreeMap<String, InstructionDeltaEntry> = BTreeMap::new();
+        let mut changed_rendered: Vec<String> = Vec::new();
+
+        for (key, body_opt) in sources {
+            let trimmed_key = key.trim();
+            if trimmed_key.is_empty() {
+                continue;
+            }
+            match body_opt {
+                None => {
+                    if self.current_values.contains_key(trimmed_key) {
+                        delta.insert(trimmed_key.to_string(), InstructionDeltaEntry::Removed);
+                        if self.initialized {
+                            changed_rendered.push(format!("[removed {trimmed_key}]"));
+                        }
+                    }
+                }
+                Some(body) => {
+                    let canonical = serde_json::to_string(body).unwrap_or_else(|_| body.clone());
+                    let hash = sha256_hex(canonical.as_bytes());
+                    if self.current_values.get(trimmed_key).map(String::as_str) != Some(hash.as_str()) {
+                        delta.insert(trimmed_key.to_string(), InstructionDeltaEntry::Hash(hash.clone()));
+                        self.blobs.entry(hash.clone()).or_insert_with(|| body.clone());
+                        if self.initialized {
+                            changed_rendered.push(format!("## {trimmed_key} (sha256:{})\n{}", &hash[..12], body.trim()));
+                        }
+                    }
+                }
+            }
+        }
+
+        if delta.is_empty() {
+            return None;
+        }
+        for (k, entry) in delta {
+            match entry {
+                InstructionDeltaEntry::Hash(h) => {
+                    self.current_values.insert(k, h);
+                }
+                InstructionDeltaEntry::Removed => {
+                    self.current_values.remove(&k);
+                }
+            }
+        }
+        if !self.initialized {
+            self.initialized = true;
+            self.epoch = 1;
+            self.initial_values = self.current_values.clone();
+            return None;
+        }
+        self.epoch += 1;
+        Some(format!(
+            "<instructions_update epoch=\"{}\" turn=\"{}\">\n{}\n</instructions_update>",
+            self.epoch,
+            turn_index,
+            changed_rendered.join("\n\n")
+        ))
+    }
+
+    /// Reconstruct initial Turn-1 rendered strings from frozen `initial_values`.
+    #[must_use]
+    pub fn initial_entries(&self) -> Vec<(String, String)> {
+        self.initial_values
+            .iter()
+            .filter_map(|(k, h)| self.blobs.get(h).map(|v| (k.clone(), v.clone())))
+            .collect()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -430,5 +536,35 @@ mod tests {
         assert!(bundle.load_skill_body("evil-skill").is_err());
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn instruction_epoch_freezes_turn1_baseline_and_emits_only_sha256_deltas() {
+        let mut tracker = InstructionEpochState::new();
+        let turn1_sources = vec![
+            ("AGENTS.md".into(), Some("Follow strict LF".into())),
+            ("CLAUDE.md".into(), Some("Keep KV clean".into())),
+        ];
+        // Turn 1 freezes baseline and returns None so Turn-1 prefix stays unmodified.
+        assert!(tracker.observe_and_commit(&turn1_sources, 1).is_none());
+        assert_eq!(tracker.epoch, 1);
+        let init_snapshot = tracker.initial_values.clone();
+
+        // Turn 2 with unchanged sources returns None (100% cache hit).
+        assert!(tracker.observe_and_commit(&turn1_sources, 2).is_none());
+        assert_eq!(tracker.epoch, 1);
+
+        // Turn 3 updates AGENTS.md and removes CLAUDE.md -> emits concise delta without mutating initial_values.
+        let turn3_sources = vec![
+            ("AGENTS.md".into(), Some("Follow strict LF + Rust".into())),
+            ("CLAUDE.md".into(), None),
+        ];
+        let delta = tracker
+            .observe_and_commit(&turn3_sources, 3)
+            .expect("delta on change");
+        assert!(delta.contains("<instructions_update epoch=\"2\" turn=\"3\">"));
+        assert!(delta.contains("AGENTS.md"));
+        assert!(delta.contains("[removed CLAUDE.md]"));
+        assert_eq!(tracker.initial_values, init_snapshot);
     }
 }

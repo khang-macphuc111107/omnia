@@ -246,12 +246,18 @@ def probe_toolchains(
         node_candidates.append(Path(local_app_data) / "nodejs-nightly" / "current" / "node.exe")
 
     edge_candidates: list[Path] = []
-    if pf86:
-        edge_candidates.append(Path(pf86) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
-    if pf:
-        edge_candidates.append(Path(pf) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
-    if local_app_data:
-        edge_candidates.append(Path(local_app_data) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+    edge_roots: list[Path] = []
+    for raw_root in (pf86, pf, local_app_data):
+        if raw_root:
+            edge_roots.append(Path(raw_root))
+    if user_profile:
+        alt_local = Path("E:/Users") / Path(user_profile).name / "AppData" / "Local"
+        if alt_local not in edge_roots:
+            edge_roots.append(alt_local)
+    for edge_root in edge_roots:
+        edge_candidates.append(edge_root / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+        for ver_dir in reversed(_safe_iterdir(edge_root / "Microsoft" / "EdgeCore", env)):
+            edge_candidates.append(ver_dir / "msedge.exe")
 
     vcvars_path, vcvars_src = _find_on_path_or_candidates(("vcvars64.bat",), vcvars_candidates, env)
     cl_path, cl_src = _find_on_path_or_candidates(("cl", "cl.exe"), cl_candidates, env)

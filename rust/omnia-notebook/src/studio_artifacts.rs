@@ -4,6 +4,7 @@
 //! `Briefing`, `StudyGuide`, `Faq`, `Timeline`, `Quiz`, `Flashcards`, `MindMap` (Mermaid),
 //! `InfographicSpec`, and `DataTable`.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use omnia_core::{now_epoch_ms, SecretRedactor};
@@ -12,15 +13,21 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::error::NotebookError;
+use crate::grounding::GroundingEngine;
+use crate::llm_client::{complete_prompt, extract_json_payload, NotebookLlmConfig};
 use crate::source_library::{SourceChunkRecord, SourceFilter, SourceLibrary, SourceRecord};
 use crate::store::{NotebookStore, StoredArtifactRow};
 
-/// All 9 Studio Artifact formats (`StudioArtifactKind` public Wave 3 contract).
+/// All Studio Artifact formats covering the 9 Atelier v5 outputs
+/// (`AudioOverview`, `MindMap`, `Flashcards`, `Quiz`, `SlideDeck`, `DataTable`,
+/// `InfographicSpec`, `Briefing`, `StudyGuide`) plus `Faq` & `Timeline`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StudioArtifactKind {
     Briefing,
     StudyGuide,
+    AudioOverview,
+    SlideDeck,
     Faq,
     Timeline,
     Quiz,
@@ -36,6 +43,8 @@ impl StudioArtifactKind {
         match self {
             Self::Briefing => "briefing",
             Self::StudyGuide => "study_guide",
+            Self::AudioOverview => "audio_overview",
+            Self::SlideDeck => "slide_deck",
             Self::Faq => "faq",
             Self::Timeline => "timeline",
             Self::Quiz => "quiz",
@@ -49,8 +58,10 @@ impl StudioArtifactKind {
     #[must_use]
     pub const fn default_title(self) -> &'static str {
         match self {
-            Self::Briefing => "Executive Briefing",
+            Self::Briefing => "Briefing Doc",
             Self::StudyGuide => "Study Guide",
+            Self::AudioOverview => "Audio Overview Script",
+            Self::SlideDeck => "Slide Deck",
             Self::Faq => "Frequently Asked Questions",
             Self::Timeline => "Chronological Timeline",
             Self::Quiz => "Practice Quiz",
@@ -64,12 +75,14 @@ impl StudioArtifactKind {
     #[must_use]
     pub fn from_str_lossy(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "briefing" => Self::Briefing,
-            "study_guide" => Self::StudyGuide,
+            "briefing" | "briefing_doc" => Self::Briefing,
+            "study_guide" | "studyguide" => Self::StudyGuide,
+            "audio_overview" | "audio" | "podcast" => Self::AudioOverview,
+            "slide_deck" | "slidedeck" | "slides" => Self::SlideDeck,
             "faq" => Self::Faq,
             "timeline" => Self::Timeline,
             "quiz" => Self::Quiz,
-            "flashcards" => Self::Flashcards,
+            "flashcards" | "flashcard" => Self::Flashcards,
             "mind_map" | "mindmap" => Self::MindMap,
             "infographic_spec" | "infographic" => Self::InfographicSpec,
             "data_table" | "datatable" => Self::DataTable,
@@ -178,6 +191,108 @@ impl StudioArtifactService {
         Ok(record_from_row(row))
     }
 
+    /// Generates a real-LLM grounded Studio artifact across multi-chunk source evidence
+    /// (ALL 9 Atelier Studio v5 types + `Faq`/`Timeline`), verifying every `[source_id:chunk_idx]`
+    /// citation via [`GroundingEngine`] before persisting to SQLite.
+    pub async fn generate_artifact_with_llm(
+        &self,
+        req: GenerateArtifactRequest,
+        grounding: &GroundingEngine,
+        llm_cfg: &NotebookLlmConfig,
+    ) -> Result<StudioArtifactRecord, NotebookError> {
+        let notebook = self.library.require_notebook(&req.notebook_id)?;
+        let selected_sources =
+            self.resolve_selected_sources(&req.notebook_id, req.source_ids.as_deref())?;
+        if selected_sources.is_empty() {
+            return Err(NotebookError::InvalidInput(format!(
+                "notebook '{}' has no eligible sources to generate {:?}",
+                req.notebook_id, req.kind
+            )));
+        }
+
+        let mut source_chunks: Vec<(SourceRecord, Vec<SourceChunkRecord>)> =
+            Vec::with_capacity(selected_sources.len());
+        let mut corpus_blocks = Vec::new();
+        for src in selected_sources {
+            let chunks = self.store.list_chunks_for_source(&src.source_id)?;
+            for ch in chunks.iter().take(6) {
+                let excerpt: String = ch
+                    .body
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(1200)
+                    .collect();
+                corpus_blocks.push(format!(
+                    "### [{}:{}] {} ({})\n{}",
+                    src.source_id, ch.chunk_idx, src.title, ch.heading, excerpt
+                ));
+            }
+            source_chunks.push((src, chunks));
+        }
+
+        let title = req
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(SecretRedactor::redact)
+            .unwrap_or_else(|| format!("{} — {}", req.kind.default_title(), notebook.title));
+        let focus = req
+            .focus_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(SecretRedactor::redact);
+
+        let (sys_prompt, user_prompt) =
+            build_llm_artifact_prompts(req.kind, &title, focus.as_deref(), &corpus_blocks);
+        let llm_resp = complete_prompt(llm_cfg, &sys_prompt, &user_prompt).await?;
+
+        let verify = grounding.verify_citations(&req.notebook_id, &llm_resp.text)?;
+        let mut cited_set: BTreeSet<String> = verify
+            .verified_citations
+            .iter()
+            .map(|c| c.source_id.clone())
+            .collect();
+        if cited_set.is_empty() {
+            for (s, _) in &source_chunks {
+                cited_set.insert(s.source_id.clone());
+            }
+        }
+        let parsed_json = extract_json_payload(&llm_resp.text);
+        let structured_json = json!({
+            "schema": format!("omnia.studio.{}.llm.v1", req.kind.as_str()),
+            "title": title,
+            "focus": focus,
+            "generated_by": "real_llm",
+            "model_id": llm_resp.model_id,
+            "provider_id": llm_resp.provider_id,
+            "wire_api": llm_resp.wire_api,
+            "input_tokens": llm_resp.input_tokens,
+            "output_tokens": llm_resp.output_tokens,
+            "latency_ms": llm_resp.latency_ms,
+            "citation_verification": verify,
+            "parsed_payload": parsed_json,
+        });
+
+        let now = now_epoch_ms();
+        let row = StoredArtifactRow {
+            artifact_id: format!("art_{}", Uuid::new_v4().simple()),
+            notebook_id: req.notebook_id,
+            kind: req.kind.as_str().to_string(),
+            title,
+            content_markdown: SecretRedactor::redact(&llm_resp.text),
+            structured_json: SecretRedactor::redact_json(&structured_json),
+            cited_source_ids: cited_set.into_iter().collect(),
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        self.store.upsert_artifact(&row)?;
+        Ok(record_from_row(row))
+    }
+
     /// List all Studio artifacts belonging to `notebook_id`.
     pub fn list_artifacts(
         &self,
@@ -259,6 +374,8 @@ fn synthesize_artifact(
     match kind {
         StudioArtifactKind::Briefing => build_briefing(title, focus, items),
         StudioArtifactKind::StudyGuide => build_study_guide(title, focus, items),
+        StudioArtifactKind::AudioOverview => build_audio_overview(title, focus, items),
+        StudioArtifactKind::SlideDeck => build_slide_deck(title, focus, items),
         StudioArtifactKind::Faq => build_faq(title, items),
         StudioArtifactKind::Timeline => build_timeline(title, items),
         StudioArtifactKind::Quiz => build_quiz(title, items),
@@ -267,6 +384,141 @@ fn synthesize_artifact(
         StudioArtifactKind::InfographicSpec => build_infographic_spec(title, focus, items),
         StudioArtifactKind::DataTable => build_data_table(title, items),
     }
+}
+
+fn build_llm_artifact_prompts(
+    kind: StudioArtifactKind,
+    title: &str,
+    focus: Option<&str>,
+    evidence_blocks: &[String],
+) -> (String, String) {
+    let sys = "You are Atelier Studio, an authoritative research synthesis assistant. \
+Every claim MUST cite exact source chunk markers in `[source_id:chunk_idx]` notation matching \
+only the evidence provided below. Never invent sources, facts, or numbers. \
+Produce clean GitHub-Flavored Markdown AND embed a fenced ```json``` block matching the requested schema."
+        .to_string();
+
+    let kind_spec = match kind {
+        StudioArtifactKind::AudioOverview => {
+            "Artifact: Two-Host Audio Overview Script (Host A: analytical guide, Host B: inquisitive synthesizer).\n\
+             Include chapter markers, natural conversational transitions, spoken math/term clarity, SSML pause hints `[pause:300ms]`, \
+             and `[source_id:chunk_idx]` citations on every key point.\n\
+             Embed ```json```: {\"chapters\":[{\"title\",\"turns\":[{\"speaker\":\"Host A\"|\"Host B\",\"line\",\"citations\":[]}]}]}."
+        }
+        StudioArtifactKind::MindMap => {
+            "Artifact: Hierarchical Concept Mind Map.\n\
+             Include a valid ```mermaid\\nflowchart TD``` diagram AND ```json```: {\"root\",\"branches\":[{\"label\",\"children\":[],\"citations\":[]}]}."
+        }
+        StudioArtifactKind::Flashcards => {
+            "Artifact: Active-Recall Flashcards Deck (6-12 cards covering core definitions, mechanisms, edge cases).\n\
+             Embed ```json```: {\"cards\":[{\"front\",\"back\",\"hint\",\"difficulty\":\"easy|medium|hard\",\"citations\":[]}]}."
+        }
+        StudioArtifactKind::Quiz => {
+            "Artifact: Assessment Quiz (5-10 MCQs with 4 plausible options, exact answer index, detailed explanation, citations).\n\
+             Embed ```json```: {\"questions\":[{\"prompt\",\"options\":[],\"correct_index\":0,\"explanation\",\"citations\":[]}]}."
+        }
+        StudioArtifactKind::SlideDeck => {
+            "Artifact: Executive Slide Deck (6-10 slides).\n\
+             For each slide provide: Slide Title, 3-4 concise bullets with citations, Visual/Diagram Suggestion, and Speaker Notes.\n\
+             Embed ```json```: {\"slides\":[{\"number\":1,\"title\",\"bullets\":[],\"visual_hint\",\"speaker_notes\",\"citations\":[]}]}."
+        }
+        StudioArtifactKind::DataTable => {
+            "Artifact: Structured Analytical Data Table comparing entities, metrics, properties, constraints, and provenance across sources.\n\
+             Render a clean Markdown table AND ```json```: {\"columns\":[],\"rows\":[[]],\"notes\":[]}."
+        }
+        StudioArtifactKind::InfographicSpec => {
+            "Artifact: Visual Infographic Layout Spec.\n\
+             Include hero headline, 3-5 KPI callouts, section flow, recommended chart specs, and ```json```: {\"headline\",\"kpis\":[],\"sections\":[],\"charts\":[],\"citations\":[]}."
+        }
+        StudioArtifactKind::Briefing => {
+            "Artifact: Executive Briefing Document covering Thesis, Key Findings, Technical Trade-offs, Risks/Limitations, and Next Actions.\n\
+             Embed ```json```: {\"executive_summary\",\"key_findings\":[{\"claim\",\"citations\":[]}],\"risks\":[],\"actions\":[]}."
+        }
+        StudioArtifactKind::StudyGuide => {
+            "Artifact: Comprehensive Study Guide with Learning Objectives, Core Concepts, Glossary, Practice Questions, and Review Checklist.\n\
+             Embed ```json```: {\"objectives\":[],\"concepts\":[],\"glossary\":[{\"term\",\"definition\",\"citations\":[]}],\"practice_prompts\":[]}."
+        }
+        StudioArtifactKind::Faq => {
+            "Artifact: Grounded Frequently Asked Questions (Q&A pairs with exact citations). Include ```json``` summary."
+        }
+        StudioArtifactKind::Timeline => {
+            "Artifact: Chronological / Causal Execution Timeline with citations. Include ```json``` events array."
+        }
+    };
+
+    let focus_line = focus
+        .map(|f| format!("User Focus: {f}\n"))
+        .unwrap_or_default();
+    let user = format!(
+        "Title: {title}\n{focus_line}\n{kind_spec}\n\n## Grounded Evidence Chunks\n\n{}",
+        evidence_blocks.join("\n\n")
+    );
+    (sys, user)
+}
+
+fn build_audio_overview(
+    title: &str,
+    focus: Option<&str>,
+    items: &[(SourceRecord, Vec<SourceChunkRecord>)],
+) -> (String, Value) {
+    let mut turns = Vec::new();
+    let mut md = format!("# {title}\n");
+    if let Some(f) = focus {
+        md.push_str(&format!("\n> Focus: {f}\n"));
+    }
+    md.push_str("\n## Two-Host Dialogue Script\n");
+    for (i, (src, chunks)) in items.iter().enumerate() {
+        let (idx, snippet) = primary_snippet(chunks, 180);
+        let cite = format!("[{}:{}]", src.source_id, idx);
+        let speaker = if i % 2 == 0 { "Host A" } else { "Host B" };
+        md.push_str(&format!("\n**{speaker}:** Reviewing **{}** {cite}: {snippet}\n", src.title));
+        turns.push(json!({
+            "speaker": speaker,
+            "source_id": src.source_id,
+            "citation": cite,
+            "line": snippet,
+        }));
+    }
+    (
+        md,
+        json!({
+            "schema": "omnia.studio.audio_overview.v1",
+            "title": title,
+            "focus": focus,
+            "turns": turns,
+        }),
+    )
+}
+
+fn build_slide_deck(
+    title: &str,
+    focus: Option<&str>,
+    items: &[(SourceRecord, Vec<SourceChunkRecord>)],
+) -> (String, Value) {
+    let mut slides = Vec::new();
+    let mut md = format!("# {title}\n");
+    for (i, (src, chunks)) in items.iter().enumerate() {
+        let num = i + 1;
+        let (idx, snippet) = primary_snippet(chunks, 180);
+        let cite = format!("[{}:{}]", src.source_id, idx);
+        md.push_str(&format!("\n## Slide {num}: {}\n- {snippet} {cite}\n", src.title));
+        slides.push(json!({
+            "number": num,
+            "title": src.title,
+            "bullets": [format!("{snippet} {cite}")],
+            "focus": focus,
+            "citations": [cite],
+        }));
+    }
+    (
+        md,
+        json!({
+            "schema": "omnia.studio.slide_deck.v1",
+            "title": title,
+            "focus": focus,
+            "slides": slides,
+        }),
+    )
 }
 
 fn build_briefing(

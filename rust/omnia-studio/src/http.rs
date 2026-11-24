@@ -84,8 +84,11 @@ impl HttpRequest {
     }
 }
 
+/// Boxed async WebSocket upgrade handler taking full socket ownership.
+pub type WebSocketUpgradeHandler =
+    Box<dyn FnOnce(TcpStream) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
 /// Streaming HTTP body forwarded as chunked HTTP/1.1 without full-body buffering.
-#[derive(Debug)]
 pub enum StreamBody {
     /// Upstream `reqwest::Response` byte stream (used for `/api/chat` SSE pass-through).
     UpstreamProxy {
@@ -98,6 +101,26 @@ pub enum StreamBody {
         receiver: mpsc::Receiver<Vec<u8>>,
         keepalive_interval: Duration,
     },
+    /// Upgraded RFC 6455 WebSocket stream taking full ownership of the accepted socket.
+    WebSocketUpgrade(WebSocketUpgradeHandler),
+}
+
+impl std::fmt::Debug for StreamBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UpstreamProxy { max_bytes, .. } => f
+                .debug_struct("UpstreamProxy")
+                .field("max_bytes", max_bytes)
+                .finish(),
+            Self::EventStream {
+                keepalive_interval, ..
+            } => f
+                .debug_struct("EventStream")
+                .field("keepalive_interval", keepalive_interval)
+                .finish(),
+            Self::WebSocketUpgrade(_) => f.write_str("WebSocketUpgrade(..)"),
+        }
+    }
 }
 
 /// HTTP response written back to the TCP client.
@@ -208,6 +231,18 @@ impl HttpResponse {
                 receiver,
                 keepalive_interval,
             })),
+        }
+    }
+
+    /// Hands socket ownership to an upgraded WebSocket handler (`ws_hub`).
+    #[must_use]
+    pub fn websocket(handler: WebSocketUpgradeHandler) -> Self {
+        Self {
+            status: 101,
+            content_type: "application/octet-stream".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            stream_body: Some(Box::new(StreamBody::WebSocketUpgrade(handler))),
         }
     }
 }
@@ -908,10 +943,30 @@ where
     }
 
     if let Some(stream_body) = response.stream_body.take() {
-        return write_streaming_http_response(stream, &response, *stream_body).await;
+        if let StreamBody::WebSocketUpgrade(handler) = *stream_body {
+            handler(stream).await;
+            return Ok(());
+        }
+        let head = format_streaming_head(&response);
+        return write_streaming_http_response(stream, head, *stream_body).await;
     }
 
-    write_http_response(&mut stream, &response).await
+    write_http_response(&mut stream, response).await
+}
+
+fn format_streaming_head(response: &HttpResponse) -> String {
+    let reason = status_reason(response.status);
+    let mut head = format!(
+        "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nCache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\n",
+        response.status, response.content_type,
+    );
+    for (name, value) in &response.headers {
+        let safe_name = name.replace(['\r', '\n'], "");
+        let safe_val = value.replace(['\r', '\n'], "");
+        head.push_str(&format!("{safe_name}: {safe_val}\r\n"));
+    }
+    head.push_str("\r\n");
+    head
 }
 
 /// Validates a `Sec-Fetch-Site` browser header (`cross-site` is always blocked with HTTP 403).
@@ -945,21 +1000,10 @@ async fn wait_for_client_disconnect(reader: &mut OwnedReadHalf) -> io::Result<()
 
 async fn write_streaming_http_response(
     stream: TcpStream,
-    response: &HttpResponse,
+    head: String,
     stream_body: StreamBody,
 ) -> io::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
-    let reason = status_reason(response.status);
-    let mut head = format!(
-        "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nCache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\n",
-        response.status, response.content_type,
-    );
-    for (name, value) in &response.headers {
-        let safe_name = name.replace(['\r', '\n'], "");
-        let safe_val = value.replace(['\r', '\n'], "");
-        head.push_str(&format!("{safe_name}: {safe_val}\r\n"));
-    }
-    head.push_str("\r\n");
 
     writer.write_all(head.as_bytes()).await?;
     writer.flush().await?;
@@ -1051,13 +1095,14 @@ async fn write_streaming_http_response(
                 }
             }
         }
+        StreamBody::WebSocketUpgrade(_) => return Ok(()),
     }
 
     writer.write_all(b"0\r\n\r\n").await?;
     writer.flush().await
 }
 
-async fn write_http_response(stream: &mut TcpStream, response: &HttpResponse) -> io::Result<()> {
+async fn write_http_response(stream: &mut TcpStream, response: HttpResponse) -> io::Result<()> {
     let reason = status_reason(response.status);
     let mut head = format!(
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n",

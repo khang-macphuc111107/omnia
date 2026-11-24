@@ -2,7 +2,18 @@
 
 use crate::config::StudioConfig;
 use crate::history::{handle_history, handle_history_messages};
+use crate::embedded_ui::load_v5_ui_asset;
+use crate::event_feed::EventFeed;
 use crate::http::{serve_static_asset, HttpRequest, HttpResponse};
+use crate::ops_store::OpsStore;
+use crate::routes_studio_v5::BrowserCdpState;
+use crate::terminal_hub::TerminalHub;
+use crate::ws_hub::prepare_websocket_upgrade;
+use omnia_agent::dynamic_plugins::CordisPluginManager;
+use omnia_agent::hooks::HookRegistry;
+use omnia_agent::mcp_client::McpManager;
+use omnia_agent::memory_engine::MemoryEngine;
+use omnia_agent::{read_models_config, AgentStore, DapManager, SuperHarnessManager};
 use crate::routes_capabilities::{
     dispatch_capability_route, ConnectorConfigRecord, RemoteControlState,
 };
@@ -11,13 +22,13 @@ use crate::routes_notebooks::dispatch_notebook_route;
 use crate::runtime_proxy::RuntimeProxy;
 use crate::telemetry::{
     count_rust_files, discover_crate_count, is_reparse_or_symlink, query_current_binary_bytes,
-    query_working_set_bytes, RUSTC_VERSION_LABEL,
+    detect_rustc_version, query_working_set_bytes,
 };
 use omnia_core::{now_epoch_ms, SecretRedactor};
 use omnia_downloader::{validate_safe_local_path, DownloadConfig, DownloadManager};
 use omnia_graph::{
-    AgentGraphError, AgentRole, GraphifyEdge, GraphifyEntity, GraphifyEntityKind, GraphifyIndex,
-    GraphifyProvenance, PeerMeshGraph, TraversalDirection,
+    AgentGraphError, GraphifyEdge, GraphifyEntity, GraphifyIndex, PeerMeshGraph,
+    TraversalDirection,
 };
 use omnia_harness::{
     composer_model::ComposerModel,
@@ -30,12 +41,11 @@ use omnia_harness::{
 use omnia_notebook::NotebookEngine;
 use omnia_routing::{
     CandidateResourceState, CandidateScoreBreakdown, CandidateSnapshot, CircuitState,
-    DecisionResult, DynamicProviderRouter, ModelCapabilities, PrivacyTier, QuotaState,
+    DynamicProviderRouter, ModelCapabilities, PrivacyTier, QuotaState,
     RouteCandidate, RouteDecisionReceipt, RouteRequestPolicy, TaskRisk,
 };
 use omnia_storage::{SessionCursor, SessionMessageRecord, SessionStore};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -61,6 +71,16 @@ pub struct StudioState {
     pub downloads: Arc<DownloadManager>,
     pub downloads_staging_dir: PathBuf,
     pub notebooks: Arc<NotebookEngine>,
+    pub event_feed: Arc<EventFeed>,
+    pub ops: Arc<OpsStore>,
+    pub terminals: Arc<TerminalHub>,
+    pub harness: Arc<SuperHarnessManager>,
+    pub memory_engine: Arc<MemoryEngine>,
+    pub browser: Arc<tokio::sync::Mutex<BrowserCdpState>>,
+    pub mcp: Arc<McpManager>,
+    pub hooks: Arc<HookRegistry>,
+    pub cordis_plugins: Arc<CordisPluginManager>,
+    pub dap: Arc<DapManager>,
     pub rust_files: usize,
     pub crate_count: usize,
     pub binary_bytes: u64,
@@ -68,7 +88,7 @@ pub struct StudioState {
 }
 
 impl StudioState {
-    /// Initializes and seeds all native Rust subsystems cleanly from `config`.
+    /// Initializes all native Rust subsystems cleanly from `config` (zero fake seeded state).
     pub fn new(config: StudioConfig) -> Result<Self, String> {
         let runtime_proxy = RuntimeProxy::new(config.runtime_timeout)?;
 
@@ -91,30 +111,62 @@ impl StudioState {
                 .map_err(|err| format!("Failed opening in-memory SessionStore: {err}"))?,
         };
 
+        let ops = match config.db_path.as_ref() {
+            Some(db_path) => OpsStore::open(&db_path.with_file_name("studio_ops.db"))?,
+            None => OpsStore::open_in_memory()?,
+        };
+        let agent_store = match config.db_path.as_ref() {
+            Some(db_path) => AgentStore::open(&db_path.with_file_name("studio_agent.db"))
+                .map_err(|e| format!("Failed opening AgentStore: {e}"))?,
+            None => AgentStore::open_in_memory()
+                .map_err(|e| format!("Failed opening in-memory AgentStore: {e}"))?,
+        };
+        let memory_engine = match config.db_path.as_ref() {
+            Some(db_path) => MemoryEngine::open(
+                db_path.with_file_name("studio_memory.db"),
+                Some(agent_store.clone()),
+            )
+            .map_err(|e| format!("Failed opening MemoryEngine: {e}"))?,
+            None => MemoryEngine::open_in_memory()
+                .map_err(|e| format!("Failed opening in-memory MemoryEngine: {e}"))?,
+        };
+
         let pid = std::process::id();
         let now = now_epoch_ms();
         let owner_id = format!("studio-server-{pid}");
         let _ = sessions.acquire_lease(&owner_id, i64::from(pid), 60_000, now);
 
-        seed_flagship_sessions(&sessions, now);
-
         let router = DynamicProviderRouter::new();
-        seed_flagship_router(&router, now);
+        register_configured_router_candidates(&router);
 
         let peer_mesh = PeerMeshGraph::new(4);
-        seed_flagship_peer_mesh(&peer_mesh, now);
 
         let graphify = GraphifyIndex::new();
-        seed_flagship_graphify(&graphify, &config.workspace_root);
+        let _ = graphify.index_workspace(&config.workspace_root);
 
         let memory = MemoryGraph::new();
-        seed_flagship_memory(&memory, now);
 
-        let rag = ProactiveRag::new();
+        let rag = ProactiveRag::from_workspace(&config.workspace_root);
+        rag.index_memory_graph(&memory);
         let skills = load_flagship_skills(&config);
 
         let steer = SteerQueue::new();
-        seed_flagship_steer(&steer, now);
+
+        let event_feed = Arc::new(EventFeed::new());
+        let ops = Arc::new(ops);
+        let terminals = Arc::new(TerminalHub::new(&config.workspace_root));
+        let harness = Arc::new(SuperHarnessManager::new(agent_store));
+        let memory_engine = Arc::new(memory_engine);
+        let browser = Arc::new(tokio::sync::Mutex::new(BrowserCdpState::default()));
+        let mcp = Arc::new(McpManager::new(&config.workspace_root));
+        let hooks = Arc::new(
+            HookRegistry::load_from_workspace(&config.workspace_root)
+                .unwrap_or_else(|_| HookRegistry::new(&config.workspace_root)),
+        );
+        let cordis_plugins = CordisPluginManager::new(&config.workspace_root);
+        let _ = cordis_plugins.discover(Some(&hooks));
+        let cordis_plugins = Arc::new(cordis_plugins);
+        let dap = Arc::new(DapManager::new(&config.workspace_root));
 
         let composer = Mutex::new(RichComposer::new());
         let connectors = Mutex::new(crate::routes_capabilities::default_connector_configs());
@@ -198,6 +250,16 @@ impl StudioState {
             downloads,
             downloads_staging_dir,
             notebooks,
+            event_feed,
+            ops,
+            terminals,
+            harness,
+            memory_engine,
+            browser,
+            mcp,
+            hooks,
+            cordis_plugins,
+            dap,
             rust_files,
             crate_count,
             binary_bytes,
@@ -206,8 +268,67 @@ impl StudioState {
     }
 }
 
+fn provider_key_configured(key_spec: &str) -> bool {
+    let trimmed = key_spec.trim();
+    !trimmed.is_empty()
+        && (std::env::var(trimmed).ok().is_some_and(|v| !v.trim().is_empty())
+            || !trimmed
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()))
+}
+
+fn register_configured_router_candidates(router: &DynamicProviderRouter) {
+    let providers = read_models_config(None)
+        .ok()
+        .map(|cfg| cfg.providers)
+        .unwrap_or_default();
+    for (priority, prov) in providers.iter().enumerate() {
+        let provider_id = &prov.id;
+        let cred_present = omnia_core::credentials::CredentialStore::resolve_secret(&format!(
+            "omnia:provider:{provider_id}"
+        ))
+        .ok()
+        .flatten()
+        .is_some();
+        let has_cred = cred_present || provider_key_configured(&prov.api_key);
+
+        for (m_idx, model) in prov.models.iter().enumerate() {
+            let mut caps = ModelCapabilities::standard_candidate();
+            caps.supports_reasoning = model.thinking.is_some();
+            let cand = RouteCandidate {
+                candidate_id: format!("{provider_id}:{}", model.id),
+                provider_id: provider_id.clone(),
+                model_id: model.id.clone(),
+                auth_boundary: "default".to_string(),
+                region: "configured".to_string(),
+                privacy_tier: PrivacyTier::Public,
+                capabilities: caps,
+                context_limit_tokens: model.context_window,
+                max_output_tokens: model.max_tokens,
+                quality_tier: 3,
+                pricing_version: "models.yml".to_string(),
+                input_cost_per_million_microunits: None,
+                output_cost_per_million_microunits: None,
+                credential_present: has_cred,
+                enabled: true,
+                route_priority: ((priority * 20) + m_idx + 10) as i32,
+                supported_roles: Vec::new(),
+            };
+            let state = CandidateResourceState {
+                quota: QuotaState::default(),
+                circuit: CircuitState::Closed,
+                ..CandidateResourceState::default()
+            };
+            let _ = router.upsert_candidate(cand, state);
+        }
+    }
+}
+
 /// Top-level HTTP route dispatcher for Flagship Studio static UI and `/api/*`.
 pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> HttpResponse {
+    if let Some(v5_resp) = crate::routes_studio_v5::dispatch_v5_route(&state, &req).await {
+        return v5_resp;
+    }
     if let Some(dl_resp) = dispatch_download_route(&state, &req).await {
         return dl_resp;
     }
@@ -288,11 +409,20 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
         ("GET", "/api/history") => handle_history(&state.config, &req),
         ("GET", "/api/history/messages") => handle_history_messages(&state.config, &req),
 
+        ("GET", "/ws") => prepare_websocket_upgrade(Arc::clone(&state), req),
         ("GET", path) if !path.starts_with("/api/") => {
+            let using_default_ui_root = state.config.ui_root == state.config.workspace_root.join("ui");
+            if using_default_ui_root {
+                if let Some((bytes, mime)) = load_v5_ui_asset(&state.config.workspace_root, path) {
+                    return HttpResponse::bytes(200, mime, bytes);
+                }
+            }
             serve_static_asset(&state.config.ui_root, path)
         }
         (_, path) if path.starts_with("/api/") => {
-            if matches!(
+            if crate::routes_studio_v5::is_known_v5_route(path)
+                || crate::routes_atelier_drive_v5::is_known_route(path)
+                || matches!(
                 path,
                 "/api/health"
                     | "/api/capabilities"
@@ -350,11 +480,17 @@ async fn handle_health(state: &StudioState) -> HttpResponse {
         "standalone"
     };
 
+    let workspace_root =
+        omnia_agent::path_guard::strip_verbatim_prefix(&state.config.workspace_root)
+            .to_string_lossy()
+            .into_owned();
+
     HttpResponse::ok(json!({
         "ok": true,
         "state": "online",
+        "workspaceRoot": workspace_root,
         "engine": "Omnia Full Native Rust",
-        "compiler": RUSTC_VERSION_LABEL,
+        "compiler": detect_rustc_version(),
         "crateCount": state.crate_count,
         "rustFiles": state.rust_files,
         "httpStack": "tokio+rust-http",
@@ -1719,7 +1855,7 @@ fn format_router_candidate_for_ui(snap: &CandidateSnapshot) -> Value {
         "remainingTokens": remaining_tokens,
         "reserveTokens": snap.state.reserved_tokens,
         "ewmaMs": ewma,
-        "p95Ms": ewma.map(|v| (v * 12) / 10),
+        "p95Ms": snap.state.latency_percentile(95).map(|v| v.round() as u64),
         "errorRate": err_rate,
         "candidate": snap.candidate.to_json(),
         "state": snap.state.to_json(),
@@ -1750,11 +1886,31 @@ fn format_router_receipt_for_ui(receipt: &RouteDecisionReceipt) -> Value {
 }
 
 fn format_score_for_ui(score: &CandidateScoreBreakdown) -> Value {
-    let cap = if score.eligible { 25 } else { 0 };
-    let priv_score = if score.eligible { 20 } else { 0 };
-    let quota_score = if score.eligible { 20 } else { 0 };
-    let lat_score = if score.eligible { 20 } else { 0 };
-    let rel_score = if score.eligible { 15 } else { 0 };
+    let cap = if score.eligible {
+        ((score.capability_fit_bps.max(0) as u64) / 100).min(100)
+    } else {
+        0
+    };
+    let priv_score = if score.eligible {
+        ((score.privacy_fit_bps.max(0) as u64) / 100).min(100)
+    } else {
+        0
+    };
+    let quota_score = if score.eligible {
+        ((score.budget_headroom_bps.max(0) as u64) / 100).min(100)
+    } else {
+        0
+    };
+    let lat_score = if score.eligible {
+        ((score.latency_health_bps.max(0) as u64) / 100).min(100)
+    } else {
+        0
+    };
+    let rel_score = if score.eligible {
+        ((score.reliability_bps.max(0) as u64) / 100).min(100)
+    } else {
+        0
+    };
     json!({
         "candidateId": score.candidate_id,
         "eligible": score.eligible,
@@ -1903,331 +2059,4 @@ fn load_flagship_skills(config: &StudioConfig) -> SkillRegistry {
         let _ = registry.load_from_directory(&config.skills_root);
     }
     registry
-}
-
-fn seed_flagship_sessions(store: &SessionStore, now: i64) {
-    let existing = store
-        .list_sessions_page(1, None)
-        .map(|p| p.items.len())
-        .unwrap_or(0);
-    if existing > 0 {
-        return;
-    }
-    let seeds = [
-        (
-            "omnia-flagship-win32",
-            "Flagship Native Rust Studio & Win32 Architecture",
-            "gpt-5.4-codex",
-            "high",
-            "Verify Full Native Rust Studio HTTP/1.1 + SQLite WAL parity with zero-downtime 3,000ms proxy bounds.",
-        ),
-        (
-            "omnia-peer-mesh",
-            "2-Way Peer-Mesh & Graphify Traversal",
-            "gemini-3.1-pro",
-            "high",
-            "Synchronize all-to-all peer mesh lanes and verify forward/reverse Graphify symbol provenance.",
-        ),
-        (
-            "omnia-dynamic-routing",
-            "Deterministic Router & Circuit Breaker Lab",
-            "claude-sonnet-4.6",
-            "medium",
-            "Benchmark capability/privacy/quota routing with tokenBudget strictly null.",
-        ),
-    ];
-
-    for (offset, (id, title, model, effort, initial_prompt)) in seeds.into_iter().enumerate() {
-        let ts = now.saturating_sub((offset as i64) * 5_000);
-        if store
-            .create_session(title, model, effort, ts, Some(id))
-            .is_ok()
-        {
-            let _ = store.append_message(id, "user", initial_prompt, "{}", ts);
-            let _ = store.append_message(
-                id,
-                "assistant",
-                "Initialized Flagship Native Rust session ledger in winsqlite3 WAL mode.",
-                "{}",
-                ts + 10,
-            );
-        }
-    }
-}
-
-fn seed_flagship_peer_mesh(mesh: &PeerMeshGraph, now: i64) {
-    let specs: [(&str, AgentRole, &[&str]); 6] = [
-        (
-            "coordinator",
-            AgentRole::Coordinator,
-            &["docs/workspace/**"],
-        ),
-        ("planner", AgentRole::Specialist, &["docs/handoff/**"]),
-        (
-            "architect",
-            AgentRole::Specialist,
-            &["docs/ui-direction/**"],
-        ),
-        ("implementer", AgentRole::Worker, &["rust/omnia-studio/**"]),
-        ("qa-live", AgentRole::Worker, &["ui/**"]),
-        ("verifier", AgentRole::Verifier, &["rust/*/tests/**"]),
-    ];
-    let mut all_owned = BTreeSet::new();
-    for &(_, _, owned) in &specs {
-        for p in owned {
-            all_owned.insert((*p).to_string());
-        }
-    }
-
-    for (id, role, owned) in specs {
-        let owned_vec: Vec<String> = owned.iter().map(|s| (*s).to_string()).collect();
-        let excluded_vec: Vec<String> = all_owned
-            .iter()
-            .filter(|p| !owned_vec.contains(p))
-            .cloned()
-            .collect();
-        let _ = mesh.register_agent(id, role, owned_vec, excluded_vec);
-    }
-
-    let _ = mesh.connect_all_to_all(
-        &[
-            "coordinator",
-            "planner",
-            "architect",
-            "implementer",
-            "qa-live",
-            "verifier",
-        ],
-        "duplex-mesh",
-    );
-
-    if let Ok(m1) = mesh.send_peer(
-        "coordinator",
-        "implementer",
-        "wave2-lane-c",
-        "Implement Full Native Rust omnia-studio HTTP server with strict 3,000ms proxy bounds.",
-        None,
-        Some(4),
-        Some(now.saturating_sub(2_000)),
-    ) {
-        let _ = mesh.reply(
-            "implementer",
-            m1.seq,
-            "wave2-lane-c",
-            "Acknowledged; disjoint ownership locked on rust/omnia-studio/**.",
-            Some(now.saturating_sub(1_000)),
-        );
-    }
-}
-
-fn seed_flagship_graphify(graphify: &GraphifyIndex, workspace_root: &Path) {
-    let _ = graphify.index_workspace(workspace_root);
-    let current_count = graphify.entities().map(|v| v.len()).unwrap_or(0);
-    if current_count > 0 {
-        return;
-    }
-
-    let fallback_entities = [
-        (
-            "crate:omnia-core",
-            GraphifyEntityKind::CodeModule,
-            "omnia-core",
-            "rust/omnia-core/src/lib.rs",
-        ),
-        (
-            "crate:omnia-storage",
-            GraphifyEntityKind::CodeModule,
-            "omnia-storage",
-            "rust/omnia-storage/src/lib.rs",
-        ),
-        (
-            "crate:omnia-studio",
-            GraphifyEntityKind::CodeModule,
-            "omnia-studio",
-            "rust/omnia-studio/src/lib.rs",
-        ),
-        (
-            "sym:SessionStore",
-            GraphifyEntityKind::Symbol,
-            "SessionStore",
-            "rust/omnia-storage/src/session_store.rs",
-        ),
-        (
-            "sym:DynamicProviderRouter",
-            GraphifyEntityKind::Symbol,
-            "DynamicProviderRouter",
-            "rust/omnia-routing/src/lib.rs",
-        ),
-    ];
-    for (id, kind, label, src) in fallback_entities {
-        let _ = graphify.upsert_entity(GraphifyEntity {
-            id: id.to_string(),
-            kind,
-            label: label.to_string(),
-            source_path: src.to_string(),
-            symbol_span: Some("L1".to_string()),
-        });
-    }
-    let _ = graphify.add_edge(GraphifyEdge {
-        from_id: "crate:omnia-studio".to_string(),
-        to_id: "crate:omnia-storage".to_string(),
-        relation: "depends_on".to_string(),
-        provenance: GraphifyProvenance::Extracted,
-        confidence_bps: 10_000,
-        source_locator: "rust/omnia-studio/Cargo.toml".to_string(),
-    });
-    let _ = graphify.add_edge(GraphifyEdge {
-        from_id: "crate:omnia-storage".to_string(),
-        to_id: "sym:SessionStore".to_string(),
-        relation: "exports_symbol".to_string(),
-        provenance: GraphifyProvenance::Extracted,
-        confidence_bps: 10_000,
-        source_locator: "rust/omnia-storage/src/session_store.rs".to_string(),
-    });
-}
-
-fn seed_flagship_router(router: &DynamicProviderRouter, now: i64) {
-    let candidates = [
-        (
-            "ollama-qwen3-coder",
-            "ollama",
-            "qwen3-coder",
-            PrivacyTier::LocalOnly,
-            85,
-            Some(0),
-            95.0,
-            10,
-        ),
-        (
-            "openai-gpt-5-4-codex",
-            "openai",
-            "gpt-5.4-codex",
-            PrivacyTier::Public,
-            95,
-            Some(2_500_000),
-            340.0,
-            20,
-        ),
-        (
-            "google-gemini-3-1-pro",
-            "google",
-            "gemini-3.1-pro",
-            PrivacyTier::ZeroDataRetention,
-            94,
-            Some(1_800_000),
-            290.0,
-            15,
-        ),
-        (
-            "anthropic-claude-sonnet-4-6",
-            "anthropic",
-            "claude-sonnet-4.6",
-            PrivacyTier::ZeroDataRetention,
-            93,
-            Some(3_000_000),
-            410.0,
-            25,
-        ),
-        (
-            "openrouter-deepseek-r1",
-            "openrouter",
-            "deepseek/deepseek-r1",
-            PrivacyTier::Public,
-            82,
-            Some(550_000),
-            520.0,
-            30,
-        ),
-    ];
-
-    for (id, provider, model, privacy, quality, cost, ewma_ms, priority) in candidates {
-        let mut caps = ModelCapabilities::standard_candidate();
-        caps.supports_vision =
-            provider == "google" || provider == "openai" || provider == "anthropic";
-
-        let cand = RouteCandidate {
-            candidate_id: id.to_string(),
-            provider_id: provider.to_string(),
-            model_id: model.to_string(),
-            auth_boundary: "default".to_string(),
-            region: "local".to_string(),
-            privacy_tier: privacy,
-            capabilities: caps,
-            context_limit_tokens: 128_000,
-            max_output_tokens: 16_384,
-            quality_tier: quality,
-            pricing_version: "2026-11".to_string(),
-            input_cost_per_million_microunits: cost,
-            output_cost_per_million_microunits: cost,
-            credential_present: true,
-            enabled: true,
-            route_priority: priority,
-        };
-        let state = CandidateResourceState {
-            quota: QuotaState::known(750_000, 1_000),
-            circuit: CircuitState::Closed,
-            retry_after_until_ms: None,
-            consecutive_failures: 0,
-            total_calls: 12,
-            success_count: 12,
-            ewma_latency_ms: Some(ewma_ms),
-            latency_samples_ms: [ewma_ms].into_iter().collect(),
-            reserved_tokens: 0,
-            reserved_requests: 0,
-        };
-        let _ = router.upsert_candidate(cand, state);
-    }
-
-    let boot_policy = RouteRequestPolicy {
-        request_id: "studio-bootstrap-decision".to_string(),
-        token_budget: None,
-        now_epoch_ms: Some(now),
-        ..RouteRequestPolicy::default()
-    };
-    let _: Result<DecisionResult, _> = router.decide_and_reserve(&boot_policy);
-}
-
-fn seed_flagship_memory(memory: &MemoryGraph, now: i64) {
-    let entries = [
-        (
-            "workspace",
-            "architecture",
-            MemoryTier::Durable,
-            "Omnia Studio runs strictly on loopback with [[workspace/build-boundary]] and winsqlite3 WAL persistence.",
-        ),
-        (
-            "workspace",
-            "build-boundary",
-            MemoryTier::Durable,
-            "Cargo target artifacts live outside D:/Omnia under D:/OmniaData/build; rollback receipts use D:/OmniaData/rollback.",
-        ),
-        (
-            "session",
-            "telemetry",
-            MemoryTier::Working,
-            "Process working set uses GetProcessMemoryInfo; upstream runtime proxy enforces 3,000ms timeout.",
-        ),
-        (
-            "harness",
-            "steer-policy",
-            MemoryTier::Durable,
-            "SteerQueue uses ADDITIVE_INTAKE with tokenBudget strictly NULL unless explicitly overridden.",
-        ),
-    ];
-    for (ns, key, tier, content) in entries {
-        let _ = memory.upsert(ns, key, tier, content, &[], Some(now));
-    }
-}
-
-fn seed_flagship_steer(steer: &SteerQueue, now: i64) {
-    let _ = steer.enqueue(
-        "Maintain additive steer backlog with tokenBudget = NULL and zero dropped tasks.",
-        SteerMode::AdditiveIntake,
-        Some(now.saturating_sub(2_000)),
-    );
-    let _ = steer.enqueue(
-        "Keep Full Native Rust studio routes synchronized across all 13 workspace crates.",
-        SteerMode::AdditiveIntake,
-        Some(now.saturating_sub(1_000)),
-    );
 }

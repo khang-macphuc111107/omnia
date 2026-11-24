@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omnia_storage::{
-    build_provider, prepare_session_config, provider_selection, upsert_profile_on, AgentCacheStore,
+    build_provider, prepare_session_config, provider_selection, upsert_profile_on,
     AgentRunStateRecord, AgentRunStatus, AgentSessionSummary, CreateAgentSessionRequest,
-    HarnessEnvironment, HarnessStore, MapSecretBroker, MerkleAstCacheEntry, ProviderProfileInput,
-    ProviderProfileRepository, RunCoordinator, RunRegistry, SaveAgentSessionNavigationRequest,
-    SessionCommand, SessionWorker, Sessions, UpdateAgentSessionSettingsRequest,
-    WireTelemetryRecord, DEFAULT_TOKEN_BUDGET,
+    HarnessEnvironment, HarnessStore, KbNoteRecord, MapSecretBroker, ProviderProfileInput,
+    ProviderProfileRepository, RecallStore, RunCoordinator, RunRegistry,
+    SaveAgentSessionNavigationRequest, SessionCommand, SessionWorker, Sessions,
+    UpdateAgentSessionSettingsRequest, WireTelemetryRecord, DEFAULT_TOKEN_BUDGET,
 };
 use omnia_winsqlite::Connection;
 use serde_json::json;
@@ -785,37 +785,36 @@ fn default_token_budget_is_none_and_agent_cache_persists_wal_tables() {
         "harness_storage_failed"
     );
 
-    // Verify on-disk WAL persistence of merkle_ast_cache, ace_playbook, and wire_telemetry.
-    let temp = TempDirGuard::new("agent-cache");
-    let cache_db = temp.path.join("agent_cache.db");
+    // Verify on-disk WAL persistence of unified recall_messages, kb_notes, and wire_telemetry.
+    let temp = TempDirGuard::new("recall-store");
+    let recall_db = temp.path.join("recall_store.db");
     let synth_secret = ["sk", "proj", "fixtureSecret9876543210"].join("-");
 
     {
-        let cache = AgentCacheStore::open(&cache_db).expect("open cache store");
-        cache
-            .upsert_merkle_ast(&MerkleAstCacheEntry {
-                path: "rust/omnia-storage/src/agent_cache.rs".to_owned(),
-                blake3_hex: "deadbeef00112233".to_owned(),
-                size_bytes: 8192,
-                mtime_ms: 1_900,
-                language: "rust".to_owned(),
-                ast_symbols_json: json!([{"name": "AgentCacheStore", "kind": "struct"}])
-                    .to_string(),
-                updated_at_ms: 2_000,
-            })
-            .expect("upsert merkle");
-        cache
-            .record_playbook_entry(
-                "ace-wal-1",
+        let store = RecallStore::open(&recall_db).expect("open recall store");
+        store
+            .index_recall_message(
                 "omnia-runtime",
-                "err:http_502_keepalive",
-                "upstream stalled after keepalive reuse",
+                1,
+                "assistant",
                 &format!("Retry with Connection: close (never leak {synth_secret})"),
-                true,
-                2_050,
+                &["http_502_keepalive".to_owned()],
+                "local_workspace",
+                false,
+                2_000,
             )
-            .expect("record playbook");
-        cache
+            .expect("index recall message");
+        store
+            .upsert_kb_note(&KbNoteRecord {
+                slug: "runtime/keepalive".to_owned(),
+                title: "HTTP 502 Keepalive Mitigation".to_owned(),
+                content: "Close stale keepalive sockets before retry.".to_owned(),
+                tags: vec!["http_502".to_owned()],
+                outbound_links: Vec::new(),
+                updated_at: 2_050,
+            })
+            .expect("upsert kb note");
+        store
             .record_wire_telemetry(&WireTelemetryRecord {
                 id: None,
                 session_id: "sess-null-budget".to_owned(),
@@ -841,19 +840,18 @@ fn default_token_budget_is_none_and_agent_cache_persists_wal_tables() {
             .expect("record wire telemetry");
     }
 
-    let reopened = AgentCacheStore::open(&cache_db).expect("reopen cache store");
-    let ast = reopened
-        .get_merkle_ast("rust/omnia-storage/src/agent_cache.rs")
-        .expect("read merkle")
-        .expect("entry persisted");
-    assert_eq!(ast.blake3_hex, "deadbeef00112233");
+    let reopened = RecallStore::open(&recall_db).expect("reopen recall store");
+    let hits = reopened
+        .search_recall_messages("Connection close keepalive", None, false, 5)
+        .expect("search recall");
+    assert_eq!(hits.len(), 1);
+    assert!(!hits[0].content.contains(&synth_secret));
+    assert!(hits[0].content.contains("[REDACTED]"));
 
-    let playbooks = reopened
-        .lookup_playbook_by_fingerprint("omnia-runtime", "err:http_502_keepalive", 5)
-        .expect("lookup playbook");
-    assert_eq!(playbooks.len(), 1);
-    assert!(!playbooks[0].remediation.contains(&synth_secret));
-    assert!(playbooks[0].remediation.contains("[REDACTED]"));
+    let kb = reopened
+        .search_kb_notes("HTTP 502 Keepalive", 5)
+        .expect("search kb");
+    assert_eq!(kb.len(), 1);
 
     let summary = reopened
         .summarize_wire_telemetry(Some("sess-null-budget"))

@@ -320,6 +320,15 @@ fn coerce_against_schema(val: &mut Value, schema: &Value, path: &str, repairs: &
             }
         }
         "object" => {
+            if let Value::String(s) = val {
+                let t = s.trim();
+                if t.starts_with('{') && t.ends_with('}') {
+                    if let Ok(parsed @ Value::Object(_)) = serde_json::from_str::<Value>(t) {
+                        *val = parsed;
+                        repairs.push(format!("coerced_str_to_object:{path}"));
+                    }
+                }
+            }
             if let (Some(obj), Some(props)) = (
                 val.as_object_mut(),
                 schema.get("properties").and_then(|v| v.as_object()),
@@ -333,6 +342,15 @@ fn coerce_against_schema(val: &mut Value, schema: &Value, path: &str, repairs: &
             }
         }
         "array" => {
+            if let Value::String(s) = val {
+                let t = s.trim();
+                if t.starts_with('[') && t.ends_with(']') {
+                    if let Ok(parsed @ Value::Array(_)) = serde_json::from_str::<Value>(t) {
+                        *val = parsed;
+                        repairs.push(format!("coerced_str_to_array:{path}"));
+                    }
+                }
+            }
             if let (Some(arr), Some(item_schema)) = (val.as_array_mut(), schema.get("items")) {
                 for (idx, item) in arr.iter_mut().enumerate() {
                     let sub_path = format!("{path}[{idx}]");
@@ -384,5 +402,21 @@ mod tests {
         let res = repair_tool_json(raw, None).unwrap();
         assert!(res.repaired);
         assert_eq!(res.value["content"], "def f():\n    return 1");
+    }
+
+    #[test]
+    fn coerces_stringified_array_and_object_parameters() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "paths": { "type": "array", "items": { "type": "string" } },
+                "options": { "type": "object", "properties": { "dry_run": { "type": "boolean" } } }
+            }
+        });
+        let raw = r#"{"paths": "[\"a.py\", \"b.py\"]", "options": "{\"dry_run\": \"true\"}"}"#;
+        let res = repair_tool_json(raw, Some(&schema)).unwrap();
+        assert!(res.repaired);
+        assert_eq!(res.value["paths"], json!(["a.py", "b.py"]));
+        assert_eq!(res.value["options"]["dry_run"], true);
     }
 }

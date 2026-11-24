@@ -655,7 +655,7 @@ pub(crate) async fn dispatch_rpc(
                     "agentCapabilities": {
                         "loadSession": state.history_root.is_some() && (state.stdio_replay || notify_tx.is_some()),
                         "promptCapabilities": { "embeddedContext": false, "image": false, "audio": false },
-                        "mcpCapabilities": { "http": false, "sse": false },
+                        "mcpCapabilities": { "http": true, "sse": true },
                         "sessionCapabilities": { "close": {} }
                     }
                 }
@@ -668,12 +668,30 @@ pub(crate) async fn dispatch_rpc(
             if loading && notify_tx.is_none() {
                 return history_error();
             }
-            if params.get("mcpServers").is_some_and(|value| !value.is_null() && value.as_array().is_none_or(|servers| !servers.is_empty())) {
-                return id.map(|req_id| json!({
-                    "jsonrpc": "2.0", "id": req_id,
-                    "error": { "code": -32602, "message": "Client MCP servers are not supported by this ACP transport" }
-                }));
-            }
+            let mcp_servers: Vec<crate::mcp_client::McpServerConfig> = match params.get("mcpServers") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(arr)) => {
+                    let mut parsed_srvs = Vec::with_capacity(arr.len());
+                    for entry in arr {
+                        match parse_acp_mcp_server(entry) {
+                            Ok(cfg) => parsed_srvs.push(cfg),
+                            Err(msg) => {
+                                return id.map(|req_id| json!({
+                                    "jsonrpc": "2.0", "id": req_id,
+                                    "error": { "code": -32602, "message": format!("Invalid mcpServers entry: {msg}") }
+                                }));
+                            }
+                        }
+                    }
+                    parsed_srvs
+                }
+                Some(_) => {
+                    return id.map(|req_id| json!({
+                        "jsonrpc": "2.0", "id": req_id,
+                        "error": { "code": -32602, "message": "mcpServers must be an array" }
+                    }));
+                }
+            };
             if loading && !params.get("cwd").and_then(Value::as_str).is_some_and(|cwd| std::path::Path::new(cwd).is_absolute()) {
                 return id.map(|i| json!({"jsonrpc":"2.0","id":i,"error":{"code":-32602,"message":"session/load requires an absolute cwd"}}));
             }
@@ -787,6 +805,14 @@ pub(crate) async fn dispatch_rpc(
                             let secrets = [eng.endpoint.api_key.as_str(), state.default_api_key.as_deref().unwrap_or(""), state.secret_key.as_deref().unwrap_or("")];
                             if j.save(&eng, 1, &[], &secrets).is_err() { return history_error(); }
                         }
+                    }
+                    if !mcp_servers.is_empty() {
+                        let mcp_mgr = Arc::clone(&eng.tool_runtime.mcp_manager);
+                        tokio::spawn(async move {
+                            for cfg in mcp_servers {
+                                let _ = mcp_mgr.connect_server(cfg).await;
+                            }
+                        });
                     }
                     let wire_dialect = eng.active_wire_dialect().to_string();
                     let resolved_model =
@@ -1524,6 +1550,121 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+fn parse_acp_kv_map(val: Option<&Value>) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    match val {
+        Some(Value::Object(map)) => {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() {
+                    out.insert(k.clone(), s.to_owned());
+                }
+            }
+        }
+        Some(Value::Array(arr)) => {
+            for item in arr {
+                if let (Some(k), Some(v)) = (
+                    item.get("name").and_then(Value::as_str),
+                    item.get("value").and_then(Value::as_str),
+                ) {
+                    out.insert(k.to_owned(), v.to_owned());
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn parse_acp_mcp_server(entry: &Value) -> Result<crate::mcp_client::McpServerConfig, String> {
+    let name = entry
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "missing non-empty server `name`".to_owned())?
+        .to_owned();
+    let kind = entry
+        .get("type")
+        .and_then(Value::as_str)
+        .map(|s| s.to_ascii_lowercase());
+    let transport = match kind.as_deref() {
+        Some("http") | Some("streamable_http") | Some("streamable-http") => {
+            let url = entry
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("HTTP MCP server `{name}` missing `url`"))?
+                .to_owned();
+            crate::mcp_client::McpTransportConfig::Http {
+                url,
+                headers: parse_acp_kv_map(entry.get("headers")),
+            }
+        }
+        Some("sse") => {
+            let url = entry
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("SSE MCP server `{name}` missing `url`"))?
+                .to_owned();
+            crate::mcp_client::McpTransportConfig::Sse {
+                url,
+                headers: parse_acp_kv_map(entry.get("headers")),
+            }
+        }
+        Some("stdio") | None => {
+            let command = entry
+                .get("command")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("Stdio MCP server `{name}` missing `command`"))?
+                .to_owned();
+            let args = entry
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let cwd = entry
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            crate::mcp_client::McpTransportConfig::Stdio {
+                command,
+                args,
+                env: parse_acp_kv_map(entry.get("env")),
+                cwd,
+            }
+        }
+        Some(other) => return Err(format!("unsupported MCP server type `{other}`")),
+    };
+    let timeout_ms = entry
+        .get("timeoutMs")
+        .or_else(|| entry.get("timeout_ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(30_000)
+        .clamp(1_000, 300_000);
+    let enabled = entry
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    Ok(crate::mcp_client::McpServerConfig {
+        name,
+        transport,
+        enabled,
+        timeout_ms,
+        oauth: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2004,7 +2145,7 @@ mod tests {
             serde_json::from_str(resp3.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(
             initialized["result"]["agentCapabilities"]["mcpCapabilities"],
-            json!({"http": false, "sse": false})
+            json!({"http": true, "sse": true})
         );
         assert_eq!(
             initialized["result"]["agentCapabilities"]["loadSession"],
@@ -2027,17 +2168,29 @@ mod tests {
             event["result"]["agentCapabilities"]["loadSession"],
             crate::acp_history::default_root().is_some()
         );
-        let body = json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"mcpServers":[{"name":"example","url":"http://127.0.0.1:1"}]}}).to_string();
+        // Valid mcpServers entry on session/new is accepted; malformed entry fails -32602.
+        let bad_body = json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"mcpServers":[{"name":"bad-only"}]}}).to_string();
         let mut rejected = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        let headers = format!("POST /acp HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Secret-Key: test-secret\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        let headers = format!("POST /acp HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Secret-Key: test-secret\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bad_body.len());
         rejected.write_all(headers.as_bytes()).await.unwrap();
-        rejected.write_all(body.as_bytes()).await.unwrap();
+        rejected.write_all(bad_body.as_bytes()).await.unwrap();
         let mut reply = String::new();
         rejected.read_to_string(&mut reply).await.unwrap();
         let response: Value =
             serde_json::from_str(reply.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(response["error"]["code"], -32602);
         assert_eq!(response["id"], 2);
+
+        let good_body = json!({"jsonrpc":"2.0","id":3,"method":"session/new","params":{"mcpServers":[{"name":"example","type":"http","url":"http://127.0.0.1:1"}]}}).to_string();
+        let mut accepted = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let good_headers = format!("POST /acp HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Secret-Key: test-secret\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", good_body.len());
+        accepted.write_all(good_headers.as_bytes()).await.unwrap();
+        accepted.write_all(good_body.as_bytes()).await.unwrap();
+        let mut good_reply = String::new();
+        accepted.read_to_string(&mut good_reply).await.unwrap();
+        let good_resp: Value =
+            serde_json::from_str(good_reply.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert!(good_resp["result"]["sessionId"].as_str().is_some(), "{good_resp}");
 
         // 4. GET /acp WebSocket upgrade + initialize frame
         let mut s4 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();

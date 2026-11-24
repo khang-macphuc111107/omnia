@@ -265,6 +265,7 @@ pub struct AcpLaunchConfig {
     pub approval_mode: ApprovalMode,
     pub workspace_trusted: bool,
     pub permission_rules: Vec<PermissionRule>,
+    pub mcp_servers: Vec<Value>,
 }
 
 impl AcpLaunchConfig {
@@ -361,6 +362,11 @@ impl AcpLaunchConfig {
             }
         }
 
+        let mcp_servers = std::env::var("OMNIA_ACP_MCP_SERVERS")
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<Value>>(&raw).ok())
+            .unwrap_or_default();
+
         Ok(Self {
             backend,
             program,
@@ -370,6 +376,7 @@ impl AcpLaunchConfig {
             approval_mode,
             workspace_trusted,
             permission_rules,
+            mcp_servers,
         })
     }
 }
@@ -404,7 +411,7 @@ pub struct AcpClient {
     stdin_tx: mpsc::UnboundedSender<String>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     next_id: AtomicU64,
-    supervisor: Arc<ProcessSupervisor>,
+    supervisor: Arc<std::sync::Mutex<ProcessSupervisor>>,
     alive: Arc<AtomicBool>,
 }
 
@@ -425,7 +432,7 @@ impl AcpClient {
         let (mut child, supervisor) = spawn_supervised_command(&mut cmd)
             .with_context(|| format!("failed to spawn ACP agent {}", cfg.program.display()))?;
         let pid = child.id();
-        let supervisor = Arc::new(supervisor);
+        let supervisor = Arc::new(std::sync::Mutex::new(supervisor));
 
         let mut child_stdin = child.stdin.take().context("missing ACP stdin")?;
         let child_stdout = child.stdout.take().context("missing ACP stdout")?;
@@ -540,7 +547,7 @@ impl AcpClient {
                 "session/new",
                 json!({
                     "cwd": cfg.cwd.to_string_lossy(),
-                    "mcpServers": []
+                    "mcpServers": cfg.mcp_servers
                 }),
                 Duration::from_secs(20),
             )
@@ -615,13 +622,17 @@ impl AcpClient {
     }
 
     pub fn kill(&self) {
-        self.supervisor.kill_tree();
+        if let Ok(mut sup) = self.supervisor.lock() {
+            sup.kill_tree();
+        }
     }
 }
 
 impl Drop for AcpClient {
     fn drop(&mut self) {
-        self.supervisor.kill_tree();
+        if let Ok(mut sup) = self.supervisor.lock() {
+            sup.kill_tree();
+        }
     }
 }
 

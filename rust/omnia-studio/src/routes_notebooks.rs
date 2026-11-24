@@ -123,7 +123,7 @@ fn redact_notebook_error_detail(raw: &str) -> String {
     SecretRedactor::redact(&sanitized_tokens.join(" "))
 }
 
-fn map_notebook_error(err: NotebookError) -> HttpResponse {
+pub(crate) fn map_notebook_error(err: NotebookError) -> HttpResponse {
     let safe_detail = redact_notebook_error_detail(&err.to_string());
     HttpResponse::error(err.http_status(), err.error_code(), &safe_detail)
 }
@@ -176,16 +176,20 @@ fn parse_surface(raw: &str) -> Result<InteractionSurface, HttpResponse> {
     }
 }
 
-fn parse_artifact_kind(raw: &str) -> Result<StudioArtifactKind, HttpResponse> {
+pub(crate) fn parse_artifact_kind(raw: &str) -> Result<StudioArtifactKind, HttpResponse> {
     match raw.trim().to_ascii_lowercase().replace('-', "_").as_str() {
-        "briefing" => Ok(StudioArtifactKind::Briefing),
+        "briefing" | "briefing_doc" => Ok(StudioArtifactKind::Briefing),
         "study_guide" | "studyguide" => Ok(StudioArtifactKind::StudyGuide),
+        "audio_overview" | "audio" | "audiooverview" => Ok(StudioArtifactKind::AudioOverview),
+        "slide_deck" | "slidedeck" | "slides" => Ok(StudioArtifactKind::SlideDeck),
         "faq" => Ok(StudioArtifactKind::Faq),
         "timeline" => Ok(StudioArtifactKind::Timeline),
         "quiz" => Ok(StudioArtifactKind::Quiz),
         "flashcards" => Ok(StudioArtifactKind::Flashcards),
         "mind_map" | "mindmap" => Ok(StudioArtifactKind::MindMap),
-        "infographic_spec" | "infographicspec" => Ok(StudioArtifactKind::InfographicSpec),
+        "infographic" | "infographic_spec" | "infographicspec" => {
+            Ok(StudioArtifactKind::InfographicSpec)
+        }
         "data_table" | "datatable" => Ok(StudioArtifactKind::DataTable),
         other => Err(HttpResponse::error(
             400,
@@ -805,6 +809,7 @@ async fn handle_artifacts_generate(state: &Arc<StudioState>, req: &HttpRequest) 
             .map(ToString::to_string),
         source_ids: obj
             .get("source_ids")
+            .or_else(|| obj.get("sourceIds"))
             .and_then(Value::as_array)
             .map(|arr| {
                 arr.iter()
@@ -820,15 +825,96 @@ async fn handle_artifacts_generate(state: &Arc<StudioState>, req: &HttpRequest) 
             .filter(|s| !s.is_empty())
             .map(ToString::to_string),
     };
-    let nb = Arc::clone(&state.notebooks);
-    match tokio::task::spawn_blocking(move || nb.generate_artifact(gen_req)).await {
-        Ok(Ok(artifact)) => HttpResponse::ok(json!({
-            "ok": true,
-            "artifact": artifact,
-        })),
-        Ok(Err(err)) => map_notebook_error(err),
-        Err(err) => HttpResponse::error(500, "artifact_task_failed", &err.to_string()),
+    let llm_cfg = build_notebook_llm_config(&obj, state);
+    match state
+        .notebooks
+        .generate_artifact_with_llm(gen_req, &llm_cfg)
+        .await
+    {
+        Ok(artifact) => {
+            state.event_feed.publish(
+                "atelier",
+                "artifact_generated",
+                None,
+                serde_json::to_value(&artifact).unwrap_or_else(|_| json!({})),
+            );
+            HttpResponse::ok(json!({
+                "ok": true,
+                "artifact": artifact,
+            }))
+        }
+        Err(err) => map_notebook_error(err),
     }
+}
+
+pub(crate) fn build_notebook_llm_config(
+    obj: &serde_json::Map<String, Value>,
+    state: &StudioState,
+) -> omnia_notebook::NotebookLlmConfig {
+    let mut cfg = omnia_notebook::NotebookLlmConfig::default();
+    if let Some(m) = obj
+        .get("model")
+        .or_else(|| obj.get("modelSpec"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(p) = obj
+            .get("provider")
+            .or_else(|| obj.get("providerId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if !m.contains('/') {
+                cfg.model_spec = format!("{p}/{m}");
+            } else {
+                cfg.model_spec = m.to_string();
+            }
+        } else {
+            cfg.model_spec = m.to_string();
+        }
+    } else if let Ok(roles) = state.ops.list_model_roles() {
+        if let Some(main_role) = roles.into_iter().find(|r| r.scope == "main") {
+            cfg.model_spec = format!("{}/{}", main_role.provider_id, main_role.model_id);
+        }
+    }
+    if let Some(u) = obj
+        .get("baseUrl")
+        .or_else(|| obj.get("base_url"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        cfg.api_base_override = Some(u.to_string());
+    }
+    if let Some(k) = obj
+        .get("apiKey")
+        .or_else(|| obj.get("api_key"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        cfg.api_key_override = Some(k.to_string());
+    }
+    if let Some(w) = obj
+        .get("wireApi")
+        .or_else(|| obj.get("wire_api"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        cfg.wire_api_override = Some(w.to_string());
+    }
+    if obj
+        .get("allowLoopback")
+        .or_else(|| obj.get("allowLoopbackEndpoints"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        cfg.allow_loopback_endpoints = true;
+    }
+    cfg
 }
 
 fn handle_artifacts_rename(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {

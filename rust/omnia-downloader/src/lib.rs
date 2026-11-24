@@ -14,15 +14,19 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+pub mod capture_bundle;
 pub mod chunker;
+pub mod crawlers;
 pub mod drive;
 pub mod engine;
 pub mod handoff;
 pub mod integrity;
 pub mod journal;
 pub mod media_box;
+pub mod media_ops;
 pub mod pacing;
 pub mod privacy;
+pub mod schema_drift;
 pub mod store;
 pub mod streaming;
 pub mod types;
@@ -38,9 +42,19 @@ pub use batch::{
     DownloadCategory, DownloadScheduler, Ef2Entry, ScheduleWindow, SchedulerConfig,
     MAX_BATCH_EXPANSION,
 };
+pub use capture_bundle::{
+    open_wire_value, seal_wire_value, CaptureBundle, CaptureBundleEntry, CasBlobMeta,
+    ContentAddressableBlobStore, WireCodecKind, DEFAULT_MAX_CAS_ENTRIES, DEFAULT_MAX_INFLATE_BYTES,
+};
 pub use chunker::{
     compute_missing_intervals, normalize_completed_intervals, record_completed_interval,
     total_interval_bytes, Chunker,
+};
+pub use crawlers::{
+    crawl_moodle_course, crawl_web_tree, extract_moodle_resources_from_html, has_redos_hazard,
+    inspect_youtube_url, parse_youtube_player_json, parse_youtube_url, CrawlReport,
+    DiscoveredCrawlResource, SafeFilterPattern, YouTubeFormatOption, YouTubeInspectResult,
+    YouTubePlaylistEntry,
 };
 pub use drive::{
     extract_drive_confirm_url, is_valid_drive_id, parse_drive_url, resolve_workspace_export,
@@ -66,6 +80,10 @@ pub use media_box::{
     inspect_media_bytes, inspect_media_file, AdtsInfo, ContainerFormat, DrmBoxMetadata,
     IsoBmffBoxInfo, MediaBoxReport, MpegTsInfo, WebmInfo,
 };
+pub use media_ops::{
+    build_ffmpeg_mux_args, convert_or_clip_media, find_media_binary, parse_ffprobe_json,
+    run_ffprobe, FfprobeReport, FfprobeStreamSummary, MediaMuxOutcome, MediaMuxRequest,
+};
 pub use pacing::{
     parse_retry_after, parse_retry_after_now, AimdBdpController, CongestionMetrics, PacingMode,
     TokenBucketLimiter, MAX_RETRY_AFTER_SECS,
@@ -73,6 +91,12 @@ pub use pacing::{
 pub use privacy::{
     PrivacyShield, ProviderCategory, ProviderDefinition, ProviderRegistry, ScopedCookie,
     ScopedCookieJar,
+};
+pub use schema_drift::{
+    build_gram_multiset, compare_schema_snapshots, compute_multiset_overlap, diff_required_keys,
+    extract_structural_shapes_from_json, extract_structural_shapes_from_text,
+    signature_similarity, DriftVerdict, SchemaDriftPair, SchemaDriftReport, SchemaSignature,
+    DEFAULT_DRIFT_THRESHOLD, GRAM_WIDTH,
 };
 pub use store::DownloadStore;
 pub use streaming::{

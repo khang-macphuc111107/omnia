@@ -433,6 +433,71 @@ impl GraphifyIndex {
     ///
     /// Scans `<root>/Cargo.toml`, `rust/*/Cargo.toml`, `rust/*/src/*.rs` (plus
     /// nested modules under `src/`), `ui/app/*.js`, and `docs/**/*.md`.
+    /// Build a 4-relation Compressed Sparse Row (CSR) bidirectional code/doc graph
+    /// (`calls`, `imports`, `defines`, `references`) over indexed entities & edges.
+    pub fn build_csr_graph(
+        &self,
+        include_ambiguous: bool,
+    ) -> Result<crate::cst_ppr::CsrCodeGraph, AgentGraphError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| AgentGraphError::InternalLockPoisoned)?;
+        let nodes: Vec<String> = guard.entities.keys().cloned().collect();
+        let typed_edges: Vec<(String, String, crate::cst_ppr::CsrRelationKind, f64)> = guard
+            .edges
+            .iter()
+            .filter(|e| include_ambiguous || e.provenance != GraphifyProvenance::Ambiguous)
+            .map(|e| {
+                let rel = match e.relation.as_str() {
+                    "calls" => crate::cst_ppr::CsrRelationKind::Calls,
+                    "depends_on" | "imports" | "imports_crate" | "links_to" => {
+                        crate::cst_ppr::CsrRelationKind::Imports
+                    }
+                    "contains_source" | "defines" | "defines_symbol" | "exports_symbol"
+                    | "exposes_route" | "implements" => crate::cst_ppr::CsrRelationKind::Defines,
+                    _ => crate::cst_ppr::CsrRelationKind::References,
+                };
+                let w = f64::from(e.confidence_bps) / 10_000.0;
+                (e.from_id.clone(), e.to_id.clone(), rel, w)
+            })
+            .collect();
+        Ok(crate::cst_ppr::CsrCodeGraph::build(&nodes, &typed_edges))
+    }
+
+    /// Execute Personalized PageRank (`alpha = 0.85`) over the 4-relation CSR code graph
+    /// seeded from explicit node IDs and/or query lexical entity matches.
+    pub fn ranked_ppr(
+        &self,
+        seed_ids: &[&str],
+        query: &str,
+        top_k: usize,
+        include_ambiguous: bool,
+    ) -> Result<Vec<crate::cst_ppr::PprEntityHit>, AgentGraphError> {
+        let mut seeds: Vec<String> = seed_ids.iter().map(|s| (*s).to_owned()).collect();
+        if !query.trim().is_empty() {
+            let needle = query.trim().to_ascii_lowercase();
+            let guard = self
+                .inner
+                .lock()
+                .map_err(|_| AgentGraphError::InternalLockPoisoned)?;
+            for ent in guard.entities.values() {
+                if ent.id.to_ascii_lowercase().contains(&needle)
+                    || ent.label.to_ascii_lowercase().contains(&needle)
+                    || ent.source_path.to_ascii_lowercase().contains(&needle)
+                {
+                    seeds.push(ent.id.clone());
+                    if seeds.len() >= 12 {
+                        break;
+                    }
+                }
+            }
+        }
+        let csr = self.build_csr_graph(include_ambiguous)?;
+        let refs: Vec<&str> = seeds.iter().map(String::as_str).collect();
+        Ok(csr.personalized_pagerank(&refs, top_k))
+    }
+
     pub fn index_workspace(
         &self,
         workspace_root: &Path,
@@ -782,6 +847,110 @@ impl GraphifyIndex {
             }
         }
 
+        // 5. General multi-language Tree-sitter CST indexing (.py, .ts, .tsx, .go, .c, .cpp, .h, .hpp)
+        let mut cst_files = Vec::new();
+        for ext in ["py", "ts", "tsx", "go", "c", "cpp", "h", "hpp"] {
+            collect_safe_files_recursive(
+                &canonical_root,
+                &canonical_root,
+                ext,
+                &mut report,
+                &mut cst_files,
+            )?;
+        }
+        let mut sym_name_to_ids: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for ent in &pending_entities {
+            if ent.kind == GraphifyEntityKind::Symbol {
+                sym_name_to_ids
+                    .entry(ent.label.clone())
+                    .or_default()
+                    .push(ent.id.clone());
+            }
+        }
+        let mut pending_cst_facts = Vec::new();
+        for src_path in cst_files.into_iter().take(128) {
+            let Ok(src_text) = read_bounded_utf8(&src_path) else {
+                continue;
+            };
+            report.files_indexed += 1;
+            let rel = rel_slash_path(workspace_root, &src_path);
+            let mod_id = format!("mod:{rel}");
+            pending_entities.push(GraphifyEntity {
+                id: mod_id.clone(),
+                kind: GraphifyEntityKind::CodeModule,
+                label: file_name_lossy(&src_path),
+                source_path: rel.clone(),
+                symbol_span: None,
+            });
+            let facts = crate::cst_ppr::extract_cst_facts(&rel, &src_text);
+            for sym in &facts.symbols {
+                let sym_id = format!("sym:{rel}::{}", sym.name);
+                sym_name_to_ids
+                    .entry(sym.name.clone())
+                    .or_default()
+                    .push(sym_id.clone());
+                pending_entities.push(GraphifyEntity {
+                    id: sym_id.clone(),
+                    kind: GraphifyEntityKind::Symbol,
+                    label: sym.name.clone(),
+                    source_path: rel.clone(),
+                    symbol_span: Some(format!("L{}-L{}", sym.line, sym.end_line)),
+                });
+                pending_edges.push(GraphifyEdge {
+                    from_id: mod_id.clone(),
+                    to_id: sym_id,
+                    relation: "defines_symbol".to_owned(),
+                    provenance: GraphifyProvenance::Extracted,
+                    confidence_bps: GraphifyProvenance::Extracted.default_confidence_bps(),
+                    source_locator: format!("{rel}#L{}", sym.line),
+                });
+            }
+            pending_cst_facts.push((rel, mod_id, facts));
+        }
+        for (rel, mod_id, facts) in pending_cst_facts {
+            for call_name in facts.call_refs {
+                if let Some(targets) = sym_name_to_ids.get(&call_name) {
+                    let (prov, conf) = if targets.len() == 1 {
+                        (GraphifyProvenance::Inferred, 8_800)
+                    } else {
+                        (GraphifyProvenance::Ambiguous, 4_200)
+                    };
+                    for tgt in targets.iter().take(3) {
+                        if !tgt.starts_with(&format!("sym:{rel}::")) {
+                            pending_edges.push(GraphifyEdge {
+                                from_id: mod_id.clone(),
+                                to_id: tgt.clone(),
+                                relation: "calls".to_owned(),
+                                provenance: prov,
+                                confidence_bps: conf,
+                                source_locator: rel.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            for base_name in facts.inherits {
+                if let Some(targets) = sym_name_to_ids.get(&base_name) {
+                    let prov = if targets.len() == 1 {
+                        GraphifyProvenance::Extracted
+                    } else {
+                        GraphifyProvenance::Ambiguous
+                    };
+                    for tgt in targets.iter().take(2) {
+                        pending_edges.push(GraphifyEdge {
+                            from_id: mod_id.clone(),
+                            to_id: tgt.clone(),
+                            relation: "implements".to_owned(),
+                            provenance: prov,
+                            confidence_bps: prov.default_confidence_bps(),
+                            source_locator: rel.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
         let mut guard = self
             .inner
             .lock()
@@ -1021,72 +1190,47 @@ fn parse_cargo_dependencies(text: &str) -> Vec<String> {
 }
 
 fn extract_rust_public_symbols(text: &str) -> Vec<(usize, String)> {
-    let mut syms = Vec::new();
-    let prefixes = [
-        "pub async fn ",
-        "pub fn ",
-        "pub struct ",
-        "pub enum ",
-        "pub trait ",
-        "pub type ",
-        "pub const ",
-        "pub mod ",
-    ];
-    for (idx, raw_line) in text.lines().enumerate() {
-        let trimmed = raw_line.trim_start();
-        for prefix in prefixes {
-            if let Some(rest) = trimmed.strip_prefix(prefix) {
-                let ident: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .collect();
-                if !ident.is_empty() {
-                    syms.push((idx + 1, ident));
-                }
-                break;
-            }
-        }
-    }
-    syms
+    crate::cst_ppr::extract_cst_facts("lib.rs", text)
+        .symbols
+        .into_iter()
+        .filter(|s| s.is_public)
+        .map(|s| (s.line, s.name))
+        .collect()
 }
 
 fn extract_internal_rust_imports(text: &str) -> Vec<String> {
     let mut crates = BTreeSet::new();
-    for raw_line in text.lines() {
-        let trimmed = raw_line.trim();
-        if let Some(rest) = trimmed.strip_prefix("use ") {
-            let ident: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if ident.starts_with("omnia_") {
-                crates.insert(ident.replace('_', "-"));
-            }
+    for imp in crate::cst_ppr::extract_cst_facts("lib.rs", text).imports {
+        let head = imp
+            .split("::")
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches('{')
+            .trim();
+        if head.starts_with("omnia_") {
+            crates.insert(head.replace('_', "-"));
         }
     }
     crates.into_iter().collect()
 }
 
 fn extract_js_exports(text: &str) -> Vec<(usize, String)> {
-    let mut syms = Vec::new();
-    let prefixes = [
-        "export async function ",
-        "export function ",
-        "export class ",
-        "export const ",
-    ];
+    let mut syms = crate::cst_ppr::extract_cst_facts("module.tsx", text)
+        .symbols
+        .into_iter()
+        .map(|s| (s.line, s.name))
+        .collect::<Vec<_>>();
+    // Preserve ESM `export const` extraction cleanly alongside CST function/class declarations
     for (idx, raw_line) in text.lines().enumerate() {
         let trimmed = raw_line.trim_start();
-        for prefix in prefixes {
-            if let Some(rest) = trimmed.strip_prefix(prefix) {
-                let ident: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
-                    .collect();
-                if !ident.is_empty() {
-                    syms.push((idx + 1, ident));
-                }
-                break;
+        if let Some(rest) = trimmed.strip_prefix("export const ") {
+            let ident: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if !ident.is_empty() && !syms.iter().any(|(_, n)| n == &ident) {
+                syms.push((idx + 1, ident));
             }
         }
     }

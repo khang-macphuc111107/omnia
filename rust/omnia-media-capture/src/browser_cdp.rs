@@ -9,6 +9,12 @@ use crate::capability::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
+
+pub use crate::browser_ws::{
+    create_isolated_profile_dir, is_forbidden_live_browser_path, launch_isolated_browser,
+    resolve_isolated_browser_binary, CdpSession, IsolatedBrowserHandle,
+    IsolatedBrowserLaunchOptions,
+};
 use thiserror::Error;
 
 /// Permitted URL schemes for CDP HTTP discovery and WebSocket debugger endpoints.

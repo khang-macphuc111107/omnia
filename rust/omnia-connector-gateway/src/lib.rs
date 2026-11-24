@@ -22,6 +22,7 @@
 pub mod artifact_intake;
 pub mod codex_patched;
 pub mod gemini_share;
+pub mod htmustc_wire;
 pub mod opencode_compat;
 pub mod proxy_router;
 

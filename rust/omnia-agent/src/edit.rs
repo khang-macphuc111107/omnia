@@ -1041,6 +1041,21 @@ pub fn run_fast_compiler_syntax_check(workspace_root: &Path, abs_path: &Path) ->
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())?;
 
+    let fast_ts_diag = crate::ast_edit::AstLang::from_path(abs_path).and_then(|lang| {
+        let src = std::fs::read_to_string(abs_path).ok()?;
+        let errs = crate::ast_edit::count_syntax_errors(lang, &src).ok()?;
+        (errs > 0).then(|| {
+            format!(
+                "Tree-sitter ({}) syntax check detected {errs} error node(s) in {}",
+                lang.as_str(),
+                abs_path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
+            )
+        })
+    });
+    if let Some(diag) = fast_ts_diag {
+        return Some(diag);
+    }
+
     let (prog, args): (String, Vec<String>) = match ext.as_str() {
         "py" => {
             let py = which::which("python")
@@ -1074,7 +1089,7 @@ pub fn run_fast_compiler_syntax_check(workspace_root: &Path, abs_path: &Path) ->
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let (mut child, sup) = crate::supervisor::spawn_supervised_command(&mut cmd).ok()?;
+    let (mut child, mut sup) = crate::supervisor::spawn_supervised_command(&mut cmd).ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2_500);
     loop {
         match child.try_wait() {

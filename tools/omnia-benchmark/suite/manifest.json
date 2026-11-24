@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "total_tasks": 24,
+  "total_tasks": 33,
   "axes_covered": [
     1,
     2,
@@ -9,7 +9,10 @@
     5,
     6,
     7,
-    11
+    11,
+    12,
+    13,
+    14
   ],
   "tasks": [
     {
@@ -433,6 +436,168 @@
       "max_turns": 25,
       "grading_type": "resilience",
       "fault_mode": null,
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "mem_01_bitemporal_ledger",
+      "axis": 12,
+      "axis_name": "Long-Horizon Memory & Context Compaction",
+      "title": "Bi-temporal policy reconstruction across 6 noisy session transcripts",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "json"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "memory_state",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "mem_02_compaction_drift",
+      "axis": 12,
+      "axis_name": "Long-Horizon Memory & Context Compaction",
+      "title": "Preserve 8 architectural invariants across 110 KB noisy spec evolution without drift",
+      "difficulty": "hard",
+      "languages": [
+        "python"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "memory_state",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "mem_03_cross_session_prefs",
+      "axis": 12,
+      "axis_name": "Long-Horizon Memory & Context Compaction",
+      "title": "Cross-session memory synthesis & incident constraint enforcement",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "csv"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "memory_state",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "ptc_01_local_mcp_fanout",
+      "axis": 13,
+      "axis_name": "MCP & PTC Code Mode Multi-Tool Composition",
+      "title": "Local stdio MCP 18-tool paginated shard aggregation & HMAC alert verification",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "json"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "mcp_ptc_composition",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "ptc_02_code_mode_batch",
+      "axis": 13,
+      "axis_name": "MCP & PTC Code Mode Multi-Tool Composition",
+      "title": "64-service graph cycle detection & batch api_v1->api_v2 manifest codemod",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "json"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "mcp_ptc_composition",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "ptc_03_mcp_schema_elicit",
+      "axis": 13,
+      "axis_name": "MCP & PTC Code Mode Multi-Tool Composition",
+      "title": "Stateful stdio MCP server w/ dynamic tool unlock & strict integer schema settlement",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "json"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "mcp_ptc_composition",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": null,
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "worktree_01_parallel_services",
+      "axis": 14,
+      "axis_name": "Multi-Agent Worktree Refactoring",
+      "title": "Refactor 3 decoupled services (billing, auth, notify) onto Envelope v2 contract",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "git"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "worktree_refactor",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "worktree_02_conflict_merge_fix",
+      "axis": 14,
+      "axis_name": "Multi-Agent Worktree Refactoring",
+      "title": "Merge conflicting Git feature branches (rate-limiter + audit-hmac) & fix combined semantics",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "git"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "worktree_refactor",
+      "prompt_file": "prompt.md",
+      "workspace_dir": "workspace",
+      "setup_script": "setup.py",
+      "verify_script": "verify.py"
+    },
+    {
+      "id": "worktree_03_monorepo_codemod",
+      "axis": 14,
+      "axis_name": "Multi-Agent Worktree Refactoring",
+      "title": "Python + Node.js ESM + Rust monorepo X-Sig-V1->X-Sig-V2 canonical signing migration",
+      "difficulty": "hard",
+      "languages": [
+        "python",
+        "javascript",
+        "rust"
+      ],
+      "timeout_s": 300,
+      "max_turns": 25,
+      "grading_type": "worktree_refactor",
       "prompt_file": "prompt.md",
       "workspace_dir": "workspace",
       "setup_script": null,

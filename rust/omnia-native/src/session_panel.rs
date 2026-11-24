@@ -326,10 +326,11 @@ fn apply_snapshot(state: &mut SessionPanelState, snap: NativeSessionsSnapshot) {
         state.expected_revision = 0;
     }
 
-    set_text_utf8(state.handles.status, &format_snapshot_status(&snap));
+    let status_text = format_snapshot_status(&snap);
     state.last_snapshot = Some(snap);
     state.suppress_notifications = false;
     sync_control_enabled_states(state);
+    set_text_utf8(state.handles.status, &status_text);
 }
 
 fn confirm_discard_if_dirty(state: &SessionPanelState) -> bool {
@@ -431,8 +432,8 @@ fn handle_worker_wake(state: &mut SessionPanelState) {
             }
             // Do NOT wipe edited fields (`122`/`123`/`124`), but restore active list selection (`qa-guard`).
             restore_prior_selection(state);
-            set_text_utf8(state.handles.status, &format_store_error_status(&err));
             sync_control_enabled_states(state);
+            set_text_utf8(state.handles.status, &format_store_error_status(&err));
         }
     }
 }

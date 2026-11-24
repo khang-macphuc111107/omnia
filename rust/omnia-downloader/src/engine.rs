@@ -15,14 +15,15 @@
 //!   / `403 BLOCKED_ACL_403` fail-closed classification.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
-use std::path::Path;
+use std::fs::{self, File};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use omnia_connector_gateway::artifact_intake::classify_http_validator;
+use omnia_connector_gateway::artifact_intake::{classify_http_validator, HttpValidatorStrength};
 use omnia_core::uuid_v4;
 use parking_lot::{Mutex, RwLock};
 use reqwest::header::{
@@ -36,8 +37,12 @@ use tokio::time::sleep;
 use url::Url;
 
 use crate::batch::{BatchPlanner, DownloadScheduler, SchedulerConfig};
+use crate::capture_bundle::{CaptureBundle, ContentAddressableBlobStore};
 use crate::chunker::{
     normalize_completed_intervals, record_completed_interval, total_interval_bytes, Chunker,
+};
+use crate::crawlers::{
+    crawl_moodle_course, crawl_web_tree, inspect_youtube_url, CrawlReport, YouTubeInspectResult,
 };
 use crate::handoff::{classify_http_response, VisibleHandoffManager};
 use crate::integrity::{parse_x_goog_hash, verify_file_integrity};
@@ -45,9 +50,17 @@ use crate::journal::{
     omnf_journal_path_for, part_meta_path_for, OmnfJournal, OmnfRecord, PartMetaV2,
 };
 use crate::media_box::{inspect_media_bytes, inspect_media_file, MediaBoxReport};
+use crate::media_ops::{
+    convert_or_clip_media, run_ffprobe, FfprobeReport, MediaMuxOutcome, MediaMuxRequest,
+};
 use crate::pacing::{AimdBdpController, PacingMode, TokenBucketLimiter};
 use crate::privacy::{PrivacyShield, ProviderRegistry, ScopedCookieJar};
+use crate::schema_drift::{compare_schema_snapshots, SchemaDriftReport};
 use crate::store::DownloadStore;
+use crate::streaming::{
+    decrypt_hls_aes128_cbc, hls_sequence_iv, parse_dash_manifest, parse_hls_manifest,
+    DashManifest, HlsManifest,
+};
 use crate::types::{
     current_epoch_ms, safe_output_filename, validate_safe_local_path, ChunkRange,
     CompletedDownload, DownloadConfig, DownloadJobSnapshot, DownloadProgressEvent,
@@ -434,8 +447,45 @@ impl DownloadEngine {
             .unwrap_or(self.config.min_split_bytes)
             .max(1);
 
+        // Fast-path manifest URLs (.m3u8 / .mpd) directly to HLS/DASH streaming execution.
+        if url_looks_like_manifest(&req.url) {
+            return self
+                .execute_manifest_download(
+                    job_id,
+                    req,
+                    None,
+                    safe_staging,
+                    sanitized_url,
+                    provider_id,
+                    pacing_mode,
+                    store,
+                    events_tx,
+                    control_rx,
+                    created_at,
+                )
+                .await;
+        }
+
         // Emit probing status
         let probe = self.probe(&req.url, &req.headers).await?;
+
+        if content_type_is_manifest(probe.content_type.as_deref()) {
+            return self
+                .execute_manifest_download(
+                    job_id,
+                    req,
+                    Some(&probe),
+                    safe_staging,
+                    sanitized_url,
+                    provider_id,
+                    pacing_mode,
+                    store,
+                    events_tx,
+                    control_rx,
+                    created_at,
+                )
+                .await;
+        }
 
         let raw_name = req
             .filename
@@ -1474,6 +1524,380 @@ impl DownloadEngine {
             let _ = st.upsert_job(snap);
         }
     }
+
+    async fn fetch_guarded_bytes(
+        &self,
+        url: &str,
+        extra_headers: &BTreeMap<String, String>,
+        range_header: Option<&str>,
+        max_bytes: usize,
+    ) -> Result<(u16, Option<String>, Vec<u8>), DownloaderError> {
+        let resp = self
+            .send_checked(reqwest::Method::GET, url, extra_headers, range_header, None)
+            .await?;
+        let status = resp.status().as_u16();
+        let ct = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(ToString::to_string);
+        let final_url = resp.url().as_str().to_string();
+        let mut buf = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res?;
+            if buf.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(DownloaderError::InvalidInput(format!(
+                    "manifest/segment payload exceeds {max_bytes} bytes limit"
+                )));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        let preview = String::from_utf8_lossy(&buf[..buf.len().min(4096)]);
+        let gate = classify_http_response(status, &final_url, ct.as_deref(), &preview);
+        self.handoffs.enforce_classification(&final_url, gate)?;
+        if status >= 400 {
+            return Err(DownloaderError::HttpStatus {
+                status,
+                detail: format!("stream request returned HTTP {status}"),
+            });
+        }
+        Ok((status, ct, buf))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_manifest_download(
+        &self,
+        job_id: String,
+        req: DownloadRequest,
+        probe: Option<&ProbeInfo>,
+        safe_staging: PathBuf,
+        sanitized_url: String,
+        provider_id: String,
+        pacing_mode: PacingMode,
+        store: Option<Arc<DownloadStore>>,
+        events_tx: Option<broadcast::Sender<DownloadProgressEvent>>,
+        control_rx: watch::Receiver<JobControl>,
+        created_at: u64,
+    ) -> Result<CompletedDownload, DownloaderError> {
+        let start_instant = Instant::now();
+        let (_, ct, manifest_bytes) = self
+            .fetch_guarded_bytes(&req.url, &req.headers, None, 8 * 1024 * 1024)
+            .await?;
+        let manifest_text = String::from_utf8_lossy(&manifest_bytes).into_owned();
+        let trimmed = manifest_text.trim_start();
+        let is_dash = trimmed.starts_with('<')
+            || req
+                .url
+                .split(['?', '#'])
+                .next()
+                .unwrap_or(&req.url)
+                .to_ascii_lowercase()
+                .ends_with(".mpd")
+            || ct
+                .as_deref()
+                .is_some_and(|c| c.to_ascii_lowercase().contains("dash+xml"));
+
+        let default_name = if let Some(explicit) = req.filename.as_deref() {
+            explicit.to_string()
+        } else if let Some(p) = probe {
+            let stem = p.suggested_filename.trim_end_matches(".m3u8").trim_end_matches(".mpd");
+            if is_dash {
+                format!("{stem}.mp4")
+            } else {
+                format!("{stem}.ts")
+            }
+        } else if is_dash {
+            "stream_dash.mp4".to_string()
+        } else {
+            "stream_hls.ts".to_string()
+        };
+        let safe_name = safe_output_filename(&default_name)?;
+        let final_dest = safe_staging.join(&safe_name);
+        let part_path = safe_staging.join(format!("{safe_name}.part"));
+
+        let mut job_snap = DownloadJobSnapshot {
+            job_id: job_id.clone(),
+            sanitized_url: sanitized_url.clone(),
+            provider_id,
+            destination_path: final_dest.clone(),
+            part_path: part_path.clone(),
+            total_bytes: 0,
+            downloaded_bytes: 0,
+            status: DownloadStatus::Downloading,
+            pacing_mode,
+            streams: 1,
+            etag: probe.and_then(|p| p.etag.clone()),
+            last_modified: probe.and_then(|p| p.last_modified.clone()),
+            validator_strength: HttpValidatorStrength::None,
+            sha256_expected: req.expected_sha256.clone(),
+            sha256_actual: None,
+            crc32c_expected: req.expected_crc32c_b64.clone(),
+            crc32c_actual: None,
+            error_code: None,
+            error_message: None,
+            drm_supported: DRM_SUPPORTED,
+            created_at_ms: created_at,
+            updated_at_ms: created_at,
+        };
+        if let Some(ref st) = store {
+            let _ = st.upsert_job(&job_snap);
+        }
+
+        type SegmentPlanItem = (String, Option<String>, Option<(String, [u8; 16])>);
+        let segment_plan: Vec<SegmentPlanItem> = if is_dash {
+            let dash: DashManifest = parse_dash_manifest(&manifest_text, &req.url)?;
+            dash.enforce_no_drm()?;
+            let rep = pick_best_dash_representation(&dash).ok_or_else(|| {
+                DownloaderError::InvalidInput("DASH manifest contains no playable representations".into())
+            })?;
+            let mut items = Vec::new();
+            if let Some(init_uri) = &rep.init_uri {
+                items.push((init_uri.clone(), None, None));
+            }
+            for seg in &rep.segments {
+                items.push((seg.uri.clone(), None, None));
+            }
+            items
+        } else {
+            let mut hls: HlsManifest = parse_hls_manifest(&manifest_text, &req.url)?;
+            if hls.is_master {
+                let best = hls
+                    .variants
+                    .iter()
+                    .max_by_key(|v| v.bandwidth.unwrap_or(0))
+                    .ok_or_else(|| {
+                        DownloaderError::InvalidInput("HLS master playlist contains no variants".into())
+                    })?;
+                let (_, _, sub_bytes) = self
+                    .fetch_guarded_bytes(&best.uri, &req.headers, None, 8 * 1024 * 1024)
+                    .await?;
+                let sub_text = String::from_utf8_lossy(&sub_bytes);
+                hls = parse_hls_manifest(&sub_text, &best.uri)?;
+            }
+            let mut items = Vec::new();
+            let mut seen_init: Option<String> = None;
+            for seg in &hls.segments {
+                if let Some(init_uri) = &seg.init_map_uri {
+                    if seen_init.as_deref() != Some(init_uri.as_str()) {
+                        items.push((init_uri.clone(), None, None));
+                        seen_init = Some(init_uri.clone());
+                    }
+                }
+                let range_hdr = seg
+                    .byte_range
+                    .map(|r| format!("bytes={}-{}", r.offset, r.offset + r.length.saturating_sub(1)));
+                let key_pair = seg.aes128_key.as_ref().map(|k| {
+                    let iv = k.explicit_iv.unwrap_or_else(|| hls_sequence_iv(seg.sequence));
+                    (k.uri.clone(), iv)
+                });
+                items.push((seg.uri.clone(), range_hdr, key_pair));
+            }
+            items
+        };
+
+        if segment_plan.is_empty() {
+            let err = DownloaderError::InvalidInput("streaming manifest contained 0 media segments".into());
+            Self::record_terminal_error(&store, &mut job_snap, &err);
+            return Err(err);
+        }
+
+        let seg_count = segment_plan.len();
+        let mut seg_rows: Vec<ChunkRange> = (0..seg_count)
+            .map(|i| ChunkRange::new(i, i as u64, i as u64))
+            .collect();
+        if let Some(ref st) = store {
+            let _ = st.replace_segments(&job_id, &seg_rows);
+        }
+
+        let mut part_file = File::create(&part_path)?;
+        let mut key_cache: HashMap<String, [u8; 16]> = HashMap::new();
+        let mut downloaded_bytes = 0u64;
+        let mut completed_ranges: Vec<(u64, u64)> = Vec::new();
+
+        for (idx, (seg_url, range_hdr, aes_opt)) in segment_plan.iter().enumerate() {
+            match *control_rx.borrow() {
+                JobControl::Pause => {
+                    let err = DownloaderError::Paused {
+                        job_id: job_id.clone(),
+                    };
+                    Self::record_terminal_error(&store, &mut job_snap, &err);
+                    return Err(err);
+                }
+                JobControl::Cancel => {
+                    let err = DownloaderError::Cancelled {
+                        job_id: job_id.clone(),
+                    };
+                    Self::record_terminal_error(&store, &mut job_snap, &err);
+                    return Err(err);
+                }
+                JobControl::Run => {}
+            }
+
+            let (_, _, raw_seg) = self
+                .fetch_guarded_bytes(seg_url, &req.headers, range_hdr.as_deref(), 64 * 1024 * 1024)
+                .await
+                .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?;
+
+            let plain_seg = if let Some((key_uri, iv)) = aes_opt {
+                let key = if let Some(cached) = key_cache.get(key_uri) {
+                    *cached
+                } else {
+                    let (_, _, key_bytes) = self
+                        .fetch_guarded_bytes(key_uri, &req.headers, None, 1024)
+                        .await
+                        .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?;
+                    if key_bytes.len() != 16 {
+                        let err = DownloaderError::InvalidInput(format!(
+                            "HLS AES-128 key must be 16 bytes, got {}",
+                            key_bytes.len()
+                        ));
+                        Self::record_terminal_error(&store, &mut job_snap, &err);
+                        return Err(err);
+                    }
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(&key_bytes);
+                    key_cache.insert(key_uri.clone(), arr);
+                    arr
+                };
+                decrypt_hls_aes128_cbc(&raw_seg, &key, iv)
+                    .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?
+            } else {
+                raw_seg
+            };
+
+            let start_off = downloaded_bytes;
+            part_file.write_all(&plain_seg)?;
+            downloaded_bytes = downloaded_bytes.saturating_add(plain_seg.len() as u64);
+            let est_total = ((downloaded_bytes * (seg_count as u64)) / ((idx as u64) + 1)).max(downloaded_bytes);
+            if downloaded_bytes > start_off {
+                record_completed_interval(&mut completed_ranges, start_off, downloaded_bytes - 1, est_total);
+            }
+            if let Some(seg) = seg_rows.get_mut(idx) {
+                seg.downloaded = plain_seg.len() as u64;
+                seg.is_completed = true;
+            }
+            if let Some(ref st) = store {
+                let _ = st.replace_segments(&job_id, &seg_rows);
+            }
+
+            let elapsed = start_instant.elapsed().as_secs_f64().max(0.001);
+            let speed_bps = (downloaded_bytes as f64 / elapsed) as u64;
+            job_snap.downloaded_bytes = downloaded_bytes;
+            job_snap.total_bytes = est_total;
+            job_snap.updated_at_ms = current_epoch_ms();
+            if let Some(ref st) = store {
+                let _ = st.upsert_job(&job_snap);
+            }
+            emit_progress(
+                &events_tx,
+                &job_id,
+                DownloadStatus::Downloading,
+                downloaded_bytes,
+                est_total.max(downloaded_bytes),
+                speed_bps,
+                1,
+                completed_ranges.clone(),
+                false,
+                None,
+            );
+        }
+
+        part_file.sync_all()?;
+        drop(part_file);
+
+        job_snap.status = DownloadStatus::Verifying;
+        job_snap.updated_at_ms = current_epoch_ms();
+        if let Some(ref st) = store {
+            let _ = st.upsert_job(&job_snap);
+        }
+
+        let part_for_hash = part_path.clone();
+        let exp_sha = req.expected_sha256.clone();
+        let exp_crc = req.expected_crc32c_b64.clone();
+        let integrity = tokio::task::spawn_blocking(move || {
+            verify_file_integrity(&part_for_hash, exp_sha.as_deref(), exp_crc.as_deref())
+        })
+        .await
+        .map_err(|e| DownloaderError::InvalidInput(format!("integrity task failed: {e}")))?
+        .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?;
+
+        if final_dest.exists() {
+            let _ = fs::remove_file(&final_dest);
+        }
+        fs::rename(&part_path, &final_dest)?;
+
+        job_snap.status = DownloadStatus::Completed;
+        job_snap.total_bytes = integrity.total_bytes;
+        job_snap.downloaded_bytes = integrity.total_bytes;
+        job_snap.sha256_actual = Some(integrity.sha256_hex.clone());
+        job_snap.crc32c_actual = Some(integrity.crc32c_b64.clone());
+        job_snap.error_code = None;
+        job_snap.error_message = None;
+        job_snap.updated_at_ms = current_epoch_ms();
+        if let Some(ref st) = store {
+            let _ = st.upsert_job(&job_snap);
+        }
+        emit_progress(
+            &events_tx,
+            &job_id,
+            DownloadStatus::Completed,
+            integrity.total_bytes,
+            integrity.total_bytes,
+            0,
+            0,
+            completed_ranges,
+            false,
+            None,
+        );
+
+        Ok(CompletedDownload {
+            job_id,
+            output_path: final_dest,
+            sanitized_url,
+            total_bytes: integrity.total_bytes,
+            sha256_hex: integrity.sha256_hex,
+            crc32c_b64: integrity.crc32c_b64,
+            streams_used: 1,
+            resumed_bytes: 0,
+            fallback_to_single_stream: false,
+            drm_supported: DRM_SUPPORTED,
+        })
+    }
+}
+
+fn url_looks_like_manifest(raw_url: &str) -> bool {
+    let base = raw_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(raw_url)
+        .to_ascii_lowercase();
+    base.ends_with(".m3u8") || base.ends_with(".mpd")
+}
+
+fn content_type_is_manifest(ct: Option<&str>) -> bool {
+    let Some(raw) = ct else {
+        return false;
+    };
+    let low = raw.to_ascii_lowercase();
+    low.contains("mpegurl") || low.contains("dash+xml")
+}
+
+fn pick_best_dash_representation(manifest: &DashManifest) -> Option<&crate::streaming::DashRepresentation> {
+    let preferred_set = manifest
+        .adaptation_sets
+        .iter()
+        .find(|s| {
+            s.content_type.as_deref() == Some("video")
+                || s.mime_type
+                    .as_deref()
+                    .is_some_and(|m| m.starts_with("video/"))
+        })
+        .or_else(|| manifest.adaptation_sets.first())?;
+    preferred_set
+        .representations
+        .iter()
+        .max_by_key(|r| r.bandwidth.unwrap_or(0))
 }
 
 struct SharedRangeState {
@@ -1616,6 +2040,7 @@ pub struct DownloadManager {
     handoffs: Arc<VisibleHandoffManager>,
     cookie_jar: Arc<ScopedCookieJar>,
     providers: Arc<ProviderRegistry>,
+    cas: Arc<ContentAddressableBlobStore>,
     scheduler: Arc<Mutex<DownloadScheduler>>,
     controls: Arc<RwLock<HashMap<String, watch::Sender<JobControl>>>>,
     events_tx: broadcast::Sender<DownloadProgressEvent>,
@@ -1654,6 +2079,7 @@ impl DownloadManager {
         let handoffs = Arc::new(VisibleHandoffManager::new());
         let cookie_jar = Arc::new(ScopedCookieJar::new());
         let providers = Arc::new(ProviderRegistry::new());
+        let cas = Arc::new(ContentAddressableBlobStore::in_memory());
         let engine = Arc::new(DownloadEngine::with_components(
             config,
             policy,
@@ -1668,6 +2094,7 @@ impl DownloadManager {
             handoffs,
             cookie_jar,
             providers,
+            cas,
             scheduler: Arc::new(Mutex::new(DownloadScheduler::new(
                 SchedulerConfig::default(),
             ))),
@@ -1831,5 +2258,175 @@ impl DownloadManager {
     #[must_use]
     pub fn inspect_media_bytes(&self, bytes: &[u8]) -> MediaBoxReport {
         inspect_media_bytes(bytes)
+    }
+
+    /// Accesses the Content-Addressable Blob Store (`sha256:<hex>`).
+    #[must_use]
+    pub fn cas(&self) -> &ContentAddressableBlobStore {
+        &self.cas
+    }
+
+    /// Seals a verifiable CAS [`CaptureBundle`] inside the manager's CAS store.
+    pub fn seal_capture_bundle(
+        &self,
+        bundle_id: String,
+        source_url: &str,
+        parts: &[(&str, &str, &[u8])],
+        metadata: serde_json::Value,
+    ) -> Result<CaptureBundle, DownloaderError> {
+        CaptureBundle::build_and_seal(&self.cas, bundle_id, source_url, parts, metadata)
+    }
+
+    /// Executes FFmpeg lossless `-c copy` mux/clip/soft-sub conversion with optional `ffprobe` verify.
+    pub async fn convert_or_clip_media(
+        &self,
+        req: MediaMuxRequest,
+    ) -> Result<MediaMuxOutcome, DownloaderError> {
+        convert_or_clip_media(req).await
+    }
+
+    /// Runs `ffprobe` container/stream verification on a local file outside workspace.
+    pub async fn inspect_media_ffprobe(
+        &self,
+        path: &Path,
+        workspace_root: Option<&Path>,
+    ) -> Result<FfprobeReport, DownloaderError> {
+        run_ffprobe(path, workspace_root).await
+    }
+
+    /// Compares two HTML/JSON/text snapshots for 3-gram structural schema drift.
+    #[must_use]
+    pub fn compare_schema_drift(
+        &self,
+        before_text: &str,
+        after_text: &str,
+        threshold: Option<f64>,
+    ) -> SchemaDriftReport {
+        compare_schema_snapshots(before_text, after_text, threshold)
+    }
+
+    /// Crawls a Moodle LMS course/page URL under strict SSRF & ReDoS guards.
+    pub async fn crawl_moodle(
+        &self,
+        url: &str,
+        cookie_header: Option<&str>,
+        filter_pattern: Option<&str>,
+    ) -> Result<CrawlReport, DownloaderError> {
+        crawl_moodle_course(url, cookie_header, filter_pattern, self.engine.policy).await
+    }
+
+    /// Bounded SSRF-safe BFS Web crawler.
+    pub async fn crawl_web(
+        &self,
+        root_url: &str,
+        max_depth: usize,
+        max_pages: usize,
+        filter_pattern: Option<&str>,
+    ) -> Result<CrawlReport, DownloaderError> {
+        crawl_web_tree(root_url, max_depth, max_pages, filter_pattern, self.engine.policy).await
+    }
+
+    /// Inspects a public YouTube URL without DRM bypass.
+    pub async fn inspect_youtube(&self, url: &str) -> Result<YouTubeInspectResult, DownloaderError> {
+        inspect_youtube_url(url, self.engine.policy).await
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+    use cbc::Encryptor;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    type Aes128CbcEnc = Encryptor<aes::Aes128>;
+
+    #[tokio::test]
+    async fn engine_executes_hls_aes128_cbc_and_dash_mpd_end_to_end() {
+        let key: [u8; 16] = *b"OmniaDummyHlsKey";
+        let plain0 = b"SegmentZeroPayload_123456";
+        let plain1 = b"SegmentOnePayload_ABCDEF";
+        let iv0 = hls_sequence_iv(10);
+        let iv1 = hls_sequence_iv(11);
+
+        let mut buf0 = vec![0u8; plain0.len() + 16];
+        buf0[..plain0.len()].copy_from_slice(plain0);
+        let enc0 = Aes128CbcEnc::new(&key.into(), &iv0.into())
+            .encrypt_padded_mut::<Pkcs7>(&mut buf0, plain0.len())
+            .unwrap()
+            .to_vec();
+
+        let mut buf1 = vec![0u8; plain1.len() + 16];
+        buf1[..plain1.len()].copy_from_slice(plain1);
+        let enc1 = Aes128CbcEnc::new(&key.into(), &iv1.into())
+            .encrypt_padded_mut::<Pkcs7>(&mut buf1, plain1.len())
+            .unwrap()
+            .to_vec();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{addr}");
+        let m3u8_body = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-KEY:METHOD=AES-128,URI=\"{base_url}/key.bin\"\n#EXTINF:2.0,\n{base_url}/seg0.ts\n#EXTINF:2.0,\n{base_url}/seg1.ts\n#EXT-X-ENDLIST\n"
+        );
+        let mpd_body = format!(
+            "<?xml version=\"1.0\"?><MPD type=\"static\"><Period><AdaptationSet mimeType=\"video/mp4\"><Representation id=\"v1\" bandwidth=\"500000\"><SegmentList><Initialization sourceURL=\"{base_url}/init.mp4\"/><SegmentURL media=\"{base_url}/dash0.m4s\"/></SegmentList></Representation></AdaptationSet></Period></MPD>"
+        );
+
+        let srv = tokio::spawn(async move {
+            for _ in 0..8 {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut req_buf = [0u8; 2048];
+                let n = sock.read(&mut req_buf).await.unwrap_or(0);
+                let req_str = String::from_utf8_lossy(&req_buf[..n]);
+                let path = req_str
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let (ct, body): (&str, Vec<u8>) = match path {
+                    "/stream.m3u8" => ("application/vnd.apple.mpegurl", m3u8_body.as_bytes().to_vec()),
+                    "/key.bin" => ("application/octet-stream", key.to_vec()),
+                    "/seg0.ts" => ("video/mp2t", enc0.clone()),
+                    "/seg1.ts" => ("video/mp2t", enc1.clone()),
+                    "/manifest.mpd" => ("application/dash+xml", mpd_body.as_bytes().to_vec()),
+                    "/init.mp4" => ("video/mp4", b"FTYP_INIT_".to_vec()),
+                    "/dash0.m4s" => ("video/mp4", b"MDAT_DASH0".to_vec()),
+                    _ => ("text/plain", b"not-found".to_vec()),
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+            }
+        });
+
+        let mgr = DownloadManager::in_memory_for_tests(DownloadConfig::default()).unwrap();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let stage = std::env::temp_dir().join(format!("omnia-dl-stream-test-{nanos}"));
+        fs::create_dir_all(&stage).unwrap();
+
+        let hls_done = mgr
+            .download_now(DownloadRequest::new(format!("{base_url}/stream.m3u8"), &stage))
+            .await
+            .expect("HLS AES-128 download");
+        let hls_bytes = fs::read(&hls_done.output_path).unwrap();
+        assert_eq!(hls_bytes, [plain0.as_slice(), plain1.as_slice()].concat());
+
+        let dash_done = mgr
+            .download_now(DownloadRequest::new(format!("{base_url}/manifest.mpd"), &stage))
+            .await
+            .expect("DASH download");
+        let dash_bytes = fs::read(&dash_done.output_path).unwrap();
+        assert_eq!(dash_bytes, b"FTYP_INIT_MDAT_DASH0");
+
+        let _ = fs::remove_dir_all(&stage);
+        srv.abort();
     }
 }

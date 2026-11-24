@@ -6,10 +6,14 @@ publish = false
 
 [dependencies]
 futures-util = "0.3"
+omnia-agent.workspace = true
 omnia-connector-gateway.workspace = true
 omnia-core.workspace = true
+omnia-harness.workspace = true
 omnia-routing.workspace = true
+omnia-storage.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde.workspace = true
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "time", "io-util"] }

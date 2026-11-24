@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod browser_cdp;
+pub mod browser_ws;
 pub mod capability;
 pub mod desktop_isolation;
 pub mod input_diagnostics;

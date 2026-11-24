@@ -19,7 +19,7 @@ use crate::policy::{
     extract_extension_lower, validate_filename_and_mime, ARTIFACT_INTAKE_ALLOWED_EXTENSIONS,
     DEFAULT_MAX_SOURCES_PER_NOTEBOOK,
 };
-use crate::store::NotebookStore;
+use crate::store::{NotebookStore, SyncTombstoneRow};
 
 /// High-level semantic category of a notebook source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -636,4 +636,111 @@ impl SourceLibrary {
     pub fn clear_sources(&self, notebook_id: &str) -> Result<ClearSourcesReceipt, NotebookError> {
         self.store.clear_sources(notebook_id)
     }
+
+    /// Delete one source by `source_id` or `remote_id`, recording a sync tombstone.
+    pub fn delete_source(
+        &self,
+        notebook_id: &str,
+        source_id_or_remote: &str,
+        reason: Option<&str>,
+    ) -> Result<Option<SyncTombstoneRow>, NotebookError> {
+        let _ = self.require_notebook(notebook_id)?;
+        self.store.delete_source_with_tombstone(
+            notebook_id,
+            source_id_or_remote.trim(),
+            reason.unwrap_or("user_deleted"),
+        )
+    }
+
+    /// Tombstone-safe remote source reconciliation (`sourceLibrary.js` / `syncService.js`):
+    /// - Suppressed items matching active tombstones (`remote_id`, `tombstone_key`, or `content_sha256`)
+    ///   NEVER resurrect on sync.
+    /// - When `remote_snapshot_complete` is true and `remote_items` is empty, records/confirms empty
+    ///   remote state without resurrecting stale local sources removed upstream.
+    pub fn reconcile_remote_sources(
+        &self,
+        notebook_id: &str,
+        remote_items: &[RemoteSyncItem],
+        remote_snapshot_complete: bool,
+    ) -> Result<RemoteReconcileReport, NotebookError> {
+        let _ = self.require_notebook(notebook_id)?;
+        let tombstones = self.store.list_tombstones(notebook_id)?;
+        let mut suppressed = Vec::new();
+        let mut kept_remote_ids = Vec::new();
+
+        for item in remote_items {
+            let matches_tombstone = tombstones.iter().any(|t| {
+                t.tombstone_key == item.remote_id
+                    || t.remote_id.as_deref() == Some(item.remote_id.as_str())
+                    || item
+                        .content_sha256
+                        .as_deref()
+                        .is_some_and(|sha| t.content_sha256.as_deref() == Some(sha))
+            });
+            if matches_tombstone {
+                suppressed.push(item.remote_id.clone());
+            } else {
+                kept_remote_ids.push(item.remote_id.clone());
+            }
+        }
+
+        let mut stale_local_removed = 0usize;
+        if remote_snapshot_complete {
+            let existing = self.store.list_sources(notebook_id, &SourceFilter::default())?;
+            let mut to_remove = Vec::new();
+            for src in &existing {
+                if let Some(ref rid) = src.remote_id {
+                    if !kept_remote_ids.iter().any(|k| k == rid) {
+                        to_remove.push(src.source_id.clone());
+                    }
+                }
+            }
+            if !to_remove.is_empty() {
+                stale_local_removed = self.store.delete_sources_by_ids(&to_remove)?;
+            }
+            if remote_items.is_empty() {
+                self.store.record_tombstone(&SyncTombstoneRow {
+                    notebook_id: notebook_id.to_string(),
+                    tombstone_key: "__empty_remote_confirmed__".to_string(),
+                    remote_id: None,
+                    content_sha256: None,
+                    reason: "empty_remote_snapshot".to_string(),
+                    deleted_at_ms: now_epoch_ms(),
+                })?;
+            }
+        }
+
+        let active_sources = self.store.list_sources(notebook_id, &SourceFilter::default())?;
+        Ok(RemoteReconcileReport {
+            notebook_id: notebook_id.to_string(),
+            active_sources,
+            suppressed_tombstoned_ids: suppressed,
+            kept_remote_ids,
+            stale_local_removed,
+            tombstone_count: tombstones.len(),
+            empty_remote_confirmed: remote_snapshot_complete && remote_items.is_empty(),
+        })
+    }
+}
+
+/// Descriptor for a remote source entry checked during tombstone-safe sync reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSyncItem {
+    pub remote_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+}
+
+/// Tombstone-safe reconciliation report returned by [`SourceLibrary::reconcile_remote_sources`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteReconcileReport {
+    pub notebook_id: String,
+    pub active_sources: Vec<SourceRecord>,
+    pub suppressed_tombstoned_ids: Vec<String>,
+    pub kept_remote_ids: Vec<String>,
+    pub stale_local_removed: usize,
+    pub tombstone_count: usize,
+    pub empty_remote_confirmed: bool,
 }

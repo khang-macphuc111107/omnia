@@ -35,7 +35,7 @@ ANCESTOR_FORBIDDEN = ("AGENTS.md", "CLAUDE.md", ".claude", ".codex", ".gemini", 
 SAFE_SYSTEM_KEYS = (
     "SYSTEMROOT", "WINDIR", "COMSPEC", "OS",
     "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS",
-    "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROGRAMDATA",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "PROGRAMDATA",
     "PATHEXT", "SYSTEMDRIVE", "COMPUTERNAME",
 )
 
@@ -122,7 +122,8 @@ def prepare_harness_launch(
     xdg_cache = env_dir / "xdg-cache"
     xdg_state = env_dir / "xdg-state"
     tmp_dir = env_dir / "temp"
-    for d in (user_dir, appdata, localappdata, xdg_cfg, xdg_data, xdg_cache, xdg_state, tmp_dir):
+    cargo_target = env_dir / "cargo-target"
+    for d in (user_dir, appdata, localappdata, xdg_cfg, xdg_data, xdg_cache, xdg_state, tmp_dir, cargo_target):
         d.mkdir(parents=True, exist_ok=True)
 
     # Strict allowlist environment
@@ -130,6 +131,8 @@ def prepare_harness_launch(
     for k in SAFE_SYSTEM_KEYS:
         if k in os.environ:
             env[k] = os.environ[k]
+    rustup_home = os.environ.get("RUSTUP_HOME") or str(Path.home() / ".rustup")
+    cargo_home = os.environ.get("CARGO_HOME") or str(Path.home() / ".cargo")
     env.update({
         "PATH": build_minimal_path(),
         "HOME": str(user_dir),
@@ -144,6 +147,10 @@ def prepare_harness_launch(
         "XDG_STATE_HOME": str(xdg_state),
         "TEMP": str(tmp_dir),
         "TMP": str(tmp_dir),
+        "RUSTUP_HOME": rustup_home,
+        "CARGO_HOME": cargo_home,
+        "CARGO_NET_OFFLINE": "true",
+        "CARGO_TARGET_DIR": str(cargo_target),
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
         "TERM": "dumb",
@@ -450,7 +457,7 @@ def prepare_harness_launch(
             "--output-format", "stream-json",
             "--auto-approve",
             "--config-dir", str(omnia_home),
-            "--timeout-secs", str(max(30, timeout_s - 10)),
+            "--timeout-secs", str(max(30, timeout_s - 3)),
             "--prompt-file", str(prompt_file),
         ]
         return CleanRoomLaunch(

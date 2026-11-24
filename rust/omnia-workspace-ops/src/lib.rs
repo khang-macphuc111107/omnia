@@ -22,12 +22,15 @@
 
 #![deny(unsafe_code)]
 
+pub mod egress;
 pub mod fs_ops;
 pub mod hardware;
 pub mod path_guard;
 pub mod process_ops;
 pub mod range_downloader;
+pub mod sandbox;
 pub mod shell_compactor;
+pub mod win32_window;
 
 use std::io;
 use std::path::Path;

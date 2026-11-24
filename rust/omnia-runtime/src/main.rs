@@ -7,7 +7,16 @@ use omnia_connector_gateway::proxy_router::{
     RouteSelectionRequest, RoutingStrategy,
 };
 use omnia_core::now_epoch_ms;
-use omnia_routing::{normalize_provider_wire_payload, ProviderWireDialect};
+use omnia_agent::{
+    read_models_config, resolve_model_endpoint, AgentStore, ApprovalMode, HarnessBackendId,
+    ManagedSpawnRequest, SuperHarnessManager, WireApiMode,
+};
+use omnia_core::credentials::CredentialStore;
+use omnia_routing::{
+    normalize_provider_wire_payload, CandidateResourceState, CircuitState,
+    DynamicProviderRouter, ModelCapabilities, PrivacyTier, ProviderWireDialect, QuotaState,
+    RouteCandidate, RouteRequestPolicy, TaskRisk,
+};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
@@ -190,6 +199,8 @@ struct App {
     retry_client: Client,
     proxy_router: Arc<Mutex<ProxyRouter>>,
     candidate_urls: Arc<HashMap<String, Url>>,
+    harness: Arc<SuperHarnessManager>,
+    dynamic_router: Arc<DynamicProviderRouter>,
 }
 
 impl App {
@@ -261,12 +272,20 @@ impl App {
             trust_forwarded_headers: false,
         });
 
+        let agent_store = AgentStore::open_in_memory()
+            .map_err(|e| format!("unable to initialize agent store: {e}"))?;
+        let harness = Arc::new(SuperHarnessManager::new(agent_store));
+        let dynamic_router = Arc::new(DynamicProviderRouter::new());
+        seed_configured_models_router(&dynamic_router, &config);
+
         Ok(Self {
             config,
             client,
             retry_client,
             proxy_router: Arc::new(Mutex::new(proxy_router)),
             candidate_urls: Arc::new(candidate_urls),
+            harness,
+            dynamic_router,
         })
     }
 
@@ -1322,9 +1341,118 @@ fn health_response(app: &App) -> ResponseSpec {
     )
 }
 
+fn seed_configured_models_router(router: &DynamicProviderRouter, config: &Config) {
+    if config.provider_base_url.is_some() {
+        let model = config
+            .provider_model
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let cand = RouteCandidate {
+            candidate_id: format!("env-primary:{model}"),
+            provider_id: "htmustc".to_string(),
+            model_id: model,
+            auth_boundary: "default".to_string(),
+            region: "configured".to_string(),
+            privacy_tier: PrivacyTier::Public,
+            capabilities: ModelCapabilities::standard_candidate(),
+            context_limit_tokens: 128_000,
+            max_output_tokens: 16_384,
+            quality_tier: 3,
+            pricing_version: "env".to_string(),
+            input_cost_per_million_microunits: None,
+            output_cost_per_million_microunits: None,
+            credential_present: config.provider_configured(),
+            enabled: true,
+            route_priority: 5,
+            supported_roles: Vec::new(),
+        };
+        let state = CandidateResourceState {
+            quota: QuotaState::default(),
+            circuit: CircuitState::Closed,
+            ..CandidateResourceState::default()
+        };
+        let _ = router.upsert_candidate(cand, state);
+    }
+
+    let providers = read_models_config(None)
+        .ok()
+        .map(|cfg| cfg.providers)
+        .unwrap_or_default();
+    for (priority, prov) in providers.iter().enumerate() {
+        let provider_id = &prov.id;
+        let cred_ok = CredentialStore::resolve_secret(&format!("omnia:provider:{provider_id}"))
+            .ok()
+            .flatten()
+            .is_some();
+        let has_cred = cred_ok || runtime_key_spec_configured(&prov.api_key);
+        for (idx, m) in prov.models.iter().enumerate() {
+            let mut caps = ModelCapabilities::standard_candidate();
+            caps.supports_reasoning = m.thinking.is_some();
+            let cand = RouteCandidate {
+                candidate_id: format!("{provider_id}:{}", m.id),
+                provider_id: provider_id.clone(),
+                model_id: m.id.clone(),
+                auth_boundary: "default".to_string(),
+                region: "configured".to_string(),
+                privacy_tier: PrivacyTier::Public,
+                capabilities: caps,
+                context_limit_tokens: m.context_window,
+                max_output_tokens: m.max_tokens,
+                quality_tier: 3,
+                pricing_version: "models.yml".to_string(),
+                input_cost_per_million_microunits: None,
+                output_cost_per_million_microunits: None,
+                credential_present: has_cred,
+                enabled: true,
+                route_priority: ((priority * 20) + idx + 20) as i32,
+                supported_roles: Vec::new(),
+            };
+            let state = CandidateResourceState {
+                quota: QuotaState::default(),
+                circuit: CircuitState::Closed,
+                ..CandidateResourceState::default()
+            };
+            let _ = router.upsert_candidate(cand, state);
+        }
+    }
+}
+
+fn runtime_key_spec_configured(key_spec: &str) -> bool {
+    let trimmed = key_spec.trim();
+    !trimmed.is_empty()
+        && (env::var(trimmed).ok().is_some_and(|v| !v.trim().is_empty())
+            || !trimmed
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()))
+}
+
+fn has_provider_credential(
+    provider_id: &str,
+    env_var: &str,
+    providers: &[omnia_agent::ProviderConfig],
+) -> bool {
+    env::var(env_var)
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty())
+        || CredentialStore::resolve_secret(&format!("omnia:provider:{provider_id}"))
+            .ok()
+            .flatten()
+            .is_some()
+        || providers
+            .iter()
+            .any(|p| p.id == provider_id && runtime_key_spec_configured(&p.api_key))
+}
+
 fn providers_response(app: &App) -> ResponseSpec {
+    let providers_cfg = read_models_config(None)
+        .ok()
+        .map(|cfg| cfg.providers)
+        .unwrap_or_default();
     let htmustc_configured = app.config.provider_configured();
     let htmustc_available = htmustc_configured && app.config.provider_config_error.is_none();
+    let nvidia_configured = has_provider_credential("nvidia_nim", "NVIDIA_API_KEY", &providers_cfg);
+    let ollama_configured = has_provider_credential("ollama_local", "OLLAMA_HOST", &providers_cfg)
+        || providers_cfg.iter().any(|p| p.id == "ollama");
     let providers = json!([
         {
             "id": "htmustc",
@@ -1335,14 +1463,14 @@ fn providers_response(app: &App) -> ResponseSpec {
         {
             "id": "nvidia_nim",
             "classification": "remote_cloud",
-            "configured": false,
-            "available": false
+            "configured": nvidia_configured,
+            "available": nvidia_configured
         },
         {
             "id": "ollama_local",
             "classification": "local_daemon",
-            "configured": false,
-            "available": false
+            "configured": ollama_configured,
+            "available": ollama_configured
         }
     ]);
     ResponseSpec::json(
@@ -1434,6 +1562,25 @@ async fn dispatch_request(app: &App, request: &Request) -> Result<Dispatch, Resp
         ("GET", "/models") | ("GET", "/v1/models") | ("GET", "/api/models") => {
             request_models(app).await
         }
+        ("GET", "/api/agent/backends") => {
+            let backends = app.harness.list_backends(None);
+            Ok(Dispatch::Response(ResponseSpec::json(
+                200,
+                json!({ "ok": true, "backends": backends }),
+            )))
+        }
+        ("GET", "/api/agent/sessions") => {
+            let sessions = app.harness.list_running();
+            Ok(Dispatch::Response(ResponseSpec::json(
+                200,
+                json!({ "ok": true, "sessions": sessions }),
+            )))
+        }
+        ("POST", "/api/agent/spawn") => handle_runtime_agent_spawn(app, request).await,
+        ("POST", "/api/agent/prompt") => handle_runtime_agent_prompt(app, request).await,
+        ("POST", "/api/agent/abort") => handle_runtime_agent_abort(app, request).await,
+        ("GET", "/api/router/state") => handle_runtime_router_state(app),
+        ("POST", "/api/router/decide") => handle_runtime_router_decide(app, request),
         ("POST", "/chat/completions")
         | ("POST", "/v1/chat/completions")
         | ("POST", "/api/chat/completions")
@@ -1467,6 +1614,146 @@ async fn dispatch_request(app: &App, request: &Request) -> Result<Dispatch, Resp
                 .push(("Allow".to_string(), "GET, POST, OPTIONS".to_string()));
             Err(response)
         }
+    }
+}
+
+async fn handle_runtime_agent_spawn(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
+    let body = parse_json_object(request)?;
+    let cwd = body
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let tab_id = body
+        .get("sessionId")
+        .or_else(|| body.get("tabId"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("rt-sess-{}", RUNTIME_REQUEST_SEQ.fetch_add(1, Ordering::Relaxed)));
+    let provider = body.get("provider").and_then(Value::as_str).map(ToString::to_string);
+    let model_id = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| app.config.provider_model.clone());
+    let spec_str = match (provider.as_deref(), model_id.as_deref()) {
+        (Some(p), Some(m)) => format!("{p}/{m}"),
+        (_, Some(m)) => m.to_string(),
+        _ => "default".to_string(),
+    };
+    let resolved = resolve_model_endpoint(&spec_str, None, None, None).ok();
+    let req = ManagedSpawnRequest {
+        tab_id: tab_id.clone(),
+        cwd,
+        backend: HarnessBackendId::OmniSuper,
+        approval_mode: ApprovalMode::AlwaysAsk,
+        workspace_trusted: true,
+        permission_rules: Vec::new(),
+        provider: resolved.as_ref().map(|r| r.provider_id.clone()).or(provider),
+        model_id: resolved.as_ref().map(|r| r.model_id.clone()).or(model_id),
+        thinking_level: body.get("thinking").and_then(Value::as_str).map(ToString::to_string),
+        wire_api: WireApiMode::Auto,
+        config_dir: None,
+        max_turns: 16,
+    };
+    let sink: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(|_| {});
+    match app.harness.spawn_session(req, sink).await {
+        Ok((session_key, pid, state)) => Ok(Dispatch::Response(ResponseSpec::json(
+            200,
+            json!({
+                "ok": true,
+                "sessionKey": session_key,
+                "sessionId": tab_id,
+                "pid": pid,
+                "state": state,
+            }),
+        ))),
+        Err(e) => Err(json_error(503, "agent_spawn_failed", &e.to_string())),
+    }
+}
+
+async fn handle_runtime_agent_prompt(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
+    let body = parse_json_object(request)?;
+    let key = body
+        .get("sessionKey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| json_error(400, "missing_session_key", "sessionKey is required"))?;
+    let prompt = body
+        .get("prompt")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| json_error(400, "missing_prompt", "prompt is required"))?;
+    match app.harness.send_prompt(key, prompt).await {
+        Ok(ack) => Ok(Dispatch::Response(ResponseSpec::json(
+            200,
+            json!({ "ok": true, "ack": ack }),
+        ))),
+        Err(e) => Err(json_error(400, "prompt_failed", &e.to_string())),
+    }
+}
+
+async fn handle_runtime_agent_abort(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
+    let body = parse_json_object(request)?;
+    let key = body
+        .get("sessionKey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| json_error(400, "missing_session_key", "sessionKey is required"))?;
+    app.harness.abort_session(key);
+    Ok(Dispatch::Response(ResponseSpec::json(
+        200,
+        json!({ "ok": true, "sessionKey": key, "aborted": true }),
+    )))
+}
+
+fn handle_runtime_router_state(app: &App) -> Result<Dispatch, ResponseSpec> {
+    let snaps = app
+        .dynamic_router
+        .snapshots(now_epoch_ms())
+        .unwrap_or_default();
+    let ids: Vec<String> = snaps.into_iter().map(|s| s.candidate.candidate_id).collect();
+    Ok(Dispatch::Response(ResponseSpec::json(
+        200,
+        json!({
+            "ok": true,
+            "service": "omnia-runtime",
+            "tokenBudget": Value::Null,
+            "candidateCount": ids.len(),
+            "candidateIds": ids,
+        }),
+    )))
+}
+
+fn handle_runtime_router_decide(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
+    let body = parse_json_object(request)?;
+    let mut policy = RouteRequestPolicy {
+        token_budget: None,
+        now_epoch_ms: Some(now_epoch_ms()),
+        ..RouteRequestPolicy::default()
+    };
+    if let Some(req_id) = body.get("requestId").and_then(Value::as_str) {
+        if !req_id.trim().is_empty() {
+            policy.request_id = req_id.trim().to_string();
+        }
+    }
+    if body.get("taskRisk").and_then(Value::as_str) == Some("high") {
+        policy.task_risk = TaskRisk::High;
+    }
+    match app.dynamic_router.decide_and_reserve(&policy) {
+        Ok(decision) => Ok(Dispatch::Response(ResponseSpec::json(
+            200,
+            json!({
+                "ok": true,
+                "allowed": decision.allowed,
+                "tokenBudget": Value::Null,
+                "selectedCandidateId": decision.receipt.selected_candidate_id,
+            }),
+        ))),
+        Err(e) => Err(json_error(503, "route_decision_failed", &e.to_string())),
     }
 }
 
@@ -2947,5 +3234,38 @@ mod tests {
         let resp_text = String::from_utf8(raw_resp).unwrap();
         assert!(resp_text.starts_with("HTTP/1.1 403 Forbidden\r\n"));
         assert!(resp_text.contains("forbidden_cross_site"));
+    }
+
+    #[tokio::test]
+    async fn runtime_exposes_unified_agent_and_router_sidecar_routes() {
+        let app = test_app();
+        let backends = dispatch_request(&app, &request("GET", "/api/agent/backends", b""))
+            .await
+            .expect("/api/agent/backends dispatches");
+        let Dispatch::Response(backends_resp) = backends else {
+            panic!("expected buffered backends response");
+        };
+        assert_eq!(backends_resp.status, 200);
+        assert_eq!(json_body(&backends_resp)["ok"], true);
+
+        let sessions = dispatch_request(&app, &request("GET", "/api/agent/sessions", b""))
+            .await
+            .expect("/api/agent/sessions dispatches");
+        let Dispatch::Response(sessions_resp) = sessions else {
+            panic!("expected buffered sessions response");
+        };
+        assert_eq!(sessions_resp.status, 200);
+        assert_eq!(json_body(&sessions_resp)["ok"], true);
+
+        let router = dispatch_request(&app, &request("GET", "/api/router/state", b""))
+            .await
+            .expect("/api/router/state dispatches");
+        let Dispatch::Response(router_resp) = router else {
+            panic!("expected buffered router state response");
+        };
+        assert_eq!(router_resp.status, 200);
+        let rv = json_body(&router_resp);
+        assert_eq!(rv["ok"], true);
+        assert!(rv["tokenBudget"].is_null());
     }
 }

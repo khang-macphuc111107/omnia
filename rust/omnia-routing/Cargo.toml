@@ -7,6 +7,7 @@ description = "Deterministic DynamicProviderRouter with uncapped token_budget, Q
 
 [dependencies]
 omnia-core = { path = "../omnia-core" }
+omnia-winsqlite = { path = "../omnia-winsqlite" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

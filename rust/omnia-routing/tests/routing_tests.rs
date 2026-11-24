@@ -410,3 +410,114 @@ fn fallback_privacy_and_window_rollover() {
         }
     ));
 }
+
+#[test]
+fn sqlite_persistence_roles_probe_1_in_4_and_request_scoped_errors() {
+    use omnia_routing::{ModelRole, RouterSqliteStore};
+    let store = Arc::new(RouterSqliteStore::open_in_memory().expect("in-memory sqlite"));
+    let router = DynamicProviderRouter::with_sqlite_store(Arc::clone(&store), 1_000).expect("router");
+
+    let mut gpt = base_candidate("cand-gpt", "htmustc", "gpt-6.2-sol");
+    gpt.supported_roles = vec![ModelRole::Main, ModelRole::Verifier];
+    let mut claude = base_candidate("cand-claude", "htmustc-claude", "claude-sonnet-5-5");
+    claude.supported_roles = vec![ModelRole::Architect, ModelRole::Main];
+    let mut gem = base_candidate("cand-gem", "htmustc-gemini", "gemini-3.8-flash");
+    gem.supported_roles = vec![ModelRole::Fast];
+
+    router.upsert_candidate(gpt, known_state(1_000_000, 100)).unwrap();
+    router.upsert_candidate(claude, known_state(1_000_000, 100)).unwrap();
+    router.upsert_candidate(gem, known_state(1_000_000, 100)).unwrap();
+    router
+        .bind_role(ModelRole::Architect, "cand-claude", "htmustc-claude/claude-sonnet-5-5", 1_000)
+        .unwrap();
+
+    // 1. Role routing selects bound Claude on Architect role cleanly
+    let arch_pick = router
+        .select_for_role(
+            ModelRole::Architect,
+            RouteRequestPolicy {
+                request_id: "r-arch".into(),
+                idempotency_key: "i-arch".into(),
+                now_epoch_ms: Some(1_100),
+                ..RouteRequestPolicy::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(arch_pick.receipt.selected_candidate_id.as_deref(), Some("cand-claude"));
+    let res_arch = arch_pick.reservation.unwrap();
+
+    // 2. RequestScopedError MUST NOT trip circuit even across >3 occurrences
+    router
+        .reconcile_outcome(OutcomeReport {
+            reservation_id: res_arch.reservation_id,
+            fencing_token: res_arch.fencing_token,
+            success: false,
+            acceptance: AcceptanceState::NotSent,
+            is_request_scoped: true,
+            now_epoch_ms: Some(1_200),
+            ..OutcomeReport::default()
+        })
+        .unwrap();
+    let snaps = router.snapshots(1_250).unwrap();
+    let claude_snap = snaps.iter().find(|s| s.candidate.candidate_id == "cand-claude").unwrap();
+    assert_eq!(claude_snap.state.consecutive_failures, 0);
+    assert_eq!(claude_snap.state.circuit, CircuitState::Closed);
+
+    // 3. Proactive quota_gate benches candidate until earliest bucket reset & persists across SQLite reload
+    let dry_buckets = vec![
+        ("rpm".into(), 100, 0, false, Some(9_000)),
+        ("tpm".into(), 1000, 0, false, Some(15_000)),
+    ];
+    assert!(router.apply_quota_probe("cand-gem", false, &dry_buckets, 1_300).unwrap());
+
+    // Reload fresh router from same SQLite store -> persisted quota gate & role bindings survive!
+    let reloaded = DynamicProviderRouter::with_sqlite_store(store, 2_000).unwrap();
+    assert_eq!(
+        reloaded.role_bindings().unwrap().get(&ModelRole::Architect).map(|(c, _)| c.as_str()),
+        Some("cand-claude")
+    );
+    let reloaded_snaps = reloaded.snapshots(2_000).unwrap();
+    let gem_snap = reloaded_snaps.iter().find(|s| s.candidate.candidate_id == "cand-gem").unwrap();
+    assert_eq!(gem_snap.state.quota_exhausted_until_ms, Some(9_000));
+
+    // 4. 1-in-4 probeUnprovenEvery routes 4th pick to unproven candidate when proven peer exists
+    let d1 = reloaded
+        .decide_and_reserve(&RouteRequestPolicy {
+            request_id: "r-ok".into(),
+            idempotency_key: "i-ok".into(),
+            preferred_candidate_ids: vec!["cand-gpt".into()],
+            now_epoch_ms: Some(2_100),
+            ..RouteRequestPolicy::default()
+        })
+        .unwrap();
+    let g1 = d1.reservation.unwrap();
+    assert_eq!(g1.candidate_id, "cand-gpt");
+    reloaded
+        .reconcile_outcome(OutcomeReport {
+            reservation_id: g1.reservation_id,
+            fencing_token: g1.fencing_token,
+            success: true,
+            acceptance: AcceptanceState::Accepted,
+            latency_ms: Some(120.0),
+            now_epoch_ms: Some(2_200),
+            ..OutcomeReport::default()
+        })
+        .unwrap();
+    // Next 3 calls prefer proven cand-gpt, 4th probes unproven cand-claude
+    let mut seen_claude_probe = false;
+    for k in 0..4 {
+        let pick = reloaded
+            .decide_and_reserve(&RouteRequestPolicy {
+                request_id: format!("rp-{k}"),
+                idempotency_key: format!("ip-{k}"),
+                now_epoch_ms: Some(2_300 + i64::from(k)),
+                ..RouteRequestPolicy::default()
+            })
+            .unwrap();
+        let cid = pick.receipt.selected_candidate_id.unwrap();
+        if cid == "cand-claude" {
+            seen_claude_probe = true;
+        }
+    }
+    assert!(seen_claude_probe, "every 4th pick must probe unproven candidate");
+}

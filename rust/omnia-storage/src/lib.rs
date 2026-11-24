@@ -4,19 +4,19 @@
 //! and `omnia-native` (`HarnessStore`, `Sessions`, `SessionWorker`, `ProviderProfileRepository`,
 //! `RunRegistry`, `RunCoordinator`).
 
-mod agent_cache;
 mod error;
 mod native_store;
 mod native_types;
+mod recall_store;
 mod session_store;
 mod sessions;
 
-pub use agent_cache::{
-    AcePlaybookEntry, AgentCacheStore, MerkleAstCacheEntry, WireTelemetryRecord,
-    WireTelemetrySummary, AGENT_CACHE_SCHEMA_SQL,
-};
 pub use error::StoreError;
 pub use native_store::HarnessStore;
+pub use recall_store::{
+    KanbanTaskRecord, KbNoteRecord, PasteRecord, RecallStore, RoutineRecord, RoutineRunRecord,
+    SessionSearchHit, WireTelemetryRecord, WireTelemetrySummary, RECALL_STORE_SCHEMA_SQL,
+};
 pub use native_types::{
     normalize_and_validate_model, normalize_and_validate_title, validate_page_limit,
     validate_session_id, AgentEvent, AgentMessage, AgentRunStateRecord, AgentRunStatus,

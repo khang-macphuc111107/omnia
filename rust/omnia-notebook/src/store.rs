@@ -148,6 +148,19 @@ CREATE TABLE IF NOT EXISTS notebook_bridge_events (
 
 CREATE INDEX IF NOT EXISTS idx_notebook_bridge_notebook
     ON notebook_bridge_events (notebook_id, created_at_ms ASC);
+
+CREATE TABLE IF NOT EXISTS notebook_sync_tombstones (
+    notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    tombstone_key TEXT NOT NULL,
+    remote_id TEXT,
+    content_sha256 TEXT,
+    reason TEXT NOT NULL DEFAULT 'user_deleted',
+    deleted_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (notebook_id, tombstone_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notebook_tombstones_remote
+    ON notebook_sync_tombstones (notebook_id, remote_id);
 "#;
 
 const NOTEBOOK_FTS5_SQL: &str = r#"
@@ -215,6 +228,17 @@ pub struct StoredBridgeRow {
     pub payload_json: Value,
     pub target_source_id: Option<String>,
     pub created_at_ms: i64,
+}
+
+/// Persisted remote sync tombstone row inside `notebook_sync_tombstones`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncTombstoneRow {
+    pub notebook_id: String,
+    pub tombstone_key: String,
+    pub remote_id: Option<String>,
+    pub content_sha256: Option<String>,
+    pub reason: String,
+    pub deleted_at_ms: i64,
 }
 
 /// Ranked BM25F chunk match returned by [`NotebookStore::search_chunks_bm25f`].
@@ -759,6 +783,46 @@ impl NotebookStore {
             tx.changes().max(0) as usize
         };
 
+        {
+            let mut src_sel = tx.prepare(
+                "SELECT source_id, remote_id, content_sha256 FROM notebook_sources WHERE notebook_id = ?1;",
+            )?;
+            src_sel.bind_text(1, notebook_id)?;
+            let mut tomb_rows = Vec::new();
+            while src_sel.step_row()? {
+                let sid = src_sel.column_text(0)?;
+                let rid = src_sel.column_opt_text(1)?;
+                let sha = src_sel.column_text(2)?;
+                let key = rid.clone().unwrap_or(sid);
+                tomb_rows.push((key, rid, sha));
+            }
+            drop(src_sel);
+            if !tomb_rows.is_empty() {
+                let now = now_epoch_ms();
+                let mut ins = tx.prepare(
+                    "INSERT INTO notebook_sync_tombstones (
+                        notebook_id, tombstone_key, remote_id, content_sha256, reason, deleted_at_ms
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(notebook_id, tombstone_key) DO UPDATE SET
+                        remote_id = COALESCE(excluded.remote_id, notebook_sync_tombstones.remote_id),
+                        content_sha256 = COALESCE(excluded.content_sha256, notebook_sync_tombstones.content_sha256),
+                        reason = excluded.reason,
+                        deleted_at_ms = excluded.deleted_at_ms;",
+                )?;
+                for (key, rid, sha) in tomb_rows {
+                    ins.reset()?;
+                    ins.clear_bindings()?;
+                    ins.bind_text(1, notebook_id)?;
+                    ins.bind_text(2, &key)?;
+                    ins.bind_opt_text(3, rid.as_deref())?;
+                    ins.bind_text(4, &sha)?;
+                    ins.bind_text(5, "clear_sources")?;
+                    ins.bind_int64(6, now)?;
+                    ins.step()?;
+                }
+            }
+        }
+
         let removed_sources = {
             let mut del = tx.prepare("DELETE FROM notebook_sources WHERE notebook_id = ?1;")?;
             del.bind_text(1, notebook_id)?;
@@ -1285,6 +1349,153 @@ impl NotebookStore {
             });
         }
         Ok(out)
+    }
+
+    /// Delete one source inside `notebook_id` atomically while recording a tombstone so sync never resurrects it.
+    pub fn delete_source_with_tombstone(
+        &self,
+        notebook_id: &str,
+        source_id_or_remote: &str,
+        reason: &str,
+    ) -> Result<Option<SyncTombstoneRow>, NotebookError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.begin_immediate()?;
+        let found = {
+            let mut sel = tx.prepare(
+                "SELECT source_id, remote_id, content_sha256
+                 FROM notebook_sources
+                 WHERE notebook_id = ?1 AND (source_id = ?2 OR remote_id = ?2)
+                 LIMIT 1;",
+            )?;
+            sel.bind_text(1, notebook_id)?;
+            sel.bind_text(2, source_id_or_remote)?;
+            if sel.step_row()? {
+                Some((
+                    sel.column_text(0)?,
+                    sel.column_opt_text(1)?,
+                    sel.column_text(2)?,
+                ))
+            } else {
+                None
+            }
+        };
+        let Some((sid, rid, sha)) = found else {
+            return Ok(None);
+        };
+
+        if self.fts5_enabled {
+            let mut fts = tx.prepare("DELETE FROM notebook_chunks_fts WHERE source_id = ?1;")?;
+            fts.bind_text(1, &sid)?;
+            fts.step()?;
+        }
+        {
+            let mut del_chunks = tx.prepare("DELETE FROM notebook_chunks WHERE source_id = ?1;")?;
+            del_chunks.bind_text(1, &sid)?;
+            del_chunks.step()?;
+        }
+        {
+            let mut del_src = tx.prepare("DELETE FROM notebook_sources WHERE source_id = ?1;")?;
+            del_src.bind_text(1, &sid)?;
+            del_src.step()?;
+        }
+
+        let tombstone_key = rid.clone().unwrap_or(sid);
+        let now = now_epoch_ms();
+        let tomb = SyncTombstoneRow {
+            notebook_id: notebook_id.to_string(),
+            tombstone_key,
+            remote_id: rid,
+            content_sha256: Some(sha),
+            reason: reason.to_string(),
+            deleted_at_ms: now,
+        };
+        {
+            let mut ins = tx.prepare(
+                "INSERT INTO notebook_sync_tombstones (
+                    notebook_id, tombstone_key, remote_id, content_sha256, reason, deleted_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(notebook_id, tombstone_key) DO UPDATE SET
+                    remote_id = COALESCE(excluded.remote_id, notebook_sync_tombstones.remote_id),
+                    content_sha256 = COALESCE(excluded.content_sha256, notebook_sync_tombstones.content_sha256),
+                    reason = excluded.reason,
+                    deleted_at_ms = excluded.deleted_at_ms;",
+            )?;
+            ins.bind_text(1, &tomb.notebook_id)?;
+            ins.bind_text(2, &tomb.tombstone_key)?;
+            ins.bind_opt_text(3, tomb.remote_id.as_deref())?;
+            ins.bind_opt_text(4, tomb.content_sha256.as_deref())?;
+            ins.bind_text(5, &tomb.reason)?;
+            ins.bind_int64(6, tomb.deleted_at_ms)?;
+            ins.step()?;
+        }
+        tx.commit()?;
+        Ok(Some(tomb))
+    }
+
+    /// Persist or update an explicit sync tombstone.
+    pub fn record_tombstone(&self, row: &SyncTombstoneRow) -> Result<(), NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "INSERT INTO notebook_sync_tombstones (
+                notebook_id, tombstone_key, remote_id, content_sha256, reason, deleted_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(notebook_id, tombstone_key) DO UPDATE SET
+                remote_id = COALESCE(excluded.remote_id, notebook_sync_tombstones.remote_id),
+                content_sha256 = COALESCE(excluded.content_sha256, notebook_sync_tombstones.content_sha256),
+                reason = excluded.reason,
+                deleted_at_ms = excluded.deleted_at_ms;",
+        )?;
+        stmt.bind_text(1, &row.notebook_id)?;
+        stmt.bind_text(2, &row.tombstone_key)?;
+        stmt.bind_opt_text(3, row.remote_id.as_deref())?;
+        stmt.bind_opt_text(4, row.content_sha256.as_deref())?;
+        stmt.bind_text(5, &row.reason)?;
+        stmt.bind_int64(6, row.deleted_at_ms)?;
+        stmt.step()?;
+        Ok(())
+    }
+
+    /// List all active sync tombstones for `notebook_id`.
+    pub fn list_tombstones(
+        &self,
+        notebook_id: &str,
+    ) -> Result<Vec<SyncTombstoneRow>, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT notebook_id, tombstone_key, remote_id, content_sha256, reason, deleted_at_ms
+             FROM notebook_sync_tombstones
+             WHERE notebook_id = ?1
+             ORDER BY deleted_at_ms DESC, tombstone_key ASC;",
+        )?;
+        stmt.bind_text(1, notebook_id)?;
+        let mut out = Vec::new();
+        while stmt.step_row()? {
+            out.push(SyncTombstoneRow {
+                notebook_id: stmt.column_text(0)?,
+                tombstone_key: stmt.column_text(1)?,
+                remote_id: stmt.column_opt_text(2)?,
+                content_sha256: stmt.column_opt_text(3)?,
+                reason: stmt.column_text(4)?,
+                deleted_at_ms: stmt.column_int64(5)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Remove a specific tombstone key (when user intentionally re-imports a previously deleted source).
+    pub fn clear_tombstone(
+        &self,
+        notebook_id: &str,
+        tombstone_key: &str,
+    ) -> Result<bool, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "DELETE FROM notebook_sync_tombstones WHERE notebook_id = ?1 AND tombstone_key = ?2;",
+        )?;
+        stmt.bind_text(1, notebook_id)?;
+        stmt.bind_text(2, tombstone_key)?;
+        stmt.step()?;
+        Ok(conn.changes() > 0)
     }
 }
 

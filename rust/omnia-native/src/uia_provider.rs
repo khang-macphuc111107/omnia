@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::Accessibility::{
     ProviderOptions, ProviderOptions_ServerSideProvider, UIA_ButtonControlTypeId,
     UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_InvokePatternId, UIA_NamePropertyId,
     UIA_ValuePatternId, UiaDisconnectProvider, UiaHostProviderFromHwnd,
-    UiaReturnRawElementProvider, UIA_E_ELEMENTNOTENABLED,
+    UiaReturnRawElementProvider, UiaRootObjectId, UIA_E_ELEMENTNOTENABLED,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
@@ -23,8 +23,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetClassNameW, GetDlgItem, GetParent, GetPropW, GetWindowLongPtrW,
     GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, IsWindow, MessageBoxW, PostMessageW,
     RemovePropW, SendMessageW, SetPropW, SetWindowTextW, SetWindowsHookExW, UnhookWindowsHookEx,
-    BM_CLICK, EN_CHANGE, ES_READONLY, GWL_ID, GWL_STYLE, HCBT_ACTIVATE, HHOOK, OBJID_CLIENT,
-    WH_CBT, WM_COMMAND, WM_GETOBJECT, WM_NCDESTROY,
+    BM_CLICK, EN_CHANGE, ES_READONLY, GWL_ID, GWL_STYLE, HCBT_ACTIVATE, HHOOK, WH_CBT, WM_COMMAND,
+    WM_GETOBJECT, WM_NCDESTROY,
 };
 
 use crate::types::{strip_mnemonic_ampersands, utf8_to_wide, wide_to_utf8};
@@ -838,7 +838,7 @@ unsafe extern "system" fn button_subclass_proc(
     dw_ref_data: usize,
 ) -> LRESULT {
     let state = dw_ref_data as *mut AttachedButtonState;
-    if umsg == WM_GETOBJECT && (lparam as i32) == OBJID_CLIENT && !state.is_null() {
+    if umsg == WM_GETOBJECT && (lparam as i32) == UiaRootObjectId && !state.is_null() {
         // SAFETY: `state` and `state.provider` remain valid until `WM_NCDESTROY`.
         unsafe {
             return UiaReturnRawElementProvider(hwnd, wparam, lparam, (*state).provider);
@@ -877,7 +877,7 @@ unsafe extern "system" fn edit_subclass_proc(
     dw_ref_data: usize,
 ) -> LRESULT {
     let state = dw_ref_data as *mut AttachedEditState;
-    if umsg == WM_GETOBJECT && (lparam as i32) == OBJID_CLIENT && !state.is_null() {
+    if umsg == WM_GETOBJECT && (lparam as i32) == UiaRootObjectId && !state.is_null() {
         // SAFETY: `state` and `state.provider` remain valid until `WM_NCDESTROY`.
         unsafe {
             return UiaReturnRawElementProvider(hwnd, wparam, lparam, (*state).provider);

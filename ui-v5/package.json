@@ -1,0 +1,10 @@
+{
+  "name": "omnia-studio-ui-v5",
+  "version": "5.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "node D:/OmniaData/build/ui-deps/node_modules/typescript/bin/tsc -p tsconfig.json",
+    "build": "node D:/OmniaData/build/ui-deps/node_modules/vite/bin/vite.js build --config vite.config.ts"
+  }
+}

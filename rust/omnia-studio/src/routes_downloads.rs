@@ -143,7 +143,7 @@ fn sanitize_downloader_error_message(err: &DownloaderError) -> String {
     }
 }
 
-fn map_downloader_error(err: DownloaderError) -> HttpResponse {
+pub(crate) fn map_downloader_error(err: DownloaderError) -> HttpResponse {
     let code = err.error_code();
     let status = match &err {
         DownloaderError::InvalidInput(_)

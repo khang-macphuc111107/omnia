@@ -204,6 +204,7 @@ fn print_help() {
 omnia {} — Ultra-Lightweight Native Rust Autonomous Coding Agent CLI
 
 USAGE:
+  omnia                          Launch Pure-Rust full-screen TUI (or --omp-tui for legacy Bun TUI)
   omnia --version
   omnia --profile-startup [--out <json>]
   omnia run --workspace <dir> --model <id> --base-url <url> [OPTIONS] \"<prompt>\"
@@ -328,9 +329,9 @@ fn launch_tui_from_args(args: &[String]) -> ExitCode {
     let model = arg_value(args, "--model");
     let base_url = arg_value(args, "--base-url").or_else(|| arg_value(args, "--api-base"));
     let api_key = arg_value(args, "--api-key");
-    let force_native = args.iter().any(|a| a == "--native");
+    let use_omp_tui = args.iter().any(|a| a == "--omp-tui");
 
-    if !force_native {
+    if use_omp_tui {
         if let Some((bun, cli_js, agent_dir, sessions_dir)) = resolve_omp_tui_paths() {
             let clean_ws = sanitize_windows_path(&workspace);
             let _ = fs::create_dir_all(&agent_dir);

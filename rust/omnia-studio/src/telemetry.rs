@@ -6,9 +6,33 @@ use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 
 /// Compiler version identifier emitted in `/api/health`.
-pub const RUSTC_VERSION_LABEL: &str = "rustc 1.99.1";
-/// Default fallback member count matching Omnia's 13-crate workspace.
-pub const DEFAULT_WORKSPACE_CRATE_COUNT: usize = 13;
+pub const RUSTC_VERSION_LABEL: &str = "rustc 1.100.0";
+/// Default fallback member count matching Omnia's 17-crate workspace.
+pub const DEFAULT_WORKSPACE_CRATE_COUNT: usize = 17;
+
+/// Resolves the live `rustc` version string (cached via `OnceLock`, falling back cleanly).
+#[must_use]
+pub fn detect_rustc_version() -> &'static str {
+    static CACHED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let mut cmd = std::process::Command::new("rustc");
+            cmd.arg("--version");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            cmd.output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| RUSTC_VERSION_LABEL.to_string())
+        })
+        .as_str()
+}
 
 /// Returns `true` if `meta` represents a symlink or Windows NTFS reparse point (`0x400`).
 #[must_use]

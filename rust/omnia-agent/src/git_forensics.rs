@@ -6,7 +6,7 @@
 //! Non-git workspaces return `None` immediately with zero subprocess overhead.
 
 use crate::path_guard::sanitize_windows_path;
-use crate::supervisor::ProcessSupervisor;
+use crate::supervisor::spawn_supervised_command;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -47,23 +47,57 @@ static GIT_BIN: LazyLock<PathBuf> = LazyLock::new(|| {
     PathBuf::from("git")
 });
 
-fn run_git(repo_path: &Path, args: &[&str]) -> Result<String> {
+pub fn run_git(repo_path: &Path, args: &[&str]) -> Result<String> {
+    let bytes = run_git_bytes(repo_path, args)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Run git cleanly with `--no-optional-locks`, `GIT_TERMINAL_PROMPT=0`, and Win32 hidden supervision.
+pub fn run_git_bytes(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let clean = sanitize_windows_path(repo_path);
     let mut cmd = Command::new(GIT_BIN.as_path());
     cmd.arg("--no-optional-locks")
         .args(args)
         .current_dir(&clean)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    ProcessSupervisor::prepare(&mut cmd);
-    let output = cmd
-        .output()
+    let (child, _sup) = spawn_supervised_command(&mut cmd)
         .with_context(|| format!("failed to spawn git {:?}", args))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
         bail!("git {} failed: {}", args.join(" "), stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(out.stdout)
+}
+
+/// Run git passing arbitrary bytes on stdin (e.g., `git apply` with a patch buffer).
+pub fn run_git_with_stdin(repo_path: &Path, args: &[&str], stdin_bytes: &[u8]) -> Result<String> {
+    use std::io::Write;
+    let clean = sanitize_windows_path(repo_path);
+    let mut cmd = Command::new(GIT_BIN.as_path());
+    cmd.arg("--no-optional-locks")
+        .args(args)
+        .current_dir(&clean)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (mut child, _sup) = spawn_supervised_command(&mut cmd)
+        .with_context(|| format!("failed to spawn git {:?}", args))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(stdin_bytes)?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 #[derive(Debug, Clone, PartialEq)]

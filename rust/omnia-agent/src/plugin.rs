@@ -565,18 +565,19 @@ impl HarnessPlugin for HostToolsLazyPlugin {
 /// so Tier-0 core schemas stay lean (`7` tools) while semantic LSP & k-hop graph tools are
 /// immediately discoverable and executable via `discover_tools` / `invoke_extension_tool`!
 pub fn builtin_deferred_semantic_tools() -> Vec<ToolSpec> {
-    vec![
+    let mut specs = vec![
         ToolSpec {
             name: "lsp_query".into(),
-            description: "Lazy on-demand LSP semantic query (`definition`, `references`, `diagnostics`) with automatic Tree-sitter AST fallback (0ms startup cost).".into(),
+            description: "Lazy on-demand LSP semantic query (`definition`, `references`, `diagnostics`, `hover`, `symbols`, `rename`) with Tree-sitter AST fallback (0ms startup cost).".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["definition", "references", "diagnostics"] },
+                    "action": { "type": "string", "enum": ["definition", "references", "diagnostics", "hover", "symbols", "rename"] },
                     "path": { "type": "string", "description": "Workspace-relative file path" },
                     "line": { "type": "integer", "description": "1-based line number" },
                     "character": { "type": "integer", "description": "0-based UTF-16 column" },
-                    "symbol": { "type": "string", "description": "Optional symbol name hint" }
+                    "symbol": { "type": "string", "description": "Optional symbol name hint" },
+                    "new_name": { "type": "string", "description": "Replacement identifier name (required for rename)" }
                 },
                 "required": ["action", "path"],
                 "additionalProperties": false
@@ -611,7 +612,206 @@ pub fn builtin_deferred_semantic_tools() -> Vec<ToolSpec> {
             }),
             read_only: true,
         },
-    ]
+        ToolSpec {
+            name: "ast_grep".into(),
+            description: "Structural Tree-sitter AST pattern search across 9 languages (`$VAR` and `$$$REST` metavariables).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Structural AST pattern with optional $VAR / $$$REST captures" },
+                    "path": { "type": "string", "description": "Optional workspace-relative file or directory" },
+                    "lang": { "type": "string", "description": "Language: rust, python, js, ts, tsx, go, c, cpp, json" },
+                    "limit": { "type": "integer", "description": "Max matches (default 50)" }
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "ast_edit".into(),
+            description: "Syntax-verified Tree-sitter structural AST search-and-rewrite across files (dry_run supported).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Workspace-relative file path" },
+                    "pattern": { "type": "string", "description": "AST match pattern with $VAR / $$$REST" },
+                    "rewrite": { "type": "string", "description": "Replacement template substituting $VAR / $$$REST" },
+                    "lang": { "type": "string", "description": "Optional language override" },
+                    "dry_run": { "type": "boolean", "description": "Preview rewrite without writing disk" }
+                },
+                "required": ["path", "pattern", "rewrite"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "pty_exec".into(),
+            description: "Persistent ConPTY interactive shell or Python REPL session manager (create, exec, write, read, resize, list, kill).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["create", "exec", "write", "read", "resize", "list", "kill"] },
+                    "session_id": { "type": "string", "description": "Target PTY session ID" },
+                    "kind": { "type": "string", "enum": ["shell", "python_repl"], "description": "Session kind for create" },
+                    "input": { "type": "string", "description": "Command/code or raw text to write" },
+                    "cols": { "type": "integer" },
+                    "rows": { "type": "integer" },
+                    "timeout_ms": { "type": "integer" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "dap".into(),
+            description: "Debug Adapter Protocol client (`debugpy`, `lldb-dap`, `dlv`): launch, attach, set_breakpoints, continue, next, step_in, step_out, stack_trace, scopes, variables, evaluate, terminate, list.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["launch", "attach", "set_breakpoints", "continue", "next", "step_in", "step_out", "stack_trace", "scopes", "variables", "evaluate", "summary", "list", "terminate"] },
+                    "session_id": { "type": "string" },
+                    "adapter": { "type": "string", "description": "debugpy | lldb-dap | dlv" },
+                    "program": { "type": "string", "description": "Target script or executable path" },
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "pid": { "type": "integer" },
+                    "port": { "type": "integer" },
+                    "file": { "type": "string" },
+                    "lines": { "type": "array", "items": { "type": "integer" } },
+                    "thread_id": { "type": "integer" },
+                    "frame_id": { "type": "integer" },
+                    "variables_reference": { "type": "integer" },
+                    "expression": { "type": "string" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "web_fetch".into(),
+            description: "SSRF-safe HTTP(S) fetch extracting clean readable text/markdown from public URLs.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Public http:// or https:// URL" },
+                    "raw": { "type": "boolean" },
+                    "max_chars": { "type": "integer" }
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "web_search".into(),
+            description: "Web search returning sanitized result titles, snippets, and URLs.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer" }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "browser".into(),
+            description: "Isolated WebSocket CDP browser automation (never touches Thorium) with SVG virtual cursor overlay.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["launch", "navigate", "click", "type", "eval", "screenshot", "close"] },
+                    "session_id": { "type": "string" },
+                    "url": { "type": "string" },
+                    "headless": { "type": "boolean" },
+                    "selector": { "type": "string" },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "text": { "type": "string" },
+                    "expression": { "type": "string" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "mcp_call".into(),
+            description: "Search or invoke live MCP 2026-07-28 tools, poll async tasks, or cancel MCP tasks.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["search", "call", "task_get", "task_cancel", "list_servers"] },
+                    "query": { "type": "string" },
+                    "tool": { "type": "string" },
+                    "server": { "type": "string" },
+                    "task_id": { "type": "string" },
+                    "arguments": { "type": "object" },
+                    "limit": { "type": "integer" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "mcp_manage".into(),
+            description: "Connect, refresh, disconnect, or inspect MCP 2026-07-28 servers (stdio, Streamable HTTP, SSE, OAuth2 PKCE/CIMD).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["connect", "disconnect", "refresh", "list"] },
+                    "name": { "type": "string" },
+                    "config": { "type": "object" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "recipe_run".into(),
+            description: "List or render Goose-compatible YAML recipes from `.omnia/recipes/` or inline YAML.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["list", "render"] },
+                    "path": { "type": "string" },
+                    "yaml": { "type": "string" },
+                    "params": { "type": "object" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "plugin_manage".into(),
+            description: "Manage Cordis dynamic reversible plugins + Creator Mode scaffold, toggle, rollback, and fault quarantine.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["list", "discover", "create", "enable", "disable", "rollback"] },
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "tool_name": { "type": "string" },
+                    "command": { "type": "string" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+    ];
+    specs.extend(crate::memory_engine::memory_tool_specs());
+    specs.extend(crate::swarm_runtime::swarm_tool_specs());
+    specs.extend(crate::test_time_scaling::test_time_scaling_tool_specs());
+    specs
 }
 
 /// KV-Cache-Invariant Deferred Extension / MCP Tool Registry (`Tool Attention`, `arXiv:2604.21816`, D7).
@@ -646,9 +846,9 @@ impl DeferredToolRegistry {
         self.tools.get(name)
     }
 
-    /// Search deferred extension tools by code-aware keyword relevance and return top `k <= 5` schemas.
+    /// Search deferred extension tools by code-aware keyword relevance and return top `k <= 10` schemas.
     pub fn discover(&self, query: &str, limit: usize) -> Vec<ToolSpec> {
-        let cap = limit.clamp(1, 5);
+        let cap = limit.clamp(1, 10);
         let q_tokens = crate::search::tokenize_code(query);
         if q_tokens.is_empty() {
             return self.tools.values().take(cap).cloned().collect();
@@ -688,17 +888,17 @@ impl DeferredToolRegistry {
             .collect()
     }
 
-    /// Two tiny static meta-tools (~160 tokens fixed) registered ONLY when deferred tools > 0.
+    /// Tiny static meta-tools (~240 tokens fixed) registered ONLY when deferred tools > 0.
     pub fn meta_tools() -> Vec<ToolSpec> {
         vec![
             ToolSpec {
                 name: "discover_tools".into(),
-                description: "Search deferred MCP/host extension tools by keyword and return up to 5 compact schemas.".into(),
+                description: "Search deferred MCP/host extension tools by keyword and return up to 10 compact schemas.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Capability or tool keyword" },
-                        "limit": { "type": "integer", "description": "Max tools (1..5, default 5)" }
+                        "limit": { "type": "integer", "description": "Max tools (1..10, default 5)" }
                     },
                     "required": ["query"],
                     "additionalProperties": false
@@ -715,6 +915,21 @@ impl DeferredToolRegistry {
                         "arguments": { "type": "object", "description": "Tool JSON arguments" }
                     },
                     "required": ["name", "arguments"],
+                    "additionalProperties": false
+                }),
+                read_only: false,
+            },
+            ToolSpec {
+                name: "run_code".into(),
+                description: "Execute confined JS batch orchestration (`tools.read_file`, `tools.search_code`, `tools.edit_file`, `tools.lsp_query`, `tools.mcp.*`) in sandboxed PTC Code Mode to cut N+1 round-trips.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "code": { "type": "string", "description": "ECMAScript source invoking tools.* / tools.mcp.* helpers and returning a JSON value" },
+                        "max_parallel_sub_calls": { "type": "integer", "description": "Parallel subcall budget (1..16, default 8)" },
+                        "timeout_ms": { "type": "integer", "description": "Execution timeout ms (default 15000)" }
+                    },
+                    "required": ["code"],
                     "additionalProperties": false
                 }),
                 read_only: false,
@@ -803,8 +1018,8 @@ mod tests {
 
         let reg = PluginRegistry::with_default_pillars();
         let active_t1 = canonicalize_openai_tools(&reg.active_tools_with_deferred(false, true));
-        // Only 7 core + 2 meta-tools = 9 tools total (NOT 48 bloated schemas!)
-        assert_eq!(active_t1.len(), 9);
+        // Only 7 core + 3 meta-tools = 10 tools total (NOT 48 bloated schemas!)
+        assert_eq!(active_t1.len(), 10);
         let mut guard = PrefixCacheGuard::new(Some("d7".into()), BASE_SYSTEM_PROMPT, &active_t1);
 
         // Discovering Kanban tools returns the matching schema via tool_result without mutating Token-0 tools[]!

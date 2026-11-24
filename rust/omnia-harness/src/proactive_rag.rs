@@ -308,7 +308,134 @@ impl ProactiveRag {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            corpus: Mutex::new(default_omnia_corpus()),
+            corpus: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Construct a [`ProactiveRag`] instance pre-indexed from a workspace directory.
+    #[must_use]
+    pub fn from_workspace(root: &std::path::Path) -> Self {
+        let rag = Self::new();
+        let _ = rag.index_workspace(root);
+        rag
+    }
+
+    /// Replace or insert a corpus source keyed by `id`.
+    pub fn upsert_source(&self, source: CorpusSource) {
+        let Ok(mut guard) = self.corpus.lock() else {
+            return;
+        };
+        if let Some(existing) = guard.iter_mut().find(|s| s.id == source.id) {
+            *existing = source;
+        } else {
+            guard.push(source);
+        }
+    }
+
+    /// Index readable UTF-8 workspace files (skipping build/git/secret files and reparse points).
+    pub fn index_workspace(&self, root: &std::path::Path) -> usize {
+        let Ok(canon_root) = std::fs::canonicalize(root) else {
+            return 0;
+        };
+        let mut files = Vec::new();
+        collect_workspace_files_bounded(&canon_root, &canon_root, &mut files, 96);
+        let mut added = 0usize;
+        for file in files {
+            let Ok(bytes) = std::fs::read(&file) else {
+                continue;
+            };
+            if bytes.is_empty() || bytes.len() > 256 * 1024 || bytes.iter().take(1024).any(|&b| b == 0)
+            {
+                continue;
+            }
+            let Ok(raw_text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let rel = file
+                .strip_prefix(&canon_root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| file.to_string_lossy().replace('\\', "/"));
+            let scrubbed = omnia_core::SecretRedactor::redact(&raw_text);
+            let title = scrubbed
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().trim_start_matches('#').trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| rel.clone());
+            let snippet = omnia_core::truncate_utf8_word_safe(&scrubbed, 1_600);
+            let kw: Vec<String> = tokenize_folded(&format!("{rel} {title} {snippet}"))
+                .into_iter()
+                .take(48)
+                .collect();
+            self.upsert_source(CorpusSource {
+                id: format!("ws:{rel}"),
+                title: omnia_core::truncate_utf8_word_safe(&title, 120),
+                locator: rel,
+                content: snippet,
+                keywords: kw,
+                provenance: SourceProvenance::Extracted,
+                is_superseded: false,
+                freshness_label: "workspace".to_owned(),
+            });
+            added += 1;
+        }
+        added
+    }
+
+    /// Index active, non-quarantined entries from [`crate::memory_graph::MemoryGraph`].
+    pub fn index_memory_graph(&self, memory: &crate::memory_graph::MemoryGraph) -> usize {
+        let Ok(entries) = memory.list_entries() else {
+            return 0;
+        };
+        let mut added = 0usize;
+        for entry in entries {
+            if entry.quarantined || entry.tainted || entry.t_invalid_ms.is_some() {
+                continue;
+            }
+            let provenance = if entry.provenance.is_trusted() {
+                SourceProvenance::Extracted
+            } else if entry.provenance == crate::memory_graph::MemoryProvenance::AgentDerived {
+                SourceProvenance::Inferred
+            } else {
+                SourceProvenance::Ambiguous
+            };
+            let content = omnia_core::SecretRedactor::redact(&entry.content);
+            let mut kw: Vec<String> = tokenize_folded(&format!(
+                "{} {} {}",
+                entry.namespace_path, entry.key, content
+            ))
+            .into_iter()
+            .take(48)
+            .collect();
+            for tag in &entry.tags {
+                let low = fold_vietnamese_ascii(tag);
+                if !low.is_empty() && !kw.contains(&low) {
+                    kw.push(low);
+                }
+            }
+            self.upsert_source(CorpusSource {
+                id: format!("mem:{}", entry.id),
+                title: format!("{}/{}", entry.namespace_path, entry.key),
+                locator: format!("memory://{}/{}", entry.namespace_path, entry.key),
+                content,
+                keywords: kw,
+                provenance,
+                is_superseded: entry.t_invalid_ms.is_some(),
+                freshness_label: if entry.t_invalid_ms.is_some() {
+                    "superseded".to_owned()
+                } else {
+                    "active_memory".to_owned()
+                },
+            });
+            added += 1;
+        }
+        added
+    }
+
+    /// Clear all indexed sources.
+    pub fn clear(&self) {
+        if let Ok(mut guard) = self.corpus.lock() {
+            guard.clear();
         }
     }
 
@@ -358,6 +485,16 @@ impl ProactiveRag {
 
         if should_retrieve {
             let sources = self.sources();
+            let query_tris = char_trigrams_ascii(query);
+            let avg_doc_tokens = if sources.is_empty() {
+                1.0
+            } else {
+                sources
+                    .iter()
+                    .map(|s| tokenize_folded(&format!("{} {} {}", s.title, s.locator, s.content)).len())
+                    .sum::<usize>() as f64
+                    / sources.len() as f64
+            };
             let mut scored_valid: Vec<GroundedEvidenceItem> = Vec::new();
 
             for src in sources {
@@ -377,7 +514,7 @@ impl ProactiveRag {
                     });
                     continue;
                 }
-                let score = score_source(&src, &tokens);
+                let score = score_source_hybrid(&src, &tokens, &query_tris, avg_doc_tokens);
                 if score < 1_000 {
                     unused_sources.push(UnusedSourceNote {
                         source_id: src.id,
@@ -519,6 +656,8 @@ fn compute_uncertainty_bps(raw: &str, folded: &str, tokens: &BTreeSet<String>) -
     }
     if tokens.len() >= 4 {
         score += 1_000;
+    } else if tokens.len() >= 2 && raw.trim().len() >= 10 {
+        score += 600;
     }
     score.min(10_000)
 }
@@ -606,123 +745,210 @@ fn build_synthesis(
     }
 }
 
-fn default_omnia_corpus() -> Vec<CorpusSource> {
-    vec![
-        CorpusSource {
-            id: "src-dynamic-router".to_owned(),
-            title: "DynamicProviderRouter & Quota Truthfulness".to_owned(),
-            locator: "docs/workspace/DYNAMIC_ROUTING_REQUIREMENTS.md".to_owned(),
-            content: "Deterministic provider/model router with Known, Unknown, Stale, and Contradictory quota states, token_budget strictly defaulting to None, circuit breakers, fencing tokens, and secret-free JSON route receipts.".to_owned(),
-            keywords: vec![
-                "router", "quota", "circuit", "fallback", "fencing", "budget",
-                "dinh tuyen", "han muc",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            provenance: SourceProvenance::Extracted,
-            is_superseded: false,
-            freshness_label: "current".to_owned(),
-        },
-        CorpusSource {
-            id: "src-peer-mesh".to_owned(),
-            title: "Bidirectional Agent Peer Mesh & Graphify".to_owned(),
-            locator: "docs/handoff/BIDIRECTIONAL_AGENT_GRAPH_AND_GRAPHIFY.md".to_owned(),
-            content: "Bidirectional A<->B peer mesh with disjoint_paths ownership, read_since cursor wakeup, max_hops/epoch cycle guards, and Graphify EXTRACTED/INFERRED/AMBIGUOUS provenance traversal.".to_owned(),
-            keywords: vec![
-                "peer", "mesh", "duplex", "graphify", "disjoint", "hop", "epoch",
-                "giao thuc", "do thi",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            provenance: SourceProvenance::Extracted,
-            is_superseded: false,
-            freshness_label: "current".to_owned(),
-        },
-        CorpusSource {
-            id: "src-session-wal".to_owned(),
-            title: "Durable SQLite WAL Session Storage".to_owned(),
-            locator: "docs/workspace/ARCHITECTURE.md".to_owned(),
-            content: "Out-of-source C++20/Rust winsqlite3 WAL persistence stores durable sessions, audit events, and memory erasure receipts without keeping unredacted secrets.".to_owned(),
-            keywords: vec!["sqlite", "wal", "session", "storage", "luu tru", "memory", "erasure"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            provenance: SourceProvenance::Extracted,
-            is_superseded: false,
-            freshness_label: "current".to_owned(),
-        },
-        CorpusSource {
-            id: "src-cors-loopback".to_owned(),
-            title: "Studio Loopback Origin & CORS Contract".to_owned(),
-            locator: "docs/workspace/GOAL.md".to_owned(),
-            content: "Studio HTTP server enforces strict 127.0.0.1 loopback binding, explicit Origin/CORS allowlist validation, and preflight method controls.".to_owned(),
-            keywords: vec!["cors", "loopback", "origin", "studio", "bao mat", "http"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            provenance: SourceProvenance::Extracted,
-            is_superseded: false,
-            freshness_label: "current".to_owned(),
-        },
-        CorpusSource {
-            id: "src-composer-steer".to_owned(),
-            title: "Rich Composer & Additive Steer Queue".to_owned(),
-            locator: "docs/workspace/COMPOSER_REQUIREMENTS.md".to_owned(),
-            content: "Dual-mode inline vs tray attachments, 15 scientific Math/Phys/Chem LaTeX symbol templates, encrypted PDF guards, and ADDITIVE_INTAKE SteerQueue preserving unfinished tasks with token_budget None.".to_owned(),
-            keywords: vec![
-                "composer", "steer", "additive", "attachment", "latex", "pdf",
-                "soan thao", "bo nho",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            provenance: SourceProvenance::Extracted,
-            is_superseded: false,
-            freshness_label: "current".to_owned(),
-        },
-        CorpusSource {
-            id: "src-ambiguous-draft".to_owned(),
-            title: "Unverified Experimental Scratch Note".to_owned(),
-            locator: "docs/drafts/unverified.md".to_owned(),
-            content: "Speculative unverified router shortcut hypothesis pending verification.".to_owned(),
-            keywords: vec!["router", "quota", "draft", "speculative"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            provenance: SourceProvenance::Ambiguous,
-            is_superseded: false,
-            freshness_label: "draft".to_owned(),
-        },
-        CorpusSource {
-            id: "src-legacy-tauri-superseded".to_owned(),
-            title: "Retired Rust/Tauri Architecture Snapshot".to_owned(),
-            locator: "archive/pre-cpp-rust-snapshot-20261112".to_owned(),
-            content: "Superseded pre-migration Tauri webview IPC notes replaced by native Flagship Studio.".to_owned(),
-            keywords: vec!["tauri", "legacy", "router", "architecture"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            provenance: SourceProvenance::Extracted,
-            is_superseded: true,
-            freshness_label: "superseded".to_owned(),
-        },
-    ]
+fn is_safe_workspace_text_ext(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some(
+            "rs" | "md"
+                | "txt"
+                | "toml"
+                | "json"
+                | "yml"
+                | "yaml"
+                | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "py"
+                | "go"
+                | "ps1"
+                | "sql"
+        )
+    )
+}
+
+fn is_reparse_or_symlink(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_excluded_workspace_entry(name: &str) -> bool {
+    let low = name.to_ascii_lowercase();
+    matches!(
+        low.as_str(),
+        ".git"
+            | "target"
+            | "node_modules"
+            | "build"
+            | "dist"
+            | "__pycache__"
+            | ".venv"
+            | "venv"
+            | "roaming"
+            | ".env"
+            | "id_rsa"
+            | "id_ed25519"
+    ) || low.ends_with(".pem")
+        || low.ends_with(".key")
+        || low.ends_with(".pfx")
+}
+
+fn collect_workspace_files_bounded(
+    canon_root: &std::path::Path,
+    cur: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+    max_files: usize,
+) {
+    if out.len() >= max_files {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(cur) else {
+        return;
+    };
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_excluded_workspace_entry(&name) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if is_reparse_or_symlink(&meta) {
+            continue;
+        }
+        if meta.is_dir() {
+            dirs.push(path);
+        } else if meta.is_file() && meta.len() <= 256 * 1024 && is_safe_workspace_text_ext(&path) {
+            files.push(path);
+        }
+    }
+    dirs.sort();
+    files.sort();
+    for f in files {
+        if out.len() >= max_files {
+            return;
+        }
+        if let Ok(canon) = std::fs::canonicalize(&f) {
+            if canon.starts_with(canon_root) {
+                out.push(canon);
+            }
+        }
+    }
+    for d in dirs {
+        if out.len() >= max_files {
+            return;
+        }
+        collect_workspace_files_bounded(canon_root, &d, out, max_files);
+    }
+}
+
+fn char_trigrams_ascii(text: &str) -> std::collections::BTreeSet<[u8; 3]> {
+    let folded = fold_vietnamese_ascii(text);
+    let bytes = folded.as_bytes();
+    let mut out = std::collections::BTreeSet::new();
+    if bytes.len() < 3 {
+        return out;
+    }
+    for w in bytes.windows(3) {
+        if w.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_') {
+            out.insert([w[0], w[1], w[2]]);
+        }
+    }
+    out
+}
+
+fn score_source_hybrid(
+    src: &CorpusSource,
+    query_tokens: &BTreeSet<String>,
+    query_tris: &std::collections::BTreeSet<[u8; 3]>,
+    avg_doc_tokens: f64,
+) -> u32 {
+    let base = score_source(src, query_tokens);
+    let doc_text = format!("{} {} {}", src.title, src.locator, src.content);
+    let doc_tokens = tokenize_folded(&doc_text);
+    let doc_len = (doc_tokens.len() as f64).max(1.0);
+
+    let overlap = query_tokens.iter().filter(|q| doc_tokens.contains(*q)).count();
+    let k1 = 1.5;
+    let b = 0.75;
+    let tf = overlap as f64;
+    let bm25_norm = if tf > 0.0 {
+        (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * (doc_len / avg_doc_tokens.max(1.0))))
+    } else {
+        0.0
+    };
+
+    let mut tri_bonus = 0u32;
+    if !query_tris.is_empty() {
+        let doc_tris = char_trigrams_ascii(&doc_text);
+        if !doc_tris.is_empty() {
+            let hits = query_tris.intersection(&doc_tris).count();
+            let ratio = hits as f64 / query_tris.len() as f64;
+            tri_bonus = (ratio * 1_600.0).round() as u32;
+        }
+    }
+
+    let bm25_bonus = (bm25_norm * 1_400.0).round() as u32;
+    base.saturating_add(bm25_bonus).saturating_add(tri_bonus)
 }
 
 #[cfg(test)]
 mod tests {
     use super::ProactiveRag;
+    use crate::memory_graph::{MemoryGraph, MemoryTier};
+    use crate::{CorpusSource, SourceProvenance};
+    use std::fs;
 
     #[test]
-    fn zero_citation_budget_preserves_retrieval_decisions() {
-        let rag = ProactiveRag::new();
-        let query = "How does loopback CORS work?";
-        let allowed = rag.plan_and_retrieve(query, 1);
+    fn default_rag_has_zero_hardcoded_fixtures_and_indexes_workspace_and_memory() {
+        let empty = ProactiveRag::new();
+        assert!(empty.sources().is_empty());
+
+        let dir = std::env::temp_dir().join(format!("omnia_rag_ws_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("docs")).expect("mkdir");
+        fs::write(
+            dir.join("docs/routing.md"),
+            "# Loopback CORS & Router Limits\nDynamicProviderRouter validates Origin headers and preserves tokenBudget = null.\n",
+        )
+        .expect("write md");
+
+        let rag = ProactiveRag::from_workspace(&dir);
+        assert!(!rag.sources().is_empty());
+
+        let memory = MemoryGraph::new();
+        memory
+            .upsert(
+                "omnia/memory",
+                "session-persist",
+                MemoryTier::Durable,
+                "Omnia Studio persists sessions via SessionStore SQLite WAL mode.",
+                &[],
+                Some(100),
+            )
+            .expect("upsert memory");
+        assert_eq!(rag.index_memory_graph(&memory), 1);
+
+        let allowed = rag.plan_and_retrieve("How does loopback CORS work?", 1);
         assert_eq!(allowed.cited_sources.len(), 1);
 
-        let blocked = rag.plan_and_retrieve(query, 0);
+        let blocked = rag.plan_and_retrieve("How does loopback CORS work?", 0);
         assert!(blocked.should_retrieve);
         assert!(blocked.cited_sources.is_empty());
         assert!(blocked.unused_sources.iter().any(|note| {
@@ -730,5 +956,25 @@ mod tests {
                 && note.exclusion_reason == "outside_top_k_citation_budget"
         }));
         assert!(blocked.synthesis.contains("citation budget is zero"));
+
+        let mem_q = rag.plan_and_retrieve("SessionStore SQLite WAL", 2);
+        assert!(mem_q
+            .cited_sources
+            .iter()
+            .any(|s| s.source_id.starts_with("mem:")));
+
+        rag.upsert_source(CorpusSource {
+            id: "src-manual".to_owned(),
+            title: "Manual Entry".to_owned(),
+            locator: "notes/manual.md".to_owned(),
+            content: "Extra manual source document.".to_owned(),
+            keywords: vec!["manual".to_owned(), "source".to_owned()],
+            provenance: SourceProvenance::Extracted,
+            is_superseded: false,
+            freshness_label: "current".to_owned(),
+        });
+        assert!(rag.sources().iter().any(|s| s.id == "src-manual"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

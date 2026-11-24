@@ -271,7 +271,14 @@ async fn server_tolerates_adguard_18_cookies_multispace_request_line_and_blocks_
     assert_eq!(json["ok"], true);
     assert_eq!(json["state"], "online");
     assert_eq!(json["engine"], "Omnia Full Native Rust");
-    assert_eq!(json["compiler"], "rustc 1.99.1");
+    assert!(
+        json["compiler"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("rustc 1."),
+        "expected live rustc version string, got {:?}",
+        json["compiler"]
+    );
     assert!(json["crateCount"].as_u64().unwrap_or(0) >= 13);
     assert!(json["rustFiles"].as_u64().unwrap_or(0) > 10);
     assert_eq!(json["httpStack"], "tokio+rust-http");
@@ -477,14 +484,34 @@ async fn legacy_routes_cover_graph_graphify_router_memory_rag_skills_composer_st
     assert_eq!(overview.status, 200);
     assert!(overview.json()["tokenBudget"].is_null());
 
-    // PeerMeshGraph & Graphify
+    // PeerMeshGraph & Graphify (starts empty with zero fake RAM peers)
     let graph = http_request(addr, "GET", "/api/graph", &[], None).await;
     assert_eq!(graph.status, 200);
-    assert!(!graph.json()["nodes"].as_array().expect("nodes").is_empty());
+    assert!(graph.json()["nodes"].as_array().expect("nodes").is_empty());
 
     let peers = http_request(addr, "GET", "/api/graph/peers", &[], None).await;
     assert_eq!(peers.status, 200);
-    assert!(peers.json()["peerCount"].as_u64().unwrap_or(0) >= 2);
+    assert_eq!(peers.json()["peerCount"].as_u64().unwrap_or(99), 0);
+
+    let reg_peers = http_request(
+        addr,
+        "POST",
+        "/api/graph/peers",
+        &[],
+        Some(json!({
+            "peers": [
+                { "id": "coordinator", "role": "coordinator", "ownedPaths": ["docs/**"], "excludedPaths": ["rust/**"] },
+                { "id": "verifier", "role": "verifier", "ownedPaths": ["rust/*/tests/**"], "excludedPaths": ["docs/**"] }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(reg_peers.status, 200);
+    assert_eq!(reg_peers.json()["peerCount"].as_u64().unwrap_or(0), 2);
+
+    let graph_after = http_request(addr, "GET", "/api/graph", &[], None).await;
+    assert_eq!(graph_after.status, 200);
+    assert_eq!(graph_after.json()["nodes"].as_array().expect("nodes").len(), 2);
 
     let send_msg = http_request(
         addr,
@@ -522,7 +549,24 @@ async fn legacy_routes_cover_graph_graphify_router_memory_rag_skills_composer_st
     assert_eq!(code_graph.status, 200);
     assert_eq!(code_graph.json()["direction"], "both");
 
-    // DynamicProviderRouter (`tokenBudget: null` invariant)
+    // DynamicProviderRouter (`tokenBudget: null` invariant; cold start has no fake router seeds)
+    let upsert_cand = http_request(
+        addr,
+        "POST",
+        "/api/router/candidates",
+        &[],
+        Some(json!({
+            "candidateId": "test-local-cand",
+            "providerId": "ollama",
+            "modelId": "qwen3-coder",
+            "privacyTier": "local_only",
+            "qualityTier": 90,
+            "credentialPresent": true
+        })),
+    )
+    .await;
+    assert_eq!(upsert_cand.status, 200);
+
     let router_state = http_request(addr, "GET", "/api/router/state", &[], None).await;
     assert_eq!(router_state.status, 200);
     assert!(router_state.json()["tokenBudget"].is_null());
@@ -1293,6 +1337,22 @@ async fn capability_routes_workspace_connectors_media_and_remote_enforce_contrac
     assert_eq!(bad_coord.status, 400);
 
     // Signed screen frame header succeeds while active
+    // Omitting real frame bytes and sha256Hex must fail honestly (no synthetic hash fabrication)
+    let missing_digest = http_request(
+        addr,
+        "POST",
+        "/api/remote/frame",
+        &[],
+        Some(json!({
+            "sessionId": "dummy-session-remote",
+            "frameId": 6,
+            "width": 1280,
+            "height": 720
+        })),
+    )
+    .await;
+    assert_eq!(missing_digest.status, 400);
+
     let frame_ok = http_request(
         addr,
         "POST",
@@ -1302,7 +1362,8 @@ async fn capability_routes_workspace_connectors_media_and_remote_enforce_contrac
             "sessionId": "dummy-session-remote",
             "frameId": 7,
             "width": 1280,
-            "height": 720
+            "height": 720,
+            "previewBase64": omnia_core::base64_encode(b"PNG_SYNTHETIC_FRAME_BYTES")
         })),
     )
     .await;
@@ -2231,6 +2292,54 @@ async fn studio_notebook_crud_ingest_grounding_btw_bridge_and_artifacts_roundtri
     assert_eq!(bridge_events.json()["count"], 1);
 
     // 5. Artifacts generate/list/rename/delete + heal/clear + delete notebook
+    // Real LLM Notebook Artifacts (no fake chunk-0 templates: unconfigured fails honestly, mock HTTP LLM succeeds)
+    let unconf_art = http_request(
+        addr,
+        "POST",
+        "/api/notebooks/artifacts",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "kind": "briefing",
+            "title": "Unconfigured Probe",
+            "provider": "openai",
+            "model": "gpt-5.4"
+        })),
+    )
+    .await;
+    assert_ne!(unconf_art.status, 200);
+
+    let llm_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let llm_addr = llm_listener.local_addr().unwrap();
+    let llm_task = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for _ in 0..3 {
+            let Ok((mut s, _)) = llm_listener.accept().await else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let _ = s.read(&mut buf).await;
+            let body = serde_json::json!({
+                "id": "chatcmpl-test",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "## Architecture Briefing\nGrounded architecture overview based on ingested source chunks."
+                    }
+                }],
+                "usage": { "prompt_tokens": 32, "completion_tokens": 18 }
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = s.write_all(resp.as_bytes()).await;
+            let _ = s.flush().await;
+        }
+    });
+
     let artifact = http_request(
         addr,
         "POST",
@@ -2239,11 +2348,21 @@ async fn studio_notebook_crud_ingest_grounding_btw_bridge_and_artifacts_roundtri
         Some(json!({
             "notebook_id": nb_id,
             "kind": "briefing",
-            "title": "Architecture Briefing"
+            "title": "Architecture Briefing",
+            "baseUrl": format!("http://{llm_addr}/v1"),
+            "apiKey": "dummy_test_api_key_example",
+            "model": "dummy-model",
+            "wireApi": "openai-completions",
+            "allowLoopback": true
         })),
     )
     .await;
+    llm_task.abort();
     assert_eq!(artifact.status, 200);
+    assert_eq!(
+        artifact.json()["artifact"]["structured_json"]["generated_by"],
+        "real_llm"
+    );
     let art_id = artifact.json()["artifact"]["artifact_id"]
         .as_str()
         .expect("artifact_id")
@@ -2327,4 +2446,385 @@ async fn studio_notebook_crud_ingest_grounding_btw_bridge_and_artifacts_roundtri
     assert_eq!(nb_deleted.json()["deleted"], true);
 
     srv.shutdown().await;
+}
+
+#[tokio::test]
+async fn studio_v5_routes_ws_events_ide_browser_kb_atelier_and_omnidrive_work_end_to_end() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let temp_dir = TempTestDir::new("studio-v5-e2e");
+    let cfg = build_isolated_config(&temp_dir);
+    let ws_root = cfg.workspace_root.clone();
+    fs::write(ws_root.join("hello.rs"), "pub fn greet() -> i32 { 42 }\n").unwrap();
+
+    let server = start_studio_server(cfg)
+        .await
+        .expect("bind studio server");
+    let addr = server.local_addr();
+
+    // 1. WebSocket /ws multiplexed handshake & ping/pong + live EventFeed broadcast
+    let (mut ws_stream, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .expect("connect /ws");
+    let hello_msg = ws_stream.next().await.expect("ws hello").expect("ws text");
+    assert!(hello_msg.to_text().unwrap().contains("ws_connected"));
+    ws_stream
+        .send(WsMessage::Text(r#"{"type":"ping"}"#.into()))
+        .await
+        .unwrap();
+    let pong_msg = ws_stream.next().await.expect("ws pong").expect("ws text");
+    assert!(pong_msg.to_text().unwrap().contains("pong"));
+
+    // 2. Attachments SHA-256 roundtrip
+    let up = http_request(
+        addr,
+        "POST",
+        "/api/attachments/upload",
+        &[],
+        Some(json!({
+            "sessionId": "sess-v5-1",
+            "placement": "inline",
+            "filename": "note.txt",
+            "mimeType": "text/plain",
+            "dataBase64": omnia_core::base64_encode(b"Multimodal payload fixture")
+        })),
+    )
+    .await;
+    assert_eq!(up.status, 200);
+    let sha = up.json()["attachment"]["sha256"].as_str().unwrap().to_string();
+    let att_get = http_request(
+        addr,
+        "GET",
+        &format!("/api/attachments/get?sha256={sha}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(att_get.status, 200);
+
+    // 3. EventFeed recent + SSE replay check
+    let recent = http_request(addr, "GET", "/api/events/recent?since=0", &[], None).await;
+    assert_eq!(recent.status, 200);
+    assert!(!recent.json()["events"].as_array().unwrap().is_empty());
+
+    // 4. Dual-Scope Models & Agent Modes + Chat BTW
+    let set_role = http_request(
+        addr,
+        "POST",
+        "/api/models/config",
+        &[],
+        Some(json!({
+            "scope": "main",
+            "providerId": "openai",
+            "modelId": "gpt-6.2-sol",
+            "effort": "high"
+        })),
+    )
+    .await;
+    assert_eq!(set_role.status, 200);
+    let get_roles = http_request(addr, "GET", "/api/models/config", &[], None).await;
+    assert_eq!(get_roles.status, 200);
+    assert_eq!(get_roles.json()["roles"][0]["modelId"], "gpt-6.2-sol");
+
+    let mode_set = http_request(
+        addr,
+        "POST",
+        "/api/agent/mode",
+        &[],
+        Some(json!({ "sessionId": "sess-v5-1", "mode": "solo" })),
+    )
+    .await;
+    assert_eq!(mode_set.status, 200);
+    assert_eq!(mode_set.json()["mode"], "solo");
+
+    let cbtw = http_request(
+        addr,
+        "POST",
+        "/api/sessions/btw/create",
+        &[],
+        Some(json!({
+            "sessionId": "sess-v5-1",
+            "quoteText": "pub fn greet",
+            "question": "What does greet return?"
+        })),
+    )
+    .await;
+    assert_eq!(cbtw.status, 200);
+
+    // 5. IDE Workspace tree/read/write + ConPTY Terminal create/list/resize/kill
+    let fw = http_request(
+        addr,
+        "POST",
+        "/api/files/write",
+        &[],
+        Some(json!({ "path": "notes.md", "content": "Hello Studio v5\n" })),
+    )
+    .await;
+    assert_eq!(fw.status, 200);
+    let fr = http_request(addr, "GET", "/api/files/read?path=notes.md", &[], None).await;
+    assert_eq!(fr.status, 200);
+    assert_eq!(fr.json()["content"], "Hello Studio v5\n");
+
+    let pty = http_request(
+        addr,
+        "POST",
+        "/api/terminal/create",
+        &[],
+        Some(json!({ "cols": 100, "rows": 30 })),
+    )
+    .await;
+    assert_eq!(pty.status, 200);
+    let pty_id = pty.json()["terminal"]["ptyId"].as_str().unwrap().to_string();
+    let pty_resize = http_request(
+        addr,
+        "POST",
+        "/api/pty/resize",
+        &[],
+        Some(json!({ "ptyId": pty_id, "cols": 132, "rows": 40 })),
+    )
+    .await;
+    assert_eq!(pty_resize.status, 200);
+    let pty_kill = http_request(
+        addr,
+        "POST",
+        "/api/terminal/kill",
+        &[],
+        Some(json!({ "ptyId": pty_id })),
+    )
+    .await;
+    assert_eq!(pty_kill.status, 200);
+
+    // 6. Isolated Browser CDP strictly blocks live Thorium paths
+    let thorium_block = http_request(
+        addr,
+        "POST",
+        "/api/browser/launch",
+        &[],
+        Some(json!({ "executablePath": r"C:\Apps\Thorium\Application\thorium.exe" })),
+    )
+    .await;
+    assert_eq!(thorium_block.status, 403);
+
+    // 7. `omp-omni` KB/Pastes/Kanban/Inbox/Routines/Stats/Scoreboard/Management
+    assert_eq!(
+        http_request(
+            addr,
+            "POST",
+            "/api/kb/notes",
+            &[],
+            Some(json!({ "title": "Studio v5", "content": "Full Native Rust notes" })),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        http_request(
+            addr,
+            "POST",
+            "/api/pastes",
+            &[],
+            Some(json!({ "title": "snippet", "language": "rust", "content": "fn ok() {}" })),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        http_request(
+            addr,
+            "POST",
+            "/api/kanban/tasks",
+            &[],
+            Some(json!({ "title": "Verify UI v5", "status": "doing" })),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        http_request(
+            addr,
+            "POST",
+            "/api/inbox",
+            &[],
+            Some(json!({ "content": "Check live CDP smoke" })),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        http_request(
+            addr,
+            "POST",
+            "/api/routines",
+            &[],
+            Some(json!({ "name": "nightly", "prompt": "run audit" })),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        http_request(addr, "GET", "/api/stats/overview", &[], None)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        http_request(addr, "GET", "/api/benchmarks/scoreboard", &[], None)
+            .await
+            .status,
+        200
+    );
+    let mgmt = http_request(addr, "GET", "/api/management/status", &[], None).await;
+    assert_eq!(mgmt.status, 200);
+    assert_eq!(mgmt.json()["state"], "unconfigured");
+
+    // 8. OmniDrive CAS CaptureBundle seal+verify & 3-gram SchemaDrift
+    let sealed = http_request(
+        addr,
+        "POST",
+        "/api/downloads/capture-bundles",
+        &[],
+        Some(json!({
+            "sourceUrl": "https://example.com/course",
+            "parts": [{ "name": "meta", "mediaType": "text/plain", "text": "hello cas" }]
+        })),
+    )
+    .await;
+    assert_eq!(sealed.status, 200);
+    let bundle_val = sealed.json()["bundle"].clone();
+    let verified = http_request(
+        addr,
+        "POST",
+        "/api/downloads/capture-bundles/verify",
+        &[],
+        Some(json!({ "bundle": bundle_val })),
+    )
+    .await;
+    assert_eq!(verified.status, 200);
+    assert_eq!(verified.json()["verified"], true);
+
+    let drift = http_request(
+        addr,
+        "POST",
+        "/api/downloads/schema-drift",
+        &[],
+        Some(json!({
+            "before": "{\"a\":1,\"b\":\"x\"}",
+            "after": "{\"a\":1,\"c\":\"x\"}"
+        })),
+    )
+    .await;
+    assert_eq!(drift.status, 200);
+    assert_eq!(drift.json()["drift"]["drift_detected"], true);
+
+    // 9. Atelier ask with loopback mock LLM + tombstone sync
+    let nb = http_request(
+        addr,
+        "POST",
+        "/api/atelier",
+        &[],
+        Some(json!({ "title": "Atelier v5", "description": "Real LLM test" })),
+    )
+    .await;
+    assert_eq!(nb.status, 200);
+    let nb_id = nb.json()["notebook"]["notebook_id"].as_str().unwrap().to_string();
+    let ing = http_request(
+        addr,
+        "POST",
+        "/api/atelier/sources/ingest",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "remote_id": "rem_a1",
+            "title": "Core Note",
+            "filename": "core-note.md",
+            "media_type": "text/markdown",
+            "text": "Omnia uses winsqlite3 WAL and real ConPTY sessions."
+        })),
+    )
+    .await;
+    assert_eq!(ing.status, 200);
+    let src_id = ing.json()["outcome"]["source"]["source_id"]
+        .as_str()
+        .expect("ingested source_id")
+        .to_string();
+
+    let llm_srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let llm_addr = llm_srv.local_addr().unwrap();
+    let cited_marker = format!("[{src_id}:0]");
+    let llm_handle = tokio::spawn(async move {
+        if let Ok((mut s, _)) = llm_srv.accept().await {
+            let mut buf = [0u8; 8192];
+            let _ = s.read(&mut buf).await;
+            let body = serde_json::json!({
+                "id": "chatcmpl-atelier",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": format!("Omnia runs on winsqlite3 WAL {cited_marker}.")
+                    }
+                }],
+                "usage": { "prompt_tokens": 20, "completion_tokens": 12 }
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = s.write_all(resp.as_bytes()).await;
+            let _ = s.flush().await;
+        }
+    });
+    let ask = http_request(
+        addr,
+        "POST",
+        "/api/atelier/ask",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "query": "What SQLite backend does Omnia use?",
+            "baseUrl": format!("http://{llm_addr}/v1"),
+            "apiKey": "dummy_test_api_key_example",
+            "model": "dummy-model",
+            "wireApi": "openai-completions",
+            "allowLoopback": true
+        })),
+    )
+    .await;
+    llm_handle.abort();
+    assert_eq!(ask.status, 200);
+
+    let del_src = http_request(
+        addr,
+        "POST",
+        "/api/atelier/sources/delete",
+        &[],
+        Some(json!({ "notebook_id": nb_id, "source_id": src_id, "reason": "user_deleted" })),
+    )
+    .await;
+    assert_eq!(del_src.status, 200);
+    let rec = http_request(
+        addr,
+        "POST",
+        "/api/atelier/sync/reconcile",
+        &[],
+        Some(json!({
+            "notebook_id": nb_id,
+            "remoteItems": [{ "remote_id": "rem_a1", "title": "Core Note" }],
+            "remoteSnapshotComplete": true
+        })),
+    )
+    .await;
+    assert_eq!(rec.status, 200);
+    assert!(rec.json()["report"]["active_sources"].as_array().unwrap().is_empty());
+
+    let _ = ws_stream.close(None).await;
+    server.shutdown().await;
 }

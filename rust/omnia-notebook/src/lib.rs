@@ -13,12 +13,14 @@ pub mod error;
 pub mod grounding;
 pub mod ingestion;
 pub mod interactions;
+pub mod llm_client;
 pub mod policy;
 pub mod preview;
 pub mod share_import;
 pub mod source_library;
 pub mod store;
 pub mod studio_artifacts;
+pub mod whisper_bridge;
 
 use std::future::Future;
 use std::path::Path;
@@ -72,18 +74,27 @@ pub use preview::{
     detect_code_language, format_hex_dump, ArchiveTreeEntry, MediaAssetMetadata, PreviewContent,
     PreviewFormat, PreviewPayload, RichPreviewService,
 };
+pub use llm_client::{
+    complete_prompt, extract_json_payload, resolve_notebook_endpoint, NotebookLlmConfig,
+    NotebookLlmResponse,
+};
 pub use share_import::{PublicShareImporter, ShareImportOutcome, ShareImporterConfig};
 pub use source_library::{
-    ClearSourcesReceipt, CreateNotebookRequest, NotebookRecord, ResolvedCitationTarget,
-    SourceBatchDedupReport, SourceChunkRecord, SourceFilter, SourceKind, SourceLibrary,
-    SourceRecord, SourceRegistrationInput, SourceRegistrationOutcome,
+    ClearSourcesReceipt, CreateNotebookRequest, NotebookRecord, RemoteReconcileReport,
+    RemoteSyncItem, ResolvedCitationTarget, SourceBatchDedupReport, SourceChunkRecord,
+    SourceFilter, SourceKind, SourceLibrary, SourceRecord, SourceRegistrationInput,
+    SourceRegistrationOutcome,
 };
 pub use store::{
     Bm25ChunkHit, NotebookStore, NotebookTurnRecord, StoredArtifactRow, StoredBridgeRow,
-    StoredBtwRow,
+    StoredBtwRow, SyncTombstoneRow,
 };
 pub use studio_artifacts::{
     GenerateArtifactRequest, StudioArtifactKind, StudioArtifactRecord, StudioArtifactService,
+};
+pub use whisper_bridge::{
+    discover_whisper_runner, transcribe_and_ingest, validate_local_media_path,
+    validate_whisper_params, WhisperRunner, WhisperTranscribeOutcome, WhisperTranscribeRequest,
 };
 
 /// Crate identity string for diagnostics.
@@ -102,6 +113,23 @@ pub struct RecordTurnRequest {
     pub quotes: Vec<QuoteRef>,
     #[serde(default)]
     pub citations: Vec<String>,
+}
+
+/// Real-LLM grounded Q&A turn receipt returned by [`NotebookEngine::ask_notebook_with_llm`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskNotebookOutcome {
+    pub turn: NotebookTurnRecord,
+    pub pack: GroundedPromptPack,
+    pub verification: CitationVerificationReport,
+    pub llm_usage: NotebookLlmResponse,
+}
+
+/// Real-LLM isolated BTW side-thread turn receipt returned by [`NotebookEngine::ask_btw_with_llm`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskBtwOutcome {
+    pub thread: BtwThread,
+    pub verification: CitationVerificationReport,
+    pub llm_usage: NotebookLlmResponse,
 }
 
 /// High-level health/telemetry snapshot for Wave 3 `/api/notebooks/status`.
@@ -451,6 +479,148 @@ impl NotebookEngine {
         self.artifacts.generate_artifact(req)
     }
 
+    /// Generates a Studio artifact using a REAL configured LLM endpoint with strict citation verification.
+    pub async fn generate_artifact_with_llm(
+        &self,
+        req: GenerateArtifactRequest,
+        llm_cfg: &NotebookLlmConfig,
+    ) -> Result<StudioArtifactRecord, NotebookError> {
+        self.artifacts
+            .generate_artifact_with_llm(req, &self.grounding, llm_cfg)
+            .await
+    }
+
+    /// Executes Grounded Q&A / Chat using a REAL LLM endpoint, verifies `[source_id:chunk_idx]` citations,
+    /// and persists the verified main turn into `notebook_turns`.
+    pub async fn ask_notebook_with_llm(
+        &self,
+        notebook_id: &str,
+        surface: InteractionSurface,
+        query: &str,
+        filter: &SourceFilter,
+        max_chunks: usize,
+        llm_cfg: &NotebookLlmConfig,
+    ) -> Result<AskNotebookOutcome, NotebookError> {
+        let pack = self.build_grounded_prompt(notebook_id, query, filter, max_chunks)?;
+        let llm_resp = complete_prompt(
+            llm_cfg,
+            &pack.system_instructions,
+            &format!("Question: {}\n\n{}", pack.query, pack.assembled_context),
+        )
+        .await?;
+        let verification = self.verify_citations(notebook_id, &llm_resp.text)?;
+        let cited_markers: Vec<String> = verification
+            .verified_citations
+            .iter()
+            .map(|c| c.marker.clone())
+            .collect();
+        let turn = self.record_turn(RecordTurnRequest {
+            notebook_id: notebook_id.to_string(),
+            surface,
+            prompt_text: pack.query.clone(),
+            response_markdown: llm_resp.text.clone(),
+            model_id: llm_resp.model_id.clone(),
+            effort: llm_cfg.effort.unwrap_or(EffortLevel::Medium),
+            quotes: Vec::new(),
+            citations: cited_markers,
+        })?;
+        Ok(AskNotebookOutcome {
+            turn,
+            pack,
+            verification,
+            llm_usage: llm_resp,
+        })
+    }
+
+    /// Sends a follow-up question inside an isolated `Quote + BTW` thread using a REAL LLM
+    /// without polluting `notebook_turns`.
+    pub async fn ask_btw_with_llm(
+        &self,
+        btw_id: &str,
+        question: &str,
+        llm_cfg: &NotebookLlmConfig,
+    ) -> Result<AskBtwOutcome, NotebookError> {
+        let existing = self
+            .store
+            .get_btw_thread(btw_id)?
+            .ok_or_else(|| NotebookError::NotFound {
+                entity: "btw_thread",
+                id: btw_id.to_string(),
+            })?;
+        let anchor_quote: QuoteRef = serde_json::from_value(existing.anchor_quote_json.clone())?;
+        let _ = self.append_btw_message(btw_id, "user", question)?;
+        let pack = self.build_grounded_prompt(
+            &existing.notebook_id,
+            &format!("{}\n{}", anchor_quote.excerpt, question),
+            &SourceFilter::default(),
+            6,
+        )?;
+        let user_prompt = format!(
+            "Anchored excerpt: \"{}\"\n\nFollow-up BTW question: {}\n\nGrounded context:\n{}",
+            anchor_quote.excerpt, question, pack.assembled_context
+        );
+        let llm_resp =
+            complete_prompt(llm_cfg, &pack.system_instructions, &user_prompt).await?;
+        let verification =
+            self.verify_citations(&existing.notebook_id, &llm_resp.text)?;
+        let updated_thread =
+            self.append_btw_message(btw_id, "assistant", &llm_resp.text)?;
+        Ok(AskBtwOutcome {
+            thread: updated_thread,
+            verification,
+            llm_usage: llm_resp,
+        })
+    }
+
+    /// Deletes one source while recording a durable tombstone so sync never resurrects it.
+    pub fn delete_source(
+        &self,
+        notebook_id: &str,
+        source_id_or_remote: &str,
+        reason: Option<&str>,
+    ) -> Result<Option<SyncTombstoneRow>, NotebookError> {
+        self.library
+            .delete_source(notebook_id, source_id_or_remote, reason)
+    }
+
+    /// Lists active sync tombstones for `notebook_id`.
+    pub fn list_tombstones(
+        &self,
+        notebook_id: &str,
+    ) -> Result<Vec<SyncTombstoneRow>, NotebookError> {
+        let _ = self.library.require_notebook(notebook_id)?;
+        self.store.list_tombstones(notebook_id)
+    }
+
+    /// Clears a tombstone key if the user explicitly re-adds the source.
+    pub fn clear_tombstone(
+        &self,
+        notebook_id: &str,
+        tombstone_key: &str,
+    ) -> Result<bool, NotebookError> {
+        let _ = self.library.require_notebook(notebook_id)?;
+        self.store.clear_tombstone(notebook_id, tombstone_key)
+    }
+
+    /// Performs tombstone-safe remote sync reconciliation (`sourceLibrary.js` / `syncService.js`).
+    pub fn reconcile_remote_sources(
+        &self,
+        notebook_id: &str,
+        remote_items: &[RemoteSyncItem],
+        remote_snapshot_complete: bool,
+    ) -> Result<RemoteReconcileReport, NotebookError> {
+        self.library
+            .reconcile_remote_sources(notebook_id, remote_items, remote_snapshot_complete)
+    }
+
+    /// Runs offline Whisper / faster-whisper transcription and ingests the resulting Markdown transcript.
+    pub async fn transcribe_and_ingest_media(
+        &self,
+        req: WhisperTranscribeRequest,
+    ) -> Result<WhisperTranscribeOutcome, NotebookError> {
+        transcribe_and_ingest(self, req).await
+    }
+
     pub fn list_artifacts(
         &self,
         notebook_id: &str,
@@ -612,4 +782,176 @@ pub fn parse_canonical_origin(raw_url: &str) -> Result<String, NotebookError> {
         Some(p) => format!("{}://{host}:{p}", parsed.scheme()),
         None => format!("{}://{host}", parsed.scheme()),
     })
+}
+
+#[cfg(test)]
+mod v5_tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn real_llm_grounded_qa_btw_and_all_9_atelier_artifacts_and_tombstones() {
+        let engine = NotebookEngine::open_in_memory().expect("open engine");
+        let nb = engine
+            .create_notebook(CreateNotebookRequest {
+                title: "Atelier v5 Real LLM".to_string(),
+                description: "Real LLM synthesis & tombstones".to_string(),
+                max_sources: 16,
+                allow_overflow_notebook: false,
+                model_id: "gpt-fixture".to_string(),
+                effort_level: "high".to_string(),
+            })
+            .expect("create nb");
+        let nb_id = nb.notebook_id;
+
+        let s1 = engine
+            .ingest_source(IngestSourceRequest {
+                notebook_id: nb_id.clone(),
+                title: Some("Storage Architecture".to_string()),
+                filename: "storage.md".to_string(),
+                mime_type: None,
+                remote_id: Some("rem_storage_01".to_string()),
+                bytes: b"# WAL Storage\nOmnia uses winsqlite3 WAL locking and SHA-256 content addressing.\n# Chunk Two\nEvery citation binds to an immutable source_id and chunk_idx."
+                    .to_vec(),
+                copied_text_fallback: None,
+                max_chunk_bytes: None,
+                metadata: json!({}),
+            })
+            .expect("ingest s1")
+            .source;
+        let sid = s1.source_id.clone();
+
+        // Start a mock OpenAI HTTP server responding to 11 calls (Ask + BTW + 9 Studio v5 artifacts)
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sid_srv = sid.clone();
+        let srv = tokio::spawn(async move {
+            for idx in 0..12usize {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = [0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let content = format!(
+                    "## Synthesis #{idx}\nGrounded finding citing [{sid_srv}:0].\n```json\n{{\"artifact_call\": {idx}, \"verified_cite\": \"[{sid_srv}:0]\"}}\n```"
+                );
+                let body = serde_json::json!({
+                    "id": format!("chatcmpl-v5-{idx}"),
+                    "choices": [{ "message": { "role": "assistant", "content": content } }],
+                    "usage": { "prompt_tokens": 100, "completion_tokens": 45 }
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let llm_cfg = NotebookLlmConfig {
+            model_spec: "openai/gpt-fixture".to_string(),
+            config_dir: None,
+            api_base_override: Some(format!("http://{addr}/v1")),
+            api_key_override: Some("sk-dummy-atelier-fixture-12345".to_string()),
+            wire_api_override: Some("openai-completions".to_string()),
+            effort: Some(EffortLevel::High),
+            temperature: 0.2,
+            max_tokens: 2048,
+            allow_loopback_endpoints: true,
+        };
+
+        // 1. Real LLM Grounded Q&A
+        let ask = engine
+            .ask_notebook_with_llm(
+                &nb_id,
+                InteractionSurface::Notebook,
+                "How does Omnia bind citations in WAL storage?",
+                &SourceFilter::default(),
+                4,
+                &llm_cfg,
+            )
+            .await
+            .expect("ask real llm");
+        assert!(ask.verification.valid);
+        assert_eq!(ask.verification.verified_citations.len(), 1);
+        assert_eq!(engine.list_turns(&nb_id).expect("turns").len(), 1);
+
+        // 2. Real LLM Quote + BTW without polluting main turns
+        let quote = engine
+            .create_quote_card(CreateQuoteCardRequest {
+                notebook_id: nb_id.clone(),
+                surface: InteractionSurface::Notebook,
+                anchor_turn_id: ask.turn.turn_id.clone(),
+                source_id: Some(sid.clone()),
+                excerpt: "winsqlite3 WAL locking".to_string(),
+                char_start: 0,
+                char_end: 22,
+            })
+            .expect("quote card");
+        let btw = engine
+            .create_btw_thread(quote.quote, "Does it use LockFileEx?")
+            .expect("btw thread");
+        let btw_ans = engine
+            .ask_btw_with_llm(&btw.btw_id, "Confirm lease lock mechanism.", &llm_cfg)
+            .await
+            .expect("ask btw real llm");
+        assert_eq!(btw_ans.thread.messages.len(), 3);
+        assert_eq!(engine.list_turns(&nb_id).expect("still 1 main turn").len(), 1);
+
+        // 3. ALL 9 Atelier Studio v5 Artifacts generated via REAL LLM
+        let v5_kinds = [
+            StudioArtifactKind::AudioOverview,
+            StudioArtifactKind::MindMap,
+            StudioArtifactKind::Flashcards,
+            StudioArtifactKind::Quiz,
+            StudioArtifactKind::SlideDeck,
+            StudioArtifactKind::DataTable,
+            StudioArtifactKind::InfographicSpec,
+            StudioArtifactKind::Briefing,
+            StudioArtifactKind::StudyGuide,
+        ];
+        for kind in v5_kinds {
+            let art = engine
+                .generate_artifact_with_llm(
+                    GenerateArtifactRequest {
+                        notebook_id: nb_id.clone(),
+                        kind,
+                        title: None,
+                        source_ids: None,
+                        focus_prompt: Some("WAL locks and provenance".to_string()),
+                    },
+                    &llm_cfg,
+                )
+                .await
+                .expect("llm artifact");
+            assert_eq!(art.structured_json["generated_by"], "real_llm");
+            assert_eq!(art.cited_source_ids, vec![sid.clone()]);
+        }
+
+        // 4. Tombstone-safe delete prevents remote sync resurrection
+        let tomb = engine
+            .delete_source(&nb_id, &sid, Some("user_removed"))
+            .expect("delete")
+            .expect("tombstone recorded");
+        assert_eq!(tomb.remote_id.as_deref(), Some("rem_storage_01"));
+        let reconcile = engine
+            .reconcile_remote_sources(
+                &nb_id,
+                &[RemoteSyncItem {
+                    remote_id: "rem_storage_01".to_string(),
+                    title: Some("Storage Architecture".to_string()),
+                    content_sha256: Some(s1.content_sha256.clone()),
+                }],
+                true,
+            )
+            .expect("reconcile");
+        assert_eq!(reconcile.suppressed_tombstoned_ids, vec!["rem_storage_01"]);
+        assert!(reconcile.active_sources.is_empty());
+
+        srv.abort();
+    }
 }

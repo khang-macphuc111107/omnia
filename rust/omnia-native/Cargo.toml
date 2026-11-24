@@ -21,4 +21,6 @@ omnia-storage = { path = "../omnia-storage" }
 omnia-winsqlite = { path = "../omnia-winsqlite" }
 serde_json.workspace = true
 thiserror.workspace = true
+webview2-com.workspace = true
+windows.workspace = true
 windows-sys.workspace = true

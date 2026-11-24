@@ -3,14 +3,22 @@
 //! and unifying all Omnia Rust capability crates on strict loopback origins.
 
 pub mod config;
+pub mod embedded_ui;
+pub mod event_feed;
 pub mod history;
 pub mod http;
+pub mod mgmt_proxy;
+pub mod ops_store;
+pub mod routes_atelier_drive_v5;
 pub mod routes_capabilities;
 pub mod routes_downloads;
 pub mod routes_legacy;
 pub mod routes_notebooks;
+pub mod routes_studio_v5;
 pub mod runtime_proxy;
 pub mod telemetry;
+pub mod terminal_hub;
+pub mod ws_hub;
 
 pub use config::{CliAction, StudioConfig, DEFAULT_HOST, DEFAULT_PORT, RUNTIME_PROXY_TIMEOUT_MS};
 pub use http::StudioServer;

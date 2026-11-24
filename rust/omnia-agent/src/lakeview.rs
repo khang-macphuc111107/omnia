@@ -39,10 +39,53 @@ pub struct ToolCallRecord {
     pub arguments: String,
 }
 
+/// Multimodal content block for rich `HarnessMessage` payloads (text, base64/URL images, file URIs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentBlock {
+    Text {
+        text: String,
+    },
+    ImageBase64 {
+        media_type: String,
+        data_base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+    },
+    ImageUrl {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    FileUri {
+        uri: String,
+        media_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+}
+
+/// 25 MiB -> 15 MiB multimodal image payload hysteresis (ported from OpenCode `model-request.ts`).
+pub const IMAGE_BYTES_TRIGGER: usize = 25 * 1024 * 1024;
+pub const IMAGE_BYTES_TARGET: usize = 15 * 1024 * 1024;
+pub const IMAGE_REMOVED_NOTICE: &str = "[This image was removed to reduce the request size and is no longer visible. Do not make claims about its contents from memory. If needed, retrieve it again with an available tool or ask the user to attach it again.]";
+
+/// OpenCode warm-cache background precomputed compaction constants (`compaction.ts`).
+pub const ULTRA_COMPACT_CEILING_TOKENS: u64 = 200_000;
+pub const PRECOMPUTE_LEAD_TOKENS: u64 = 60_000;
+pub const CACHE_LIFETIME_MS: u64 = 5 * 60_000;
+pub const CACHE_MARGIN_MS: u64 = 30_000;
+pub const PRECOMPUTED_TAIL_SHARE: f64 = 0.4;
+pub const PRECOMPUTE_MAX_FAILURES: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessMessage {
     pub role: String, // "system" | "user" | "assistant" | "tool"
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_blocks: Vec<ContentBlock>,
     pub reasoning: Option<String>,
     #[serde(default)]
     pub reasoning_signature: Option<String>,
@@ -50,6 +93,14 @@ pub struct HarnessMessage {
     pub redacted_thinking: Vec<String>,
     #[serde(default)]
     pub reasoning_origin_turn: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_model: Option<String>,
+    #[serde(default)]
+    pub reasoning_error_tainted: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_encrypted_items: Vec<Value>,
     pub tool_calls: Vec<ToolCallRecord>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
@@ -66,10 +117,15 @@ impl HarnessMessage {
         Self {
             role: "system".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             reasoning: None,
             reasoning_signature: None,
             redacted_thinking: Vec::new(),
             reasoning_origin_turn: 0,
+            origin_provider: None,
+            origin_model: None,
+            reasoning_error_tainted: false,
+            reasoning_encrypted_items: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
@@ -84,10 +140,15 @@ impl HarnessMessage {
         Self {
             role: "user".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             reasoning: None,
             reasoning_signature: None,
             redacted_thinking: Vec::new(),
             reasoning_origin_turn: 0,
+            origin_provider: None,
+            origin_model: None,
+            reasoning_error_tainted: false,
+            reasoning_encrypted_items: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_name: None,
@@ -96,6 +157,16 @@ impl HarnessMessage {
             turn_index,
             lakeview_compressed: false,
         }
+    }
+
+    pub fn user_multimodal(
+        content: impl Into<String>,
+        content_blocks: Vec<ContentBlock>,
+        turn_index: u32,
+    ) -> Self {
+        let mut msg = Self::user(content, turn_index);
+        msg.content_blocks = content_blocks;
+        msg
     }
 
     pub fn assistant(
@@ -117,10 +188,15 @@ impl HarnessMessage {
         Self {
             role: "assistant".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             reasoning,
             reasoning_signature,
             redacted_thinking: Vec::new(),
             reasoning_origin_turn: turn_index,
+            origin_provider: None,
+            origin_model: None,
+            reasoning_error_tainted: false,
+            reasoning_encrypted_items: Vec::new(),
             tool_calls,
             tool_call_id: None,
             tool_name: None,
@@ -128,6 +204,55 @@ impl HarnessMessage {
             tool_is_error: false,
             turn_index,
             lakeview_compressed: false,
+        }
+    }
+
+    pub fn with_origin(
+        mut self,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.origin_provider = Some(provider.into());
+        self.origin_model = Some(model.into());
+        self
+    }
+
+    pub fn mark_reasoning_error_tainted(mut self) -> Self {
+        self.reasoning_error_tainted = true;
+        self
+    }
+
+    /// Enforce OpenCode's cross-model cryptographic proof scoping: thinking signatures,
+    /// `redacted_thinking`, and encrypted reasoning items replay ONLY on the same model without error.
+    #[must_use]
+    pub fn can_replay_cryptographic_proof(
+        &self,
+        target_provider: &str,
+        target_model: &str,
+    ) -> bool {
+        if self.reasoning_error_tainted {
+            return false;
+        }
+        let Some(ref orig_m) = self.origin_model else {
+            // Legacy messages without tracked origin retain same-session compatibility only when untainted.
+            return true;
+        };
+        let norm = |s: &str| {
+            s.rsplit('/')
+                .next()
+                .unwrap_or(s)
+                .trim()
+                .to_ascii_lowercase()
+                .replace('.', "-")
+        };
+        if norm(orig_m) != norm(target_model) {
+            return false;
+        }
+        match self.origin_provider.as_deref() {
+            Some(orig_p) if !orig_p.trim().is_empty() && !target_provider.trim().is_empty() => {
+                orig_p.trim().eq_ignore_ascii_case(target_provider.trim())
+            }
+            _ => true,
         }
     }
 
@@ -151,10 +276,15 @@ impl HarnessMessage {
         Self {
             role: "tool".into(),
             content: content.into(),
+            content_blocks: Vec::new(),
             reasoning: None,
             reasoning_signature: None,
             redacted_thinking: Vec::new(),
             reasoning_origin_turn: 0,
+            origin_provider: None,
+            origin_model: None,
+            reasoning_error_tainted: false,
+            reasoning_encrypted_items: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),
@@ -164,6 +294,371 @@ impl HarnessMessage {
             lakeview_compressed: false,
         }
     }
+}
+
+/// Hysteresis bounding (`25 MiB` trigger -> `15 MiB` target) over inline base64 images.
+/// Keeps earlier cached prefix untouched between cuts (`model-request.ts:216-244`).
+pub fn bound_multimodal_images(messages: &[HarnessMessage]) -> Vec<HarnessMessage> {
+    bound_multimodal_images_with_limits(messages, IMAGE_BYTES_TRIGGER, IMAGE_BYTES_TARGET)
+}
+
+/// Parameterized hysteresis bounding over inline base64 images.
+pub fn bound_multimodal_images_with_limits(
+    messages: &[HarnessMessage],
+    trigger_bytes: usize,
+    target_bytes: usize,
+) -> Vec<HarnessMessage> {
+    let mut sizes: Vec<(usize, usize, usize)> = Vec::new();
+    for (mi, msg) in messages.iter().enumerate() {
+        for (bi, blk) in msg.content_blocks.iter().enumerate() {
+            if let ContentBlock::ImageBase64 { data_base64, .. } = blk {
+                sizes.push((mi, bi, data_base64.len()));
+            }
+        }
+    }
+    if sizes.is_empty() {
+        return messages.to_vec();
+    }
+
+    let mut cut = 0usize;
+    let mut kept = 0usize;
+    for &(_, _, sz) in &sizes {
+        kept += sz;
+        if kept <= trigger_bytes {
+            continue;
+        }
+        while kept > target_bytes && cut < sizes.len() {
+            kept = kept.saturating_sub(sizes[cut].2);
+            cut += 1;
+        }
+    }
+    if cut == 0 {
+        return messages.to_vec();
+    }
+
+    let mut out = messages.to_vec();
+    for &(mi, bi, _) in &sizes[..cut] {
+        out[mi].content_blocks[bi] = ContentBlock::Text {
+            text: IMAGE_REMOVED_NOTICE.to_string(),
+        };
+    }
+    out
+}
+
+/// Active Context-Folding branch metadata (`FoldAgent`, `arXiv:2510.11967`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoldBranch {
+    pub branch_id: String,
+    pub objective: String,
+    pub start_msg_idx: usize,
+    pub start_turn: u32,
+}
+
+/// Receipt returned when folding a branch trajectory back into main conversation state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoldResult {
+    pub branch_id: String,
+    pub folded_messages: usize,
+    pub chars_saved: usize,
+    pub kept_files: Vec<String>,
+}
+
+/// Context-Folding (`FoldAgent`, `arXiv:2510.11967`) & Active Context Compression (`Focus`, `arXiv:2601.07190`)
+/// manager preserving Prefix-0 KV stability by folding completed exploration sub-trajectories in one atomic cut.
+#[derive(Debug, Clone, Default)]
+pub struct FoldAgentState {
+    pub active_branches: Vec<FoldBranch>,
+    pub completed_folds: Vec<FoldResult>,
+    pub total_folded_chars: usize,
+}
+
+impl FoldAgentState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Open a temporary exploration branch anchored at `start_msg_idx`.
+    pub fn branch_subtask(
+        &mut self,
+        branch_id: impl Into<String>,
+        objective: impl Into<String>,
+        start_msg_idx: usize,
+        start_turn: u32,
+    ) {
+        let id = branch_id.into();
+        if let Some(existing) = self.active_branches.iter_mut().find(|b| b.branch_id == id) {
+            existing.objective = objective.into();
+            existing.start_msg_idx = start_msg_idx;
+            existing.start_turn = start_turn;
+            return;
+        }
+        self.active_branches.push(FoldBranch {
+            branch_id: id,
+            objective: objective.into(),
+            start_msg_idx,
+            start_turn,
+        });
+    }
+
+    /// Fold all exploration steps inside `[start_msg_idx..]` into a single concise `<folded_branch>` record,
+    /// preserving any critical failed-shell diagnostics or modified-file annotations.
+    pub fn return_and_fold(
+        &mut self,
+        branch_id: &str,
+        messages: &mut Vec<HarnessMessage>,
+        verified_summary: &str,
+        kept_files: &[String],
+        fold_turn: u32,
+    ) -> Option<FoldResult> {
+        let pos = self
+            .active_branches
+            .iter()
+            .position(|b| b.branch_id == branch_id)?;
+        let branch = self.active_branches.remove(pos);
+        let cut = branch.start_msg_idx.clamp(1, messages.len());
+        if cut >= messages.len() {
+            return None;
+        }
+
+        let removed: Vec<HarnessMessage> = messages.drain(cut..).collect();
+        let before_chars: usize = removed.iter().map(|m| m.content.len()).sum();
+        let mut errors: Vec<String> = Vec::new();
+        for m in &removed {
+            if m.tool_is_error && !m.content.trim().is_empty() && errors.len() < 3 {
+                let first = m.content.lines().next().unwrap_or("").trim();
+                if !first.is_empty() {
+                    errors.push(first.chars().take(180).collect());
+                }
+            }
+        }
+
+        let mut summary_text = format!(
+            "<folded_branch id=\"{}\" objective=\"{}\" folded_messages=\"{}\">\n{}\n",
+            branch.branch_id,
+            branch.objective.replace('"', "'"),
+            removed.len(),
+            verified_summary.trim()
+        );
+        if !kept_files.is_empty() {
+            summary_text.push_str(&format!("Kept files: {}\n", kept_files.join(", ")));
+        }
+        if !errors.is_empty() {
+            summary_text.push_str(&format!("Retained errors: {}\n", errors.join(" | ")));
+        }
+        summary_text.push_str("</folded_branch>");
+
+        let folded_chars = summary_text.len();
+        let mut folded_msg = HarnessMessage::user(summary_text, fold_turn);
+        folded_msg.lakeview_compressed = true;
+        messages.push(folded_msg);
+
+        let chars_saved = before_chars.saturating_sub(folded_chars);
+        self.total_folded_chars += chars_saved;
+        let receipt = FoldResult {
+            branch_id: branch.branch_id,
+            folded_messages: removed.len(),
+            chars_saved,
+            kept_files: kept_files.to_vec(),
+        };
+        self.completed_folds.push(receipt.clone());
+        Some(receipt)
+    }
+}
+
+/// Held warm-cache background precomputed summary (`opencode/packages/core/src/session/compaction.ts`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedCompaction {
+    pub keep_msg_idx: usize,
+    pub anchor_turn: u32,
+    pub model_key: String,
+    pub summary_text: String,
+    pub tail_limit_tokens: u64,
+    pub created_at_ms: u64,
+    pub failures: u32,
+}
+
+/// Warm-Cache Background Precomputed Compaction coordinator (`200k` ceiling, `60k` lead, `5m - 30s` cache window).
+#[derive(Debug, Clone, Default)]
+pub struct BackgroundCompactionCoordinator {
+    pub ultra_ceiling_tokens: u64,
+    pub precompute_lead_tokens: u64,
+    pub held: Option<PrecomputedCompaction>,
+    pub consecutive_failures: u32,
+}
+
+impl BackgroundCompactionCoordinator {
+    #[must_use]
+    pub fn new(model_context_window: u64) -> Self {
+        let ceiling = if model_context_window == 0 {
+            ULTRA_COMPACT_CEILING_TOKENS
+        } else {
+            model_context_window.min(ULTRA_COMPACT_CEILING_TOKENS)
+        };
+        Self {
+            ultra_ceiling_tokens: ceiling,
+            precompute_lead_tokens: PRECOMPUTE_LEAD_TOKENS,
+            held: None,
+            consecutive_failures: 0,
+        }
+    }
+
+    /// Return `true` only when near the 200k compaction ceiling, within the active prompt-cache
+    /// TTL margin (`< CACHE_LIFETIME_MS - CACHE_MARGIN_MS`), and below `PRECOMPUTE_MAX_FAILURES`.
+    #[must_use]
+    pub fn should_start_precompute(
+        &self,
+        estimated_total_tokens: u64,
+        cycle_start_tokens: u64,
+        model_key: &str,
+        last_cache_age_ms: u64,
+        cache_ttl_ms: Option<u64>,
+    ) -> bool {
+        if self.consecutive_failures >= PRECOMPUTE_MAX_FAILURES {
+            return false;
+        }
+        if estimated_total_tokens >= self.ultra_ceiling_tokens {
+            return false;
+        }
+        let half_room = self.ultra_ceiling_tokens.saturating_sub(cycle_start_tokens) / 2;
+        let trigger_at = self
+            .ultra_ceiling_tokens
+            .saturating_sub(self.precompute_lead_tokens.min(half_room));
+        if estimated_total_tokens < trigger_at {
+            return false;
+        }
+        let lifetime = cache_ttl_ms.unwrap_or(CACHE_LIFETIME_MS);
+        if last_cache_age_ms > lifetime.saturating_sub(CACHE_MARGIN_MS) {
+            return false;
+        }
+        if let Some(ref held) = self.held {
+            if held.model_key == model_key {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn store_precomputed(
+        &mut self,
+        keep_msg_idx: usize,
+        anchor_turn: u32,
+        model_key: impl Into<String>,
+        summary_text: String,
+        created_at_ms: u64,
+    ) {
+        self.consecutive_failures = 0;
+        let tail_limit_tokens = ((self.ultra_ceiling_tokens as f64) * PRECOMPUTED_TAIL_SHARE) as u64;
+        self.held = Some(PrecomputedCompaction {
+            keep_msg_idx,
+            anchor_turn,
+            model_key: model_key.into(),
+            summary_text,
+            tail_limit_tokens,
+            created_at_ms,
+            failures: 0,
+        });
+    }
+
+    pub fn record_precompute_failure(&mut self) {
+        self.consecutive_failures += 1;
+        self.held = None;
+    }
+
+    /// Swap the held background summary when compaction is actually due and the post-anchor tail
+    /// fits within `PRECOMPUTED_TAIL_SHARE` (`40%`), preserving KV cache until swap time.
+    pub fn try_swap_precomputed(
+        &mut self,
+        messages: &mut Vec<HarnessMessage>,
+        fold_turn: u32,
+    ) -> bool {
+        let Some(held) = self.held.take() else {
+            return false;
+        };
+        if held.keep_msg_idx == 0 || held.keep_msg_idx >= messages.len() {
+            return false;
+        }
+        let tail_chars: usize = messages[held.keep_msg_idx..]
+            .iter()
+            .map(|m| m.content.len())
+            .sum();
+        let tail_tokens = (tail_chars as u64).div_ceil(4);
+        if tail_tokens > held.tail_limit_tokens {
+            return false;
+        }
+        let tail = messages.split_off(held.keep_msg_idx);
+        let mut new_msgs = Vec::with_capacity(tail.len() + 2);
+        if let Some(sys) = messages.first().filter(|m| m.role == "system").cloned() {
+            new_msgs.push(sys);
+        }
+        let mut summary_msg = HarnessMessage::user(held.summary_text, fold_turn);
+        summary_msg.lakeview_compressed = true;
+        new_msgs.push(summary_msg);
+        new_msgs.extend(tail);
+        *messages = new_msgs;
+        true
+    }
+}
+
+/// Deterministic `snapcompact`-style structured cold transcript archive (`FILES` + `HISTORY` sections).
+#[must_use]
+pub fn render_snapcompact_archive_text(
+    files: &[String],
+    messages: &[HarnessMessage],
+    include_thinking: bool,
+) -> String {
+    let mut out = String::from(
+        "Resume prior conversation. Earlier turns archived under HISTORY below, oldest->newest.\n",
+    );
+    if !files.is_empty() {
+        out.push_str("\nFILES\n===================\n");
+        for f in files.iter().take(20) {
+            out.push_str(f);
+            out.push('\n');
+        }
+    }
+    out.push_str("\nHISTORY\n===================\n");
+    for msg in messages {
+        if msg.role == "system" {
+            continue;
+        }
+        match msg.role.as_str() {
+            "user" => {
+                out.push_str("¶user:\n");
+                out.push_str(msg.content.trim());
+                out.push('\n');
+            }
+            "assistant" => {
+                if include_thinking {
+                    if let Some(ref r) = msg.reasoning {
+                        if !r.trim().is_empty() {
+                            out.push_str("¶think:\n");
+                            out.push_str(r.trim());
+                            out.push('\n');
+                        }
+                    }
+                }
+                if !msg.content.trim().is_empty() {
+                    out.push_str("¶ai:\n");
+                    out.push_str(msg.content.trim());
+                    out.push('\n');
+                }
+                for tc in &msg.tool_calls {
+                    out.push_str(&format!("¶call:{}({})\n", tc.name, tc.arguments));
+                }
+            }
+            "tool" => {
+                out.push_str("<out>");
+                out.push_str(msg.content.trim());
+                out.push_str("</out>\n");
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1457,5 +1952,86 @@ mod tests {
             churn,
             OscillationAlert::ZeroMutationChurn { turns: 5 }
         ));
+    }
+
+    #[test]
+    fn multimodal_hysteresis_bounds_25_to_15_mib_and_proof_scoping_blocks_cross_model() {
+        let img_a = ContentBlock::ImageBase64 {
+            media_type: "image/png".into(),
+            data_base64: "A".repeat(120),
+            detail: Some("original".into()),
+            filename: Some("a.png".into()),
+        };
+        let img_b = ContentBlock::ImageBase64 {
+            media_type: "image/png".into(),
+            data_base64: "B".repeat(120),
+            detail: None,
+            filename: Some("b.png".into()),
+        };
+        let img_c = ContentBlock::ImageBase64 {
+            media_type: "image/png".into(),
+            data_base64: "C".repeat(120),
+            detail: None,
+            filename: Some("c.png".into()),
+        };
+        let msgs = vec![
+            HarnessMessage::user_multimodal("u1", vec![img_a], 1),
+            HarnessMessage::user_multimodal("u2", vec![img_b], 2),
+            HarnessMessage::user_multimodal("u3", vec![img_c], 3),
+        ];
+        // Trigger = 250, Target = 150 -> 360 > 250 drops oldest 2 images down to 120 <= 150.
+        let bounded = bound_multimodal_images_with_limits(&msgs, 250, 150);
+        assert!(matches!(bounded[0].content_blocks[0], ContentBlock::Text { .. }));
+        assert!(matches!(bounded[1].content_blocks[0], ContentBlock::Text { .. }));
+        assert!(matches!(bounded[2].content_blocks[0], ContentBlock::ImageBase64 { .. }));
+
+        let asst = HarnessMessage::assistant_with_signature(
+            "ok",
+            Some("thought".into()),
+            Some("sig_opaque_fixture".into()),
+            Vec::new(),
+            1,
+        )
+        .with_origin("htmustc-claude", "claude-sonnet-5-5");
+        assert!(asst.can_replay_cryptographic_proof("htmustc-claude", "claude-sonnet-5-5"));
+        assert!(!asst.can_replay_cryptographic_proof("htmustc", "gpt-6.2-sol"));
+        let tainted = asst.mark_reasoning_error_tainted();
+        assert!(!tainted.can_replay_cryptographic_proof("htmustc-claude", "claude-sonnet-5-5"));
+    }
+
+    #[test]
+    fn fold_agent_and_background_precomputed_compaction_keep_prefix_clean() {
+        let mut msgs = vec![
+            HarnessMessage::system("SYS"),
+            HarnessMessage::user("Investigate module", 1),
+            HarnessMessage::tool_result("c1", "read_file", "x".repeat(500), 2),
+            HarnessMessage::tool_result_with_meta("c2", "shell", "AssertionError: boom\nexit_code: 1", 3, None, true),
+        ];
+        let mut fold = FoldAgentState::new();
+        fold.branch_subtask("diag-1", "Check failing tests", 2, 2);
+        let receipt = fold
+            .return_and_fold(
+                "diag-1",
+                &mut msgs,
+                "Found AssertionError in tests/test_core.py",
+                &["tests/test_core.py".into()],
+                4,
+            )
+            .expect("fold receipt");
+        assert_eq!(receipt.folded_messages, 2);
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs[2].content.contains("<folded_branch"));
+        assert!(msgs[2].content.contains("AssertionError: boom"));
+
+        let mut bg = BackgroundCompactionCoordinator::new(200_000);
+        assert!(bg.should_start_precompute(145_000, 10_000, "gpt-6.2-sol", 60_000, None));
+        assert!(!bg.should_start_precompute(145_000, 10_000, "gpt-6.2-sol", 290_000, None));
+        bg.store_precomputed(1, 2, "gpt-6.2-sol", "<summary/>".into(), 1000);
+        assert!(bg.try_swap_precomputed(&mut msgs, 5));
+        assert!(msgs.iter().any(|m| m.content == "<summary/>"));
+
+        let snap = render_snapcompact_archive_text(&["a.rs".into()], &msgs, true);
+        assert!(snap.contains("FILES\n===================\na.rs"));
+        assert!(snap.contains("HISTORY\n==================="));
     }
 }
