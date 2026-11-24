@@ -7,8 +7,8 @@
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -1170,6 +1170,9 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                     _ => {}
                 },
                 Event::Key(key) => {
+                    if !should_process_key_event(&key) {
+                        continue;
+                    }
                     if let Some(appr) = state.pending_approval.take() {
                         match key.code {
                             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -1436,6 +1439,10 @@ async fn run_piped_repl(
     Ok(())
 }
 
+fn should_process_key_event(key: &KeyEvent) -> bool {
+    matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1463,5 +1470,27 @@ mod tests {
         for req in ["/help", "/model", "/wire", "/thinking", "/mode", "/rewind", "/creds", "/exit"] {
             assert!(cmds.contains(&req), "missing slash command {req}");
         }
+    }
+
+    #[test]
+    fn key_event_filter_ignores_conpty_release_events() {
+        let press = KeyEvent::new_with_kind(
+            KeyCode::Char('h'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
+        let repeat = KeyEvent::new_with_kind(
+            KeyCode::Char('h'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        );
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('h'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(should_process_key_event(&press));
+        assert!(should_process_key_event(&repeat));
+        assert!(!should_process_key_event(&release));
     }
 }

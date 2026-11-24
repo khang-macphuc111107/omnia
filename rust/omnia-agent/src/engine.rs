@@ -4963,11 +4963,8 @@ impl NativeSuperEngine {
                                     {
                                         stop_reason = Some(sr.to_string());
                                     }
-                                    if let Some(out) =
-                                        val.pointer("/usage/output_tokens").and_then(|v| v.as_u64())
-                                    {
-                                        usage.saw_usage = true;
-                                        usage.output = out;
+                                    if let Some(u) = val.get("usage") {
+                                        apply_anthropic_usage_fields(u, &mut usage);
                                     }
                                 }
                                 "message_stop" => {
@@ -5031,17 +5028,7 @@ impl NativeSuperEngine {
                     "message_start" => {
                         last_wire_activity_at = Some(Instant::now());
                         if let Some(u) = val.pointer("/message/usage") {
-                            usage.saw_usage = true;
-                            usage.uncached_input =
-                                u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            usage.cache_read = u
-                                .get("cache_read_input_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            usage.cache_write = u
-                                .get("cache_creation_input_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
+                            apply_anthropic_usage_fields(u, &mut usage);
                         }
                     }
                     "content_block_start" => {
@@ -5184,11 +5171,8 @@ impl NativeSuperEngine {
                         {
                             stop_reason = Some(sr.to_string());
                         }
-                        if let Some(out) =
-                            val.pointer("/usage/output_tokens").and_then(|v| v.as_u64())
-                        {
-                            usage.saw_usage = true;
-                            usage.output = out;
+                        if let Some(u) = val.get("usage") {
+                            apply_anthropic_usage_fields(u, &mut usage);
                         }
                     }
                     "message_stop" => {
@@ -6731,6 +6715,22 @@ fn compute_pure_gen_duration_ms(
         stream_span_ms.max(1)
     } else {
         0
+    }
+}
+
+fn apply_anthropic_usage_fields(u: &Value, usage: &mut TurnLlmUsage) {
+    usage.saw_usage = true;
+    if let Some(n) = u.get("input_tokens").and_then(|v| v.as_u64()) {
+        usage.uncached_input = n;
+    }
+    if let Some(n) = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+        usage.cache_read = n;
+    }
+    if let Some(n) = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()) {
+        usage.cache_write = n;
+    }
+    if let Some(n) = u.get("output_tokens").and_then(|v| v.as_u64()) {
+        usage.output = n;
     }
 }
 
@@ -9333,5 +9333,57 @@ data: [DONE]\n\n";
         let (_e2e2, g2, a2) = compute_eval_tps_metrics(1_000, 20_000, 18_000, 12_000);
         assert!((55.0..=56.0).contains(&g2));
         assert!((83.0..=84.0).contains(&a2));
+    }
+
+    #[tokio::test]
+    async fn anthropic_message_delta_captures_cache_read_creation_and_input_tokens() {
+        // Part A: Helper preserves `message_start` cache tokens when `message_delta` only carries `output_tokens`.
+        let mut standard = TurnLlmUsage::default();
+        apply_anthropic_usage_fields(
+            &json!({"input_tokens": 100, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 50}),
+            &mut standard,
+        );
+        apply_anthropic_usage_fields(&json!({"output_tokens": 12}), &mut standard);
+        assert_eq!(standard.uncached_input, 100);
+        assert_eq!(standard.cache_read, 400);
+        assert_eq!(standard.cache_write, 50);
+        assert_eq!(standard.output, 12);
+
+        // Part B: Full Anthropic SSE round-trip where `htmustc`-style `message_delta.usage` reports final KV cache hit.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut sock).await;
+            let sse = concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"CACHE_DELTA_OK\"}}\n\n",
+                "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1200,\"cache_read_input_tokens\":112544,\"cache_creation_input_tokens\":256,\"output_tokens\":45}}\n\n",
+                "data: {\"type\":\"message_stop\"}\n\n"
+            );
+            let _ = sock.write_all(sse.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_ant_delta_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "claude-sonnet-5-5".into();
+        eng.endpoint.api = "anthropic-messages".into();
+        eng.wire_api_mode = WireApiMode::Messages;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("check delta cache", 4, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "CACHE_DELTA_OK");
+        assert_eq!(sum.cache_stats.uncached_input_tokens, 1_200);
+        assert_eq!(sum.cache_stats.cache_read_tokens, 112_544);
+        assert_eq!(sum.cache_stats.cache_write_tokens, 256);
+        assert_eq!(sum.cache_stats.output_tokens, 45);
+        assert!(sum.cache_stats.cache_hit_pct > 90.0);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
