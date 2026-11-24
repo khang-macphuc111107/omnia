@@ -2315,7 +2315,9 @@ impl NativeSuperEngine {
 
                 // Update ExecutionProgressState for Runtime Self-Verify Gate, Regression Detector,
                 // Anti-Termination-Lag, & ACE Playbook + RTK stdout noise compression + >20KB spill.
-                let mut tool_text = if out.content.len() >= 1_800 && tc.name != "read_file" {
+                let bypass_rtk = tc.name == "read_file"
+                    || (!effective_error && is_ptc_batch_read_call(&tc.name, &arg_val));
+                let mut tool_text = if out.content.len() >= 1_800 && !bypass_rtk {
                     let cmd_label = arg_val
                         .get("command")
                         .and_then(|v| v.as_str())
@@ -2336,7 +2338,7 @@ impl NativeSuperEngine {
                     }
                     rtk.content
                 } else {
-                    if tc.name != "read_file"
+                    if !bypass_rtk
                         && (out.content.contains("\n... [repeated ")
                             || out.content.contains("[rtk:"))
                     {
@@ -6311,6 +6313,14 @@ fn is_test_script_invocation(cmd: &str, output: &str) -> bool {
         })
 }
 
+fn is_ptc_batch_read_call(tool_name: &str, arg_val: &Value) -> bool {
+    tool_name == "run_code"
+        && arg_val
+            .get("code")
+            .and_then(|v| v.as_str())
+            .is_some_and(|c| c.contains("read_file") || c.contains("parallel("))
+}
+
 /// Extract Gemini `thought_signature` / `thoughtSignature` verbatim from SSE delta or part JSON.
 fn extract_thought_signature(v: &Value) -> Option<String> {
     v.get("thought_signature")
@@ -9509,5 +9519,81 @@ data: [DONE]\n\n";
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn ptc_batch_read_code_preserves_up_to_56kb_without_rtk_spill_or_clip() {
+        assert!(is_ptc_batch_read_call(
+            "run_code",
+            &json!({"code": "return await tools.read_file({ paths: ['a.rs', 'b.rs'] });"})
+        ));
+        assert!(is_ptc_batch_read_call(
+            "run_code",
+            &json!({"code": "return await tools.parallel([]);"})
+        ));
+        assert!(!is_ptc_batch_read_call(
+            "run_code",
+            &json!({"code": "return await tools.run_shell({ command: 'cargo test' });"})
+        ));
+
+        let tmp = std::env::temp_dir().join(format!("omni_ptc_56k_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let line_a = "# batch_read_segment_alpha_0123456789_padding_value\n";
+        let line_b = "# batch_read_segment_beta_0123456789_padding_value\n";
+        std::fs::write(tmp.join("big_a.py"), line_a.repeat(240)).unwrap();
+        std::fs::write(tmp.join("big_b.py"), line_b.repeat(240)).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let reqs = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let reqs_bg = Arc::clone(&reqs);
+
+        let srv = tokio::spawn(async move {
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let r1 = http_body_json(&read_http_request(&mut s1).await);
+            reqs_bg.lock().unwrap().push(r1);
+            let code = "const out = await tools.read_file({ paths: ['big_a.py', 'big_b.py'] }); return out;";
+            let args_str = serde_json::to_string(&json!({ "code": code }).to_string()).unwrap();
+            let sse1 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"rc1\",\"function\":{{\"name\":\"run_code\",\"arguments\":{args_str}}}}}]}},\"finish_reason\":\"tool_calls\"}}],\"usage\":{{\"prompt_tokens\":60,\"completion_tokens\":8}}}}\n\n\
+data: [DONE]\n\n"
+            );
+            let _ = s1.write_all(sse1.as_bytes()).await;
+            let _ = s1.shutdown().await;
+
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let r2 = http_body_json(&read_http_request(&mut s2).await);
+            reqs_bg.lock().unwrap().push(r2);
+            let sse2 = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"PTC_56K_OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":3}}\n\n\
+data: [DONE]\n\n";
+            let _ = s2.write_all(sse2.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("batch read via run_code", 4, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "PTC_56K_OK");
+        assert_eq!(eng.total_rtk_spills, 0);
+
+        let captured = reqs.lock().unwrap().clone();
+        let tool_msg = captured[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(
+            tool_msg.len() > 23_000,
+            "run_code batch read must bypass 19KB RTK clip/spill (got {} bytes)",
+            tool_msg.len()
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
