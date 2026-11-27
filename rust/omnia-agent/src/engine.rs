@@ -438,6 +438,31 @@ pub fn apply_retry_effort_step_down(
     clamp_effort_for_model(model_id, stepped).or(Some(stepped))
 }
 
+/// Bound zero-byte HTTP response-header waits (`req.send()`) while retries remain (`>= 90s` left)
+/// so unaccepted/stalled upstream sockets fail over in `45s-75s` instead of burning `150s-245s`
+/// with zero bytes (`worktree_02` GPT / `heal_02` Claude header hangs).
+fn attempt_header_timeout_cap(
+    rem_run: Duration,
+    attempt: u32,
+    max_attempts: u32,
+    api_kind: &str,
+) -> Option<Duration> {
+    if attempt + 1 >= max_attempts || rem_run < Duration::from_secs(90) {
+        return None;
+    }
+    let (frac, min_s, max_s) = match (attempt, api_kind) {
+        (0, "openai-responses") => (0.25, 45, 60),
+        (0, _) => (0.28, 50, 75),
+        (1, _) => (0.45, 55, 95),
+        _ => return None,
+    };
+    Some(
+        rem_run
+            .mul_f64(frac)
+            .clamp(Duration::from_secs(min_s), Duration::from_secs(max_s)),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compute_sse_loop_wait(
     stream_started_at: Instant,
@@ -3024,13 +3049,17 @@ impl NativeSuperEngine {
                 rem_run_budget: Some(rem_run),
                 total_run_budget: Some(total_run_budget),
             };
-            let (header_to, first_delta_to, inter_chunk_to) =
+            let (mut header_to, first_delta_to, inter_chunk_to) =
                 self.stream_budget.effective_timeouts(
                     &self.endpoint.model_id,
                     self.last_context_tokens,
                     attempt,
                     rem_now,
                 );
+            if let Some(hdr_cap) = attempt_header_timeout_cap(rem_run, attempt, max_attempts, api_kind)
+            {
+                header_to = header_to.min(hdr_cap);
+            }
 
             // Bounded Pre-TTFT Hedging (`<= 5%` retry budget, NEVER post-TTFT; loser aborted on first content byte):
             let max_hedges = ((self.total_turns.max(1) as f64) * 0.05).ceil() as u32;
@@ -10044,6 +10073,34 @@ data: [DONE]\n\n";
         assert!(
             msg.contains("turn deadline") && !msg.contains("stall timeout"),
             "unexpected deadline detail: {msg}"
+        );
+    }
+
+    #[test]
+    fn attempt_header_timeout_cap_bounds_zero_byte_hangs_while_retries_remain() {
+        // Attempt 0 with retries remaining bounds zero-byte header wait (`45s-75s` vs `150s`),
+        // covering >99.5% of healthy TTFBs while letting retries recover quickly.
+        assert_eq!(
+            attempt_header_timeout_cap(Duration::from_secs(245), 0, 4, "openai-responses"),
+            Some(Duration::from_secs(60))
+        );
+        let ant0 =
+            attempt_header_timeout_cap(Duration::from_secs(245), 0, 4, "anthropic-messages").unwrap();
+        assert!(ant0 >= Duration::from_secs(68) && ant0 <= Duration::from_secs(70));
+
+        // Attempt 1 (with 2 more retries remaining) still caps below full 187.5s so Attempt 2 survives.
+        let ant1 =
+            attempt_header_timeout_cap(Duration::from_secs(185), 1, 4, "anthropic-messages").unwrap();
+        assert!(ant1 >= Duration::from_secs(80) && ant1 <= Duration::from_secs(85));
+
+        // Final attempt or short (<90s) test budgets stay completely uncapped.
+        assert_eq!(
+            attempt_header_timeout_cap(Duration::from_secs(245), 3, 4, "openai-responses"),
+            None
+        );
+        assert_eq!(
+            attempt_header_timeout_cap(Duration::from_secs(20), 0, 4, "openai-responses"),
+            None
         );
     }
 
