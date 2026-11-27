@@ -167,6 +167,20 @@ class RunnerScorerV5Tests(unittest.TestCase):
         self.assertEqual(pids, {100, 200, 300})
         self.assertNotIn(999, pids)
 
+    def test_opencode_cleanroom_launch_uses_standalone(self):
+        import tempfile
+        from pathlib import Path
+        import cleanroom
+
+        with tempfile.TemporaryDirectory() as ws:
+            launch = cleanroom.prepare_harness_launch(
+                "opencode", "gpt-6.2-sol", "hello", Path(ws), 45123, run_id="unit-test-oc", timeout_s=60
+            )
+            try:
+                self.assertIn("--standalone", launch.cmd)
+            finally:
+                launch.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

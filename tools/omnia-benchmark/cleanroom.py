@@ -289,6 +289,7 @@ def prepare_harness_launch(
         cmd = [
             str(exe),
             "run",
+            "--standalone",
             "--format", "json",
             "--model", f"htmustc/{model}",
             prompt,
