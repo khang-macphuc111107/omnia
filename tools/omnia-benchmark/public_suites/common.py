@@ -308,8 +308,18 @@ def call_htmustc_chat(
             proxy.stop()
 
 
+def _med(vals: List[Optional[float]]) -> Optional[float]:
+    clean = [float(v) for v in vals if v is not None]
+    if not clean:
+        return None
+    clean.sort()
+    mid = len(clean) // 2
+    val = clean[mid] if len(clean) % 2 else 0.5 * (clean[mid - 1] + clean[mid])
+    return round(val, 3)
+
+
 def summarize_suite_results(suite: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Summarize pass rate + Wilson 95% CI + telemetry across rows grouped by (harness, model)."""
+    """Summarize pass rate + Wilson 95% CI + McNemar p + telemetry across rows grouped by (harness, model)."""
     grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for r in rows:
         key = (str(r.get("harness") or "unknown"), str(r.get("model") or "unknown"))
@@ -321,6 +331,18 @@ def summarize_suite_results(suite: str, rows: List[Dict[str, Any]]) -> Dict[str,
         lo, hi = scorer_v4.wilson_ci(k, n)
         scores = [float(x.get("score") if x.get("score") is not None else (1.0 if x.get("passed") else 0.0)) for x in items]
         leaks = sum(len(x.get("non_loopback_sockets") or []) for x in items)
+
+        tot_in = sum(int(x.get("wire_prompt_total") or 0) for x in items)
+        tot_cr = sum(int(x.get("wire_cache_read") or 0) for x in items)
+        tot_tc = sum(int(x.get("tool_call_count") or 0) for x in items)
+        tot_te = sum(int(x.get("tool_error_count") or 0) for x in items)
+        tot_ec = sum(int(x.get("edit_call_count") or 0) for x in items)
+        tot_ee = sum(int(x.get("edit_error_count") or 0) for x in items)
+        all_tok_known = bool(items) and all(
+            x.get("wire_total_tokens") is not None and not x.get("wire_requests_missing_usage") for x in items
+        )
+        costs = [x.get("cost_usd_est") if x.get("cost_usd_est") is not None else scorer_v5.estimate_record_cost_usd(x) for x in items]
+        all_cost_known = bool(items) and all(c is not None for c in costs)
         summary[f"{h}:{m}"] = {
             "suite": suite,
             "harness": h,
@@ -331,8 +353,35 @@ def summarize_suite_results(suite: str, rows: List[Dict[str, Any]]) -> Dict[str,
             "wilson_95ci": [round(lo, 2), round(hi, 2)],
             "mean_score": round(sum(scores) / n, 4) if n else 0.0,
             "network_leaks": leaks,
+            "median_wall_s": _med([x.get("wall_s") for x in items]),
+            "median_ttft_ms": _med([x.get("wire_first_ttft_ms") for x in items]),
+            "median_active_tps": _med([x.get("wire_gen_tokens_per_sec") for x in items]),
+            "median_e2e_tps": _med([x.get("e2e_tokens_per_sec") for x in items]),
+            "tokens_per_solved": round(sum(int(x.get("wire_total_tokens") or 0) for x in items) / k, 1) if (k > 0 and all_tok_known) else None,
+            "cost_per_solved_usd": round(sum(float(c) for c in costs if c is not None) / k, 5) if (k > 0 and all_cost_known) else None,
+            "pooled_kv_cache_hit_pct": round(100.0 * tot_cr / tot_in, 2) if tot_in > 0 else None,
+            "pooled_tool_error_rate_pct": round(100.0 * tot_te / tot_tc, 2) if tot_tc > 0 else 0.0,
+            "pooled_edit_error_rate_pct": round(100.0 * tot_ee / tot_ec, 2) if tot_ec > 0 else 0.0,
+            "peak_rss_mb_median": _med([x.get("peak_rss_mb") for x in items]),
+            "peak_job_mem_mb_max": round(max(float(x["peak_job_memory_mb"]) for x in items if x.get("peak_job_memory_mb") is not None), 2) if any(x.get("peak_job_memory_mb") is not None for x in items) else None,
+            "median_cpu_s": _med([x.get("total_cpu_time_s") for x in items]),
         }
-    return {"suite": suite, "groups": summary}
+
+    mcnemar: Dict[str, Any] = {}
+    harnesses_present = {str(x.get("harness") or "") for x in rows}
+    if "omnia" in harnesses_present:
+        norm_rows = [
+            {
+                **x,
+                "repeat": int(x.get("repeat") or 0),
+                "task_id": str(x.get("task_id") or x.get("id") or x.get("question_id") or x.get("sample_id") or x.get("case_id") or ""),
+            }
+            for x in rows
+        ]
+        for h in sorted(harnesses_present):
+            if h and h != "omnia":
+                mcnemar[h] = scorer_v4.paired_mcnemar(norm_rows, "omnia", h)
+    return {"suite": suite, "groups": summary, **({"mcnemar_vs_omnia": mcnemar} if mcnemar else {})}
 
 
 def make_temp_workspace(prefix: str, suite_name: str) -> Path:

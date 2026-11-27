@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import runner_v5
+
 from .common import DATASET_ROOT, EXT_LIBS_ROOT, clean_host_env, make_temp_workspace, python_exe, run_harness_in_workspace
 
 AIDER_ROOT = DATASET_ROOT / "aider_polyglot"
@@ -107,7 +109,8 @@ def verify_exercise(item: Dict[str, Any], ws: Path) -> Dict[str, Any]:
         return {"passed": r.returncode == 0, "score": 1.0 if r.returncode == 0 else 0.0, "detail": (r.stdout + "\n" + r.stderr)[-400:]}
     if lang == "rust":
         # `--include-ignored` enforces all Exercism Rust tests, matching Aider Polyglot harness behavior
-        r = subprocess.run(["cargo", "test", "--offline", "--", "--include-ignored"], cwd=str(ws), env={**env, "PATH": os.environ.get("PATH", "")}, capture_output=True, text=True, timeout=120)
+        rs_env = runner_v5._clean_setup_env()
+        r = subprocess.run(["cargo", "test", "--offline", "--", "--include-ignored"], cwd=str(ws), env=rs_env, capture_output=True, text=True, timeout=120)
         return {"passed": r.returncode == 0, "score": 1.0 if r.returncode == 0 else 0.0, "detail": (r.stdout + "\n" + r.stderr)[-400:]}
     return {"passed": False, "score": 0.0, "detail": f"Blocked on Windows host: {item.get('blocker')}"}
 

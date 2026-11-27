@@ -128,6 +128,26 @@ class PublicSuitesOfflineTests(unittest.TestCase):
         if not rt["container_runtime_available"]:
             self.assertIn("WSL2", rt["exact_blocker"])
 
+    def test_aider_rust_verify_exercise_links_cleanly_offline(self):
+        import shutil
+        import tempfile
+
+        ex_acc = next(it for it in aider_polyglot.discover_exercises(["rust"]) if it["id"] == "rust/accumulate")
+        tmp = Path(tempfile.mkdtemp(prefix="test_rs_link_"))
+        try:
+            aider_polyglot._stage_exercise_workspace(ex_acc, tmp)
+            (tmp / "src" / "lib.rs").write_text(
+                "pub fn map<T, U, F: FnMut(T) -> U>(input: Vec<T>, mut function: F) -> Vec<U> {\n"
+                "    input.into_iter().map(function).collect()\n"
+                "}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            res = aider_polyglot.verify_exercise(ex_acc, tmp)
+            self.assertTrue(res["passed"], res)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_cli_select_tasks_and_reject_agy_gemini(self):
         import argparse
         from public_suites import cli, common
@@ -145,10 +165,15 @@ class PublicSuitesOfflineTests(unittest.TestCase):
         ))
         self.assertEqual(len({x[1]["repository_url"] for x in strat_swe}), 11)
 
-        summ = common.summarize_suite_results("tau2_bench", [{"harness": "api", "model": "gpt-6.2-sol", "passed": False, "score": 0.75}])
+        summ = common.summarize_suite_results("tau2_bench", [
+            {"harness": "omnia", "model": "gpt-6.2-sol", "task_id": "t1", "passed": True, "score": 1.0, "wall_s": 5.0, "wire_prompt_total": 100, "wire_cache_read": 80, "wire_output_tokens": 50, "wire_total_tokens": 150, "wire_requests_missing_usage": 0},
+            {"harness": "api", "model": "gpt-6.2-sol", "task_id": "t1", "passed": False, "score": 0.75, "wall_s": 8.0, "wire_prompt_total": 100, "wire_cache_read": 0, "wire_output_tokens": 20, "wire_total_tokens": 120, "wire_requests_missing_usage": 0},
+        ])
         ci_lo, ci_hi = summ["groups"]["api:gpt-6.2-sol"]["wilson_95ci"]
         self.assertGreaterEqual(ci_lo, 0.0)
         self.assertLessEqual(ci_hi, 100.0)
+        self.assertEqual(summ["groups"]["omnia:gpt-6.2-sol"]["pooled_kv_cache_hit_pct"], 80.0)
+        self.assertIn("api", summ.get("mcnemar_vs_omnia", {}))
 
 
 if __name__ == "__main__":

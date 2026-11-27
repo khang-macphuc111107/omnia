@@ -149,6 +149,9 @@ def run_task_api(
     ]
 
     # First user turn
+    agent_wires: List[Dict[str, Any]] = []
+    tool_calls_total = 0
+    tool_errors_total = 0
     u_resp = call_htmustc_chat(u_model, user_msgs, max_tokens=512, run_id=f"tau2-u-{domain}-{task.id}")
     u_text = u_resp["text"].strip()
     user_msgs.append({"role": "assistant", "content": u_text})
@@ -159,6 +162,8 @@ def run_task_api(
         if "###STOP###" in u_text:
             break
         a_resp = call_htmustc_chat(model, agent_msgs, tools=agent_tools_schemas, max_tokens=1024, run_id=f"tau2-a-{domain}-{task.id}")
+        if isinstance(a_resp.get("wire"), dict):
+            agent_wires.append(a_resp["wire"])
         tcalls = a_resp.get("tool_calls") or []
         if tcalls:
             if "claude" in model.lower():
@@ -170,6 +175,9 @@ def run_task_api(
                     fargs = dict(tc.get("input") or {})
                     cid = str(tc.get("id") or f"call_{idx}")
                     msg_res = env.get_response(ToolCall(id=cid, name=fname, arguments=fargs, requestor="assistant"))
+                    tool_calls_total += 1
+                    if getattr(msg_res, "error", False) or "error" in str(msg_res.content).lower()[:80]:
+                        tool_errors_total += 1
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": cid,
@@ -189,6 +197,9 @@ def run_task_api(
                     fargs = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
                     cid = str(tc.get("id") or f"call_{idx}")
                     msg_res = env.get_response(ToolCall(id=cid, name=fname, arguments=fargs, requestor="assistant"))
+                    tool_calls_total += 1
+                    if getattr(msg_res, "error", False) or "error" in str(msg_res.content).lower()[:80]:
+                        tool_errors_total += 1
                     agent_msgs.append({
                         "role": "tool",
                         "tool_call_id": cid,
@@ -205,11 +216,34 @@ def run_task_api(
         agent_msgs.append({"role": "user", "content": u_text.replace("###STOP###", "").strip() or "Thanks."})
 
     ev = evaluate_environment(domain, env, task, assistant_texts)
+    wall_s = round(time.perf_counter() - t_start, 3)
+    in_tok = sum(int(w.get("wire_prompt_total") or 0) for w in agent_wires)
+    out_tok = sum(int(w.get("wire_output_tokens") or 0) for w in agent_wires)
+    cr_tok = sum(int(w.get("wire_cache_read") or 0) for w in agent_wires)
+    cw_tok = sum(int(w.get("wire_cache_write") or 0) for w in agent_wires)
+    unc_tok = sum(int(w.get("wire_uncached_input") or 0) for w in agent_wires)
+    ttfts = [float(w["wire_first_ttft_ms"]) for w in agent_wires if w.get("wire_first_ttft_ms") is not None]
+    wait_ms = sum(float(w.get("wire_total_llm_wait_ms") or 0.0) for w in agent_wires)
+    missing_u = sum(int(w.get("wire_requests_missing_usage") or 0) for w in agent_wires)
     return {
         "suite": "tau2_bench",
         "harness": "api",
         "model": model,
-        "wall_s": round(time.perf_counter() - t_start, 3),
+        "wall_s": wall_s,
         "non_loopback_sockets": [],
+        "egress_clean": True,
+        "wire_requests": len(agent_wires),
+        "wire_requests_missing_usage": missing_u,
+        "wire_prompt_total": in_tok,
+        "wire_uncached_input": unc_tok,
+        "wire_cache_read": cr_tok,
+        "wire_cache_write": cw_tok,
+        "wire_output_tokens": out_tok,
+        "wire_total_tokens": None if missing_u else (in_tok + out_tok),
+        "wire_first_ttft_ms": round(ttfts[0], 2) if ttfts else None,
+        "wire_gen_tokens_per_sec": round(out_tok / (wait_ms / 1000.0), 2) if wait_ms > 0 and out_tok > 0 else None,
+        "e2e_tokens_per_sec": round(out_tok / wall_s, 2) if wall_s > 0 and out_tok > 0 else None,
+        "tool_call_count": tool_calls_total,
+        "tool_error_count": tool_errors_total,
         **ev,
     }
