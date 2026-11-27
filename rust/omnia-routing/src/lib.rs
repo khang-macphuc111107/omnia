@@ -918,7 +918,130 @@ pub struct CandidateScoreBreakdown {
     pub total_score_bps: i64,
 }
 
+/// Single labeled bar segment in a 5-segment candidate score waterfall.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScoreWaterfallSegment {
+    pub key: String,
+    pub label: String,
+    pub bps: i64,
+    pub share_pct: f64,
+}
+
+/// 5-segment normalized score waterfall for Router Lab observability (`capability`,
+/// `privacy`, `headroom`, `latency`, `reliability_preference`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScoreWaterfall5 {
+    pub candidate_id: String,
+    pub eligible: bool,
+    pub total_bps: i64,
+    pub capability_bps: i64,
+    pub privacy_bps: i64,
+    pub headroom_bps: i64,
+    pub latency_bps: i64,
+    pub reliability_pref_bps: i64,
+    pub segments: Vec<ScoreWaterfallSegment>,
+}
+
+/// Truthful quota burn-rate and runway projection for one candidate.
+/// Never fabricates known runway when quota state is `Unknown` or `Contradictory`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuotaRunwayProjection {
+    pub candidate_id: String,
+    pub quota_kind: String,
+    pub remaining_tokens: Option<i64>,
+    pub window_capacity_tokens: Option<i64>,
+    pub reserved_tokens: i64,
+    pub burn_rate_tokens_per_min: Option<f64>,
+    pub estimated_runway_minutes: Option<f64>,
+    pub window_reset_in_minutes: Option<f64>,
+    pub sample_count: usize,
+    pub status: String,
+}
+
+/// Structured failover / circuit / quota lifecycle event for Router Lab timelines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailoverEvent {
+    pub timestamp_ms: i64,
+    pub kind: String,
+    pub from_candidate_id: Option<String>,
+    pub to_candidate_id: Option<String>,
+    pub reason: String,
+    pub reservation_id: Option<String>,
+}
+
+impl FailoverEvent {
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        SecretRedactor::redact_json(&json!({
+            "timestamp_ms": self.timestamp_ms,
+            "kind": self.kind,
+            "from_candidate_id": self.from_candidate_id,
+            "to_candidate_id": self.to_candidate_id,
+            "reason": SecretRedactor::redact(&self.reason),
+            "reservation_id": self.reservation_id,
+        }))
+    }
+}
+
 impl CandidateScoreBreakdown {
+    /// Group the deterministic bps breakdown into the canonical 5-segment waterfall.
+    #[must_use]
+    pub fn score_waterfall_5(&self) -> ScoreWaterfall5 {
+        let reliability_pref_bps =
+            self.reliability_bps + self.user_preference_bps + self.route_priority_bps;
+        let denom = self.total_score_bps.max(1) as f64;
+        let share = |bps: i64| -> f64 {
+            if !self.eligible || self.total_score_bps <= 0 {
+                0.0
+            } else {
+                (((bps.max(0) as f64) / denom) * 1000.0).round() / 10.0
+            }
+        };
+        let segments = vec![
+            ScoreWaterfallSegment {
+                key: "capability".to_owned(),
+                label: "Capability & Role Fit".to_owned(),
+                bps: self.capability_fit_bps,
+                share_pct: share(self.capability_fit_bps),
+            },
+            ScoreWaterfallSegment {
+                key: "privacy".to_owned(),
+                label: "Privacy Tier".to_owned(),
+                bps: self.privacy_fit_bps,
+                share_pct: share(self.privacy_fit_bps),
+            },
+            ScoreWaterfallSegment {
+                key: "headroom".to_owned(),
+                label: "Quota Headroom".to_owned(),
+                bps: self.budget_headroom_bps,
+                share_pct: share(self.budget_headroom_bps),
+            },
+            ScoreWaterfallSegment {
+                key: "latency".to_owned(),
+                label: "Latency Health".to_owned(),
+                bps: self.latency_health_bps,
+                share_pct: share(self.latency_health_bps),
+            },
+            ScoreWaterfallSegment {
+                key: "reliability_pref".to_owned(),
+                label: "Reliability & Affinity".to_owned(),
+                bps: reliability_pref_bps,
+                share_pct: share(reliability_pref_bps),
+            },
+        ];
+        ScoreWaterfall5 {
+            candidate_id: self.candidate_id.clone(),
+            eligible: self.eligible,
+            total_bps: self.total_score_bps,
+            capability_bps: self.capability_fit_bps,
+            privacy_bps: self.privacy_fit_bps,
+            headroom_bps: self.budget_headroom_bps,
+            latency_bps: self.latency_health_bps,
+            reliability_pref_bps,
+            segments,
+        }
+    }
+
     #[must_use]
     pub fn to_json(&self) -> Value {
         json!({
@@ -933,6 +1056,7 @@ impl CandidateScoreBreakdown {
             "user_preference_bps": self.user_preference_bps,
             "route_priority_bps": self.route_priority_bps,
             "total_score_bps": self.total_score_bps,
+            "waterfall_5": self.score_waterfall_5(),
         })
     }
 }
@@ -1173,6 +1297,32 @@ struct RouterInner {
     role_bindings: BTreeMap<ModelRole, (String, String)>,
     probe_counters: BTreeMap<String, u64>,
     session_affinity: BTreeMap<String, String>,
+    token_burn_samples: BTreeMap<String, VecDeque<(i64, u64)>>,
+    failover_events: VecDeque<FailoverEvent>,
+}
+
+impl RouterInner {
+    fn push_failover_event(&mut self, mut ev: FailoverEvent) {
+        ev.reason = SecretRedactor::redact(&ev.reason);
+        if self.failover_events.len() >= MAX_LATENCY_SAMPLES {
+            self.failover_events.pop_front();
+        }
+        self.failover_events.push_back(ev);
+    }
+
+    fn record_burn_sample(&mut self, candidate_id: &str, now_ms: i64, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+        let ring = self
+            .token_burn_samples
+            .entry(candidate_id.to_owned())
+            .or_default();
+        if ring.len() >= MAX_LATENCY_SAMPLES {
+            ring.pop_front();
+        }
+        ring.push_back((now_ms, tokens));
+    }
 }
 
 /// Thread-safe deterministic provider/model router with quota truth, circuit breakers,
@@ -1214,6 +1364,8 @@ impl DynamicProviderRouter {
                 role_bindings: BTreeMap::new(),
                 probe_counters: BTreeMap::new(),
                 session_affinity: BTreeMap::new(),
+                token_burn_samples: BTreeMap::new(),
+                failover_events: VecDeque::new(),
             }),
         }
     }
@@ -1378,6 +1530,16 @@ impl DynamicProviderRouter {
         if let Some(store) = store_opt {
             store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
         }
+        if exhausted {
+            guard.push_failover_event(FailoverEvent {
+                timestamp_ms: now_ms,
+                kind: "quota_exhausted".to_owned(),
+                from_candidate_id: Some(candidate_id.to_owned()),
+                to_candidate_id: None,
+                reason: "proactive_quota_gate_exhausted".to_owned(),
+                reservation_id: None,
+            });
+        }
         Ok(exhausted)
     }
 
@@ -1412,11 +1574,15 @@ impl DynamicProviderRouter {
             .inner
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let store_opt = guard.sqlite_store.clone();
         let entry = guard
             .candidates
             .get_mut(candidate_id)
             .ok_or_else(|| RoutingError::UnknownCandidate(candidate_id.to_owned()))?;
         entry.candidate.enabled = enabled;
+        if let Some(store) = store_opt {
+            store.save_candidate(&entry.candidate, &entry.state, now_epoch_ms())?;
+        }
         Ok(())
     }
 
@@ -1431,6 +1597,7 @@ impl DynamicProviderRouter {
             .inner
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let store_opt = guard.sqlite_store.clone();
         let entry = guard
             .candidates
             .get_mut(candidate_id)
@@ -1438,6 +1605,9 @@ impl DynamicProviderRouter {
         entry.candidate.pricing_version = pricing_version.into();
         entry.candidate.input_cost_per_million_microunits = input_cost_per_million_microunits;
         entry.candidate.output_cost_per_million_microunits = output_cost_per_million_microunits;
+        if let Some(store) = store_opt {
+            store.save_candidate(&entry.candidate, &entry.state, now_epoch_ms())?;
+        }
         Ok(())
     }
 
@@ -1452,14 +1622,27 @@ impl DynamicProviderRouter {
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
         let default_cooldown = guard.default_cooldown_ms;
+        let store_opt = guard.sqlite_store.clone();
+        let effective_cooldown = cooldown_ms.unwrap_or(default_cooldown).max(1);
         let entry = guard
             .candidates
             .get_mut(candidate_id)
             .ok_or_else(|| RoutingError::UnknownCandidate(candidate_id.to_owned()))?;
         entry.state.circuit = CircuitState::Open {
             opened_at_ms: now_ms,
-            cooldown_ms: cooldown_ms.unwrap_or(default_cooldown).max(1),
+            cooldown_ms: effective_cooldown,
         };
+        if let Some(store) = store_opt {
+            store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
+        }
+        guard.push_failover_event(FailoverEvent {
+            timestamp_ms: now_ms,
+            kind: "circuit_tripped".to_owned(),
+            from_candidate_id: Some(candidate_id.to_owned()),
+            to_candidate_id: None,
+            reason: format!("manual_trip_cooldown_{effective_cooldown}ms"),
+            reservation_id: None,
+        });
         Ok(())
     }
 
@@ -1468,12 +1651,26 @@ impl DynamicProviderRouter {
             .inner
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let now_ms = now_epoch_ms();
+        let store_opt = guard.sqlite_store.clone();
         let entry = guard
             .candidates
             .get_mut(candidate_id)
             .ok_or_else(|| RoutingError::UnknownCandidate(candidate_id.to_owned()))?;
         entry.state.circuit = CircuitState::Closed;
         entry.state.consecutive_failures = 0;
+        entry.state.retry_after_until_ms = None;
+        if let Some(store) = store_opt {
+            store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
+        }
+        guard.push_failover_event(FailoverEvent {
+            timestamp_ms: now_ms,
+            kind: "circuit_reset".to_owned(),
+            from_candidate_id: None,
+            to_candidate_id: Some(candidate_id.to_owned()),
+            reason: "manual_reset".to_owned(),
+            reservation_id: None,
+        });
         Ok(())
     }
 
@@ -1566,12 +1763,13 @@ impl DynamicProviderRouter {
             "{}:fallback:{}",
             original_policy.idempotency_key, prev.reservation_id
         );
+        let prev_candidate_id = prev.candidate_id.clone();
         if !fb_policy
             .excluded_candidate_ids
             .iter()
-            .any(|id| id == &prev.candidate_id)
+            .any(|id| id == &prev_candidate_id)
         {
-            fb_policy.excluded_candidate_ids.push(prev.candidate_id);
+            fb_policy.excluded_candidate_ids.push(prev_candidate_id.clone());
         }
         if fb_policy.fallback_scope == FallbackScope::SameProviderOnly {
             let extra_excluded: Vec<String> = guard
@@ -1586,7 +1784,24 @@ impl DynamicProviderRouter {
                 }
             }
         }
-        decide_and_reserve_locked(&mut guard, &fb_policy)
+        let res = decide_and_reserve_locked(&mut guard, &fb_policy)?;
+        guard.push_failover_event(FailoverEvent {
+            timestamp_ms: now_ms,
+            kind: if res.allowed {
+                "fallback_selected".to_owned()
+            } else {
+                "fallback_denied".to_owned()
+            },
+            from_candidate_id: Some(prev_candidate_id),
+            to_candidate_id: res.receipt.selected_candidate_id.clone(),
+            reason: res
+                .receipt
+                .deny_reason
+                .clone()
+                .unwrap_or_else(|| "fallback_routed".to_owned()),
+            reservation_id: Some(prev.reservation_id),
+        });
+        Ok(res)
     }
 
     pub fn mark_dispatched(
@@ -1670,7 +1885,9 @@ impl DynamicProviderRouter {
             grant.status = next_status;
         }
 
+        let mut auto_opened_circuit = false;
         if let Some(entry) = guard.candidates.get_mut(&candidate_id) {
+            let was_open = matches!(entry.state.circuit, CircuitState::Open { .. });
             entry.state.reserved_tokens = entry
                 .state
                 .reserved_tokens
@@ -1732,11 +1949,35 @@ impl DynamicProviderRouter {
                         opened_at_ms: now_ms,
                         cooldown_ms: default_cooldown,
                     };
+                    if !was_open {
+                        auto_opened_circuit = true;
+                    }
                 }
             }
             if let Some(ref store) = store_opt {
                 store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
             }
+        }
+        let burned_tokens = report
+            .actual_input_tokens
+            .unwrap_or(0)
+            .saturating_add(report.actual_output_tokens.unwrap_or(0));
+        if burned_tokens > 0 {
+            guard.record_burn_sample(&candidate_id, now_ms, burned_tokens);
+        }
+        if auto_opened_circuit {
+            guard.push_failover_event(FailoverEvent {
+                timestamp_ms: now_ms,
+                kind: "circuit_opened".to_owned(),
+                from_candidate_id: Some(candidate_id.clone()),
+                to_candidate_id: None,
+                reason: if report.diagnostic_note.trim().is_empty() {
+                    "failure_threshold_reached".to_owned()
+                } else {
+                    report.diagnostic_note.clone()
+                },
+                reservation_id: Some(report.reservation_id.clone()),
+            });
         }
 
         let receipt = RouteOutcomeReceipt {
@@ -1904,6 +2145,185 @@ impl DynamicProviderRouter {
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
         Ok(guard.outcome_receipts.clone())
+    }
+
+    /// Look up one secret-redacted decision receipt by `decision_id`.
+    pub fn decision_receipt_by_id(
+        &self,
+        decision_id: &str,
+    ) -> Result<Option<RouteDecisionReceipt>, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard
+            .decision_receipts
+            .iter()
+            .rev()
+            .find(|r| r.decision_id == decision_id)
+            .cloned())
+    }
+
+    /// Return the most recent secret-redacted decision receipt, if any.
+    pub fn latest_decision_receipt(&self) -> Result<Option<RouteDecisionReceipt>, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard.decision_receipts.last().cloned())
+    }
+
+    /// Return recent failover / circuit / quota lifecycle events (newest first, bounded by `limit`).
+    pub fn failover_timeline(&self, limit: usize) -> Result<Vec<FailoverEvent>, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let cap = limit.max(1);
+        Ok(guard
+            .failover_events
+            .iter()
+            .rev()
+            .take(cap)
+            .cloned()
+            .collect())
+    }
+
+    /// Compute truthful burn-rate and runway projection for one candidate.
+    pub fn candidate_runway(
+        &self,
+        candidate_id: &str,
+        now_ms: i64,
+    ) -> Result<QuotaRunwayProjection, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        if let Some(entry) = guard.candidates.get_mut(candidate_id) {
+            entry.state.advance_time(now_ms);
+        } else {
+            return Err(RoutingError::UnknownCandidate(candidate_id.to_owned()));
+        }
+        let state = &guard.candidates[candidate_id].state;
+        let samples = guard.token_burn_samples.get(candidate_id);
+        Ok(compute_quota_runway(candidate_id, state, samples, now_ms))
+    }
+
+    /// Compute truthful burn-rate and runway projections for all registered candidates.
+    pub fn candidate_runways(
+        &self,
+        now_ms: i64,
+    ) -> Result<BTreeMap<String, QuotaRunwayProjection>, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let ids: Vec<String> = guard.candidates.keys().cloned().collect();
+        let mut out = BTreeMap::new();
+        for id in ids {
+            if let Some(entry) = guard.candidates.get_mut(&id) {
+                entry.state.advance_time(now_ms);
+            }
+            let state = &guard.candidates[&id].state;
+            let samples = guard.token_burn_samples.get(&id);
+            out.insert(id.clone(), compute_quota_runway(&id, state, samples, now_ms));
+        }
+        Ok(out)
+    }
+}
+
+fn compute_quota_runway(
+    candidate_id: &str,
+    state: &CandidateResourceState,
+    samples: Option<&VecDeque<(i64, u64)>>,
+    now_ms: i64,
+) -> QuotaRunwayProjection {
+    let sample_count = samples.map_or(0, VecDeque::len);
+    let burn_rate_tokens_per_min = samples.and_then(|ring| {
+        if ring.is_empty() {
+            return None;
+        }
+        let total_tok: u64 = ring.iter().map(|(_, t)| *t).sum();
+        if total_tok == 0 {
+            return None;
+        }
+        let first_ts = ring.front().map_or(now_ms, |(ts, _)| *ts);
+        let last_ts = ring.back().map_or(now_ms, |(ts, _)| *ts).max(now_ms);
+        let span_ms = last_ts.saturating_sub(first_ts).max(60_000);
+        let rate = (total_tok as f64) / ((span_ms as f64) / 60_000.0);
+        Some((rate * 100.0).round() / 100.0)
+    });
+
+    let (remaining_tokens, window_capacity_tokens, window_reset_at_ms) = match &state.quota {
+        QuotaState::Known {
+            remaining_tokens,
+            window_capacity_tokens,
+            window_reset_at_ms,
+            ..
+        } => (
+            Some((*remaining_tokens).saturating_sub(state.reserved_tokens).max(0)),
+            (*window_capacity_tokens > 0).then_some(*window_capacity_tokens),
+            *window_reset_at_ms,
+        ),
+        QuotaState::Stale {
+            last_known_remaining_tokens,
+            window_capacity_tokens,
+            window_reset_at_ms,
+            ..
+        } => (
+            Some(
+                (*last_known_remaining_tokens)
+                    .saturating_sub(state.reserved_tokens)
+                    .max(0),
+            ),
+            (*window_capacity_tokens > 0).then_some(*window_capacity_tokens),
+            *window_reset_at_ms,
+        ),
+        QuotaState::Unknown { .. } | QuotaState::Contradictory { .. } => (None, None, None),
+    };
+
+    let window_reset_in_minutes = window_reset_at_ms.map(|reset| {
+        let rem_ms = reset.saturating_sub(now_ms).max(0);
+        ((rem_ms as f64 / 60_000.0) * 100.0).round() / 100.0
+    });
+
+    let estimated_runway_minutes = match (remaining_tokens, burn_rate_tokens_per_min) {
+        (Some(rem), Some(rate)) if rate > 0.0 => {
+            Some((((rem as f64) / rate) * 100.0).round() / 100.0)
+        }
+        _ => None,
+    };
+
+    let status = if state
+        .quota_exhausted_until_ms
+        .is_some_and(|until| until > now_ms)
+        || remaining_tokens == Some(0)
+    {
+        "exhausted"
+    } else if matches!(
+        state.quota,
+        QuotaState::Unknown { .. } | QuotaState::Contradictory { .. }
+    ) {
+        "unknown"
+    } else if estimated_runway_minutes.is_some_and(|m| m < 15.0)
+        || matches!(state.quota, QuotaState::Stale { .. })
+    {
+        "warning"
+    } else {
+        "healthy"
+    };
+
+    QuotaRunwayProjection {
+        candidate_id: candidate_id.to_owned(),
+        quota_kind: state.quota.kind_str().to_owned(),
+        remaining_tokens,
+        window_capacity_tokens,
+        reserved_tokens: state.reserved_tokens,
+        burn_rate_tokens_per_min,
+        estimated_runway_minutes,
+        window_reset_in_minutes,
+        sample_count,
+        status: status.to_owned(),
     }
 }
 
@@ -2390,5 +2810,140 @@ fn evaluate_quota(
             }
             Err("quota_stale".to_owned())
         }
+    }
+}
+#[cfg(test)]
+mod router_analytics_tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_persists_manual_trip_reset_and_records_failover_timeline_and_waterfall() {
+        let tmp = std::env::temp_dir().join(format!(
+            "omnia_router_s17_{}.db",
+            uuid_v4()
+        ));
+        let now_ms = 1_700_000_000_000i64;
+        {
+            let router = DynamicProviderRouter::open_sqlite(&tmp, now_ms).unwrap();
+            let c1 = RouteCandidate {
+                candidate_id: "p1::claude-sonnet-5-5".into(),
+                provider_id: "p1".into(),
+                model_id: "claude-sonnet-5-5".into(),
+                quality_tier: 5,
+                ..Default::default()
+            };
+            let c2 = RouteCandidate {
+                candidate_id: "p2::gpt-6.2-sol".into(),
+                provider_id: "p2".into(),
+                model_id: "gpt-6.2-sol".into(),
+                quality_tier: 4,
+                ..Default::default()
+            };
+            let s1 = CandidateResourceState {
+                quota: QuotaState::known_with_window(
+                    100_000,
+                    500,
+                    200_000,
+                    3_600_000,
+                    Some(now_ms + 1_800_000),
+                    Some(now_ms),
+                    600_000,
+                ),
+                ..Default::default()
+            };
+            let s2 = CandidateResourceState {
+                quota: QuotaState::unknown("unobserved"),
+                ..Default::default()
+            };
+            router.upsert_candidate(c1, s1).unwrap();
+            router.upsert_candidate(c2, s2).unwrap();
+
+            let policy = RouteRequestPolicy {
+                request_id: "req-wf-1".into(),
+                idempotency_key: "idem-wf-1".into(),
+                allow_unknown_quota_without_emergency: true,
+                now_epoch_ms: Some(now_ms),
+                ..Default::default()
+            };
+            let dec = router.decide_and_reserve(&policy).unwrap();
+            assert!(dec.allowed);
+            let grant = dec.reservation.unwrap();
+            assert_eq!(grant.candidate_id, "p1::claude-sonnet-5-5");
+
+            // 5-segment waterfall & receipt lookup
+            let wf = dec.receipt.candidate_scores[0].score_waterfall_5();
+            assert_eq!(wf.segments.len(), 5);
+            assert!(wf.total_bps > 0);
+            let fetched = router
+                .decision_receipt_by_id(&dec.receipt.decision_id)
+                .unwrap()
+                .expect("receipt must be retrievable by decision_id");
+            assert_eq!(fetched.decision_id, dec.receipt.decision_id);
+
+            // Reconcile tokens -> burn-rate/runway projection (Known vs Unknown honest!)
+            router
+                .mark_dispatched(&grant.reservation_id, grant.fencing_token)
+                .unwrap();
+            router
+                .reconcile_outcome(OutcomeReport {
+                    reservation_id: grant.reservation_id.clone(),
+                    fencing_token: grant.fencing_token,
+                    success: true,
+                    acceptance: AcceptanceState::Accepted,
+                    actual_input_tokens: Some(8_000),
+                    actual_output_tokens: Some(2_000),
+                    latency_ms: Some(120.0),
+                    now_epoch_ms: Some(now_ms + 60_000),
+                    ..Default::default()
+                })
+                .unwrap();
+            let rw1 = router
+                .candidate_runway("p1::claude-sonnet-5-5", now_ms + 60_000)
+                .unwrap();
+            assert_eq!(rw1.quota_kind, "Known");
+            assert_eq!(rw1.burn_rate_tokens_per_min, Some(10_000.0));
+            assert_eq!(rw1.estimated_runway_minutes, Some(10.0));
+            assert_eq!(rw1.status, "warning");
+
+            let rw2 = router
+                .candidate_runway("p2::gpt-6.2-sol", now_ms + 60_000)
+                .unwrap();
+            assert_eq!(rw2.quota_kind, "Unknown");
+            assert_eq!(rw2.estimated_runway_minutes, None);
+            assert_eq!(rw2.status, "unknown");
+
+            // Manual trip persists to SQLite across reopen!
+            router
+                .trip_circuit("p1::claude-sonnet-5-5", now_ms + 65_000, Some(120_000))
+                .unwrap();
+            let timeline = router.failover_timeline(10).unwrap();
+            assert!(timeline.iter().any(|e| e.kind == "circuit_tripped"));
+        }
+
+        // Reopen SQLite and verify tripped circuit survived restart!
+        {
+            let reopened = DynamicProviderRouter::open_sqlite(&tmp, now_ms + 70_000).unwrap();
+            let snaps = reopened.snapshots(now_ms + 70_000).unwrap();
+            let p1 = snaps
+                .iter()
+                .find(|s| s.candidate.candidate_id == "p1::claude-sonnet-5-5")
+                .unwrap();
+            assert_eq!(p1.state.circuit.kind_str(), "Open");
+
+            // Reset circuit and verify persistence across second reopen
+            reopened.reset_circuit("p1::claude-sonnet-5-5").unwrap();
+        }
+        {
+            let reopened2 = DynamicProviderRouter::open_sqlite(&tmp, now_ms + 75_000).unwrap();
+            let snaps = reopened2.snapshots(now_ms + 75_000).unwrap();
+            let p1 = snaps
+                .iter()
+                .find(|s| s.candidate.candidate_id == "p1::claude-sonnet-5-5")
+                .unwrap();
+            assert_eq!(p1.state.circuit.kind_str(), "Closed");
+        }
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp.with_extension("db-wal"));
+        let _ = std::fs::remove_file(tmp.with_extension("db-shm"));
     }
 }

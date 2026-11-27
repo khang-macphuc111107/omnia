@@ -22,12 +22,20 @@ use omnia_agent::{
     FileReadTracker, HarnessEventSink, HarnessStreamEvent, PermissionsEngine, PluginRegistry,
     SuperEvalOptions, TurnCheckpointStore, WireApiMode,
 };
+use omnia_core::PrivacyMask;
+use omnia_workspace_ops::hardware::collect_host_system_snapshot;
+use omnia_workspace_ops::net_diag::{
+    default_upstream_targets, inspect_dns_and_benchmark, inspect_network_identity,
+    inspect_proxy_tls_and_endpoints, run_speedtest_streaming, DnsBenchOptions, NetDiagOptions,
+    SpeedtestConfig,
+};
 use serde_json::json;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -162,6 +170,20 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "net" => match run_net_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia net error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
+        "speedtest" => match run_speedtest_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia speedtest error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprintln!("Unknown command '{first}'. Run `omnia --help` for usage.");
             ExitCode::FAILURE
@@ -210,7 +232,9 @@ USAGE:
   omnia run --workspace <dir> --model <id> --base-url <url> [OPTIONS] \"<prompt>\"
   omnia --acp [--model <id>] [--base-url <url>] [--api-key <key>]
   omnia --acp-http [--host <ip>] [--port <n>] [--secret <key>]
-  omnia rewind --workspace <dir> --turn <n> [--session <id>]
+  omnia rewind --workspace <dir> --turn <n> [--session <id>] [--preview]
+  omnia net [--dns] [--proxy] [--all] [--offline] [--json] [--privacy-mask]
+  omnia speedtest [--quick | --standard] [--url <override>] [--json] [--privacy-mask]
 
 RUN OPTIONS:
   --workspace, --cwd <dir>       Target workspace directory (default: current dir)
@@ -713,6 +737,20 @@ fn run_rewind_cmd(args: &[String]) -> Result<()> {
     };
 
     let mut store = TurnCheckpointStore::load_from_store(&session_id, db)?;
+    let preview_only = args.iter().any(|a| a == "--preview" || a == "--dry-run");
+    if preview_only {
+        let preview = store.preview_rollback_to_turn(target_turn, &cwd)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "dryRun": true,
+                "rewound": false,
+                "sessionId": session_id,
+                "preview": preview
+            }))?
+        );
+        return Ok(());
+    }
     let tracker = FileReadTracker::new();
     let restored = store.rollback_to_turn(target_turn, &cwd, &tracker)?;
     println!(
@@ -724,6 +762,260 @@ fn run_rewind_cmd(args: &[String]) -> Result<()> {
             "restoredFiles": restored
         }))?
     );
+    Ok(())
+}
+
+fn build_net_report_json(
+    offline: bool,
+    run_dns: bool,
+    run_proxy: bool,
+    timeout_ms: u64,
+    privacy_mask: bool,
+) -> serde_json::Value {
+    let identity = inspect_network_identity(&NetDiagOptions {
+        probe_public_ip: !offline,
+        timeout_ms: timeout_ms.clamp(500, 6_000),
+        force_refresh: true,
+    });
+    let dns = inspect_dns_and_benchmark(&DnsBenchOptions {
+        run_benchmark: !offline && run_dns,
+        public_ipv4_hint: identity.public_ipv4.clone(),
+        ..DnsBenchOptions::default()
+    });
+    let targets = if !offline && run_proxy {
+        default_upstream_targets()
+    } else {
+        Vec::new()
+    };
+    let proxy_tls = inspect_proxy_tls_and_endpoints(&targets, !offline && run_proxy);
+    let host = collect_host_system_snapshot();
+    let payload = json!({
+        "privacyMasked": privacy_mask,
+        "identity": identity,
+        "dns": dns,
+        "proxyTls": proxy_tls,
+        "host": host,
+    });
+    if privacy_mask {
+        PrivacyMask::mask_json(&payload)
+    } else {
+        payload
+    }
+}
+
+fn run_net_cmd(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia net [--dns] [--proxy] [--all] [--offline] [--json] [--privacy-mask] [--timeout-ms <ms>]"
+        );
+        return Ok(());
+    }
+    let offline = args.iter().any(|a| a == "--offline");
+    let all = args.iter().any(|a| a == "--all");
+    let run_dns = all || args.iter().any(|a| a == "--dns");
+    let run_proxy = all || args.iter().any(|a| a == "--proxy");
+    let json_out = args.iter().any(|a| a == "--json");
+    let privacy_mask = args.iter().any(|a| a == "--privacy-mask")
+        || env::var("OMNIA_PRIVACY_MASK")
+            .ok()
+            .is_some_and(|v| matches!(v.trim(), "1" | "true" | "on"));
+    let timeout_ms = arg_value(args, "--timeout-ms")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(2_500);
+
+    let report = build_net_report_json(offline, run_dns, run_proxy, timeout_ms, privacy_mask);
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    let id = &report["identity"];
+    let dns = &report["dns"];
+    let host = &report["host"];
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Omnia Network Observatory [{}] (privacy_mask={})",
+        id["provenance"].as_str().unwrap_or("UNAVAILABLE"),
+        privacy_mask
+    ));
+    lines.push(format!(
+        "  Public IPv4 : {} | IPv6: {} | NAT: {} | VPN: {}",
+        id["publicIpv4"].as_str().unwrap_or("unavailable"),
+        id["publicIpv6"].as_str().unwrap_or("unavailable"),
+        id["natClassification"].as_str().unwrap_or("unknown"),
+        id["vpnActive"].as_bool().unwrap_or(false)
+    ));
+    if let Some(geo) = id.get("geo").filter(|g| !g.is_null()) {
+        lines.push(format!(
+            "  GeoIP / ASN : {} {} ({}, {})",
+            geo["asn"].as_str().unwrap_or("-"),
+            geo["isp"].as_str().unwrap_or("-"),
+            geo["city"].as_str().unwrap_or("-"),
+            geo["country"].as_str().unwrap_or("-")
+        ));
+    }
+    let adapters = id["adapters"].as_array().map_or(0, Vec::len);
+    lines.push(format!(
+        "  Adapters    : {} detected | Fingerprint: {}",
+        adapters,
+        id["fingerprintSha256"]
+            .as_str()
+            .map_or("-", |s| &s[..s.len().min(16)])
+    ));
+    let dns_servers: Vec<&str> = dns["systemDnsServers"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    lines.push(format!(
+        "  System DNS  : {} | Hosts overrides: {} | Leak: {}",
+        if dns_servers.is_empty() {
+            "none".to_string()
+        } else {
+            dns_servers.join(", ")
+        },
+        dns["hostsOverrideCount"].as_u64().unwrap_or(0),
+        dns["leakStatus"].as_str().unwrap_or("unverified")
+    ));
+    if let Some(resolvers) = dns["resolvers"].as_array() {
+        for r in resolvers {
+            if let Some(p50) = r["p50Ms"].as_f64() {
+                lines.push(format!(
+                    "    resolver {:<12} ({:<14}): p50={:.1}ms p95={:.1}ms loss={:.0}%",
+                    r["name"].as_str().unwrap_or("-"),
+                    r["server"].as_str().unwrap_or("-"),
+                    p50,
+                    r["p95Ms"].as_f64().unwrap_or(0.0),
+                    r["failureRatePct"].as_f64().unwrap_or(0.0)
+                ));
+            }
+        }
+    }
+    if let Some(endpoints) = report["proxyTls"]["endpoints"].as_array() {
+        for ep in endpoints {
+            lines.push(format!(
+                "    upstream {:<16}: status={:?} dns={:.1}ms tcp={:.1}ms tls={:.1}ms ttfb={:.1}ms",
+                ep["label"].as_str().unwrap_or("-"),
+                ep["httpStatus"].as_u64(),
+                ep["dnsMs"].as_f64().unwrap_or(0.0),
+                ep["tcpMs"].as_f64().unwrap_or(0.0),
+                ep["tlsMs"].as_f64().unwrap_or(0.0),
+                ep["ttfbMs"].as_f64().unwrap_or(0.0)
+            ));
+        }
+    }
+    let ram_tot_gb =
+        host["hardware"]["total_ram_bytes"].as_u64().unwrap_or(0) as f64 / 1_073_741_824.0;
+    let ram_avail_gb =
+        host["hardware"]["available_ram_bytes"].as_u64().unwrap_or(0) as f64 / 1_073_741_824.0;
+    let omnia_rss_mb =
+        host["totalOmniaRssBytes"].as_u64().unwrap_or(0) as f64 / (1024.0 * 1024.0);
+    lines.push(format!(
+        "  Host        : CPU {:.1}% | RAM {:.1}/{:.1} GiB free | Omnia RSS {:.1} MiB | Ports {}",
+        host["cpuLoadPct"].as_f64().unwrap_or(0.0),
+        ram_avail_gb,
+        ram_tot_gb,
+        omnia_rss_mb,
+        host["listeningPorts"].as_array().map_or(0, Vec::len)
+    ));
+    let out = lines.join("\n");
+    if privacy_mask {
+        println!("{}", PrivacyMask::mask_text(&out));
+    } else {
+        println!("{out}");
+    }
+    Ok(())
+}
+
+fn parse_speedtest_config(args: &[String]) -> SpeedtestConfig {
+    let profile = if args.iter().any(|a| a == "--quick") {
+        "quick"
+    } else {
+        "standard"
+    };
+    let mut cfg = SpeedtestConfig::for_profile(profile);
+    if let Some(url) = arg_value(args, "--url") {
+        cfg.base_url_override = Some(url);
+    }
+    cfg
+}
+
+fn run_speedtest_cmd(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia speedtest [--quick | --standard] [--url <override>] [--json] [--privacy-mask]"
+        );
+        return Ok(());
+    }
+    let cfg = parse_speedtest_config(args);
+    let json_out = args.iter().any(|a| a == "--json");
+    let privacy_mask = args.iter().any(|a| a == "--privacy-mask")
+        || env::var("OMNIA_PRIVACY_MASK")
+            .ok()
+            .is_some_and(|v| matches!(v.trim(), "1" | "true" | "on"));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let run_id = format!(
+        "cli-st-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let result = run_speedtest_streaming(&run_id, &cfg, cancel, |ev| {
+        if !json_out {
+            let speed_note = ev
+                .current_mbps
+                .map_or_else(String::new, |m| format!(" | {m:.1} Mbps"));
+            let rtt_note = ev
+                .current_rtt_ms
+                .map_or_else(String::new, |r| format!(" | RTT {r:.1} ms"));
+            eprintln!(
+                "  [{:>3}%] {:<14}{}{}: {}",
+                ev.progress_pct, ev.phase, speed_note, rtt_note, ev.message
+            );
+        }
+    });
+    let val = serde_json::to_value(&result)?;
+    let out_val = if privacy_mask {
+        PrivacyMask::mask_json(&val)
+    } else {
+        val
+    };
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&out_val)?);
+        return Ok(());
+    }
+    let summary = format!(
+        "Omnia Speedtest [{}] ({} | {}ms)\n  Download    : {:.2} Mbps (1-stream {:.2} / multi {:.2})\n  Upload      : {:.2} Mbps (1-stream {:.2} / multi {:.2})\n  Unloaded RTT: p50={:.1}ms p95={:.1}ms jitter={:.1}ms loss={:.1}%\n  Bufferbloat : Grade {} (DL +{:.1}ms / UL +{:.1}ms)\n  Readiness   : AI SSE {} ({}) | Git/Docker {} ({}) | WebRTC {} ({}) | Remote {} ({})",
+        result.provenance.as_str(),
+        result.profile,
+        result.duration_ms,
+        result.download_mbps,
+        result.single_stream_dl_mbps,
+        result.multi_stream_dl_mbps,
+        result.upload_mbps,
+        result.single_stream_ul_mbps,
+        result.multi_stream_ul_mbps,
+        result.unloaded.p50_ms.unwrap_or(0.0),
+        result.unloaded.p95_ms.unwrap_or(0.0),
+        result.unloaded.jitter_ms.unwrap_or(0.0),
+        result.unloaded.loss_pct,
+        result.bufferbloat_grade,
+        result.dl_bufferbloat_delta_ms,
+        result.ul_bufferbloat_delta_ms,
+        result.workload_readiness.ai_sse_streaming.score,
+        result.workload_readiness.ai_sse_streaming.rating,
+        result.workload_readiness.git_docker_sync.score,
+        result.workload_readiness.git_docker_sync.rating,
+        result.workload_readiness.webrtc.score,
+        result.workload_readiness.webrtc.rating,
+        result.workload_readiness.remote_control.score,
+        result.workload_readiness.remote_control.rating
+    );
+    if privacy_mask {
+        println!("{}", PrivacyMask::mask_text(&summary));
+    } else {
+        println!("{summary}");
+    }
     Ok(())
 }
 
@@ -849,5 +1141,22 @@ mod tests {
 
         let write_mode: Vec<String> = vec!["--approval-mode".into(), "write".into()];
         assert_eq!(resolve_approval_mode(&write_mode).unwrap(), ApprovalMode::Write);
+    }
+
+    #[test]
+    fn cli_net_offline_report_and_speedtest_config_honor_privacy_mask() {
+        let rep = build_net_report_json(true, false, false, 1_000, true);
+        assert_eq!(rep["privacyMasked"], json!(true));
+        assert!(rep["identity"]["fingerprintSha256"].is_string());
+        assert!(rep["host"]["hardware"]["logical_cpus"].as_u64().unwrap_or(0) >= 1);
+
+        let quick_args: Vec<String> = vec![
+            "--quick".into(),
+            "--url".into(),
+            "http://127.0.0.1:19999".into(),
+        ];
+        let cfg = parse_speedtest_config(&quick_args);
+        assert_eq!(cfg.profile, "quick");
+        assert_eq!(cfg.base_url_override.as_deref(), Some("http://127.0.0.1:19999"));
     }
 }

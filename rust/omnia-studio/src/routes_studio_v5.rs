@@ -41,7 +41,7 @@ use serde_json::{json, Value};
 
 use crate::http::{HttpRequest, HttpResponse};
 use crate::mgmt_proxy::{build_benchmark_scoreboard, handle_management_route};
-use crate::ops_store::{OpsStore, UsageTraceInput};
+use crate::ops_store::{OpsStore, RichUsageTraceInput};
 use crate::routes_legacy::StudioState;
 use crate::telemetry::is_reparse_or_symlink;
 
@@ -64,6 +64,9 @@ pub fn is_known_v5_route(path: &str) -> bool {
     if path == "/api/management" || path.starts_with("/api/management/") {
         return true;
     }
+    if crate::routes_observatory_v5::is_known_route(path) {
+        return true;
+    }
     matches!(
         path,
         "/api/events"
@@ -84,6 +87,7 @@ pub fn is_known_v5_route(path: &str) -> bool {
             | "/api/sessions/rename"
             | "/api/sessions/fork"
             | "/api/sessions/rewind"
+            | "/api/sessions/rewind/preview"
             | "/api/sessions/compact"
             | "/api/sessions/btw/create"
             | "/api/sessions/btw/append"
@@ -169,6 +173,10 @@ pub async fn dispatch_v5_route(state: &Arc<StudioState>, req: &HttpRequest) -> O
         return Some(handle_management_route(req).await);
     }
 
+    if let Some(resp) = crate::routes_observatory_v5::dispatch(state, req).await {
+        return Some(resp);
+    }
+
     if let Some(resp) = crate::routes_atelier_drive_v5::dispatch(state, req).await {
         return Some(resp);
     }
@@ -199,6 +207,9 @@ pub async fn dispatch_v5_route(state: &Arc<StudioState>, req: &HttpRequest) -> O
         ("POST", "/api/sessions/rename") => Some(handle_sessions_rename(state, req)),
         ("POST", "/api/sessions/fork") => Some(handle_sessions_fork(state, req)),
         ("POST", "/api/sessions/rewind") => Some(handle_sessions_rewind(state, req).await),
+        ("GET", "/api/sessions/rewind/preview") | ("POST", "/api/sessions/rewind/preview") => {
+            Some(handle_sessions_rewind_preview(state, req).await)
+        }
         ("POST", "/api/sessions/compact") => Some(handle_sessions_compact(state, req).await),
 
         ("POST", "/api/sessions/btw/create") => Some(handle_chat_btw_create(state, req)),
@@ -558,7 +569,7 @@ async fn handle_agent_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
     let chosen_effort = non_empty_str(&body, &["thinking", "effort", "thinkingLevel"])
         .map(ToString::to_string)
         .or(role_override.2.clone())
-        .unwrap_or_else(|| "high".to_string());
+        .unwrap_or_else(|| "max".to_string());
     if state.sessions.get_session(&session_id).ok().flatten().is_none() {
         let title = effective_prompt.chars().take(64).collect::<String>();
         let _ = state.sessions.upsert_session(
@@ -835,6 +846,13 @@ fn handle_chat_steer(state: &Arc<StudioState>, req: &HttpRequest, queued: bool) 
     };
     let sid = non_empty_str(&body, &["sessionId"]).map(ToString::to_string);
     let item = state.steer.enqueue(prompt, SteerMode::AdditiveIntake, None);
+    let _ = state.ops.upsert_steer_item(
+        &item.id,
+        &item.text,
+        item.mode.as_str(),
+        item.status.as_str(),
+        item.created_at_ms,
+    );
     let event_name = if queued { "queue_enqueued" } else { "steer_enqueued" };
     state.event_feed.publish(
         "agent",
@@ -974,10 +992,17 @@ async fn handle_sessions_rewind(state: &Arc<StudioState>, req: &HttpRequest) -> 
         Ok(v) => v,
         Err(resp) => return resp,
     };
+    if body.get("dryRun").or_else(|| body.get("dry_run")).and_then(Value::as_bool) == Some(true) {
+        return handle_sessions_rewind_preview(state, req).await;
+    }
     let Some(key) = resolve_managed_session_key(state, &body) else {
         return HttpResponse::error(404, "session_not_found", "Active managed session not found for rewind.");
     };
-    let turn = body.get("turn").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let turn = body
+        .get("turn")
+        .or_else(|| body.get("turn_idx"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
     match state.harness.rewind_to_turn(&key, turn).await {
         Ok(report) => {
             state.event_feed.publish(
@@ -990,6 +1015,78 @@ async fn handle_sessions_rewind(state: &Arc<StudioState>, req: &HttpRequest) -> 
         }
         Err(e) => HttpResponse::error(400, "rewind_failed", &e.to_string()),
     }
+}
+
+async fn handle_sessions_rewind_preview(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = parse_json_body(req).unwrap_or_else(|_| json!({}));
+    let session_id = query_param_val(req, "sessionId")
+        .or_else(|| query_param_val(req, "session_id"))
+        .or_else(|| non_empty_str(&body, &["sessionId", "session_id", "tabId"]).map(ToString::to_string))
+        .unwrap_or_default();
+    let turn = query_param_val(req, "turn")
+        .or_else(|| query_param_val(req, "turn_idx"))
+        .and_then(|s| s.parse::<usize>().ok())
+        .or_else(|| {
+            body.get("turn")
+                .or_else(|| body.get("turn_idx"))
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+        })
+        .unwrap_or(0);
+
+    let messages = if session_id.is_empty() {
+        Vec::new()
+    } else {
+        state.sessions.list_messages(&session_id, 0).unwrap_or_default()
+    };
+    let dropped_messages: Vec<Value> = messages
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx >= turn)
+        .map(|(idx, m)| {
+            json!({
+                "index": idx,
+                "seq": m.seq,
+                "role": m.role,
+                "preview": SecretRedactor::redact(&omnia_core::truncate_utf8_codepoints(&m.content, 160)),
+            })
+        })
+        .collect();
+
+    let ws_root = state.config.workspace_root.clone();
+    let git_preview = tokio::task::spawn_blocking(move || {
+        let stat = run_git(&ws_root, &["diff", "--numstat"]).unwrap_or_default();
+        let patch = run_git(&ws_root, &["diff", "--unified=3"]).unwrap_or_default();
+        let mut files = Vec::new();
+        for line in stat.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 3 {
+                files.push(json!({
+                    "path": parts[2],
+                    "added": parts[0].parse::<u64>().unwrap_or(0),
+                    "deleted": parts[1].parse::<u64>().unwrap_or(0),
+                }));
+            }
+        }
+        let clipped_patch = omnia_core::truncate_utf8_codepoints(&patch, 12_000);
+        (files, SecretRedactor::redact(&clipped_patch))
+    })
+    .await
+    .unwrap_or_else(|_| (Vec::new(), String::new()));
+
+    let has_managed_session = resolve_managed_session_key(state, &body).is_some();
+    HttpResponse::ok(json!({
+        "ok": true,
+        "dryRun": true,
+        "sessionId": session_id,
+        "targetTurn": turn,
+        "managedSessionActive": has_managed_session,
+        "totalMessages": messages.len(),
+        "messagesAffected": dropped_messages.len(),
+        "droppedMessages": dropped_messages,
+        "workspaceModifiedFiles": git_preview.0,
+        "diffPatchPreview": git_preview.1,
+    }))
 }
 
 async fn handle_sessions_compact(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
@@ -1235,7 +1332,7 @@ fn handle_models_config_set(state: &Arc<StudioState>, req: &HttpRequest) -> Http
     let Some(model_id) = non_empty_str(&body, &["modelId", "model"]) else {
         return HttpResponse::error(400, "missing_model_id", "Field 'modelId' is required.");
     };
-    let effort_raw = non_empty_str(&body, &["effort", "thinkingLevel"]).unwrap_or("high");
+    let effort_raw = non_empty_str(&body, &["effort", "thinkingLevel"]).unwrap_or("max");
     let effort = match effort_raw.parse::<EffortLevel>() {
         Ok(lvl) => lvl.as_str().to_string(),
         Err(_) => effort_raw.to_ascii_lowercase(),
@@ -1273,6 +1370,7 @@ fn handle_credentials_list() -> HttpResponse {
                         "kind": c.kind,
                         "label": c.label,
                         "maskedHint": c.masked_hint,
+                        "masked_hint": c.masked_hint,
                         "updatedAtMs": c.updated_at_ms,
                     })
                 })
@@ -1304,6 +1402,7 @@ fn handle_credentials_set(req: &HttpRequest) -> HttpResponse {
                 "kind": masked.kind,
                 "label": masked.label,
                 "maskedHint": masked.masked_hint,
+                "masked_hint": masked.masked_hint,
                 "updatedAtMs": masked.updated_at_ms,
             }
         })),
@@ -2515,27 +2614,83 @@ fn build_harness_sink(state: Arc<StudioState>, session_id: String) -> Arc<dyn Fn
                     now_epoch_ms(),
                 );
             }
-            let _ = state.ops.record_trace(&UsageTraceInput {
+            let model_str = ev
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("auto")
+                .to_string();
+            let rich = RichUsageTraceInput {
+                req_id: ev
+                    .get("requestId")
+                    .or_else(|| ev.get("reqId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 session_id: session_id.clone(),
+                workspace: state.config.workspace_root.to_string_lossy().to_string(),
+                git_branch: ev
+                    .get("gitBranch")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                role: ev
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("main")
+                    .to_string(),
                 provider_id: ev
                     .get("provider")
                     .and_then(Value::as_str)
                     .unwrap_or("omnia-agent")
                     .to_string(),
-                model_id: ev
-                    .get("model")
+                model_id: model_str.clone(),
+                surface: "chat".to_string(),
+                wire_dialect: ev
+                    .get("wireDialect")
+                    .or_else(|| ev.get("wireApi"))
                     .and_then(Value::as_str)
                     .unwrap_or("auto")
                     .to_string(),
-                surface: "chat".to_string(),
+                reasoning_effort: ev
+                    .get("effort")
+                    .or_else(|| ev.get("thinkingLevel"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("max")
+                    .to_string(),
+                status: if ev.get("error").is_some_and(|e| !e.is_null()) {
+                    "error".to_string()
+                } else {
+                    "ok".to_string()
+                },
                 input_tokens: ev.get("inputTokens").and_then(Value::as_i64).unwrap_or(0),
                 output_tokens: ev.get("outputTokens").and_then(Value::as_i64).unwrap_or(0),
+                reasoning_tokens: ev.get("reasoningTokens").and_then(Value::as_i64).unwrap_or(0),
                 cache_read_tokens: ev.get("cacheReadTokens").and_then(Value::as_i64).unwrap_or(0),
                 cache_write_tokens: ev.get("cacheWriteTokens").and_then(Value::as_i64).unwrap_or(0),
                 cost_usd: ev.get("totalCostUsd").and_then(Value::as_f64).unwrap_or(0.0),
+                kv_savings_usd: ev.get("kvSavingsUsd").and_then(Value::as_f64),
                 duration_ms: ev.get("durationMs").and_then(Value::as_i64).unwrap_or(0),
                 ttft_ms: ev.get("ttftMs").and_then(Value::as_i64),
-                tokens_per_second: ev.get("tokensPerSecond").and_then(Value::as_f64).unwrap_or(0.0),
+                tpot_ms: ev.get("tpotMs").and_then(Value::as_f64),
+                active_decode_tps: ev
+                    .get("activeDecodeTps")
+                    .or_else(|| ev.get("tokensPerSecond"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0),
+                e2e_tps: ev.get("e2eTps").and_then(Value::as_f64).unwrap_or(0.0),
+                stall_retries: ev.get("stallRetries").and_then(Value::as_i64).unwrap_or(0),
+                hedge_wins: ev.get("hedgeWins").and_then(Value::as_i64).unwrap_or(0),
+                prefix_hash: ev
+                    .get("prefixHash")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                cache_bust_reason: ev
+                    .get("cacheBustReason")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                context_window_fill_pct: ev.get("contextWindowFillPct").and_then(Value::as_f64),
+                compaction_eta_turns: ev.get("compactionEtaTurns").and_then(Value::as_i64),
                 is_error: ev.get("error").is_some_and(|e| !e.is_null()),
                 error_note: ev
                     .get("error")
@@ -2543,7 +2698,21 @@ fn build_harness_sink(state: Arc<StudioState>, session_id: String) -> Arc<dyn Fn
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
                 saved_tokens: ev.get("savedTokens").and_then(Value::as_i64).unwrap_or(0),
-            });
+                recorded_at_ms: None,
+            };
+            if let Ok(trace_id) = state.ops.record_rich_trace(&rich) {
+                state.event_feed.publish(
+                    "telemetry",
+                    "trace_recorded",
+                    Some(&session_id),
+                    json!({
+                        "traceId": trace_id,
+                        "modelId": model_str,
+                        "ttftMs": rich.ttft_ms,
+                        "costUsd": rich.cost_usd,
+                    }),
+                );
+            }
         }
     })
 }

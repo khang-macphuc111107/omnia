@@ -1199,6 +1199,9 @@ pub struct NativeSuperEngine {
     /// One-shot requirements/edge-case review before a mutating task finishes (default on).
     pub final_review_gate: bool,
     pub last_context_tokens: u64,
+    pub total_kv_savings_usd: f64,
+    pub turn_telemetry: Vec<TurnTelemetryRecord>,
+    pub tool_waterfall: Vec<ToolCallWaterfallEntry>,
     http: reqwest::Client,
     fresh_http: reqwest::Client,
     ws_state: ResponsesWsContinuationState,
@@ -1383,6 +1386,9 @@ impl NativeSuperEngine {
             total_final_review_nudges: 0,
             final_review_gate: true,
             last_context_tokens: 0,
+            total_kv_savings_usd: 0.0,
+            turn_telemetry: Vec::new(),
+            tool_waterfall: Vec::new(),
             http,
             fresh_http,
             ws_state: ResponsesWsContinuationState::default(),
@@ -1690,6 +1696,217 @@ impl NativeSuperEngine {
         self.messages
             .retain(|m| m.role == "system" || m.turn_index <= target_turn);
         Ok(restored)
+    }
+
+    /// Dry-run diff preview for `/rewind <target_turn>` (zero file or history mutation).
+    pub fn preview_rewind_to_turn(
+        &self,
+        target_turn: u32,
+    ) -> Result<crate::checkpoint::RewindPreview> {
+        self.tool_runtime
+            .checkpoint_store
+            .lock()
+            .unwrap()
+            .preview_rollback_to_turn(target_turn, &self.workspace_root)
+    }
+
+    /// List all turn numbers that have recorded pre-mutation BLAKE3 checkpoints.
+    #[must_use]
+    pub fn available_rewind_turns(&self) -> Vec<u32> {
+        self.tool_runtime
+            .checkpoint_store
+            .lock()
+            .unwrap()
+            .available_turns()
+    }
+
+    /// Strictly observe-only smart prompt preflight (`token_budget` is ALWAYS `None`).
+    #[must_use]
+    pub fn preflight_prompt(&self, prompt: &str) -> PromptPreflightEstimate {
+        let prompt_tokens = crate::cache_guard::estimate_tokens(prompt);
+        let history_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
+        let current_ctx = self
+            .last_context_tokens
+            .max((history_chars as u64).div_ceil(4));
+        let projected_ctx = current_ctx.saturating_add(prompt_tokens);
+        let ctx_win = self.endpoint.context_window.max(1);
+        let fill_pct = (((projected_ctx as f64) / (ctx_win as f64)) * 1000.0).round() / 10.0;
+        let compact_cap = ctx_win.min(200_000);
+        let rot_knee = (compact_cap * 68) / 100;
+        let will_trigger_compaction = projected_ctx >= rot_knee;
+        let wire_dialect = self.active_wire_dialect().to_string();
+        let effective_effort = self
+            .resolve_effort_for_turn(false, false)
+            .map(|e| e.as_str().to_string());
+        let estimated_input_cost_usd =
+            (prompt_tokens as f64 / 1_000_000.0) * self.endpoint.cost_input_per_m;
+        let mut warnings = Vec::new();
+        if will_trigger_compaction {
+            warnings.push(format!(
+                "Projected context ({projected_ctx} tok, {fill_pct:.1}%) nears compaction threshold ({rot_knee} tok)."
+            ));
+        }
+        if prompt_tokens > 32_000 {
+            warnings.push(format!(
+                "Large prompt (~{prompt_tokens} tokens); consider referencing file paths instead of pasting full contents."
+            ));
+        }
+        if self.endpoint.api_key.trim().is_empty() && self.endpoint.auth_header {
+            warnings.push("No API key configured for active endpoint.".to_string());
+        }
+        PromptPreflightEstimate {
+            estimated_prompt_tokens: prompt_tokens,
+            projected_context_tokens: projected_ctx,
+            context_window: ctx_win,
+            projected_context_fill_pct: fill_pct,
+            will_trigger_compaction,
+            wire_dialect,
+            effective_effort,
+            estimated_input_cost_usd,
+            token_budget: None,
+            warnings,
+        }
+    }
+
+    /// Observe-only session cost, KV-cache, per-turn waterfall, and retry/stall forensics snapshot.
+    #[must_use]
+    pub fn session_telemetry_snapshot(&self) -> SessionTelemetrySnapshot {
+        let cache_stats = self.cache_guard.snapshot();
+        let ctx_win = self.endpoint.context_window.max(1);
+        let history_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
+        let context_tokens = self
+            .last_context_tokens
+            .max((history_chars as u64).div_ceil(4));
+        let context_fill_pct =
+            (((context_tokens as f64) / (ctx_win as f64)) * 1000.0).round() / 10.0;
+        let compact_cap = ctx_win.min(200_000);
+        let rot_knee = (compact_cap * 68) / 100;
+        let compaction_eta_turns = if context_tokens >= rot_knee {
+            Some(0)
+        } else if self.total_turns > 0 && context_tokens > 0 {
+            let avg_per_turn = (context_tokens / u64::from(self.total_turns)).max(500);
+            let rem = rot_knee.saturating_sub(context_tokens);
+            Some(u32::try_from(rem.div_ceil(avg_per_turn)).unwrap_or(u32::MAX))
+        } else {
+            None
+        };
+        SessionTelemetrySnapshot {
+            session_key: self.session_key.clone(),
+            model_id: self.endpoint.model_id.clone(),
+            wire_dialect: self.active_wire_dialect().to_string(),
+            effort: self
+                .resolve_effort_for_turn(false, false)
+                .map(|e| e.as_str().to_string()),
+            token_budget: None,
+            total_turns: self.total_turns,
+            total_tool_calls: self.total_tool_calls,
+            total_tool_errors: self.total_tool_errors,
+            total_http_retries: self.total_http_retries,
+            total_stall_retries: self.total_stall_retries,
+            total_truncated_retries: self.total_truncated_stream_retries,
+            total_hedge_wins: self.total_hedge_wins,
+            total_cost_usd: self.total_cost_usd,
+            total_kv_savings_usd: self.total_kv_savings_usd,
+            context_tokens,
+            context_window: ctx_win,
+            context_fill_pct,
+            compaction_eta_turns,
+            cache_stats,
+            turns: self.turn_telemetry.clone(),
+            tool_waterfall: self.tool_waterfall.clone(),
+        }
+    }
+
+    /// Manually fold stale tool observations while preserving Prefix-0 immutability (`/compact`).
+    pub fn compact_conversation_now(&mut self) -> crate::lakeview::LakeviewCompressionReport {
+        let rep = crate::lakeview::compress_stale_tool_results(
+            &mut self.messages,
+            self.total_turns.max(1),
+            600,
+            2,
+        );
+        if rep.compressed_count > 0 {
+            self.cache_guard.lakeview_compressions += rep.compressed_count;
+            self.cache_guard.lakeview_chars_saved += rep.chars_saved;
+        }
+        rep
+    }
+
+    /// Render a secret-redacted (and optionally Privacy-Masked) Markdown session report (`/export`).
+    #[must_use]
+    pub fn export_session_markdown(&self, privacy_mask: bool) -> String {
+        let snap = self.session_telemetry_snapshot();
+        let mut md = String::new();
+        md.push_str("# Omnia Session Report\n\n");
+        md.push_str(&format!("- **Session**: `{}`\n", snap.session_key));
+        md.push_str(&format!("- **Workspace**: `{}`\n", self.workspace_root.display()));
+        md.push_str(&format!(
+            "- **Model**: `{}` (`{}` | effort: `{}`)\n",
+            snap.model_id,
+            snap.wire_dialect,
+            snap.effort.as_deref().unwrap_or("none")
+        ));
+        md.push_str(&format!(
+            "- **Turns / Tools**: {} turns, {} tool calls ({} errors)\n",
+            snap.total_turns, snap.total_tool_calls, snap.total_tool_errors
+        ));
+        md.push_str(&format!(
+            "- **KV Cache**: {:.1}% hit (read {}, uncached {}, write {}, prefix_stable={})\n",
+            snap.cache_stats.cache_hit_pct,
+            snap.cache_stats.cache_read_tokens,
+            snap.cache_stats.uncached_input_tokens,
+            snap.cache_stats.cache_write_tokens,
+            snap.cache_stats.prefix_stable
+        ));
+        md.push_str(&format!(
+            "- **Cost / KV Savings**: ${:.6} spent | ${:.6} saved | token_budget: NULL\n",
+            snap.total_cost_usd, snap.total_kv_savings_usd
+        ));
+        md.push_str(&format!(
+            "- **Retries / Stalls**: http={}, stall={}, truncated={}, hedge_wins={}\n\n",
+            snap.total_http_retries,
+            snap.total_stall_retries,
+            snap.total_truncated_retries,
+            snap.total_hedge_wins
+        ));
+        if !snap.turns.is_empty() {
+            md.push_str("## Turn Waterfall\n\n");
+            md.push_str("| Turn | TTFT ms | TPOT ms | Decode TPS | Out Tok | Cache Read | Retries | Cost USD |\n");
+            md.push_str("|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+            for t in &snap.turns {
+                md.push_str(&format!(
+                    "| {} | {} | {} | {:.1} | {} | {} | {} | ${:.6} |\n",
+                    t.turn,
+                    t.ttft_ms
+                        .map_or_else(|| "-".into(), |v| v.to_string()),
+                    t.tpot_ms
+                        .map_or_else(|| "-".into(), |v| format!("{v:.1}")),
+                    t.active_decode_tps,
+                    t.output_tokens,
+                    t.cache_read_tokens,
+                    t.http_retries,
+                    t.cost_usd
+                ));
+            }
+            md.push('\n');
+        }
+        md.push_str("## Transcript\n\n");
+        for msg in &self.messages {
+            if msg.role == "system" {
+                continue;
+            }
+            let preview: String = msg.content.chars().take(1_200).collect();
+            md.push_str(&format!(
+                "### [{}] Turn {}\n\n{}\n\n",
+                msg.role, msg.turn_index, preview
+            ));
+        }
+        let redacted = crate::sanitizer::redact_secrets(&md);
+        if privacy_mask {
+            omnia_core::PrivacyMask::mask_text(&redacted)
+        } else {
+            redacted
+        }
     }
 
     /// Execute one user prompt to completion (multi-turn agent loop until final response, max_turns, timeout, or cancel).
@@ -2020,6 +2237,11 @@ impl NativeSuperEngine {
             }
 
             let msg_id = format!("msg-{}-{}", self.session_key, cur_turn);
+            let stall_before = self.total_stall_retries;
+            let trunc_before = self.total_truncated_stream_retries;
+            let turn_effort = self
+                .resolve_effort_for_turn(force_low_reasoning, progress.escalate_reasoning)
+                .map(|e| e.as_str().to_string());
             let turn_res = match self
                 .call_llm_streaming(
                     &msg_id,
@@ -2096,7 +2318,59 @@ impl NativeSuperEngine {
                         * self.endpoint.cost_cache_write_per_m
                     + (turn_res.usage.output as f64 / 1_000_000.0)
                         * self.endpoint.cost_output_per_m;
+                let turn_kv_savings = (turn_res.usage.cache_read as f64 / 1_000_000.0)
+                    * (self.endpoint.cost_input_per_m - self.endpoint.cost_cache_read_per_m)
+                        .max(0.0);
                 self.total_cost_usd += turn_cost;
+                self.total_kv_savings_usd += turn_kv_savings;
+                let (e2e_tps, _gen_tps, active_decode_tps) = compute_eval_tps_metrics(
+                    turn_res.usage.output,
+                    turn_res.turn_ttft_ms.unwrap_or(0) + turn_res.turn_gen_ms,
+                    turn_res.turn_gen_ms,
+                    turn_res.turn_active_decode_ms,
+                );
+                let tpot_ms = if turn_res.usage.output > 1 && turn_res.turn_active_decode_ms > 0 {
+                    Some(
+                        ((turn_res.turn_active_decode_ms as f64
+                            / (turn_res.usage.output.saturating_sub(1) as f64))
+                            * 100.0)
+                            .round()
+                            / 100.0,
+                    )
+                } else {
+                    None
+                };
+                if self.turn_telemetry.len() >= 256 {
+                    self.turn_telemetry.remove(0);
+                }
+                self.turn_telemetry.push(TurnTelemetryRecord {
+                    turn: cur_turn,
+                    model_id: self.endpoint.model_id.clone(),
+                    wire_dialect: self.active_wire_dialect().to_string(),
+                    effort: turn_effort.clone(),
+                    ttft_ms: turn_res.turn_ttft_ms,
+                    tpot_ms,
+                    gen_duration_ms: turn_res.turn_gen_ms,
+                    active_decode_ms: turn_res.turn_active_decode_ms,
+                    active_decode_tps,
+                    e2e_tps,
+                    uncached_input_tokens: turn_res.usage.uncached_input,
+                    cache_read_tokens: turn_res.usage.cache_read,
+                    cache_write_tokens: turn_res.usage.cache_write,
+                    output_tokens: turn_res.usage.output,
+                    reasoning_tokens: turn_res.usage.reasoning.unwrap_or(0),
+                    cost_usd: turn_cost,
+                    kv_savings_usd: turn_kv_savings,
+                    http_retries: turn_res.http_retries,
+                    stall_retries: self.total_stall_retries.saturating_sub(stall_before),
+                    truncated_retries: self
+                        .total_truncated_stream_retries
+                        .saturating_sub(trunc_before),
+                    tool_calls: turn_res.tool_calls.len(),
+                    tool_errors: 0,
+                    prefix_stable: self.cache_guard.snapshot().prefix_stable,
+                    recorded_at_ms: Utc::now().timestamp_millis(),
+                });
             }
 
             if !turn_res.text.trim().is_empty() {
@@ -2724,6 +2998,23 @@ impl NativeSuperEngine {
 
                 self.trajectory
                     .record_tool_call(cur_turn, &tc.name, out.is_error, out.duration_ms);
+                if self.tool_waterfall.len() >= 512 {
+                    self.tool_waterfall.remove(0);
+                }
+                self.tool_waterfall.push(ToolCallWaterfallEntry {
+                    turn: cur_turn,
+                    tool_name: tc.name.clone(),
+                    duration_ms: out.duration_ms,
+                    is_error: out.is_error,
+                    output_bytes: tool_text.len(),
+                });
+                if out.is_error {
+                    if let Some(last_t) = self.turn_telemetry.last_mut() {
+                        if last_t.turn == cur_turn {
+                            last_t.tool_errors += 1;
+                        }
+                    }
+                }
 
                 if let Some(ref s) = sink {
                     s(HarnessStreamEvent::ToolEnd {
@@ -6523,6 +6814,90 @@ pub struct PromptRunSummary {
     pub interleaved_reasoning_turns: u32,
     pub cache_stats: HarnessCacheStats,
     pub error: Option<String>,
+}
+
+/// Single tool execution record for per-session tool-call waterfall forensics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallWaterfallEntry {
+    pub turn: u32,
+    pub tool_name: String,
+    pub duration_ms: u64,
+    pub is_error: bool,
+    pub output_bytes: usize,
+}
+
+/// Per-turn LLM streaming, KV-cache, cost, and retry telemetry record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnTelemetryRecord {
+    pub turn: u32,
+    pub model_id: String,
+    pub wire_dialect: String,
+    pub effort: Option<String>,
+    pub ttft_ms: Option<u64>,
+    pub tpot_ms: Option<f64>,
+    pub gen_duration_ms: u64,
+    pub active_decode_ms: u64,
+    pub active_decode_tps: f64,
+    pub e2e_tps: f64,
+    pub uncached_input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cost_usd: f64,
+    pub kv_savings_usd: f64,
+    pub http_retries: u32,
+    pub stall_retries: u32,
+    pub truncated_retries: u32,
+    pub tool_calls: usize,
+    pub tool_errors: usize,
+    pub prefix_stable: bool,
+    pub recorded_at_ms: i64,
+}
+
+/// Observe-only session cost, cache, context-fill, and waterfall snapshot (`token_budget = None`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTelemetrySnapshot {
+    pub session_key: String,
+    pub model_id: String,
+    pub wire_dialect: String,
+    pub effort: Option<String>,
+    pub token_budget: Option<u64>,
+    pub total_turns: u32,
+    pub total_tool_calls: u32,
+    pub total_tool_errors: u32,
+    pub total_http_retries: u32,
+    pub total_stall_retries: u32,
+    pub total_truncated_retries: u32,
+    pub total_hedge_wins: u32,
+    pub total_cost_usd: f64,
+    pub total_kv_savings_usd: f64,
+    pub context_tokens: u64,
+    pub context_window: u64,
+    pub context_fill_pct: f64,
+    pub compaction_eta_turns: Option<u32>,
+    pub cache_stats: HarnessCacheStats,
+    pub turns: Vec<TurnTelemetryRecord>,
+    pub tool_waterfall: Vec<ToolCallWaterfallEntry>,
+}
+
+/// Observe-only smart prompt preflight estimate (`token_budget` is always `None`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptPreflightEstimate {
+    pub estimated_prompt_tokens: u64,
+    pub projected_context_tokens: u64,
+    pub context_window: u64,
+    pub projected_context_fill_pct: f64,
+    pub will_trigger_compaction: bool,
+    pub wire_dialect: String,
+    pub effective_effort: Option<String>,
+    pub estimated_input_cost_usd: f64,
+    pub token_budget: Option<u64>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10579,5 +10954,64 @@ data: [DONE]\n\n";
             det.observe_turn_tree(new_hash, false),
             Some(crate::lakeview::OscillationAlert::ZeroMutationChurn { turns: 5 })
         ));
+    }
+
+    #[test]
+    fn steer17_preflight_telemetry_rewind_preview_and_privacy_export() {
+        let tmp = std::env::temp_dir().join(format!("omni_s17_eng_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let target = tmp.join("app.py");
+        std::fs::write(&target, "VALUE = 1\n").unwrap();
+
+        let mut eng = make_test_engine(&tmp, "http://127.0.0.1:1/v1".into());
+        eng.endpoint.model_id = "claude-sonnet-5-5".into();
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.endpoint.cost_input_per_m = 3.0;
+        eng.endpoint.cost_cache_read_per_m = 0.3;
+
+        // 1. Smart prompt preflight is strictly observe-only (`token_budget: None`)
+        let pre = eng.preflight_prompt("Explain architecture and fix bug in app.py");
+        assert_eq!(pre.token_budget, None);
+        assert_eq!(pre.wire_dialect, "anthropic-messages");
+        assert_eq!(pre.effective_effort.as_deref(), Some("max"));
+        assert!(pre.estimated_prompt_tokens > 0);
+
+        // 2. Dry-run rewind preview shows diff without mutating file on disk
+        eng.tool_runtime
+            .checkpoint_store
+            .lock()
+            .unwrap()
+            .record_pre_mutation(2, "app.py", &target);
+        std::fs::write(&target, "VALUE = 2\nEXTRA = True\n").unwrap();
+        assert_eq!(eng.available_rewind_turns(), vec![2]);
+
+        let preview = eng.preview_rewind_to_turn(1).unwrap();
+        assert_eq!(preview.target_turn, 1);
+        assert_eq!(preview.turns_affected, vec![2]);
+        assert_eq!(preview.files.len(), 1);
+        assert_eq!(preview.files[0].action, "restore");
+        assert!(preview.files[0].unified_diff.contains("VALUE = 1"));
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "VALUE = 2\nEXTRA = True\n",
+            "preview_rewind_to_turn must NEVER mutate disk"
+        );
+
+        // 3. Session telemetry snapshot & privacy-masked export
+        eng.messages.push(HarnessMessage::user(
+            "Contact dummy-user@example.com from 203.0.113.42 in C:\\Users\\alice\\repo",
+            1,
+        ));
+        let snap = eng.session_telemetry_snapshot();
+        assert_eq!(snap.token_budget, None);
+        assert_eq!(snap.model_id, "claude-sonnet-5-5");
+
+        let masked = eng.export_session_markdown(true);
+        assert!(!masked.contains("203.0.113.42"));
+        assert!(!masked.contains("dummy-user@example.com"));
+        assert!(masked.contains("[MASKED_IP]"));
+        assert!(masked.contains("[MASKED_EMAIL]"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

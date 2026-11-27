@@ -1274,6 +1274,8 @@ dependencies = [
  "mimalloc",
  "omnia-agent",
  "omnia-core",
+ "omnia-routing",
+ "omnia-workspace-ops",
  "ratatui",
  "serde",
  "serde_json",

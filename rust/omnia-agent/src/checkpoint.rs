@@ -9,13 +9,14 @@
 
 use crate::agent_store::AgentStore;
 use crate::cache_guard::blake3_hex;
-use crate::edit::FileReadTracker;
+use crate::edit::{format_compact_unified_diff, FileReadTracker};
 use crate::path_guard::ensure_within_workspace;
 use crate::sanitizer::atomic_write_bytes;
 use anyhow::{Context, Result};
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
+use imara_diff::{Algorithm, Diff, InternedInput};
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,29 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::OnceLock;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindFilePreview {
+    pub rel_path: String,
+    pub action: String,
+    pub current_exists: bool,
+    pub target_exists: bool,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+    pub unified_diff: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindPreview {
+    pub session_id: String,
+    pub target_turn: u32,
+    pub turns_affected: Vec<u32>,
+    pub files: Vec<RewindFilePreview>,
+    pub total_added_lines: usize,
+    pub total_removed_lines: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestPassCounts {
@@ -280,6 +304,102 @@ impl TurnCheckpointStore {
 
     pub fn checkpoint_count(&self) -> usize {
         self.turns.len()
+    }
+
+    /// Return all checkpointed turn indices in ascending order.
+    #[must_use]
+    pub fn available_turns(&self) -> Vec<u32> {
+        self.turns.keys().copied().collect()
+    }
+
+    /// Dry-run preview of `rollback_to_turn`: computes per-file unified diffs and line deltas
+    /// for every mutation in turns `> target_turn` WITHOUT mutating workspace files or checkpoints.
+    pub fn preview_rollback_to_turn(
+        &self,
+        target_turn: u32,
+        workspace_root: &Path,
+    ) -> Result<RewindPreview> {
+        let later_turns: Vec<u32> = self
+            .turns
+            .keys()
+            .copied()
+            .filter(|&t| t > target_turn)
+            .collect();
+        let mut restore_plan: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for &t in later_turns.iter().rev() {
+            if let Some(cp) = self.turns.get(&t) {
+                for (rel, pre_hash) in &cp.pre_files {
+                    restore_plan.insert(rel.clone(), pre_hash.clone());
+                }
+            }
+        }
+
+        let mut files = Vec::with_capacity(restore_plan.len());
+        let mut total_added_lines = 0usize;
+        let mut total_removed_lines = 0usize;
+
+        for (rel, pre_hash_opt) in restore_plan {
+            let abs = ensure_within_workspace(workspace_root, &rel)?;
+            let current_exists = abs.is_file();
+            let current_text = if current_exists {
+                fs::read(&abs)
+                    .map(|b| String::from_utf8_lossy(&b).replace("\r\n", "\n"))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            let (target_exists, target_text, action) = match pre_hash_opt {
+                Some(hex) => {
+                    let compressed = self
+                        .mem_blobs
+                        .get(&hex)
+                        .cloned()
+                        .or_else(|| {
+                            self.db
+                                .as_ref()
+                                .and_then(|d| d.get_checkpoint_blob(&hex).ok().flatten())
+                        })
+                        .with_context(|| format!("missing checkpoint blob {hex} for '{rel}'"))?;
+                    let raw = inflate_bytes(&compressed)?;
+                    let tgt = String::from_utf8_lossy(&raw).replace("\r\n", "\n");
+                    let act = if current_exists { "restore" } else { "recreate" };
+                    (true, tgt, act.to_string())
+                }
+                None => (false, String::new(), "delete".to_string()),
+            };
+
+            let input = InternedInput::new(current_text.as_str(), target_text.as_str());
+            let diff = Diff::compute(Algorithm::Histogram, &input);
+            let mut added_lines = 0usize;
+            let mut removed_lines = 0usize;
+            for hunk in diff.hunks() {
+                removed_lines += hunk.before.len();
+                added_lines += hunk.after.len();
+            }
+            total_added_lines += added_lines;
+            total_removed_lines += removed_lines;
+
+            let unified_diff = format_compact_unified_diff(&rel, &current_text, &target_text, 60);
+            files.push(RewindFilePreview {
+                rel_path: rel,
+                action,
+                current_exists,
+                target_exists,
+                added_lines,
+                removed_lines,
+                unified_diff,
+            });
+        }
+
+        Ok(RewindPreview {
+            session_id: self.session_id.clone(),
+            target_turn,
+            turns_affected: later_turns,
+            files,
+            total_added_lines,
+            total_removed_lines,
+        })
     }
 }
 
@@ -661,5 +781,41 @@ mod tests {
             parse_test_pass_counts("exit_code: 0\npassed arguments cleanly without flags\n"),
             None
         );
+    }
+
+    #[test]
+    fn preview_rollback_shows_diffs_without_mutating_files() {
+        let tmp = std::env::temp_dir().join(format!("omni_cp_prev_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let f_mod = tmp.join("calc.py");
+        let f_new = tmp.join("temp.py");
+        fs::write(&f_mod, "def add(a, b):\n    return a + b\n").unwrap();
+
+        let mut store = TurnCheckpointStore::new("sess-prev", None);
+        store.record_pre_mutation(2, "calc.py", &f_mod);
+        fs::write(&f_mod, "def add(a, b):\n    return a - b\n").unwrap();
+        store.record_pre_mutation(2, "temp.py", &f_new);
+        fs::write(&f_new, "TMP = 1\n").unwrap();
+
+        assert_eq!(store.available_turns(), vec![2]);
+        let prev = store.preview_rollback_to_turn(1, &tmp).unwrap();
+        assert_eq!(prev.target_turn, 1);
+        assert_eq!(prev.turns_affected, vec![2]);
+        assert_eq!(prev.files.len(), 2);
+        let mod_entry = prev.files.iter().find(|f| f.rel_path == "calc.py").unwrap();
+        assert_eq!(mod_entry.action, "restore");
+        assert!(mod_entry.unified_diff.contains("return a + b"));
+        assert!(mod_entry.added_lines >= 1 && mod_entry.removed_lines >= 1);
+        let new_entry = prev.files.iter().find(|f| f.rel_path == "temp.py").unwrap();
+        assert_eq!(new_entry.action, "delete");
+
+        // Verify zero disk mutations occurred
+        assert_eq!(
+            fs::read_to_string(&f_mod).unwrap(),
+            "def add(a, b):\n    return a - b\n"
+        );
+        assert!(f_new.exists());
+        assert_eq!(store.checkpoint_count(), 1);
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

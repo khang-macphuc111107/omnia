@@ -616,3 +616,341 @@ fn scan_token_chars(s: &str) -> usize {
 fn is_jwt_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')
 }
+
+/// Global Privacy Mask redactor for shareable exports, screenshots, and diagnostic snapshots.
+///
+/// Builds on [`SecretRedactor`] and additionally masks Public/LAN IPs, MAC addresses,
+/// Wi-Fi SSIDs, email addresses, local user profile paths, and credential hints.
+pub struct PrivacyMask;
+
+const MASKED_IP: &str = "[MASKED_IP]";
+const MASKED_IPV6: &str = "[MASKED_IPV6]";
+const MASKED_MAC: &str = "[MASKED_MAC]";
+const MASKED_SSID: &str = "[MASKED_SSID]";
+const MASKED_EMAIL: &str = "[MASKED_EMAIL]";
+const MASKED_USER: &str = "[MASKED_USER]";
+const MASKED_HINT: &str = "[MASKED_HINT]";
+const MASKED_LOCATION: &str = "[MASKED_LOCATION]";
+
+impl PrivacyMask {
+    /// Applies secret redaction followed by PII/network privacy masking on arbitrary text.
+    #[must_use]
+    pub fn mask_text(input: &str) -> String {
+        if input.is_empty() {
+            return String::new();
+        }
+        let s0 = SecretRedactor::redact(input);
+        let s1 = mask_user_profile_paths(&s0);
+        let s2 = mask_emails(&s1);
+        let s3 = mask_mac_addresses(&s2);
+        let s4 = mask_ipv6_addresses(&s3);
+        mask_ipv4_addresses(&s4)
+    }
+
+    /// Recursively applies secret redaction and field-aware privacy masking on JSON payloads.
+    #[must_use]
+    pub fn mask_json(val: &Value) -> Value {
+        let redacted = SecretRedactor::redact_json(val);
+        mask_json_value(&redacted, None)
+    }
+}
+
+fn privacy_mask_for_key(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "ssid" | "wifi_ssid" | "wifissid" | "bssid" => Some(MASKED_SSID),
+        "mac" | "mac_address" | "macaddress" => Some(MASKED_MAC),
+        "masked_hint" | "maskedhint" => Some(MASKED_HINT),
+        "email" | "user_email" | "useremail" => Some(MASKED_EMAIL),
+        "city" | "region" | "postal" | "loc" => Some(MASKED_LOCATION),
+        "username" | "user_name" | "hostname" | "host_name" | "computer_name" => Some(MASKED_USER),
+        "public_ipv4" | "publicipv4" | "dns_egress_ip" | "dnsegressip" | "client_ip"
+        | "clientip" | "local_ip" | "localip" | "ip" | "gateway" | "gateways" | "ipv4"
+        | "ipv4_cidrs" | "ipv4cidrs" => Some(MASKED_IP),
+        "public_ipv6" | "publicipv6" | "ipv6" | "ipv6_cidrs" | "ipv6cidrs" => Some(MASKED_IPV6),
+        _ => None,
+    }
+}
+
+fn mask_json_value(val: &Value, key_mask: Option<&'static str>) -> Value {
+    match val {
+        Value::Null | Value::Bool(_) | Value::Number(_) => val.clone(),
+        Value::String(s) => {
+            if s.is_empty() {
+                return Value::String(String::new());
+            }
+            if let Some(mask) = key_mask {
+                if s == "127.0.0.1" || s == "::1" || s == "localhost" {
+                    return Value::String(s.clone());
+                }
+                return Value::String(mask.to_string());
+            }
+            Value::String(PrivacyMask::mask_text(s))
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| mask_json_value(item, key_mask))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let mut out = Map::with_capacity(map.len());
+            for (k, v) in map {
+                let child_mask = privacy_mask_for_key(k);
+                out.insert(k.clone(), mask_json_value(v, child_mask));
+            }
+            Value::Object(out)
+        }
+    }
+}
+
+fn mask_user_profile_paths(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Windows: `<Drive>:\Users\<user>` or `<Drive>:/Users/<user>`
+        if i + 9 < bytes.len()
+            && bytes[i].is_ascii_alphabetic()
+            && bytes[i + 1] == b':'
+            && matches!(bytes[i + 2], b'\\' | b'/')
+            && starts_with_ignore_ascii_case(&input[i + 3..], "users")
+            && matches!(bytes.get(i + 8), Some(b'\\' | b'/'))
+        {
+            let sep = bytes[i + 2] as char;
+            let user_start = i + 9;
+            let user_len = input[user_start..]
+                .bytes()
+                .take_while(|&b| !matches!(b, b'\\' | b'/' | b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b',' | b')' | b']' | b'}'))
+                .count();
+            if user_len > 0 && &input[user_start..user_start + user_len] != MASKED_USER {
+                out.push(bytes[i] as char);
+                out.push(':');
+                out.push(sep);
+                out.push_str("Users");
+                out.push(bytes[i + 8] as char);
+                out.push_str(MASKED_USER);
+                i = user_start + user_len;
+                continue;
+            }
+        }
+        // POSIX: `/home/<user>` or `/Users/<user>`
+        for prefix in ["/home/", "/Users/"] {
+            if input[i..].starts_with(prefix)
+                && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+            {
+                let user_start = i + prefix.len();
+                let user_len = input[user_start..]
+                    .bytes()
+                    .take_while(|&b| !matches!(b, b'/' | b'\\' | b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b',' | b')' | b']' | b'}'))
+                    .count();
+                if user_len > 0 && &input[user_start..user_start + user_len] != MASKED_USER {
+                    out.push_str(prefix);
+                    out.push_str(MASKED_USER);
+                    i = user_start + user_len;
+                    continue;
+                }
+            }
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let Some(c) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+fn mask_emails(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'.' | b'_' | b'%' | b'+' | b'-') {
+            let start = i;
+            let mut at_pos = None;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'@' && at_pos.is_none() {
+                    at_pos = Some(i);
+                    i += 1;
+                } else if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-') {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            let slice = &input[start..i];
+            if let Some(at) = at_pos {
+                let local = &input[start..at];
+                let domain = &input[at + 1..i];
+                let domain_trimmed = domain.trim_end_matches('.');
+                if !local.is_empty()
+                    && domain_trimmed.contains('.')
+                    && domain_trimmed
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|tld| tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic()))
+                {
+                    let trailing_dots = domain.len() - domain_trimmed.len();
+                    out.push_str(MASKED_EMAIL);
+                    for _ in 0..trailing_dots {
+                        out.push('.');
+                    }
+                    continue;
+                }
+            }
+            out.push_str(slice);
+            continue;
+        }
+        let Some(c) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+fn mask_mac_addresses(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 17 <= bytes.len()
+            && (i == 0 || !bytes[i - 1].is_ascii_hexdigit())
+            && (i + 17 == bytes.len() || !bytes[i + 17].is_ascii_hexdigit())
+        {
+            let sep = bytes[i + 2];
+            if matches!(sep, b':' | b'-')
+                && bytes[i + 5] == sep
+                && bytes[i + 8] == sep
+                && bytes[i + 11] == sep
+                && bytes[i + 14] == sep
+                && [0, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16]
+                    .iter()
+                    .all(|&off| bytes[i + off].is_ascii_hexdigit())
+            {
+                out.push_str(MASKED_MAC);
+                i += 17;
+                continue;
+            }
+        }
+        let Some(c) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+fn mask_ipv6_addresses(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_hexdigit() || bytes[i] == b':' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || bytes[i] == b':') {
+                i += 1;
+            }
+            let cand = &input[start..i];
+            let colon_count = cand.bytes().filter(|&b| b == b':').count();
+            if colon_count >= 2
+                && cand != "::1"
+                && cand != "::"
+                && cand.parse::<std::net::Ipv6Addr>().is_ok()
+            {
+                out.push_str(MASKED_IPV6);
+                continue;
+            }
+            out.push_str(cand);
+            continue;
+        }
+        let Some(c) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+fn mask_ipv4_addresses(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit()
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.'))
+        {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            let cand = &input[start..i];
+            let after_ok = i == bytes.len() || !(bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.');
+            if after_ok {
+                if let Ok(ip) = cand.parse::<std::net::Ipv4Addr>() {
+                    if !ip.is_loopback() && !ip.is_unspecified() {
+                        out.push_str(MASKED_IP);
+                        continue;
+                    }
+                }
+            }
+            out.push_str(cand);
+            continue;
+        }
+        let Some(c) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+#[cfg(test)]
+mod privacy_mask_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn privacy_mask_redacts_network_and_user_pii_while_preserving_loopback() {
+        let sample = r"User C:\Users\dummy_dev email dummy@example.test ip 198.51.100.42 ipv6 2001:db8::42 mac 02:00:5e:10:20:30 local 127.0.0.1";
+        let masked = PrivacyMask::mask_text(sample);
+        assert!(!masked.contains("dummy_dev"));
+        assert!(!masked.contains("dummy@example.test"));
+        assert!(!masked.contains("198.51.100.42"));
+        assert!(!masked.contains("2001:db8::42"));
+        assert!(!masked.contains("02:00:5e:10:20:30"));
+        assert!(masked.contains("127.0.0.1"));
+        assert!(masked.contains("[MASKED_USER]"));
+        assert!(masked.contains("[MASKED_EMAIL]"));
+        assert!(masked.contains("[MASKED_IP]"));
+        assert!(masked.contains("[MASKED_IPV6]"));
+        assert!(masked.contains("[MASKED_MAC]"));
+    }
+
+    #[test]
+    fn privacy_mask_json_masks_sensitive_keys_and_preserves_metrics() {
+        let payload = json!({
+            "publicIpv4": "198.51.100.99",
+            "wifiSsid": "ExampleLabWifi",
+            "macAddress": "02:00:5e:aa:bb:cc",
+            "maskedHint": "sk-****1234",
+            "ttftMs": 412.5,
+            "bind": "127.0.0.1"
+        });
+        let masked = PrivacyMask::mask_json(&payload);
+        assert_eq!(masked["publicIpv4"], "[MASKED_IP]");
+        assert_eq!(masked["wifiSsid"], "[MASKED_SSID]");
+        assert_eq!(masked["macAddress"], "[MASKED_MAC]");
+        assert_eq!(masked["maskedHint"], "[MASKED_HINT]");
+        assert_eq!(masked["ttftMs"], 412.5);
+        assert_eq!(masked["bind"], "127.0.0.1");
+    }
+}

@@ -1581,6 +1581,9 @@ async fn dispatch_request(app: &App, request: &Request) -> Result<Dispatch, Resp
         ("POST", "/api/agent/abort") => handle_runtime_agent_abort(app, request).await,
         ("GET", "/api/router/state") => handle_runtime_router_state(app),
         ("POST", "/api/router/decide") => handle_runtime_router_decide(app, request),
+        ("POST", "/api/router/trip") => handle_runtime_router_breaker(app, request, true),
+        ("POST", "/api/router/reset") => handle_runtime_router_breaker(app, request, false),
+        ("GET", "/api/telemetry") => handle_runtime_telemetry(app),
         ("POST", "/chat/completions")
         | ("POST", "/v1/chat/completions")
         | ("POST", "/api/chat/completions")
@@ -1755,6 +1758,69 @@ fn handle_runtime_router_decide(app: &App, request: &Request) -> Result<Dispatch
         ))),
         Err(e) => Err(json_error(503, "route_decision_failed", &e.to_string())),
     }
+}
+
+fn handle_runtime_router_breaker(
+    app: &App,
+    request: &Request,
+    trip: bool,
+) -> Result<Dispatch, ResponseSpec> {
+    let body = parse_json_object(request)?;
+    let candidate_id = body
+        .get("candidateId")
+        .or_else(|| body.get("candidate_id"))
+        .or_else(|| body.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| json_error(400, "missing_candidate_id", "candidateId is required"))?;
+    let cooldown_ms = body
+        .get("cooldownMs")
+        .and_then(Value::as_i64)
+        .unwrap_or(60_000)
+        .clamp(1_000, 3_600_000);
+    let res = if trip {
+        app.dynamic_router
+            .trip_circuit(candidate_id, now_epoch_ms(), Some(cooldown_ms))
+    } else {
+        app.dynamic_router.reset_circuit(candidate_id)
+    };
+    match res {
+        Ok(()) => Ok(Dispatch::Response(ResponseSpec::json(
+            200,
+            json!({
+                "ok": true,
+                "candidateId": candidate_id,
+                "circuit": if trip { "Open" } else { "Closed" },
+            }),
+        ))),
+        Err(e) => Err(json_error(404, "unknown_candidate", &e.to_string())),
+    }
+}
+
+fn handle_runtime_telemetry(app: &App) -> Result<Dispatch, ResponseSpec> {
+    let now = now_epoch_ms();
+    let snaps = app.dynamic_router.snapshots(now).unwrap_or_default();
+    let open_circuits = snaps
+        .iter()
+        .filter(|s| !matches!(s.state.circuit, CircuitState::Closed))
+        .count();
+    let sessions = app.harness.list_running();
+    Ok(Dispatch::Response(ResponseSpec::json(
+        200,
+        json!({
+            "ok": true,
+            "service": "omnia-runtime",
+            "observedAtMs": now,
+            "requestSeq": RUNTIME_REQUEST_SEQ.load(Ordering::Relaxed),
+            "providerConfigured": app.config.provider_configured(),
+            "activeAgentSessions": sessions.len(),
+            "routerCandidates": snaps.len(),
+            "openCircuits": open_circuits,
+            "skillsReady": app.config.skills.is_ready(),
+            "tokenBudget": Value::Null,
+        }),
+    )))
 }
 
 async fn wait_for_client_disconnect(reader: &mut OwnedReadHalf) -> io::Result<()> {
@@ -3267,5 +3333,17 @@ mod tests {
         let rv = json_body(&router_resp);
         assert_eq!(rv["ok"], true);
         assert!(rv["tokenBudget"].is_null());
+
+        let tel = dispatch_request(&app, &request("GET", "/api/telemetry", b""))
+            .await
+            .expect("/api/telemetry dispatches");
+        let Dispatch::Response(tel_resp) = tel else {
+            panic!("expected buffered telemetry response");
+        };
+        assert_eq!(tel_resp.status, 200);
+        let tv = json_body(&tel_resp);
+        assert_eq!(tv["ok"], true);
+        assert_eq!(tv["service"], "omnia-runtime");
+        assert!(tv["tokenBudget"].is_null());
     }
 }

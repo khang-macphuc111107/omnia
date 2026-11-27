@@ -25,6 +25,7 @@
 pub mod egress;
 pub mod fs_ops;
 pub mod hardware;
+pub mod net_diag;
 pub mod path_guard;
 pub mod process_ops;
 pub mod range_downloader;
@@ -42,9 +43,10 @@ pub use fs_ops::{
     SnippetResult, WriteOptions, WriteReceipt,
 };
 pub use hardware::{
-    classify_hardware_tier, detect_hardware_profile, validate_local_aux_model_vram,
-    HardwareProfile, HardwareTier, LocalAuxVramCheck, DEFAULT_DWM_UI_HEADROOM_MB,
-    DEFAULT_MAX_AUX_MODEL_VRAM_MB,
+    classify_hardware_tier, collect_host_system_snapshot, detect_hardware_profile,
+    validate_local_aux_model_vram, DiskDriveInfo, HardwareProfile, HardwareTier,
+    HostSystemSnapshot, ListeningPortInfo, LocalAuxVramCheck, ProcessMemoryInfo,
+    DEFAULT_DWM_UI_HEADROOM_MB, DEFAULT_MAX_AUX_MODEL_VRAM_MB,
 };
 pub use path_guard::{
     is_reparse_point, is_reparse_point_metadata, relative_posix_path, resolve_contained_path,

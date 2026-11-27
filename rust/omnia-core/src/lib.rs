@@ -31,7 +31,7 @@ pub use prompt_norm::{
     ProtectedSpanExtraction, ProtectedSpanKind, TranslationInvariantReport,
     UnaccentedVietnameseDetection, VietnameseRestorationResult, DATA_PLANE_SCHEMA_MODE,
 };
-pub use redactor::SecretRedactor;
+pub use redactor::{PrivacyMask, SecretRedactor};
 pub use utf16::{
     lsp_utf16_to_utf8_line_col, utf16_code_unit_len, utf16_nul_to_utf8, utf16_to_utf8,
     utf16_to_utf8_lossy, utf16_unit_to_utf8_byte_offset, utf8_byte_offset_to_utf16_unit,

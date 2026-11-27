@@ -402,6 +402,398 @@ fn detect_vram_bytes() -> u64 {
     0
 }
 
+/// Disk capacity & utilization record for a local drive (e.g. `C:\`, `D:\`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskDriveInfo {
+    pub drive: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub used_bytes: u64,
+    pub used_pct: f64,
+}
+
+/// Resident memory telemetry for a running `omnia*` process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessMemoryInfo {
+    pub pid: u32,
+    pub name: String,
+    pub rss_bytes: u64,
+    pub peak_rss_bytes: u64,
+}
+
+/// Active local listening TCP port discovered via Win32 IP Helper (`GetExtendedTcpTable`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListeningPortInfo {
+    pub protocol: String,
+    pub bind_addr: String,
+    pub port: u16,
+    pub pid: u32,
+    pub process_name: Option<String>,
+    pub category: String,
+}
+
+/// Complete host telemetry snapshot (CPU/RAM/VRAM, Disks, `omnia-*` RSS, listening dev ports).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostSystemSnapshot {
+    pub hardware: HardwareProfile,
+    pub cpu_load_pct: Option<f64>,
+    pub disks: Vec<DiskDriveInfo>,
+    pub omnia_processes: Vec<ProcessMemoryInfo>,
+    pub total_omnia_rss_bytes: u64,
+    pub listening_ports: Vec<ListeningPortInfo>,
+}
+
+/// Collects a real-time host system snapshot (zero subprocesses, dynamic `iphlpapi.dll` load).
+#[must_use]
+pub fn collect_host_system_snapshot() -> HostSystemSnapshot {
+    let hardware = detect_hardware_profile();
+    let cpu_load_pct = detect_cpu_load_pct();
+    let disks = detect_local_disks(&["C:\\", "D:\\"]);
+    let (omnia_processes, pid_names) = enumerate_processes_and_omnia_rss();
+    let total_omnia_rss_bytes = omnia_processes.iter().map(|p| p.rss_bytes).sum();
+    let listening_ports = enumerate_listening_tcp_ports(&pid_names);
+    HostSystemSnapshot {
+        hardware,
+        cpu_load_pct,
+        disks,
+        omnia_processes,
+        total_omnia_rss_bytes,
+        listening_ports,
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn detect_cpu_load_pct() -> Option<f64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetSystemTimes(
+            idle: *mut FILETIME,
+            kernel: *mut FILETIME,
+            user: *mut FILETIME,
+        ) -> i32;
+    }
+
+    fn ft_u64(ft: FILETIME) -> u64 {
+        (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime)
+    }
+
+    let sample = || -> Option<(u64, u64, u64)> {
+        let mut idle = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut kernel = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut user = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        // SAFETY: Output pointers refer to valid stack `FILETIME` structs.
+        if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } != 0 {
+            Some((ft_u64(idle), ft_u64(kernel), ft_u64(user)))
+        } else {
+            None
+        }
+    };
+
+    let (i0, k0, u0) = sample()?;
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let (i1, k1, u1) = sample()?;
+    let idle_d = i1.saturating_sub(i0);
+    let kernel_d = k1.saturating_sub(k0);
+    let user_d = u1.saturating_sub(u0);
+    let total = kernel_d.saturating_add(user_d);
+    if total == 0 {
+        return Some(0.0);
+    }
+    let busy = total.saturating_sub(idle_d);
+    let pct = ((busy as f64) / (total as f64)) * 100.0;
+    Some(((pct.clamp(0.0, 100.0)) * 10.0).round() / 10.0)
+}
+
+#[cfg(not(windows))]
+fn detect_cpu_load_pct() -> Option<f64> {
+    None
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn detect_local_disks(drives: &[&str]) -> Vec<DiskDriveInfo> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory_name: *const u16,
+            free_bytes_available: *mut u64,
+            total_bytes: *mut u64,
+            total_free_bytes: *mut u64,
+        ) -> i32;
+    }
+
+    let mut out = Vec::new();
+    for drive in drives {
+        let wide: Vec<u16> = drive.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut avail = 0u64;
+        let mut total = 0u64;
+        let mut total_free = 0u64;
+        // SAFETY: `wide` is NUL-terminated UTF-16 and output pointers are valid stack locals.
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut total_free)
+        };
+        if ok != 0 && total > 0 {
+            let used = total.saturating_sub(avail);
+            let used_pct = (((used as f64) / (total as f64)) * 1000.0).round() / 10.0;
+            out.push(DiskDriveInfo {
+                drive: (*drive).to_string(),
+                total_bytes: total,
+                free_bytes: avail,
+                used_bytes: used,
+                used_pct,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn detect_local_disks(_drives: &[&str]) -> Vec<DiskDriveInfo> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn enumerate_processes_and_omnia_rss(
+) -> (Vec<ProcessMemoryInfo>, std::collections::HashMap<u32, String>) {
+    use core::mem::{size_of, zeroed};
+    use std::collections::HashMap;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let mut omnia = Vec::new();
+    let mut names = HashMap::new();
+
+    // SAFETY: Standard Win32 Toolhelp process enumeration.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snap == INVALID_HANDLE_VALUE || snap.is_null() {
+        return (omnia, names);
+    }
+
+    let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+
+    if unsafe { Process32FirstW(snap, &mut entry) } != 0 {
+        loop {
+            let nul = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..nul]);
+            let pid = entry.th32ProcessID;
+            let lower = name.to_ascii_lowercase();
+            names.insert(pid, name.clone());
+
+            if lower.starts_with("omnia") {
+                let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+                if !h.is_null() {
+                    let mut pmc: PROCESS_MEMORY_COUNTERS = unsafe { zeroed() };
+                    pmc.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+                    if unsafe { GetProcessMemoryInfo(h, &mut pmc, pmc.cb) } != 0 {
+                        omnia.push(ProcessMemoryInfo {
+                            pid,
+                            name,
+                            rss_bytes: pmc.WorkingSetSize as u64,
+                            peak_rss_bytes: pmc.PeakWorkingSetSize as u64,
+                        });
+                    }
+                    unsafe {
+                        let _ = CloseHandle(h);
+                    }
+                }
+            }
+
+            if unsafe { Process32NextW(snap, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+    unsafe {
+        let _ = CloseHandle(snap);
+    }
+    omnia.sort_by_key(|a| std::cmp::Reverse(a.rss_bytes));
+    (omnia, names)
+}
+
+#[cfg(not(windows))]
+fn enumerate_processes_and_omnia_rss(
+) -> (Vec<ProcessMemoryInfo>, std::collections::HashMap<u32, String>) {
+    (Vec::new(), std::collections::HashMap::new())
+}
+
+fn classify_listening_port(port: u16, proc_name: Option<&str>) -> &'static str {
+    let lower = proc_name.unwrap_or("").to_ascii_lowercase();
+    if lower.starts_with("omnia") || matches!(port, 8787 | 8790) {
+        "omnia"
+    } else if matches!(port, 7890 | 7897 | 8317 | 10808 | 10809 | 2080 | 8888 | 1080) {
+        "proxy"
+    } else if matches!(port, 3000 | 3001 | 4173 | 5173 | 5174 | 8000 | 8080 | 9222 | 9229)
+        || lower.contains("node")
+        || lower.contains("bun")
+        || lower.contains("python")
+        || lower.contains("vite")
+        || lower.contains("cargo")
+    {
+        "dev"
+    } else {
+        "system"
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn enumerate_listening_tcp_ports(
+    pid_names: &std::collections::HashMap<u32, String>,
+) -> Vec<ListeningPortInfo> {
+    use core::ffi::c_void;
+    use std::collections::BTreeSet;
+    use std::mem::{size_of, transmute};
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+    #[repr(C)]
+    struct MibTcpRowOwnerPid {
+        dw_state: u32,
+        dw_local_addr: u32,
+        dw_local_port: u32,
+        dw_remote_addr: u32,
+        dw_remote_port: u32,
+        dw_owning_pid: u32,
+    }
+
+    #[repr(C)]
+    struct MibTcp6RowOwnerPid {
+        uc_local_addr: [u8; 16],
+        dw_local_scope_id: u32,
+        dw_local_port: u32,
+        uc_remote_addr: [u8; 16],
+        dw_remote_scope_id: u32,
+        dw_remote_port: u32,
+        dw_state: u32,
+        dw_owning_pid: u32,
+    }
+
+    let wide: Vec<u16> = "iphlpapi.dll".encode_utf16().chain(std::iter::once(0)).collect();
+    let hmod = unsafe { LoadLibraryW(wide.as_ptr()) };
+    if hmod.is_null() {
+        return Vec::new();
+    }
+    let sym = unsafe { GetProcAddress(hmod, c"GetExtendedTcpTable".as_ptr().cast()) };
+    let Some(sym_fn) = sym else {
+        unsafe {
+            let _ = FreeLibrary(hmod);
+        }
+        return Vec::new();
+    };
+    type GetExtendedTcpTableFn =
+        unsafe extern "system" fn(*mut c_void, *mut u32, i32, u32, u32, u32) -> u32;
+    let get_table: GetExtendedTcpTableFn = unsafe { transmute(sym_fn) };
+
+    const AF_INET: u32 = 2;
+    const AF_INET6: u32 = 23;
+    const TCP_TABLE_OWNER_PID_LISTENER: u32 = 3;
+
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    // IPv4 listeners
+    let mut size = 0u32;
+    unsafe {
+        let _ = get_table(std::ptr::null_mut(), &mut size, 1, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0);
+    }
+    if (4..=4 * 1024 * 1024).contains(&size) {
+        let mut buf = vec![0u8; size as usize];
+        if unsafe { get_table(buf.as_mut_ptr().cast(), &mut size, 1, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) } == 0 {
+            let count = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            let max_rows = (buf.len().saturating_sub(4)) / size_of::<MibTcpRowOwnerPid>();
+            let base = unsafe { buf.as_ptr().add(4).cast::<MibTcpRowOwnerPid>() };
+            for i in 0..count.min(max_rows) {
+                let row = unsafe { &*base.add(i) };
+                let ip = Ipv4Addr::from(row.dw_local_addr.to_ne_bytes());
+                let port = u16::from_be((row.dw_local_port & 0xFFFF) as u16);
+                let pname = pid_names.get(&row.dw_owning_pid).cloned();
+                let cat = classify_listening_port(port, pname.as_deref());
+                // Focus on loopback, omnia, proxy, and dev ports so output stays high-signal
+                if (ip.is_loopback() || cat != "system" || port >= 1024)
+                    && seen.insert((port, row.dw_owning_pid, ip.to_string()))
+                {
+                    out.push(ListeningPortInfo {
+                        protocol: "tcp4".to_string(),
+                        bind_addr: ip.to_string(),
+                        port,
+                        pid: row.dw_owning_pid,
+                        process_name: pname,
+                        category: cat.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    // IPv6 listeners
+    let mut size6 = 0u32;
+    unsafe {
+        let _ = get_table(std::ptr::null_mut(), &mut size6, 1, AF_INET6, TCP_TABLE_OWNER_PID_LISTENER, 0);
+    }
+    if (4..=4 * 1024 * 1024).contains(&size6) {
+        let mut buf = vec![0u8; size6 as usize];
+        if unsafe { get_table(buf.as_mut_ptr().cast(), &mut size6, 1, AF_INET6, TCP_TABLE_OWNER_PID_LISTENER, 0) } == 0 {
+            let count = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            let max_rows = (buf.len().saturating_sub(4)) / size_of::<MibTcp6RowOwnerPid>();
+            let base = unsafe { buf.as_ptr().add(4).cast::<MibTcp6RowOwnerPid>() };
+            for i in 0..count.min(max_rows) {
+                let row = unsafe { &*base.add(i) };
+                let ip = Ipv6Addr::from(row.uc_local_addr);
+                let port = u16::from_be((row.dw_local_port & 0xFFFF) as u16);
+                let pname = pid_names.get(&row.dw_owning_pid).cloned();
+                let cat = classify_listening_port(port, pname.as_deref());
+                if (ip.is_loopback() || cat != "system")
+                    && seen.insert((port, row.dw_owning_pid, ip.to_string()))
+                {
+                    out.push(ListeningPortInfo {
+                        protocol: "tcp6".to_string(),
+                        bind_addr: ip.to_string(),
+                        port,
+                        pid: row.dw_owning_pid,
+                        process_name: pname,
+                        category: cat.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    unsafe {
+        let _ = FreeLibrary(hmod);
+    }
+    out.sort_by(|a, b| a.port.cmp(&b.port).then_with(|| a.protocol.cmp(&b.protocol)));
+    out.truncate(64);
+    out
+}
+
+#[cfg(not(windows))]
+fn enumerate_listening_tcp_ports(
+    _pid_names: &std::collections::HashMap<u32, String>,
+) -> Vec<ListeningPortInfo> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

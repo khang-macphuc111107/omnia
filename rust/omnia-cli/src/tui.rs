@@ -20,6 +20,15 @@ use omnia_agent::{
     NativeSuperEngine, PermissionsEngine, PluginRegistry, WireApiMode, WorkspaceGraphIndex,
 };
 use omnia_core::credentials::{CredentialStore, MaskedCredential};
+use omnia_core::PrivacyMask;
+use omnia_routing::DynamicProviderRouter;
+use omnia_workspace_ops::hardware::{collect_host_system_snapshot, HostSystemSnapshot};
+use omnia_workspace_ops::net_diag::{
+    default_upstream_targets, inspect_dns_and_benchmark, inspect_network_identity,
+    inspect_proxy_tls_and_endpoints, run_speedtest_streaming, DnsBenchOptions, DnsIntelReport,
+    NetDiagOptions, NetworkIdentityReport, ProxyTlsReport, SpeedtestConfig,
+    SpeedtestProgressEvent, SpeedtestResult,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -41,6 +50,7 @@ const DEFAULT_BASE_URL: &str = "https://htmustc.id.vn/v1";
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct CliSavedConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -48,6 +58,115 @@ pub struct CliSavedConfig {
     pub wire_api: Option<String>,
     pub approval_mode: Option<String>,
     pub thinking: Option<String>,
+    pub theme: Option<String>,
+    pub privacy_mask: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TuiTheme {
+    #[default]
+    Obsidian,
+    Titanium,
+    Alabaster,
+    Blueprint,
+}
+
+impl TuiTheme {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "obsidian" | "dark" => Some(Self::Obsidian),
+            "titanium" | "slate" => Some(Self::Titanium),
+            "alabaster" | "light" => Some(Self::Alabaster),
+            "blueprint" | "midnight" => Some(Self::Blueprint),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Obsidian => "obsidian",
+            Self::Titanium => "titanium",
+            Self::Alabaster => "alabaster",
+            Self::Blueprint => "blueprint",
+        }
+    }
+
+    const fn accent(self) -> Color {
+        match self {
+            Self::Obsidian => Color::Cyan,
+            Self::Titanium => Color::LightCyan,
+            Self::Alabaster => Color::Blue,
+            Self::Blueprint => Color::LightBlue,
+        }
+    }
+
+    const fn border(self) -> Color {
+        match self {
+            Self::Obsidian => Color::DarkGray,
+            Self::Titanium => Color::Gray,
+            Self::Alabaster => Color::DarkGray,
+            Self::Blueprint => Color::Blue,
+        }
+    }
+
+    const fn hud_bg(self) -> Color {
+        match self {
+            Self::Obsidian => Color::Gray,
+            Self::Titanium => Color::DarkGray,
+            Self::Alabaster => Color::White,
+            Self::Blueprint => Color::Blue,
+        }
+    }
+
+    const fn hud_fg(self) -> Color {
+        match self {
+            Self::Obsidian => Color::Black,
+            Self::Titanium => Color::White,
+            Self::Alabaster => Color::Black,
+            Self::Blueprint => Color::White,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum DrawerTab {
+    #[default]
+    Closed,
+    Status,
+    Network,
+    Router,
+    Cache,
+    Swarm,
+    Memory,
+    Rewind,
+}
+
+impl DrawerTab {
+    const fn next(self) -> Self {
+        match self {
+            Self::Closed => Self::Status,
+            Self::Status => Self::Network,
+            Self::Network => Self::Router,
+            Self::Router => Self::Cache,
+            Self::Cache => Self::Swarm,
+            Self::Swarm => Self::Memory,
+            Self::Memory => Self::Rewind,
+            Self::Rewind => Self::Closed,
+        }
+    }
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Closed => "",
+            Self::Status => "Status & Host",
+            Self::Network => "Network & Speedtest",
+            Self::Router => "Router Lab",
+            Self::Cache => "KV Prefix & Cache",
+            Self::Swarm => "Swarm & Graph",
+            Self::Memory => "Memory & Playbook",
+            Self::Rewind => "Rewind Preview",
+        }
+    }
 }
 
 pub struct TuiLaunchOptions {
@@ -86,9 +205,14 @@ const SLASH_DEFS: &[SlashDef] = &[
         desc: "Wire dialect: auto | chat | responses | messages | gemini",
     },
     SlashDef {
+        cmd: "/effort",
+        usage: "/effort <level>",
+        desc: "Reasoning effort: auto | none | low | medium | high | xhigh | max",
+    },
+    SlashDef {
         cmd: "/thinking",
         usage: "/thinking <level>",
-        desc: "Reasoning level: off | minimal | low | medium | high | max",
+        desc: "Alias of /effort (default: max)",
     },
     SlashDef {
         cmd: "/mode",
@@ -122,13 +246,63 @@ const SLASH_DEFS: &[SlashDef] = &[
     },
     SlashDef {
         cmd: "/rewind",
-        usage: "/rewind <turn>",
-        desc: "Atomic BLAKE3 rewind to turn N",
+        usage: "/rewind [preview|apply] <n>",
+        desc: "Inspect per-file diff preview or apply BLAKE3 rewind",
     },
     SlashDef {
         cmd: "/status",
         usage: "/status",
-        desc: "Print live KV-cache, TPS, cost, and RSS metrics",
+        desc: "Telemetry waterfall, cost/KV savings & host CPU/RAM/RSS",
+    },
+    SlashDef {
+        cmd: "/net",
+        usage: "/net [dns|proxy|offline]",
+        desc: "Inspect IP/NICs/VPN/NAT, DNS benchmark & proxy/TLS waterfall",
+    },
+    SlashDef {
+        cmd: "/speedtest",
+        usage: "/speedtest [quick|standard|cancel]",
+        desc: "Run live cancellable speedtest & bufferbloat A+..F probe",
+    },
+    SlashDef {
+        cmd: "/router",
+        usage: "/router [trip|reset <id>|receipt]",
+        desc: "Inspect SQLite router waterfall, runway, timeline & breakers",
+    },
+    SlashDef {
+        cmd: "/cache",
+        usage: "/cache",
+        desc: "Inspect Prefix-0 BLAKE3 stability, hit % & KV dollar savings",
+    },
+    SlashDef {
+        cmd: "/swarm",
+        usage: "/swarm",
+        desc: "Inspect WorkspaceGraphIndex CST/Merkle & peer-mesh state",
+    },
+    SlashDef {
+        cmd: "/memory",
+        usage: "/memory [query]",
+        desc: "Recall workspace memory graph & playbook insights",
+    },
+    SlashDef {
+        cmd: "/compact",
+        usage: "/compact",
+        desc: "Fold stale tool observations keeping Prefix-0 hot",
+    },
+    SlashDef {
+        cmd: "/export",
+        usage: "/export [path]",
+        desc: "Export redacted/privacy-masked Markdown session report",
+    },
+    SlashDef {
+        cmd: "/privacy",
+        usage: "/privacy [on|off]",
+        desc: "Toggle global Privacy Mask (IPs/MACs/SSIDs/paths/emails)",
+    },
+    SlashDef {
+        cmd: "/theme",
+        usage: "/theme <obsidian|titanium|alabaster|blueprint>",
+        desc: "Switch WCAG cockpit color palette",
     },
     SlashDef {
         cmd: "/clear",
@@ -228,8 +402,17 @@ enum UiAsyncEvent {
         tps: f64,
         final_text: String,
         cost_usd: f64,
+        kv_savings_usd: f64,
         err: Option<String>,
     },
+    NetworkSnapshot {
+        identity: Box<NetworkIdentityReport>,
+        dns: Box<DnsIntelReport>,
+        proxy_tls: Box<ProxyTlsReport>,
+        host: Box<HostSystemSnapshot>,
+    },
+    SpeedtestProgress(SpeedtestProgressEvent),
+    SpeedtestFinished(Box<SpeedtestResult>),
 }
 
 #[derive(Debug, Clone)]
@@ -287,15 +470,36 @@ struct TuiAppState {
     kv_hit_pct: f64,
     tokens_per_sec: f64,
     cost_usd: f64,
+    kv_savings_usd: f64,
     context_pct: f64,
     total_turns: u32,
     total_tools: u32,
     tool_errors: u32,
     cached_rss_bytes: u64,
     last_rss_refresh: Instant,
+
+    theme: TuiTheme,
+    privacy_mask: bool,
+    drawer_tab: DrawerTab,
+    drawer_lines: Vec<String>,
+    speedtest_running: bool,
+    speedtest_cancel: Arc<AtomicBool>,
+    last_speedtest_progress: Option<String>,
+    last_net_summary: Vec<String>,
+    last_speedtest_summary: Vec<String>,
+    last_router_summary: Vec<String>,
+    last_rewind_summary: Vec<String>,
 }
 
 impl TuiAppState {
+    fn mask_if_enabled(&self, raw: &str) -> String {
+        if self.privacy_mask {
+            PrivacyMask::mask_text(raw)
+        } else {
+            raw.to_string()
+        }
+    }
+
     fn refresh_rss_if_stale(&mut self, now: Instant) -> bool {
         if now.duration_since(self.last_rss_refresh) >= Duration::from_secs(2) {
             self.cached_rss_bytes = process_tree_rss_bytes(std::process::id());
@@ -504,63 +708,88 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
     } else {
         Span::styled("NO KEY (/key)", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
     };
-    let think_label = state.thinking.as_deref().unwrap_or("default");
-    let header_line = Line::from(vec![
-        Span::styled(" OMNIA ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    let think_label = state.thinking.as_deref().unwrap_or("max");
+    let ws_display = state.mask_if_enabled(&state.workspace.display().to_string());
+    let accent = state.theme.accent();
+    let border_col = state.theme.border();
+    let mut header_spans = vec![
+        Span::styled(" OMNIA ", Style::default().fg(Color::Black).bg(accent).add_modifier(Modifier::BOLD)),
         Span::raw(format!(" v{} ", env!("CARGO_PKG_VERSION"))),
-        Span::styled("| ", Style::default().fg(Color::DarkGray)),
+        Span::styled("| ", Style::default().fg(border_col)),
         Span::styled(state.model.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::raw(format!(" [{think_label}] ")),
-        Span::styled("| ", Style::default().fg(Color::DarkGray)),
+        Span::styled("| ", Style::default().fg(border_col)),
         Span::styled(format!("{:?}", state.wire_api), Style::default().fg(Color::LightBlue)),
         Span::raw(format!(" · {} ", format_approval(state.approval_mode))),
-        Span::styled("| ", Style::default().fg(Color::DarkGray)),
+        Span::styled("| ", Style::default().fg(border_col)),
         key_badge,
-        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        Span::raw(format!("ws: {}", state.workspace.display())),
-    ]);
+    ];
+    if state.privacy_mask {
+        header_spans.push(Span::styled(" | ", Style::default().fg(border_col)));
+        header_spans.push(Span::styled(
+            "MASK ON",
+            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+    header_spans.push(Span::styled(" | ", Style::default().fg(border_col)));
+    header_spans.push(Span::raw(format!("ws: {ws_display}")));
+    let header_line = Line::from(header_spans);
     let header = Paragraph::new(header_line).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(" Pure-Rust Super-Harness TUI "),
+            .border_style(Style::default().fg(accent))
+            .title(format!(" Pure-Rust Super-Harness TUI [{}] ", state.theme.as_str())),
     );
     frame.render_widget(header, chunks[0]);
 
-    // 2. Main Transcript Viewport
+    // 2. Main Transcript Viewport + Optional Cockpit Drawer (`F4`)
+    let show_drawer = state.drawer_tab != DrawerTab::Closed && chunks[1].width >= 96;
+    let (transcript_area, drawer_area_opt) = if show_drawer {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(chunks[1]);
+        (split[0], Some(split[1]))
+    } else {
+        (chunks[1], None)
+    };
+
     let visible_lines: Vec<Line> = state
         .transcript
         .iter()
         .filter(|entry| state.show_thinking || !matches!(entry.kind, TranscriptEntryKind::Thinking))
-        .map(|entry| match entry.kind {
-            TranscriptEntryKind::User => Line::from(vec![
-                Span::styled("› ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(entry.text.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            ]),
-            TranscriptEntryKind::Assistant => Line::from(Span::styled(entry.text.clone(), Style::default().fg(Color::Gray))),
-            TranscriptEntryKind::Thinking => Line::from(Span::styled(
-                format!("  [thinking] {}", entry.text),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-            )),
-            TranscriptEntryKind::Tool { is_error } => Line::from(Span::styled(
-                entry.text.clone(),
-                Style::default().fg(if is_error { Color::Red } else { Color::Magenta }),
-            )),
-            TranscriptEntryKind::DiffLine { added, removed } => Line::from(Span::styled(
-                entry.text.clone(),
-                Style::default().fg(if added {
-                    Color::Green
-                } else if removed {
-                    Color::Red
-                } else {
-                    Color::Gray
-                }),
-            )),
-            TranscriptEntryKind::System => Line::from(Span::styled(entry.text.clone(), Style::default().fg(Color::Yellow))),
+        .map(|entry| {
+            let txt = state.mask_if_enabled(&entry.text);
+            match entry.kind {
+                TranscriptEntryKind::User => Line::from(vec![
+                    Span::styled("› ", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+                    Span::styled(txt, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                ]),
+                TranscriptEntryKind::Assistant => Line::from(Span::styled(txt, Style::default().fg(Color::Gray))),
+                TranscriptEntryKind::Thinking => Line::from(Span::styled(
+                    format!("  [thinking] {txt}"),
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                )),
+                TranscriptEntryKind::Tool { is_error } => Line::from(Span::styled(
+                    txt,
+                    Style::default().fg(if is_error { Color::Red } else { Color::Magenta }),
+                )),
+                TranscriptEntryKind::DiffLine { added, removed } => Line::from(Span::styled(
+                    txt,
+                    Style::default().fg(if added {
+                        Color::Green
+                    } else if removed {
+                        Color::Red
+                    } else {
+                        Color::Gray
+                    }),
+                )),
+                TranscriptEntryKind::System => Line::from(Span::styled(txt, Style::default().fg(Color::Yellow))),
+            }
         })
         .collect();
 
-    let inner_height = chunks[1].height.saturating_sub(2) as usize;
+    let inner_height = transcript_area.height.saturating_sub(2) as usize;
     let total_rows = visible_lines.len();
     let max_scroll = total_rows.saturating_sub(inner_height) as u16;
     if state.auto_scroll || state.scroll_offset > max_scroll {
@@ -570,33 +799,62 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
     let body_title = if state.running {
         " Transcript [STREAMING · Esc to Abort] "
     } else if state.show_thinking {
-        " Transcript [F2: Hide Thinking] "
+        " Transcript [F2: Hide Thinking · F4: Drawer · F5: Mask] "
     } else {
-        " Transcript [F2: Show Thinking · F3: Creds] "
+        " Transcript [F2: Thinking · F3: Creds · F4: Drawer · F5: Mask] "
     };
 
     let transcript_widget = Paragraph::new(visible_lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(Style::default().fg(border_col))
                 .title(body_title),
         )
         .wrap(Wrap { trim: false })
         .scroll((state.scroll_offset, 0));
-    frame.render_widget(transcript_widget, chunks[1]);
+    frame.render_widget(transcript_widget, transcript_area);
 
-    // 3. Band Composer
+    if let Some(d_area) = drawer_area_opt {
+        let d_lines: Vec<Line> = build_drawer_lines(state)
+            .into_iter()
+            .map(|l| Line::from(Span::styled(state.mask_if_enabled(&l), Style::default().fg(Color::Gray))))
+            .collect();
+        let drawer_widget = Paragraph::new(d_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(accent))
+                    .title(format!(" Cockpit: {} [F4 next · Esc close] ", state.drawer_tab.title())),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(drawer_widget, d_area);
+    }
+
+    // 3. Band Composer with Observe-Only Smart Prompt Preflight
     let composer_title = if state.running {
-        " Composer (Streaming active — Enter disabled until Esc/finish) "
+        " Composer (Streaming active — Enter disabled until Esc/finish) ".to_string()
+    } else if !state.input.trim().is_empty() && !state.input.trim_start().starts_with('/') {
+        if let Some(ref eng) = state.engine {
+            let pre = eng.preflight_prompt(&state.input);
+            format!(
+                " Prompt [preflight ~{}t · ctx {:.1}% · {} · {} · budget:NULL] ",
+                pre.estimated_prompt_tokens,
+                pre.projected_context_fill_pct,
+                pre.effective_effort.as_deref().unwrap_or("none"),
+                pre.wire_dialect
+            )
+        } else {
+            " Prompt (Enter send · Alt+Enter newline · / commands · PgUp/PgDn scroll) ".to_string()
+        }
     } else {
-        " Prompt (Enter send · Alt+Enter newline · / commands · PgUp/PgDn scroll) "
+        " Prompt (Enter send · Alt+Enter newline · / commands · PgUp/PgDn scroll) ".to_string()
     };
     let composer_widget = Paragraph::new(state.input.as_str())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(if state.running { Color::Yellow } else { Color::Blue }))
+                .border_style(Style::default().fg(if state.running { Color::Yellow } else { accent }))
                 .title(composer_title),
         )
         .wrap(Wrap { trim: false });
@@ -613,11 +871,17 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
         frame.set_cursor_position((cx, cy));
     }
 
-    // 4. Bottom HUD Telemetry Strip (KV-Cache / TPS / Cost / RSS / Token Budget NULL)
+    // 4. Bottom HUD Telemetry Strip (KV-Cache / TPS / Cost+Savings / Speedtest / RSS / Token Budget NULL)
+    let st_badge = state
+        .last_speedtest_progress
+        .as_deref()
+        .map(|s| format!(" | {s}"))
+        .unwrap_or_default();
+    let mask_badge = if state.privacy_mask { " | MASK" } else { "" };
     let hud = Line::from(vec![
         Span::styled(
             format!(
-                " turns:{} tools:{}(err:{}) | KV:{:.1}% | {:.1} tok/s | ctx:{:.0}% | ${:.4} | RSS:{:.1}MiB | budget:NULL ",
+                " turns:{} tools:{}(err:{}) | KV:{:.1}% | {:.1} tok/s | ctx:{:.0}% | ${:.4} (saved ${:.4}) | RSS:{:.1}MiB | budget:NULL{}{} ",
                 state.total_turns,
                 state.total_tools,
                 state.tool_errors,
@@ -625,9 +889,12 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
                 state.tokens_per_sec,
                 state.context_pct,
                 state.cost_usd,
-                rss_mb
+                state.kv_savings_usd,
+                rss_mb,
+                st_badge,
+                mask_badge
             ),
-            Style::default().fg(Color::Black).bg(Color::Gray),
+            Style::default().fg(state.theme.hud_fg()).bg(state.theme.hud_bg()),
         ),
     ]);
     frame.render_widget(Paragraph::new(hud), chunks[3]);
@@ -675,7 +942,7 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
             Line::from(format!("  OMNIA_API_KEY   : {}", mask_secret_hint(env::var("OMNIA_API_KEY").ok().as_deref()))),
             Line::from(format!("  OPENAI_API_KEY  : {}", mask_secret_hint(env::var("OPENAI_API_KEY").ok().as_deref()))),
             Line::from(format!("  cli_config.json : {}", mask_secret_hint(state.saved.api_key.as_deref()))),
-            Line::from(format!("  Active Base URL : {}", state.base_url)),
+            Line::from(format!("  Active Base URL : {}", state.mask_if_enabled(&state.base_url))),
             Line::from(""),
             Line::from(Span::styled("  Stored omnia:* Targets:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
         ];
@@ -683,7 +950,8 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
             lines.push(Line::from("    (none stored yet — run `/key <secret>` to persist in Win32 CredMan)"));
         } else {
             for c in state.cred_entries.iter().take(6) {
-                lines.push(Line::from(format!("    {} [{}] · {} · {}", c.target, c.kind, c.label, c.masked_hint)));
+                let hint = if state.privacy_mask { "[MASKED_HINT]" } else { c.masked_hint.as_str() };
+                lines.push(Line::from(format!("    {} [{}] · {} · {}", c.target, c.kind, c.label, hint)));
             }
         }
         lines.push(Line::from(""));
@@ -749,6 +1017,153 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(v[1])[1]
 }
 
+fn build_drawer_lines(state: &TuiAppState) -> Vec<String> {
+    match state.drawer_tab {
+        DrawerTab::Closed => Vec::new(),
+        DrawerTab::Status => {
+            let mut out = Vec::new();
+            if let Some(ref eng) = state.engine {
+                let snap = eng.session_telemetry_snapshot();
+                out.push(format!("Session : {}", snap.session_key));
+                out.push(format!(
+                    "Model   : {} ({} | {})",
+                    snap.model_id,
+                    snap.wire_dialect,
+                    snap.effort.as_deref().unwrap_or("none")
+                ));
+                out.push(format!(
+                    "Turns   : {} | Tools: {} (err {})",
+                    snap.total_turns, snap.total_tool_calls, snap.total_tool_errors
+                ));
+                out.push(format!(
+                    "Context : {} / {} ({:.1}%) ETA: {}",
+                    snap.context_tokens,
+                    snap.context_window,
+                    snap.context_fill_pct,
+                    snap.compaction_eta_turns
+                        .map_or_else(|| "-".into(), |t| format!("~{t} turns"))
+                ));
+                out.push(format!(
+                    "Cost    : ${:.6} | KV Saved: ${:.6}",
+                    snap.total_cost_usd, snap.total_kv_savings_usd
+                ));
+                out.push(format!(
+                    "Retries : http={} stall={} trunc={} hedge={}",
+                    snap.total_http_retries,
+                    snap.total_stall_retries,
+                    snap.total_truncated_retries,
+                    snap.total_hedge_wins
+                ));
+                if !snap.turns.is_empty() {
+                    out.push("Recent Turns:".into());
+                    for t in snap.turns.iter().rev().take(6) {
+                        out.push(format!(
+                            "  T{} ttft={}ms {:.1}t/s out={} kv={} ${:.5}",
+                            t.turn,
+                            t.ttft_ms.unwrap_or(0),
+                            t.active_decode_tps,
+                            t.output_tokens,
+                            t.cache_read_tokens,
+                            t.cost_usd
+                        ));
+                    }
+                }
+                if !snap.tool_waterfall.is_empty() {
+                    out.push("Recent Tools:".into());
+                    for w in snap.tool_waterfall.iter().rev().take(6) {
+                        out.push(format!(
+                            "  T{} {} {}ms ({}B){}",
+                            w.turn,
+                            w.tool_name,
+                            w.duration_ms,
+                            w.output_bytes,
+                            if w.is_error { " [ERR]" } else { "" }
+                        ));
+                    }
+                }
+            }
+            if !state.drawer_lines.is_empty() {
+                out.push("---".into());
+                out.extend(state.drawer_lines.iter().cloned());
+            }
+            out
+        }
+        DrawerTab::Network => {
+            let mut out = Vec::new();
+            if state.last_net_summary.is_empty() && state.last_speedtest_summary.is_empty() {
+                out.push("Run /net or /speedtest to populate live diagnostics.".into());
+            } else {
+                out.extend(state.last_net_summary.iter().cloned());
+                if !state.last_speedtest_summary.is_empty() {
+                    out.push("--- Speedtest & Bufferbloat ---".into());
+                    out.extend(state.last_speedtest_summary.iter().cloned());
+                }
+            }
+            out
+        }
+        DrawerTab::Router => {
+            if state.last_router_summary.is_empty() {
+                vec!["Run /router to inspect SQLite router state, waterfalls & breakers.".into()]
+            } else {
+                state.last_router_summary.clone()
+            }
+        }
+        DrawerTab::Cache => {
+            if let Some(ref eng) = state.engine {
+                let cs = eng.cache_guard.snapshot();
+                vec![
+                    format!("Prefix Stable : {}", cs.prefix_stable),
+                    format!("Mutations     : {}", cs.prefix_mutations),
+                    format!("Sys BLAKE3    : {}", &cs.system_prompt_hash[..cs.system_prompt_hash.len().min(16)]),
+                    format!("Tools BLAKE3  : {}", &cs.tool_schema_hash[..cs.tool_schema_hash.len().min(16)]),
+                    format!("Hit Rate      : {:.1}%", cs.cache_hit_pct),
+                    format!("Cache Read    : {} tok", cs.cache_read_tokens),
+                    format!("Cache Write   : {} tok", cs.cache_write_tokens),
+                    format!("Uncached In   : {} tok", cs.uncached_input_tokens),
+                    format!("Output / Reas : {} / {} tok", cs.output_tokens, cs.reasoning_tokens),
+                    format!("KV Saved      : ${:.6}", eng.total_kv_savings_usd),
+                    format!("Lakeview Folds: {} ({} chars)", cs.lakeview_compressions, cs.lakeview_chars_saved),
+                ]
+            } else {
+                vec!["Engine busy streaming...".into()]
+            }
+        }
+        DrawerTab::Swarm => {
+            if let Some(ref eng) = state.engine {
+                let (files, root_hash) = {
+                    let g = eng.tool_runtime.graph_index.lock().unwrap();
+                    (g.merkle().files().len(), g.merkle().root_hash().to_string())
+                };
+                let plugins = eng.plugins.list_info();
+                vec![
+                    format!("Workspace     : {}", eng.workspace_root.display()),
+                    format!("Indexed Files : {files}"),
+                    format!("Merkle Root   : {}", &root_hash[..root_hash.len().min(16)]),
+                    format!("Active Plugins: {}", plugins.len()),
+                    "Peer Mesh     : 2-way A<->B duplex (disjoint_paths enforced)".into(),
+                    "Token Budget  : NULL (uncapped ADDITIVE_INTAKE)".into(),
+                ]
+            } else {
+                vec!["Engine busy streaming...".into()]
+            }
+        }
+        DrawerTab::Memory => {
+            if state.drawer_lines.is_empty() {
+                vec!["Run /memory [query] to recall workspace memories & playbooks.".into()]
+            } else {
+                state.drawer_lines.clone()
+            }
+        }
+        DrawerTab::Rewind => {
+            if state.last_rewind_summary.is_empty() {
+                vec!["Run /rewind or /rewind preview <turn> to inspect diffs before rollback.".into()]
+            } else {
+                state.last_rewind_summary.clone()
+            }
+        }
+    }
+}
+
 fn handle_slash_command(
     raw: &str,
     state: &mut TuiAppState,
@@ -761,8 +1176,14 @@ fn handle_slash_command(
     match cmd {
         "/exit" | "/quit" => return Ok(true),
         "/help" => {
-            state.push_line(TranscriptEntryKind::System, "Commands: /model, /wire, /thinking, /mode, /cd, /key, /base-url, /creds, /rewind, /status, /clear, /exit");
-            state.push_line(TranscriptEntryKind::System, "Keys: F2 toggle thinking | F3 credential manager | PgUp/PgDn scroll | Esc abort stream");
+            state.push_line(
+                TranscriptEntryKind::System,
+                "Commands: /model, /wire, /effort, /mode, /cd, /key, /base-url, /creds, /status, /net, /speedtest, /router, /cache, /swarm, /memory, /rewind, /compact, /export, /privacy, /theme, /clear, /exit",
+            );
+            state.push_line(
+                TranscriptEntryKind::System,
+                "Keys: F2 thinking | F3 creds | F4 cockpit drawer | F5 privacy mask | PgUp/PgDn scroll | Esc abort/close",
+            );
         }
         "/creds" => {
             state.cred_entries = CredentialStore::list_masked().unwrap_or_default();
@@ -912,33 +1333,348 @@ fn handle_slash_command(
             }
         }
         "/rewind" => {
-            if let Ok(turn) = arg.parse::<u32>() {
+            let tokens: Vec<&str> = arg.split_whitespace().collect();
+            if tokens.is_empty() {
+                if let Some(ref eng) = state.engine {
+                    let turns = eng.available_rewind_turns();
+                    let msg = if turns.is_empty() {
+                        "No turn checkpoints recorded yet.".to_string()
+                    } else {
+                        format!(
+                            "Available checkpoint turns: {:?}. Use `/rewind preview <n>` or `/rewind apply <n>`.",
+                            turns
+                        )
+                    };
+                    state.last_rewind_summary = vec![msg.clone()];
+                    state.drawer_tab = DrawerTab::Rewind;
+                    state.push_line(TranscriptEntryKind::System, msg);
+                }
+            } else if (tokens[0].eq_ignore_ascii_case("apply")
+                || tokens.iter().any(|t| *t == "--yes" || *t == "-y"))
+                && tokens.iter().find_map(|t| t.parse::<u32>().ok()).is_some()
+            {
+                let turn = tokens.iter().find_map(|t| t.parse::<u32>().ok()).unwrap();
                 if let Some(ref mut eng) = state.engine {
                     match eng.rewind_to_turn(turn) {
-                        Ok(files) => state.push_line(TranscriptEntryKind::System, format!("Rewound to turn {turn} ({} file(s) restored)", files.len())),
+                        Ok(files) => {
+                            let summary = format!(
+                                "Rewound atomically to turn {turn} ({} file(s) restored: {})",
+                                files.len(),
+                                files.join(", ")
+                            );
+                            state.last_rewind_summary = vec![summary.clone()];
+                            state.drawer_tab = DrawerTab::Rewind;
+                            state.push_line(TranscriptEntryKind::System, summary);
+                        }
                         Err(e) => state.push_line(TranscriptEntryKind::System, format!("Rewind failed: {e:#}")),
                     }
                 }
+            } else if let Some(turn) = tokens.iter().find_map(|t| t.parse::<u32>().ok()) {
+                if let Some(ref eng) = state.engine {
+                    match eng.preview_rewind_to_turn(turn) {
+                        Ok(prev) => {
+                            let mut lines = vec![format!(
+                                "Rewind Preview -> Turn {} ({} file(s), +{} / -{} lines; run `/rewind apply {}` to confirm):",
+                                prev.target_turn,
+                                prev.files.len(),
+                                prev.total_added_lines,
+                                prev.total_removed_lines,
+                                prev.target_turn
+                            )];
+                            for f in &prev.files {
+                                lines.push(format!(
+                                    "  [{}] {} (+{} / -{})",
+                                    f.action, f.rel_path, f.added_lines, f.removed_lines
+                                ));
+                                for dl in f.unified_diff.lines().take(12) {
+                                    lines.push(format!("    {dl}"));
+                                }
+                            }
+                            state.last_rewind_summary = lines.clone();
+                            state.drawer_tab = DrawerTab::Rewind;
+                            for l in lines.iter().take(18) {
+                                state.push_line(TranscriptEntryKind::System, l.clone());
+                            }
+                        }
+                        Err(e) => state.push_line(TranscriptEntryKind::System, format!("Rewind preview failed: {e:#}")),
+                    }
+                }
             } else {
-                state.push_line(TranscriptEntryKind::System, "Usage: /rewind <turn_number>");
+                state.push_line(TranscriptEntryKind::System, "Usage: /rewind [preview|apply] <turn_number>");
             }
         }
         "/status" => {
+            state.drawer_tab = DrawerTab::Status;
+            let host = collect_host_system_snapshot();
+            let ram_tot = host.hardware.total_ram_bytes as f64 / 1_073_741_824.0;
+            let ram_avail = host.hardware.available_ram_bytes as f64 / 1_073_741_824.0;
+            let host_line = format!(
+                "Host: CPU {:.1}% | RAM {:.1}/{:.1} GiB free | VRAM {} MiB | Ports {}",
+                host.cpu_load_pct.unwrap_or(0.0),
+                ram_avail,
+                ram_tot,
+                host.hardware.total_vram_mb,
+                host.listening_ports.len()
+            );
+            state.drawer_lines = vec![host_line.clone()];
             if let Some(ref eng) = state.engine {
-                let cs = eng.cache_guard.snapshot();
+                let snap = eng.session_telemetry_snapshot();
                 state.push_line(
                     TranscriptEntryKind::System,
                     format!(
-                        "turns={} tool_calls={} err={} kv={:.1}% in={} cache_read={} out={}",
-                        eng.total_turns,
-                        eng.total_tool_calls,
-                        eng.total_tool_errors,
-                        cs.cache_hit_pct,
-                        cs.uncached_input_tokens,
-                        cs.cache_read_tokens,
-                        cs.output_tokens
+                        "turns={} tools={}(err:{}) | KV:{:.1}% | ctx:{:.1}% | cost:${:.5} (saved ${:.5}) | retries:{} | budget:NULL",
+                        snap.total_turns,
+                        snap.total_tool_calls,
+                        snap.total_tool_errors,
+                        snap.cache_stats.cache_hit_pct,
+                        snap.context_fill_pct,
+                        snap.total_cost_usd,
+                        snap.total_kv_savings_usd,
+                        snap.total_http_retries
                     ),
                 );
+            }
+            state.push_line(TranscriptEntryKind::System, host_line);
+        }
+        "/net" => {
+            state.drawer_tab = DrawerTab::Network;
+            let offline = arg.contains("offline");
+            let run_dns = !offline && (arg.is_empty() || arg.contains("dns"));
+            let run_proxy = !offline && (arg.is_empty() || arg.contains("proxy"));
+            state.last_net_summary = vec!["Probing network identity, DNS, and proxy/TLS...".into()];
+            state.push_line(TranscriptEntryKind::System, "Running native Rust network diagnostics...");
+            let tx_net = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let identity = inspect_network_identity(&NetDiagOptions {
+                    probe_public_ip: !offline,
+                    timeout_ms: 2_500,
+                    force_refresh: true,
+                });
+                let dns = inspect_dns_and_benchmark(&DnsBenchOptions {
+                    run_benchmark: run_dns,
+                    public_ipv4_hint: identity.public_ipv4.clone(),
+                    ..DnsBenchOptions::default()
+                });
+                let targets = if run_proxy {
+                    default_upstream_targets()
+                } else {
+                    Vec::new()
+                };
+                let proxy_tls = inspect_proxy_tls_and_endpoints(&targets, run_proxy);
+                let host = collect_host_system_snapshot();
+                let _ = tx_net.send(UiAsyncEvent::NetworkSnapshot {
+                    identity: Box::new(identity),
+                    dns: Box::new(dns),
+                    proxy_tls: Box::new(proxy_tls),
+                    host: Box::new(host),
+                });
+            });
+        }
+        "/speedtest" => {
+            if arg.eq_ignore_ascii_case("cancel") || arg.eq_ignore_ascii_case("stop") {
+                state.speedtest_cancel.store(true, Ordering::SeqCst);
+                state.push_line(TranscriptEntryKind::System, "Cancelling active speedtest...");
+            } else if state.speedtest_running {
+                state.push_line(TranscriptEntryKind::System, "Speedtest already running. Run `/speedtest cancel` to stop.");
+            } else {
+                let profile = if arg.eq_ignore_ascii_case("standard") {
+                    "standard"
+                } else {
+                    "quick"
+                };
+                state.speedtest_running = true;
+                state.speedtest_cancel.store(false, Ordering::SeqCst);
+                state.drawer_tab = DrawerTab::Network;
+                state.last_speedtest_progress = Some("ST:init".into());
+                state.last_speedtest_summary = vec![format!("Running {profile} speedtest & bufferbloat probe...")];
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!("Starting on-demand {profile} speedtest (run `/speedtest cancel` to abort)..."),
+                );
+                let tx_st = tx.clone();
+                let cancel = Arc::clone(&state.speedtest_cancel);
+                let cfg = SpeedtestConfig::for_profile(profile);
+                tokio::task::spawn_blocking(move || {
+                    let run_id = format!("tui-st-{}", uuid_like_id());
+                    let tx_prog = tx_st.clone();
+                    let res = run_speedtest_streaming(&run_id, &cfg, cancel, move |ev| {
+                        let _ = tx_prog.send(UiAsyncEvent::SpeedtestProgress(ev));
+                    });
+                    let _ = tx_st.send(UiAsyncEvent::SpeedtestFinished(Box::new(res)));
+                });
+            }
+        }
+        "/router" => {
+            state.drawer_tab = DrawerTab::Router;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let db_path = default_omnia_data_dir().join("omnia_router.db");
+            match DynamicProviderRouter::open_sqlite(&db_path, now_ms) {
+                Ok(router) => {
+                    let sub: Vec<&str> = arg.split_whitespace().collect();
+                    if sub.len() >= 2 && sub[0].eq_ignore_ascii_case("trip") {
+                        match router.trip_circuit(sub[1], now_ms, Some(60_000)) {
+                            Ok(()) => state.push_line(TranscriptEntryKind::System, format!("Tripped circuit `{}` (persisted to SQLite).", sub[1])),
+                            Err(e) => state.push_line(TranscriptEntryKind::System, format!("Trip failed: {e}")),
+                        }
+                    } else if sub.len() >= 2 && sub[0].eq_ignore_ascii_case("reset") {
+                        match router.reset_circuit(sub[1]) {
+                            Ok(()) => state.push_line(TranscriptEntryKind::System, format!("Reset circuit `{}` (persisted to SQLite).", sub[1])),
+                            Err(e) => state.push_line(TranscriptEntryKind::System, format!("Reset failed: {e}")),
+                        }
+                    } else if sub.first().is_some_and(|s| s.eq_ignore_ascii_case("receipt")) {
+                        if let Ok(Some(rec)) = router.latest_decision_receipt() {
+                            state.push_line(TranscriptEntryKind::System, serde_json::to_string_pretty(&rec).unwrap_or_default());
+                        } else {
+                            state.push_line(TranscriptEntryKind::System, "No decision receipts in current router instance yet.");
+                        }
+                    }
+                    let snaps = router.snapshots(now_ms).unwrap_or_default();
+                    let runways = router.candidate_runways(now_ms).unwrap_or_default();
+                    let timeline = router.failover_timeline(5).unwrap_or_default();
+                    let mut lines = vec![format!("Router SQLite: {} ({} candidates)", db_path.display(), snaps.len())];
+                    for s in snaps.iter().take(8) {
+                        let rw = runways.get(&s.candidate.candidate_id);
+                        let rw_str = rw.map_or_else(
+                            || "quota:Unknown".into(),
+                            |r| format!(
+                                "quota:{} status:{} runway:{}",
+                                r.quota_kind,
+                                r.status,
+                                r.estimated_runway_minutes.map_or_else(|| "-".into(), |m| format!("{m:.1}m"))
+                            ),
+                        );
+                        lines.push(format!(
+                            "  {} [{}] calls:{} p95:{:.0}ms {}",
+                            s.candidate.candidate_id,
+                            s.state.circuit.kind_str(),
+                            s.state.total_calls,
+                            s.state.latency_percentile(95).unwrap_or(0.0),
+                            rw_str
+                        ));
+                    }
+                    if !timeline.is_empty() {
+                        lines.push("Failover Timeline:".into());
+                        for ev in timeline {
+                            lines.push(format!(
+                                "  {} {} -> {} ({})",
+                                ev.kind,
+                                ev.from_candidate_id.as_deref().unwrap_or("-"),
+                                ev.to_candidate_id.as_deref().unwrap_or("-"),
+                                ev.reason
+                            ));
+                        }
+                    }
+                    state.last_router_summary = lines.clone();
+                    for l in lines.iter().take(10) {
+                        state.push_line(TranscriptEntryKind::System, l.clone());
+                    }
+                }
+                Err(e) => state.push_line(TranscriptEntryKind::System, format!("Router DB unavailable: {e}")),
+            }
+        }
+        "/cache" => {
+            state.drawer_tab = DrawerTab::Cache;
+            for l in build_drawer_lines(state) {
+                state.push_line(TranscriptEntryKind::System, l);
+            }
+        }
+        "/swarm" => {
+            state.drawer_tab = DrawerTab::Swarm;
+            for l in build_drawer_lines(state) {
+                state.push_line(TranscriptEntryKind::System, l);
+            }
+        }
+        "/memory" => {
+            state.drawer_tab = DrawerTab::Memory;
+            let mut lines = Vec::new();
+            if let Some(ref eng) = state.engine {
+                if let Some(ref mem) = eng.memory_engine {
+                    let q = if arg.is_empty() { "workspace architecture" } else { arg };
+                    if let Some(recalled) = mem.recall_tail_for_prompt(&eng.workspace_root, q, 1_200) {
+                        lines.push(format!("Memory Recall ({q}):"));
+                        for ln in recalled.lines().take(14) {
+                            lines.push(format!("  {ln}"));
+                        }
+                    } else {
+                        lines.push(format!("No memory matches for `{q}` yet."));
+                    }
+                } else {
+                    lines.push("MemoryEngine inactive (no omnia_memory.db present yet).".into());
+                }
+            }
+            state.drawer_lines = lines.clone();
+            for l in lines {
+                state.push_line(TranscriptEntryKind::System, l);
+            }
+        }
+        "/compact" => {
+            if let Some(ref mut eng) = state.engine {
+                let rep = eng.compact_conversation_now();
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!(
+                        "Compacted {} stale tool observation(s), saved {} chars (Prefix-0 untouched).",
+                        rep.compressed_count, rep.chars_saved
+                    ),
+                );
+            }
+        }
+        "/export" => {
+            if let Some(ref eng) = state.engine {
+                let md = eng.export_session_markdown(state.privacy_mask);
+                let out_path = if arg.is_empty() {
+                    default_omnia_data_dir()
+                        .join("exports")
+                        .join(format!("{}.md", eng.session_key))
+                } else {
+                    PathBuf::from(arg)
+                };
+                if let Some(parent) = out_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                match fs::write(&out_path, md) {
+                    Ok(()) => state.push_line(
+                        TranscriptEntryKind::System,
+                        format!(
+                            "Exported session report (privacy_mask={}) -> {}",
+                            state.privacy_mask,
+                            out_path.display()
+                        ),
+                    ),
+                    Err(e) => state.push_line(TranscriptEntryKind::System, format!("Export failed: {e}")),
+                }
+            }
+        }
+        "/privacy" => {
+            let next = match arg.to_ascii_lowercase().as_str() {
+                "on" | "1" | "true" => true,
+                "off" | "0" | "false" => false,
+                _ => !state.privacy_mask,
+            };
+            state.privacy_mask = next;
+            state.saved.privacy_mask = Some(next);
+            let _ = save_config(&state.saved);
+            state.push_line(
+                TranscriptEntryKind::System,
+                format!("Global Privacy Mask -> {}", if next { "ON" } else { "OFF" }),
+            );
+        }
+        "/theme" => {
+            if arg.is_empty() {
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!("Theme: {} (options: obsidian | titanium | alabaster | blueprint)", state.theme.as_str()),
+                );
+            } else if let Some(t) = TuiTheme::parse(arg) {
+                state.theme = t;
+                state.saved.theme = Some(t.as_str().to_string());
+                let _ = save_config(&state.saved);
+                state.push_line(TranscriptEntryKind::System, format!("Theme -> {}", t.as_str()));
+            } else {
+                state.push_line(TranscriptEntryKind::System, "Usage: /theme <obsidian|titanium|alabaster|blueprint>");
             }
         }
         _ => state.push_line(TranscriptEntryKind::System, format!("Unknown command `{cmd}`. Type /help.")),
@@ -1017,6 +1753,12 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         Some(tx.clone()),
     )?;
 
+    let init_theme = saved
+        .theme
+        .as_deref()
+        .and_then(TuiTheme::parse)
+        .unwrap_or_default();
+    let init_privacy_mask = saved.privacy_mask.unwrap_or(false);
     let mut state = TuiAppState {
         workspace,
         model,
@@ -1052,12 +1794,24 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         kv_hit_pct: 0.0,
         tokens_per_sec: 0.0,
         cost_usd: 0.0,
+        kv_savings_usd: 0.0,
         context_pct: 0.0,
         total_turns: 0,
         total_tools: 0,
         tool_errors: 0,
         cached_rss_bytes: process_tree_rss_bytes(std::process::id()),
         last_rss_refresh: Instant::now(),
+        theme: init_theme,
+        privacy_mask: init_privacy_mask,
+        drawer_tab: DrawerTab::Closed,
+        drawer_lines: Vec::new(),
+        speedtest_running: false,
+        speedtest_cancel: Arc::new(AtomicBool::new(false)),
+        last_speedtest_progress: None,
+        last_net_summary: Vec::new(),
+        last_speedtest_summary: Vec::new(),
+        last_router_summary: Vec::new(),
+        last_rewind_summary: Vec::new(),
     };
 
     let _guard = TerminalGuard::enter()?;
@@ -1156,6 +1910,7 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                     tps,
                     final_text,
                     cost_usd,
+                    kv_savings_usd,
                     err,
                 } => {
                     state.engine = Some(*engine);
@@ -1164,6 +1919,7 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                     state.kv_hit_pct = kv_pct;
                     state.tokens_per_sec = tps;
                     state.cost_usd = cost_usd;
+                    state.kv_savings_usd = kv_savings_usd;
                     if let Some(e) = err {
                         state.push_line(TranscriptEntryKind::System, format!("Error: {}", redact_secrets(&e)));
                     } else if !final_text.trim().is_empty()
@@ -1173,8 +1929,126 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                     }
                     state.push_line(
                         TranscriptEntryKind::System,
-                        format!("── {elapsed_secs:.2}s | {turns} turns | KV {kv_pct:.1}% | {tps:.1} tok/s ──"),
+                        format!(
+                            "── {elapsed_secs:.2}s | {turns} turns | KV {kv_pct:.1}% | {tps:.1} tok/s | ${cost_usd:.5} (saved ${kv_savings_usd:.5}) ──"
+                        ),
                     );
+                }
+                UiAsyncEvent::NetworkSnapshot {
+                    identity,
+                    dns,
+                    proxy_tls,
+                    host,
+                } => {
+                    let mut lines = vec![
+                        format!("Provenance  : {}", identity.provenance.as_str()),
+                        format!(
+                            "Public IPv4 : {} | IPv6: {}",
+                            identity.public_ipv4.as_deref().unwrap_or("unavailable"),
+                            identity.public_ipv6.as_deref().unwrap_or("unavailable")
+                        ),
+                        format!(
+                            "NAT / VPN   : {} | VPN={} ({})",
+                            identity.nat_classification,
+                            identity.vpn_active,
+                            if identity.vpn_tags.is_empty() {
+                                "none".to_string()
+                            } else {
+                                identity.vpn_tags.join(",")
+                            }
+                        ),
+                        format!(
+                            "NICs / Fp   : {} adapters | {}",
+                            identity.adapters.len(),
+                            &identity.fingerprint_sha256[..identity.fingerprint_sha256.len().min(16)]
+                        ),
+                        format!(
+                            "DNS Leak    : {} (fastest: {})",
+                            dns.leak_status,
+                            dns.fastest_resolver.as_deref().unwrap_or("-")
+                        ),
+                        format!(
+                            "Proxy / TLS : {} env, {} local ports, {} endpoints",
+                            proxy_tls.env_proxies.len(),
+                            proxy_tls.local_proxy_ports.len(),
+                            proxy_tls.endpoints.len()
+                        ),
+                        format!(
+                            "Host        : CPU {:.1}% | Omnia RSS {:.1} MiB | {} ports",
+                            host.cpu_load_pct.unwrap_or(0.0),
+                            host.total_omnia_rss_bytes as f64 / (1024.0 * 1024.0),
+                            host.listening_ports.len()
+                        ),
+                    ];
+                    for ep in proxy_tls.endpoints.iter().take(3) {
+                        lines.push(format!(
+                            "  {} dns:{:.0} tcp:{:.0} tls:{:.0} ttfb:{:.0}ms",
+                            ep.label,
+                            ep.dns_ms.unwrap_or(0.0),
+                            ep.tcp_ms.unwrap_or(0.0),
+                            ep.tls_ms.unwrap_or(0.0),
+                            ep.ttfb_ms.unwrap_or(0.0)
+                        ));
+                    }
+                    state.last_net_summary = lines.clone();
+                    for l in lines.iter().take(6) {
+                        state.push_line(TranscriptEntryKind::System, l.clone());
+                    }
+                }
+                UiAsyncEvent::SpeedtestProgress(ev) => {
+                    let badge = match (ev.current_mbps, ev.current_rtt_ms) {
+                        (Some(m), _) => format!("ST:{:>2}% {:.1}Mbps", ev.progress_pct, m),
+                        (None, Some(r)) => format!("ST:{:>2}% {:.0}ms", ev.progress_pct, r),
+                        _ => format!("ST:{:>2}% {}", ev.progress_pct, ev.phase),
+                    };
+                    state.last_speedtest_progress = Some(badge);
+                    state.last_speedtest_summary = vec![format!(
+                        "[{}%] {}: {}",
+                        ev.progress_pct, ev.phase, ev.message
+                    )];
+                }
+                UiAsyncEvent::SpeedtestFinished(res) => {
+                    state.speedtest_running = false;
+                    state.last_speedtest_progress = None;
+                    let lines = vec![
+                        format!(
+                            "Speedtest [{}] ({}ms, cancelled={})",
+                            res.provenance.as_str(),
+                            res.duration_ms,
+                            res.cancelled
+                        ),
+                        format!(
+                            "  DL: {:.1} Mbps (1x {:.1} / 4x {:.1}) | UL: {:.1} Mbps",
+                            res.download_mbps,
+                            res.single_stream_dl_mbps,
+                            res.multi_stream_dl_mbps,
+                            res.upload_mbps
+                        ),
+                        format!(
+                            "  RTT p50:{:.1}ms p95:{:.1}ms jitter:{:.1}ms loss:{:.1}%",
+                            res.unloaded.p50_ms.unwrap_or(0.0),
+                            res.unloaded.p95_ms.unwrap_or(0.0),
+                            res.unloaded.jitter_ms.unwrap_or(0.0),
+                            res.unloaded.loss_pct
+                        ),
+                        format!(
+                            "  Bufferbloat: Grade {} (DL +{:.1}ms / UL +{:.1}ms)",
+                            res.bufferbloat_grade,
+                            res.dl_bufferbloat_delta_ms,
+                            res.ul_bufferbloat_delta_ms
+                        ),
+                        format!(
+                            "  Readiness: SSE {} | Git {} | WebRTC {} | Remote {}",
+                            res.workload_readiness.ai_sse_streaming.score,
+                            res.workload_readiness.git_docker_sync.score,
+                            res.workload_readiness.webrtc.score,
+                            res.workload_readiness.remote_control.score
+                        ),
+                    ];
+                    state.last_speedtest_summary = lines.clone();
+                    for l in lines {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
                 }
             }
         }
@@ -1257,11 +2131,27 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                 state.show_creds_modal = !state.show_creds_modal;
                             }
                             KeyEvent {
+                                code: KeyCode::F(4),
+                                ..
+                            } => {
+                                state.drawer_tab = state.drawer_tab.next();
+                            }
+                            KeyEvent {
+                                code: KeyCode::F(5),
+                                ..
+                            } => {
+                                state.privacy_mask = !state.privacy_mask;
+                                state.saved.privacy_mask = Some(state.privacy_mask);
+                                let _ = save_config(&state.saved);
+                            }
+                            KeyEvent {
                                 code: KeyCode::Esc,
                                 ..
                             } => {
                                 if state.show_creds_modal {
                                     state.show_creds_modal = false;
+                                } else if state.drawer_tab != DrawerTab::Closed && !state.running {
+                                    state.drawer_tab = DrawerTab::Closed;
                                 } else if state.running {
                                     state.cancel_flag.store(true, Ordering::SeqCst);
                                     state.push_line(TranscriptEntryKind::System, "Abort requested...");
@@ -1362,6 +2252,8 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                     let res = eng.run_prompt(&submitted, max_turns, timeout_secs, Some(sink)).await;
                                     let cs = eng.cache_guard.snapshot();
                                     let turns = eng.total_turns;
+                                    let cost_usd = eng.total_cost_usd;
+                                    let kv_savings_usd = eng.total_kv_savings_usd;
                                     let event = match res {
                                         Ok(summary) => {
                                             let tps = if summary.active_decode_ms > 0 {
@@ -1376,7 +2268,8 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                                 kv_pct: cs.cache_hit_pct,
                                                 tps,
                                                 final_text: summary.final_text,
-                                                cost_usd: 0.0,
+                                                cost_usd,
+                                                kv_savings_usd,
                                                 err: None,
                                             }
                                         }
@@ -1387,7 +2280,8 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                             kv_pct: cs.cache_hit_pct,
                                             tps: 0.0,
                                             final_text: String::new(),
-                                            cost_usd: 0.0,
+                                            cost_usd,
+                                            kv_savings_usd,
                                             err: Some(format!("{e:#}")),
                                         },
                                     };
@@ -1535,11 +2429,40 @@ mod tests {
     }
 
     #[test]
-    fn slash_definitions_cover_core_commands() {
+    fn slash_definitions_cover_core_and_steer17_cockpit_commands() {
         let cmds: Vec<&str> = SLASH_DEFS.iter().map(|d| d.cmd).collect();
-        for req in ["/help", "/model", "/wire", "/thinking", "/mode", "/rewind", "/creds", "/exit"] {
+        for req in [
+            "/help",
+            "/model",
+            "/wire",
+            "/effort",
+            "/thinking",
+            "/mode",
+            "/status",
+            "/net",
+            "/speedtest",
+            "/router",
+            "/cache",
+            "/swarm",
+            "/memory",
+            "/rewind",
+            "/compact",
+            "/export",
+            "/privacy",
+            "/theme",
+            "/creds",
+            "/exit",
+        ] {
             assert!(cmds.contains(&req), "missing slash command {req}");
         }
+        assert_eq!(TuiTheme::parse("titanium"), Some(TuiTheme::Titanium));
+        assert_eq!(TuiTheme::parse("alabaster"), Some(TuiTheme::Alabaster));
+        assert_eq!(TuiTheme::parse("blueprint"), Some(TuiTheme::Blueprint));
+        assert_eq!(DrawerTab::Closed.next(), DrawerTab::Status);
+        assert_eq!(DrawerTab::Rewind.next(), DrawerTab::Closed);
+        let masked = PrivacyMask::mask_text("IP 203.0.113.55 user@example.com");
+        assert!(!masked.contains("203.0.113.55"));
+        assert!(!masked.contains("user@example.com"));
     }
 
     #[test]

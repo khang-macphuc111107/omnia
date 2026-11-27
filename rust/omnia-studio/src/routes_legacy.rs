@@ -6,6 +6,7 @@ use crate::embedded_ui::load_v5_ui_asset;
 use crate::event_feed::EventFeed;
 use crate::http::{serve_static_asset, HttpRequest, HttpResponse};
 use crate::ops_store::OpsStore;
+use crate::routes_observatory_v5::ObservatoryState;
 use crate::routes_studio_v5::BrowserCdpState;
 use crate::terminal_hub::TerminalHub;
 use crate::ws_hub::prepare_websocket_upgrade;
@@ -81,6 +82,7 @@ pub struct StudioState {
     pub hooks: Arc<HookRegistry>,
     pub cordis_plugins: Arc<CordisPluginManager>,
     pub dap: Arc<DapManager>,
+    pub observatory: Arc<ObservatoryState>,
     pub rust_files: usize,
     pub crate_count: usize,
     pub binary_bytes: u64,
@@ -136,7 +138,18 @@ impl StudioState {
         let owner_id = format!("studio-server-{pid}");
         let _ = sessions.acquire_lease(&owner_id, i64::from(pid), 60_000, now);
 
-        let router = DynamicProviderRouter::new();
+        let router = match config.db_path.as_ref() {
+            Some(db_path) => DynamicProviderRouter::open_sqlite(
+                db_path.with_file_name("studio_router.db"),
+                now,
+            )
+            .unwrap_or_else(|_| {
+                DynamicProviderRouter::open_in_memory_sqlite(now)
+                    .unwrap_or_else(|_| DynamicProviderRouter::new())
+            }),
+            None => DynamicProviderRouter::open_in_memory_sqlite(now)
+                .unwrap_or_else(|_| DynamicProviderRouter::new()),
+        };
         register_configured_router_candidates(&router);
 
         let peer_mesh = PeerMeshGraph::new(4);
@@ -151,6 +164,26 @@ impl StudioState {
         let skills = load_flagship_skills(&config);
 
         let steer = SteerQueue::new();
+        if let Ok(saved_steer) = ops.list_persisted_steer_items() {
+            for (_id, text, mode_raw, status_raw, created_ms) in saved_steer {
+                let mode = match mode_raw.to_ascii_uppercase().as_str() {
+                    "BOUNDARY_CORRECTION" => SteerMode::BoundaryCorrection,
+                    "EXPLICIT_STOP_OR_REPLACE" => SteerMode::ExplicitStopOrReplace,
+                    _ => SteerMode::AdditiveIntake,
+                };
+                let item = steer.enqueue(&text, mode, Some(created_ms));
+                let target_status = match status_raw.to_ascii_lowercase().as_str() {
+                    "in_progress" => Some(omnia_harness::steer_queue::SteerStatus::InProgress),
+                    "completed" => Some(omnia_harness::steer_queue::SteerStatus::Completed),
+                    "cancelled" => Some(omnia_harness::steer_queue::SteerStatus::Cancelled),
+                    "superseded" => Some(omnia_harness::steer_queue::SteerStatus::Superseded),
+                    _ => None,
+                };
+                if let Some(st) = target_status {
+                    let _ = steer.mark_status(&item.id, st);
+                }
+            }
+        }
 
         let event_feed = Arc::new(EventFeed::new());
         let ops = Arc::new(ops);
@@ -167,6 +200,7 @@ impl StudioState {
         let _ = cordis_plugins.discover(Some(&hooks));
         let cordis_plugins = Arc::new(cordis_plugins);
         let dap = Arc::new(DapManager::new(&config.workspace_root));
+        let observatory = Arc::new(ObservatoryState::new());
 
         let composer = Mutex::new(RichComposer::new());
         let connectors = Mutex::new(crate::routes_capabilities::default_connector_configs());
@@ -260,6 +294,7 @@ impl StudioState {
             hooks,
             cordis_plugins,
             dap,
+            observatory,
             rust_files,
             crate_count,
             binary_bytes,
@@ -421,6 +456,7 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
         }
         (_, path) if path.starts_with("/api/") => {
             if crate::routes_studio_v5::is_known_v5_route(path)
+                || crate::routes_observatory_v5::is_known_route(path)
                 || crate::routes_atelier_drive_v5::is_known_route(path)
                 || matches!(
                 path,
@@ -525,6 +561,7 @@ fn handle_capabilities(state: &StudioState) -> HttpResponse {
         { "id": "connector_gateway", "enabled": true, "endpoint": "/api/connectors/status" },
         { "id": "media_capture", "enabled": true, "endpoint": "/api/media/capabilities" },
         { "id": "remote_control", "enabled": true, "endpoint": "/api/remote/status" },
+        { "id": "observatory_v5", "enabled": true, "endpoint": "/api/v5/network/overview" },
     ]);
 
     HttpResponse::ok(json!({
@@ -981,6 +1018,10 @@ fn handle_router_state(state: &StudioState) -> HttpResponse {
     }))
 }
 
+pub fn handle_router_decide_public(state: &StudioState, req: &HttpRequest) -> HttpResponse {
+    handle_router_decide(state, req)
+}
+
 fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse {
     let body = if req.body.is_empty() {
         serde_json::Map::new()
@@ -996,18 +1037,36 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
     if let Some(trip_id) = body
         .get("tripCandidate")
         .or_else(|| body.get("trip_candidate"))
+        .or_else(|| body.get("trip_provider"))
+        .or_else(|| body.get("tripProvider"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if let Err(err) = state.router.trip_circuit(trip_id, now, Some(30_000)) {
+        if let Err(err) = state.router.trip_circuit(trip_id, now, Some(60_000)) {
             return HttpResponse::error(404, "unknown_candidate", &err.to_string());
         }
+        let prov = trip_id.split(':').next().unwrap_or(trip_id);
+        let _ = state.ops.record_router_event(
+            trip_id,
+            prov,
+            "trip",
+            "router_decide_manual_trip",
+            "Open",
+        );
+        state.event_feed.publish(
+            "router",
+            "circuit_tripped",
+            None,
+            json!({ "candidateId": trip_id, "circuit": "Open" }),
+        );
     }
 
     if let Some(reset_id) = body
         .get("resetCandidate")
         .or_else(|| body.get("reset_candidate"))
+        .or_else(|| body.get("reset_provider"))
+        .or_else(|| body.get("resetProvider"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -1015,6 +1074,20 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
         if let Err(err) = state.router.reset_circuit(reset_id) {
             return HttpResponse::error(404, "unknown_candidate", &err.to_string());
         }
+        let prov = reset_id.split(':').next().unwrap_or(reset_id);
+        let _ = state.ops.record_router_event(
+            reset_id,
+            prov,
+            "reset",
+            "router_decide_manual_reset",
+            "Closed",
+        );
+        state.event_feed.publish(
+            "router",
+            "circuit_reset",
+            None,
+            json!({ "candidateId": reset_id, "circuit": "Closed" }),
+        );
     }
 
     let mut policy = RouteRequestPolicy {
@@ -1022,12 +1095,20 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
         now_epoch_ms: Some(now),
         ..RouteRequestPolicy::default()
     };
-    if let Some(req_id) = body.get("requestId").and_then(Value::as_str) {
+    if let Some(req_id) = body
+        .get("requestId")
+        .or_else(|| body.get("request_id"))
+        .and_then(Value::as_str)
+    {
         if !req_id.trim().is_empty() {
             policy.request_id = req_id.trim().to_string();
         }
     }
-    if let Some(idem) = body.get("idempotencyKey").and_then(Value::as_str) {
+    if let Some(idem) = body
+        .get("idempotencyKey")
+        .or_else(|| body.get("idempotency_key"))
+        .and_then(Value::as_str)
+    {
         if !idem.trim().is_empty() {
             policy.idempotency_key = idem.trim().to_string();
         }
@@ -1035,24 +1116,44 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
     if let Some(tier_raw) = body
         .get("privacyTier")
         .or_else(|| body.get("minimumPrivacyTier"))
+        .or_else(|| body.get("privacy_boundary"))
+        .or_else(|| body.get("privacyBoundary"))
         .and_then(Value::as_str)
     {
         policy.minimum_privacy_tier = parse_privacy_tier(tier_raw);
     }
-    if let Some(risk_raw) = body.get("taskRisk").and_then(Value::as_str) {
+    if let Some(risk_raw) = body
+        .get("taskRisk")
+        .or_else(|| body.get("task_risk"))
+        .or_else(|| body.get("task_class"))
+        .and_then(Value::as_str)
+    {
         policy.task_risk = parse_task_risk(risk_raw);
     }
     if let Some(est_tok) = body
         .get("estimatedTokens")
         .or_else(|| body.get("estimatedInputTokens"))
+        .or_else(|| body.get("token_estimate"))
+        .or_else(|| body.get("tokenEstimate"))
         .and_then(Value::as_u64)
     {
         policy.estimated_input_tokens = est_tok;
     }
-    if body.get("requireStreaming").and_then(Value::as_bool) == Some(true) {
+    if body
+        .get("requireStreaming")
+        .or_else(|| body.get("streaming"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
         policy.required_capabilities.supports_streaming = true;
     }
-    if body.get("requireVision").and_then(Value::as_bool) == Some(true) {
+    if body
+        .get("requireVision")
+        .or_else(|| body.get("vision"))
+        .and_then(Value::as_bool)
+        == Some(true)
+        || body.get("task_class").and_then(Value::as_str) == Some("vision")
+    {
         policy.required_capabilities.supports_vision = true;
     }
     if let Some(excl) = body.get("excludedCandidates").and_then(Value::as_array) {
@@ -1167,11 +1268,14 @@ fn handle_memory_upsert(state: &StudioState, req: &HttpRequest) -> HttpResponse 
         .memory
         .upsert(ns, key, tier, content, &links, Some(now_epoch_ms()))
     {
-        Ok(entry) => HttpResponse::ok(json!({
-            "ok": true,
-            "state": "online",
-            "entry": format_memory_entry_for_ui(&entry),
-        })),
+        Ok(entry) => {
+            state.rag.index_memory_graph(&state.memory);
+            HttpResponse::ok(json!({
+                "ok": true,
+                "state": "online",
+                "entry": format_memory_entry_for_ui(&entry),
+            }))
+        }
         Err(err) => memory_error_response(err),
     }
 }
@@ -1221,12 +1325,15 @@ fn handle_memory_erase(state: &StudioState, req: &HttpRequest) -> HttpResponse {
     }
 
     match state.memory.erase(&ns, &key, Some(now_epoch_ms())) {
-        Ok(receipt) => HttpResponse::ok(json!({
-            "ok": true,
-            "state": "online",
-            "erased": true,
-            "receipt": format_erasure_receipt_for_ui(&receipt),
-        })),
+        Ok(receipt) => {
+            state.rag.index_memory_graph(&state.memory);
+            HttpResponse::ok(json!({
+                "ok": true,
+                "state": "online",
+                "erased": true,
+                "receipt": format_erasure_receipt_for_ui(&receipt),
+            }))
+        }
         Err(err) => memory_error_response(err),
     }
 }
@@ -1513,6 +1620,13 @@ fn handle_steer_enqueue(state: &StudioState, req: &HttpRequest) -> HttpResponse 
     };
 
     let item = state.steer.enqueue(text, mode, Some(now_epoch_ms()));
+    let _ = state.ops.upsert_steer_item(
+        &item.id,
+        &item.text,
+        item.mode.as_str(),
+        item.status.as_str(),
+        item.created_at_ms,
+    );
     let items: Vec<Value> = state
         .steer
         .items()
@@ -1617,7 +1731,7 @@ fn handle_sessions_create(state: &StudioState, req: &HttpRequest) -> HttpRespons
     let effort = body
         .get("effort")
         .and_then(Value::as_str)
-        .unwrap_or("high")
+        .unwrap_or("max")
         .trim();
     let custom_id = body
         .get("id")
@@ -1998,19 +2112,23 @@ fn resolve_graphify_entity_id(graphify: &GraphifyIndex, candidate: &str) -> Stri
 
 fn parse_privacy_tier(raw: &str) -> PrivacyTier {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "local_only" | "strict_local_zero_retention" | "localonly" => PrivacyTier::LocalOnly,
-        "private_vpc" | "privatevpc" => PrivacyTier::PrivateVpc,
-        "zero_data_retention" | "enterprise_zdr" | "zerodataretention" | "zdr" => {
-            PrivacyTier::ZeroDataRetention
+        "local_only" | "strict_local" | "strict_local_zero_retention" | "localonly" => {
+            PrivacyTier::LocalOnly
         }
+        "private_vpc" | "privatevpc" => PrivacyTier::PrivateVpc,
+        "zero_data_retention"
+        | "enterprise_zdr"
+        | "enterprise_redacted"
+        | "zerodataretention"
+        | "zdr" => PrivacyTier::ZeroDataRetention,
         _ => PrivacyTier::Public,
     }
 }
 
 fn parse_task_risk(raw: &str) -> TaskRisk {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "low" => TaskRisk::Low,
-        "high" => TaskRisk::High,
+        "low" | "fast" => TaskRisk::Low,
+        "high" | "reasoning" => TaskRisk::High,
         "critical" => TaskRisk::Critical,
         _ => TaskRisk::Standard,
     }

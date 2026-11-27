@@ -186,12 +186,14 @@ pub async fn dispatch_capability_route(
         ("POST", "/api/connectors/validate") => Some(handle_connectors_validate(state, req).await),
 
         ("GET", "/api/media/capabilities") => Some(handle_media_capabilities(req).await),
+        ("GET", "/api/media/isolation") => Some(handle_media_isolation()),
         ("GET", "/api/media/windows") => Some(handle_media_windows()),
         ("GET", "/api/media/browser/cdp") => Some(handle_media_cdp(req).await),
         ("GET", "/api/media/obs/status") => Some(handle_media_obs(req).await),
         ("POST", "/api/media/capture/window") => Some(handle_media_window_capture(req)),
 
         ("GET", "/api/remote/status") => Some(handle_remote_status(state)),
+        ("GET", "/api/remote/audit") => Some(handle_remote_audit(state)),
         ("POST", "/api/remote/pair") => Some(handle_remote_pair(state, req)),
         ("POST", "/api/remote/session") => Some(handle_remote_session(state, req)),
         ("POST", "/api/remote/input") => Some(handle_remote_input(state, req)),
@@ -206,11 +208,13 @@ pub async fn dispatch_capability_route(
             | "/api/connectors/status"
             | "/api/connectors/validate"
             | "/api/media/capabilities"
+            | "/api/media/isolation"
             | "/api/media/windows"
             | "/api/media/browser/cdp"
             | "/api/media/obs/status"
             | "/api/media/capture/window"
             | "/api/remote/status"
+            | "/api/remote/audit"
             | "/api/remote/pair"
             | "/api/remote/session"
             | "/api/remote/input"
@@ -1270,6 +1274,28 @@ async fn handle_media_capabilities(req: &HttpRequest) -> HttpResponse {
             }))
         }
     }
+}
+
+fn handle_media_isolation() -> HttpResponse {
+    let matrix = omnia_media_capture::desktop_isolation::DesktopCapabilityMatrix::windows_11_truthful_default();
+    HttpResponse::ok(json!({
+        "ok": true,
+        "matrix": matrix.to_json(),
+    }))
+}
+
+fn handle_remote_audit(state: &StudioState) -> HttpResponse {
+    let guard = state.remote.lock().expect("remote state mutex");
+    let entries: Vec<Value> = guard
+        .audit_log
+        .iter()
+        .map(omnia_core::SecretRedactor::redact_json)
+        .collect();
+    HttpResponse::ok(json!({
+        "ok": true,
+        "count": entries.len(),
+        "auditLog": entries,
+    }))
 }
 
 async fn handle_media_cdp(req: &HttpRequest) -> HttpResponse {
