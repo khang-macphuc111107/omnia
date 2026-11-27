@@ -46,8 +46,8 @@ use crate::types::{
     utf8_to_wide, Mode, COLOR_ACCENT, COLOR_BORDER, COLOR_CARD_BG, COLOR_INPUT_BG,
     COLOR_TEXT_MUTED, COLOR_TEXT_PRIMARY, COLOR_TEXT_SOFT, COLOR_TOP_BAR_BG, COLOR_WINDOW_BG,
     ID_COMPOSER_BADGE, ID_COMPOSER_CMD, ID_DRAFT, ID_DRAFT_LABEL, ID_FOOTER, ID_HEADING,
-    ID_MODE_BROWSER, ID_MODE_CHAT, ID_MODE_IDE, ID_SYM_CHEM, ID_SYM_MATH, ID_SYM_PHYS, SS_LEFT,
-    SS_NOPREFIX, STUDIO_BADGE_TEXT,
+    ID_MODE_BROWSER, ID_MODE_CHAT, ID_MODE_IDE, ID_SYM_CHEM, ID_SYM_MATH, ID_SYM_PHYS,
+    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_LEFT, SS_NOPREFIX, STUDIO_BADGE_TEXT,
 };
 use crate::uia_provider::{attach_button, attach_edit, modal_message_box, read_hwnd_text_utf8};
 
@@ -458,12 +458,14 @@ fn init_shell_controls(hwnd: HWND, instance: HINSTANCE, state: &mut ShellState) 
     );
     attach_button(sym_chem, Some("Chemistry symbols"));
 
+    let badge_style =
+        WS_CHILD | WS_VISIBLE | (SS_LEFT | SS_NOPREFIX | SS_CENTERIMAGE | SS_ENDELLIPSIS);
     let composer_badge = create_child(
         hwnd,
         instance,
         "STATIC",
         "Rich LaTeX/Unicode",
-        static_style,
+        badge_style,
         ID_COMPOSER_BADGE,
     );
 

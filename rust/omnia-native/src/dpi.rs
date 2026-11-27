@@ -385,7 +385,7 @@ pub fn compute_shell_layout(
 
     let sym_w = scale_px(72, dpi).min((inner_w / 7).max(44));
     let sym_gap = scale_px(6, dpi).min(4);
-    let badge_chip_w = scale_px(92, dpi).min((inner_w / 6).max(48));
+    let badge_chip_w = scale_px(136, dpi).min((inner_w / 4).max(76));
     let cmd_w = (inner_w - sym_w * 3 - badge_chip_w - sym_gap * 4).max(60);
 
     let composer_cmd = RectPx::from_xywh(inner_left, toolbar_y, cmd_w, toolbar_h);
@@ -450,7 +450,7 @@ pub fn compute_session_panel_layout(
     let mut label_h = scale_px(17, dpi);
     let mut edit_h = scale_px(25, dpi);
     let mut combo_h = scale_px(26, dpi);
-    let mut status_h = scale_px(54, dpi);
+    let mut status_h = scale_px(104, dpi);
     let min_list_h = scale_px(72, dpi).min((h / 5).max(36));
 
     // Exact vertical sum of all fixed rows + gaps (9*gap + 3*2px label tight gaps).
@@ -477,7 +477,7 @@ pub fn compute_session_panel_layout(
         label_h = shrink(label_h, 12);
         edit_h = shrink(edit_h, 18);
         combo_h = shrink(combo_h, 18);
-        status_h = shrink(status_h, 24);
+        status_h = shrink(status_h, 42);
     }
 
     let top_block_h = header_h + gap + btn_h + gap;

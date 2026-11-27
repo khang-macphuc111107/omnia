@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   Bug,
   Check,
@@ -6,18 +6,21 @@ import {
   FileCode2,
   FolderTree,
   GitCompare,
+  GitGraph,
   ListTree,
   Play,
+  Plus,
   RefreshCw,
   Save,
   Search,
+  Square,
   Terminal as TerminalIcon,
   X,
 } from 'lucide-solid';
 import { EditorState } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view';
+import { EditorView, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { rust } from '@codemirror/lang-rust';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -30,14 +33,15 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { api } from '@/api/client';
-import { DiffCard } from '@/components/chat/DiffCard';
 import { Composer } from '@/components/chat/Composer';
+import { DiffCard } from '@/components/chat/DiffCard';
 import { Transcript } from '@/components/chat/Transcript';
 import {
   activeTabPath,
   ideChatDrawerOpen,
   ideGitStatus,
   openTabs,
+  privacyMask,
   setActiveTabPath,
   setIdeGitStatus,
   setOpenTabs,
@@ -49,6 +53,7 @@ import {
 } from '@/state/studio';
 import type { OpenEditorTab, WorkspaceEntry } from '@/types';
 import { renderRichMarkdown } from '@/utils/markdown';
+import { maskText } from '@/utils/privacy';
 
 type ActivitySection = 'explorer' | 'search' | 'git' | 'lsp' | 'debug';
 
@@ -65,6 +70,19 @@ function langExtensionForPath(filePath: string) {
   return [];
 }
 
+function terminalThemeForPref(pref: string) {
+  if (pref === 'alabaster') {
+    return { background: '#F1EFE8', foreground: '#11141C', cursor: '#0A539B' };
+  }
+  if (pref === 'titanium') {
+    return { background: '#1B1F24', foreground: '#EDF0F2', cursor: '#9AC6D6' };
+  }
+  if (pref === 'blueprint') {
+    return { background: '#081020', foreground: '#EDF5FF', cursor: '#4CC9FF' };
+  }
+  return { background: '#080A0F', foreground: '#F2F5FA', cursor: '#38BDF8' };
+}
+
 export function IdeWorkbench() {
   const [activity, setActivity] = createSignal<ActivitySection>('explorer');
   const [searchQuery, setSearchQuery] = createSignal('');
@@ -73,6 +91,12 @@ export function IdeWorkbench() {
   const [terminalOpen, setTerminalOpen] = createSignal(true);
   const [gitDiffPatch, setGitDiffPatch] = createSignal('');
   const [lspData, setLspData] = createSignal<Record<string, unknown>>({});
+  const [graphJumpData, setGraphJumpData] = createSignal<Record<string, unknown> | null>(null);
+  const [dapSessions, setDapSessions] = createSignal<Array<Record<string, unknown>>>([]);
+  const [dapAdapter, setDapAdapter] = createSignal('lldb');
+  const [dapProgram, setDapProgram] = createSignal('');
+  const [dapStatus, setDapStatus] = createSignal('');
+  const [termTabs, setTermTabs] = createSignal<Array<{ id: string; label: string }>>([]);
   const [activeTermId, setActiveTermId] = createSignal<string | null>(null);
   const [saveNote, setSaveNote] = createSignal('');
 
@@ -86,13 +110,21 @@ export function IdeWorkbench() {
   const activeTab = () => openTabs.find((t) => t.path === activeTabPath()) ?? null;
 
   const refreshExplorer = async () => {
-    const [treeRes, gitRes] = await Promise.all([api.getWorkspaceTree('', 2), api.getGitStatus()]);
+    const [treeRes, gitRes, dapRes] = await Promise.all([
+      api.getWorkspaceTree('', 3),
+      api.getGitStatus(),
+      api.listDapSessions(),
+    ]);
     if (treeRes.ok) {
       if (treeRes.data.root) setWorkspaceRoot(treeRes.data.root);
       if (Array.isArray(treeRes.data.entries)) setWorkspaceTree(treeRes.data.entries);
     }
     if (gitRes.ok) {
       setIdeGitStatus(gitRes.data);
+    }
+    if (dapRes.ok) {
+      const list = (dapRes.data.sessions ?? dapRes.data.items) as Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(list)) setDapSessions(list);
     }
   };
 
@@ -115,15 +147,23 @@ export function IdeWorkbench() {
     setOpenTabs([...openTabs, tab]);
     setActiveTabPath(tab.path);
 
-    // Fetch diff & LSP outline for this file (skip diff on non-git workspaces)
     if (ideGitStatus()?.isGitRepo === true) {
       void api.getGitDiff(entry.relativePath).then((d) => {
-        if (d.ok && d.data.diff) setGitDiffPatch(d.data.diff);
+        if (d.ok) setGitDiffPatch(d.data.diff ?? '');
       });
+    } else {
+      setGitDiffPatch('');
     }
     void api.queryLsp('outline', entry.relativePath).then((l) => {
       if (l.ok) setLspData(l.data);
     });
+  };
+
+  const openRelativePath = async (relPath: string) => {
+    const clean = relPath.trim();
+    if (!clean) return;
+    const name = clean.split(/[\\/]/).pop() || clean;
+    await openFile({ name, path: clean, relativePath: clean, kind: 'file', bytes: 0, depth: 0 });
   };
 
   const saveActiveTab = async () => {
@@ -150,6 +190,82 @@ export function IdeWorkbench() {
     setOpenTabs((t) => t.path === tab.path, { content: tab.originalContent, dirty: false });
     setDiffMode(false);
   };
+
+  const spawnTerminalTab = async () => {
+    const cols = xtermInstance?.cols ?? 100;
+    const rows = xtermInstance?.rows ?? 24;
+    const res = await api.createTerminal(workspaceRoot() || undefined, cols, rows);
+    if (res.ok) {
+      const id = res.data.terminal?.ptyId ?? res.data.ptyId ?? res.data.id ?? res.data.terminal_id ?? null;
+      if (id) {
+        const nextNum = termTabs().length + 1;
+        setTermTabs([...termTabs(), { id, label: `PTY #${nextNum}` }]);
+        setActiveTermId(id);
+        xtermInstance?.writeln(`\r\n[Connected ConPTY ${id}]`);
+      }
+    } else {
+      xtermInstance?.writeln(`\r\n[ConPTY error: ${res.error.code} — ${res.error.message}]`);
+    }
+  };
+
+  const killTerminalTab = async (id: string) => {
+    await api.killTerminal(id);
+    const remaining = termTabs().filter((t) => t.id !== id);
+    setTermTabs(remaining);
+    if (activeTermId() === id) {
+      setActiveTermId(remaining[0]?.id ?? null);
+    }
+  };
+
+  const handleLspAction = async (action: 'problems' | 'outline' | 'hover' | 'definition') => {
+    const res = await api.queryLsp(action, activeTabPath() ?? undefined, 1, 0);
+    if (res.ok) {
+      setLspData(res.data);
+    } else {
+      setLspData({ error: res.error.code, message: res.error.message });
+    }
+  };
+
+  const handleGraphifyJump = async () => {
+    const target = activeTab()?.name.replace(/\.[^.]+$/, '') || 'omnia-studio';
+    const res = await api.traverseGraphify(target, 'both', 2);
+    if (res.ok) {
+      setGraphJumpData(res.data);
+    } else {
+      setGraphJumpData({ error: res.error.code, message: res.error.message });
+    }
+  };
+
+  const handleLaunchDap = async () => {
+    const prog = dapProgram().trim() || activeTabPath() || 'omnia-cli';
+    const res = await api.launchDap(dapAdapter(), prog, workspaceRoot() || undefined);
+    if (res.ok) {
+      setDapStatus(`Launched ${dapAdapter()} on ${prog}`);
+      const list = await api.listDapSessions();
+      if (list.ok && Array.isArray(list.data.sessions)) {
+        setDapSessions(list.data.sessions as Array<Record<string, unknown>>);
+      }
+    } else {
+      setDapStatus(`DAP (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleTerminateDap = async (sessionId: string) => {
+    const res = await api.terminateDap(sessionId);
+    setDapStatus(res.ok ? `Terminated DAP ${sessionId}` : `Terminate error: ${res.error.message}`);
+    const list = await api.listDapSessions();
+    if (list.ok && Array.isArray(list.data.sessions)) {
+      setDapSessions(list.data.sessions as Array<Record<string, unknown>>);
+    }
+  };
+
+  const changedGitFiles = createMemo(() => {
+    const st = ideGitStatus();
+    const arr = (st.files ?? st.changedFiles ?? st.modified ?? []) as unknown[];
+    return Array.isArray(arr)
+      ? arr.map((f) => (typeof f === 'string' ? f : String((f as Record<string, unknown>).path ?? '')))
+      : [];
+  });
 
   // Mount/update CodeMirror 6 instance when active tab or theme changes
   createEffect(() => {
@@ -192,6 +308,14 @@ export function IdeWorkbench() {
     });
   });
 
+  // Keep xterm.js palette synced with all 4 WCAG themes
+  createEffect(() => {
+    const pref = themePref();
+    if (xtermInstance) {
+      xtermInstance.options.theme = terminalThemeForPref(pref);
+    }
+  });
+
   // Mount WebGL/Canvas ConPTY xterm.js terminal
   onMount(() => {
     void refreshExplorer();
@@ -201,11 +325,7 @@ export function IdeWorkbench() {
         fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, monospace',
         fontSize: 12.5,
         cursorBlink: true,
-        theme: {
-          background: '#080A0F',
-          foreground: '#F2F5FA',
-          cursor: '#38BDF8',
-        },
+        theme: terminalThemeForPref(themePref()),
       });
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
@@ -217,7 +337,7 @@ export function IdeWorkbench() {
       }
       fitAddon.fit();
       xtermInstance = term;
-      term.writeln('Omnia ConPTY Terminal ready (pure-Rust PTY host).');
+      term.writeln('Omnia ConPTY Multi-Tab Terminal ready (pure-Rust PTY host).');
 
       wsHandle = api.connectMultiplexedWs(
         (msg) => {
@@ -229,7 +349,6 @@ export function IdeWorkbench() {
           }
         },
         (bytes) => {
-          // Binary frame [0x01 | pty bytes]
           const payload = bytes[0] === 0x01 ? bytes.slice(1) : bytes;
           term.write(new TextDecoder().decode(payload));
         },
@@ -242,12 +361,7 @@ export function IdeWorkbench() {
         }
       });
 
-      void api.createTerminal(workspaceRoot() || undefined, term.cols, term.rows).then((res) => {
-        if (res.ok) {
-          const id = res.data.terminal?.ptyId ?? res.data.ptyId ?? res.data.id ?? res.data.terminal_id ?? null;
-          if (id) setActiveTermId(id);
-        }
-      });
+      void spawnTerminalTab();
     }
   });
 
@@ -263,10 +377,10 @@ export function IdeWorkbench() {
       <div class="w-11 shrink-0 bg-[var(--bg-rail)] border-r border-[var(--border-subtle)] flex flex-col items-center py-2 gap-1.5">
         {(
           [
-            { id: 'explorer', label: 'Explorer', icon: FolderTree },
-            { id: 'search', label: 'Search', icon: Search },
-            { id: 'git', label: 'Source Control', icon: GitCompare },
-            { id: 'lsp', label: 'LSP Outline & Problems', icon: ListTree },
+            { id: 'explorer', label: 'Explorer (.gitignore aware)', icon: FolderTree },
+            { id: 'search', label: 'Search Workspace', icon: Search },
+            { id: 'git', label: 'Git & git_forensics', icon: GitCompare },
+            { id: 'lsp', label: 'LSP + Tree-sitter + Graphify', icon: ListTree },
             { id: 'debug', label: 'Run & Debug (DAP)', icon: Bug },
           ] as const
         ).map((item) => {
@@ -291,7 +405,7 @@ export function IdeWorkbench() {
         <div class="mt-auto">
           <button
             type="button"
-            title="Toggle ConPTY Terminal"
+            title="Toggle Multi-Tab ConPTY Terminal"
             onClick={() => setTerminalOpen(!terminalOpen())}
             class="w-8 h-8 rounded flex items-center justify-center cursor-pointer border"
             classList={{
@@ -332,7 +446,7 @@ export function IdeWorkbench() {
               </For>
               <Show when={workspaceTree.length === 0}>
                 <div class="p-2 text-[var(--ink-muted)] text-[11.5px]">
-                  Click Refresh to load workspace tree from `/api/workspace/tree`.
+                  Click Refresh to load `.gitignore`-filtered workspace tree from `/api/workspace/tree`.
                 </div>
               </Show>
             </div>
@@ -347,7 +461,7 @@ export function IdeWorkbench() {
                 onInput={(e) => setSearchQuery(e.currentTarget.value)}
                 class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[12px] outline-none"
               />
-              <For each={workspaceTree.filter((e) => e.name.toLowerCase().includes(searchQuery().toLowerCase())).slice(0, 40)}>
+              <For each={workspaceTree.filter((e) => e.name.toLowerCase().includes(searchQuery().toLowerCase())).slice(0, 50)}>
                 {(entry) => (
                   <button
                     type="button"
@@ -363,7 +477,25 @@ export function IdeWorkbench() {
 
           <Show when={activity() === 'git'}>
             <div class="space-y-2 text-[11.5px] font-mono-num">
-              <pre class="whitespace-pre-wrap text-[var(--ink-secondary)]">
+              <div class="p-2 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)]">
+                <div>Branch: <strong class="text-[var(--accent-cyan)]">{String(ideGitStatus()?.branch ?? 'unknown')}</strong></div>
+                <div>Dirty: {changedGitFiles().length} files</div>
+              </div>
+              <For each={changedGitFiles().slice(0, 40)}>
+                {(file) => (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await openRelativePath(file);
+                      setDiffMode(true);
+                    }}
+                    class="w-full text-left px-2 py-1 rounded hover:bg-[var(--bg-elevated)] text-[11px] truncate text-[var(--accent-amber)] cursor-pointer"
+                  >
+                    {maskText(file, privacyMask())}
+                  </button>
+                )}
+              </For>
+              <pre class="whitespace-pre-wrap text-[10.5px] text-[var(--ink-muted)]">
                 {JSON.stringify(ideGitStatus(), null, 2)}
               </pre>
             </div>
@@ -371,34 +503,95 @@ export function IdeWorkbench() {
 
           <Show when={activity() === 'lsp'}>
             <div class="space-y-2 text-[11.5px] font-mono-num">
+              <div class="grid grid-cols-2 gap-1">
+                <button type="button" class="omnia-btn justify-center text-[10.5px]" onClick={() => void handleLspAction('problems')}>
+                  Problems
+                </button>
+                <button type="button" class="omnia-btn justify-center text-[10.5px]" onClick={() => void handleLspAction('outline')}>
+                  Outline
+                </button>
+                <button type="button" class="omnia-btn justify-center text-[10.5px]" onClick={() => void handleLspAction('hover')}>
+                  Hover
+                </button>
+                <button type="button" class="omnia-btn justify-center text-[10.5px]" onClick={() => void handleLspAction('definition')}>
+                  Definition
+                </button>
+              </div>
               <button
                 type="button"
-                class="omnia-btn w-full justify-center text-[11px]"
-                onClick={() => void api.queryLsp('problems', activeTabPath() ?? undefined).then((r) => r.ok && setLspData(r.data))}
+                class="omnia-btn omnia-btn-primary w-full justify-center text-[11px]"
+                onClick={() => void handleGraphifyJump()}
               >
-                Query rust-analyzer / LSP
+                <GitGraph class="w-3.5 h-3.5" />
+                <span>Tree-sitter + Graphify Jump</span>
               </button>
-              <pre class="whitespace-pre-wrap text-[var(--ink-secondary)]">{JSON.stringify(lspData(), null, 2)}</pre>
+              <Show when={graphJumpData()}>
+                <pre class="p-2 rounded bg-[var(--bg-code)] border border-[var(--border-subtle)] whitespace-pre-wrap text-[10.5px] max-h-40 overflow-auto">
+                  {JSON.stringify(graphJumpData(), null, 2)}
+                </pre>
+              </Show>
+              <pre class="p-2 rounded bg-[var(--bg-code)] border border-[var(--border-subtle)] whitespace-pre-wrap text-[10.5px] text-[var(--ink-secondary)] max-h-60 overflow-auto">
+                {JSON.stringify(lspData(), null, 2)}
+              </pre>
             </div>
           </Show>
 
           <Show when={activity() === 'debug'}>
-            <div class="space-y-2 text-[12px]">
-              <div class="text-[var(--ink-muted)]">DAP Adapters: debugpy · lldb · dlv</div>
+            <div class="space-y-2 text-[11.5px]">
+              <div class="text-[var(--ink-muted)] font-mono-num">Real DAP Adapters (`/api/dap/*`)</div>
+              <select
+                value={dapAdapter()}
+                onChange={(e) => setDapAdapter(e.currentTarget.value)}
+                class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11.5px]"
+              >
+                <option value="lldb">lldb-dap (Rust / Native)</option>
+                <option value="debugpy">debugpy (Python)</option>
+                <option value="dlv">dlv (Go)</option>
+              </select>
+              <input
+                type="text"
+                placeholder="Target binary or script..."
+                value={dapProgram()}
+                onInput={(e) => setDapProgram(e.currentTarget.value)}
+                class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11.5px] font-mono-num"
+              />
               <button
                 type="button"
+                data-testid="dap-launch-btn"
                 class="omnia-btn omnia-btn-primary w-full justify-center text-[11.5px]"
-                onClick={() => void api.queryLsp('problems')}
+                onClick={() => void handleLaunchDap()}
               >
                 <Play class="w-3.5 h-3.5" />
-                <span>Inspect Debug Targets</span>
+                <span>Launch DAP Session</span>
               </button>
+              <Show when={dapStatus()}>
+                <div class="text-[11px] font-mono-num text-[var(--accent-cyan)]">{dapStatus()}</div>
+              </Show>
+              <div class="space-y-1 pt-1 border-t border-[var(--border-subtle)]">
+                <For each={dapSessions()}>
+                  {(s) => {
+                    const sid = String(s.sessionId ?? s.id ?? 'dap');
+                    return (
+                      <div class="p-2 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] flex items-center justify-between gap-1 text-[11px] font-mono-num">
+                        <span class="truncate">{String(s.adapter ?? 'dap')} · {sid.slice(0, 8)}</span>
+                        <button
+                          type="button"
+                          class="omnia-btn omnia-btn-danger px-1.5 py-0.5 text-[10px]"
+                          onClick={() => void handleTerminateDap(sid)}
+                        >
+                          <Square class="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    );
+                  }}
+                </For>
+              </div>
             </div>
           </Show>
         </div>
       </div>
 
-      {/* Center Multi-Tab CodeMirror 6 + Diff + Preview + Bottom WebGL ConPTY Terminal */}
+      {/* Center Multi-Tab CodeMirror 6 + Diff + Preview + Bottom Multi-Tab ConPTY Terminal */}
       <div class="flex-1 min-w-0 flex flex-col overflow-hidden">
         {/* Editor Tabs & Actions */}
         <div class="h-9 shrink-0 bg-[var(--bg-rail)] border-b border-[var(--border-subtle)] flex items-center justify-between px-2 gap-2">
@@ -415,7 +608,10 @@ export function IdeWorkbench() {
                       activeTabPath() !== tab.path,
                   }}
                 >
-                  <span>{tab.name}{tab.dirty ? ' *' : ''}</span>
+                  <span>
+                    {tab.name}
+                    {tab.dirty ? ' *' : ''}
+                  </span>
                   <button
                     type="button"
                     class="hover:text-[var(--status-coral)]"
@@ -455,7 +651,7 @@ export function IdeWorkbench() {
         {/* Editor / Diff / Live Preview Area */}
         <div class="flex-1 min-h-0 flex overflow-hidden">
           <div class="flex-1 min-w-0 relative overflow-hidden">
-            <Show when={diffMode() && gitDiffPatch()}>
+            <Show when={diffMode()}>
               <div class="absolute inset-0 z-10 bg-[var(--bg-canvas)] overflow-y-auto p-3">
                 <div class="flex items-center justify-between mb-2">
                   <span class="text-[12px] font-semibold">Inline Hunk Review</span>
@@ -469,7 +665,16 @@ export function IdeWorkbench() {
                     </button>
                   </div>
                 </div>
-                <DiffCard patch={gitDiffPatch()} path={activeTabPath() ?? undefined} />
+                <Show
+                  when={gitDiffPatch().trim().length > 0}
+                  fallback={
+                    <div class="p-4 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[12px] font-mono-num text-[var(--ink-muted)]">
+                      Working copy matches HEAD for {activeTabPath() || 'active file'} (0 uncommitted diff hunks).
+                    </div>
+                  }
+                >
+                  <DiffCard patch={gitDiffPatch()} path={activeTabPath() ?? undefined} />
+                </Show>
               </div>
             </Show>
             <div ref={editorHostRef} class="h-full w-full" classList={{ hidden: !activeTab() }} />
@@ -483,30 +688,64 @@ export function IdeWorkbench() {
           <Show when={previewSplit() && activeTab()}>
             {(tab) => (
               <div class="w-1/2 border-l border-[var(--border-subtle)] bg-[var(--bg-panel)] overflow-y-auto p-4">
-                <div class="text-[11px] font-mono-num text-[var(--ink-muted)] mb-2 uppercase">Live Preview — {tab().name}</div>
+                <div class="text-[11px] font-mono-num text-[var(--ink-muted)] mb-2 uppercase">
+                  Live Preview — {tab().name}
+                </div>
                 <Show
                   when={tab().name.endsWith('.html')}
                   fallback={<div class="omnia-prose" innerHTML={renderRichMarkdown(tab().content)} />}
                 >
-                  <iframe sandbox="" srcdoc={tab().content} class="w-full h-[70vh] rounded border border-[var(--border-subtle)] bg-white" />
+                  <iframe
+                    sandbox=""
+                    srcdoc={tab().content}
+                    class="w-full h-[70vh] rounded border border-[var(--border-subtle)] bg-white"
+                  />
                 </Show>
               </div>
             )}
           </Show>
         </div>
 
-        {/* Bottom ConPTY Terminal */}
+        {/* Bottom Multi-Tab ConPTY Terminal (Theme-Synced) */}
         <Show when={terminalOpen()}>
-          <div class="h-52 shrink-0 border-t border-[var(--border-subtle)] bg-[#080A0F] flex flex-col">
-            <div class="h-7 px-3 border-b border-[var(--border-subtle)] bg-[var(--bg-rail)] flex items-center justify-between text-[11px] font-mono-num">
-              <span class="text-[var(--ink-secondary)]">
-                ConPTY Terminal {activeTermId() ? `(${activeTermId()})` : ''}
-              </span>
-              <button
-                type="button"
-                class="omnia-btn px-2 py-0.5 text-[10px]"
-                onClick={() => fitAddon?.fit()}
-              >
+          <div class="h-52 shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-code)] flex flex-col">
+            <div class="h-7 px-2 border-b border-[var(--border-subtle)] bg-[var(--bg-rail)] flex items-center justify-between gap-2 text-[11px] font-mono-num">
+              <div class="flex items-center gap-1 overflow-x-auto min-w-0">
+                <For each={termTabs()}>
+                  {(t) => (
+                    <div
+                      onClick={() => setActiveTermId(t.id)}
+                      class="flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer shrink-0"
+                      classList={{
+                        'bg-[var(--bg-elevated)] border-[var(--border-accent)] text-[var(--accent-cyan)]':
+                          activeTermId() === t.id,
+                        'bg-transparent border-transparent text-[var(--ink-muted)]': activeTermId() !== t.id,
+                      }}
+                    >
+                      <span>{t.label}</span>
+                      <button
+                        type="button"
+                        class="hover:text-[var(--status-coral)]"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void killTerminalTab(t.id);
+                        }}
+                      >
+                        <X class="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  )}
+                </For>
+                <button
+                  type="button"
+                  class="omnia-btn px-1.5 py-0.5 text-[10px]"
+                  title="New ConPTY Terminal Tab"
+                  onClick={() => void spawnTerminalTab()}
+                >
+                  <Plus class="w-3 h-3" />
+                </button>
+              </div>
+              <button type="button" class="omnia-btn px-2 py-0.5 text-[10px] shrink-0" onClick={() => fitAddon?.fit()}>
                 Fit
               </button>
             </div>

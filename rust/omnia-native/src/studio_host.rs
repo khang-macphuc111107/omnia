@@ -27,13 +27,16 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW,
     GetWindowLongPtrW, KillTimer, PostQuitMessage, RegisterClassExW, SetTimer, SetWindowLongPtrW,
-    ShowWindow, TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, MSG, SW_SHOW,
-    WM_CREATE, WM_DESTROY, WM_NCDESTROY, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_CLIPCHILDREN,
-    WS_OVERLAPPEDWINDOW,
+    SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, MSG, SWP_NOACTIVATE,
+    SWP_NOZORDER, SW_SHOW, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY, WM_SIZE, WM_TIMER,
+    WNDCLASSEXW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 
 use crate::cli::CliError;
-use crate::dpi::ensure_per_monitor_v2_dpi_awareness;
+use crate::dpi::{
+    ensure_per_monitor_v2_dpi_awareness, primary_work_area, scale_px, system_dpi,
+    window_work_area,
+};
 use omnia_storage::StoreError;
 
 const STUDIO_HOST_CLASS: &str = "OmniaNativeStudioMicaHost";
@@ -144,31 +147,36 @@ pub fn resolve_webview2_browser_folder() -> Option<PathBuf> {
         }
     }
 
-    let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from(r"E:\Users\khang\AppData\Local\Microsoft\EdgeCore\159.0.4401.0"),
-        PathBuf::from(r"C:\Windows\System32\Microsoft-Edge-WebView"),
-    ];
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let mut dynamic_dirs: Vec<PathBuf> = Vec::new();
 
     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
         let edge_core = PathBuf::from(&local_app).join(r"Microsoft\EdgeCore");
         if let Ok(entries) = std::fs::read_dir(&edge_core) {
             for ent in entries.flatten() {
-                candidates.push(ent.path());
+                dynamic_dirs.push(ent.path());
             }
         }
     }
     if let Ok(entries) = std::fs::read_dir(r"E:\Users\khang\AppData\Local\Microsoft\EdgeCore") {
         for ent in entries.flatten() {
-            candidates.push(ent.path());
+            dynamic_dirs.push(ent.path());
         }
     }
     if let Ok(entries) =
         std::fs::read_dir(r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application")
     {
         for ent in entries.flatten() {
-            candidates.push(ent.path());
+            dynamic_dirs.push(ent.path());
         }
     }
+    // Sort newest version folder first so dynamic runtime discovery stays ahead of static fallbacks.
+    dynamic_dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    candidates.extend(dynamic_dirs);
+    candidates.push(PathBuf::from(
+        r"E:\Users\khang\AppData\Local\Microsoft\EdgeCore\159.0.4401.0",
+    ));
+    candidates.push(PathBuf::from(r"C:\Windows\System32\Microsoft-Edge-WebView"));
 
     candidates
         .into_iter()
@@ -245,6 +253,35 @@ unsafe extern "system" fn studio_wnd_proc(
     }
 
     match umsg {
+        WM_DPICHANGED => {
+            if lparam.0 != 0 {
+                // SAFETY: Clamp suggested Win32 DPI rect inside monitor workarea and resize WebView2 bounds.
+                unsafe {
+                    let suggested = *(lparam.0 as *const RECT);
+                    let wa = window_work_area(hwnd.0 as windows_sys::Win32::Foundation::HWND);
+                    let w = (suggested.right - suggested.left).min(wa.width()).max(320);
+                    let h = (suggested.bottom - suggested.top).min(wa.height()).max(240);
+                    let x = suggested.left.max(wa.left).min(wa.right - w);
+                    let y = suggested.top.max(wa.top).min(wa.bottom - h);
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        x,
+                        y,
+                        w,
+                        h,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    let mut rc = RECT::default();
+                    if GetClientRect(hwnd, &raw mut rc).is_ok() {
+                        if let Some(ref ctrl) = *(*ptr).controller.borrow() {
+                            let _ = ctrl.SetBounds(rc);
+                        }
+                    }
+                }
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             // SAFETY: Resize embedded WebView2 controller to fill client bounds.
             unsafe {
@@ -347,17 +384,24 @@ pub fn run_studio_host(args: &[String]) -> Result<(), StoreError> {
         smoke_exit_ms: opts.smoke_exit_ms,
     }));
 
-    // SAFETY: Create DWM Mica host window.
+    let dpi = system_dpi();
+    let wa = primary_work_area();
+    let target_w = scale_px(1440, dpi).min(wa.width()).max(640);
+    let target_h = scale_px(900, dpi).min(wa.height()).max(480);
+    let start_x = wa.left + (wa.width() - target_w) / 2;
+    let start_y = wa.top + (wa.height() - target_h) / 2;
+
+    // SAFETY: Create DWM Mica host window clamped strictly within primary monitor workarea.
     let hwnd = unsafe {
         CreateWindowExW(
             Default::default(),
             PCWSTR(cls_w.as_ptr()),
             PCWSTR(title_w.as_ptr()),
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            1440,
-            900,
+            start_x,
+            start_y,
+            target_w,
+            target_h,
             None,
             None,
             Some(hinstance),

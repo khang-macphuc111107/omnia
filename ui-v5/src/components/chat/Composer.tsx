@@ -1,8 +1,9 @@
-import { For, Show, createMemo, createSignal } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import {
   Cpu,
   FilePlus2,
   GitBranch,
+  ListOrdered,
   Paperclip,
   Plus,
   Send,
@@ -20,9 +21,12 @@ import {
   attachments,
   composerCaret,
   composerDraft,
+  enqueueAdditiveSteer,
+  handleSlashCommand,
   isStreaming,
   modelCatalog,
   modelConfig,
+  modelPickerTriggerSeq,
   pendingPasteChoice,
   sendComposerMessage,
   setAgentRunMode,
@@ -30,6 +34,7 @@ import {
   setComposerCaret,
   setComposerDraft,
   setPendingPasteChoice,
+  setSteerDrawerOpen,
   steerQueue,
   updateDualModelConfig,
 } from '@/state/studio';
@@ -38,13 +43,18 @@ import { detectEncryptedArchive, sha256Hex } from '@/utils/crypto';
 import { LATEX_15_TEMPLATES } from '@/utils/markdown';
 
 const SLASH_COMMANDS = [
-  { cmd: '/rewind', desc: 'Open atomic BLAKE3 checkpoint rewind' },
-  { cmd: '/fork', desc: 'Fork active SQLite session from current turn' },
-  { cmd: '/compact', desc: 'Trigger Lakeview anchored context compaction' },
-  { cmd: '/model', desc: 'Configure Main & Subagent model + effort' },
-  { cmd: '/swarm', desc: 'Inspect active Peer-Mesh swarm graph' },
-  { cmd: '/review', desc: 'Run P0-P3 multi-reviewer diff verification' },
-  { cmd: '/clear', desc: 'Clear current draft & attachment staging' },
+  { cmd: '/rewind', desc: 'Preview atomic BLAKE3 checkpoint diff before rewinding', immediate: true },
+  { cmd: '/fork', desc: 'Fork active SQLite session from current turn', immediate: true },
+  { cmd: '/compact', desc: 'Trigger Lakeview anchored context compaction', immediate: true },
+  { cmd: '/model', desc: 'Configure Main & Subagent model + 5-level effort', immediate: true },
+  { cmd: '/btw', desc: 'Open interactive /btw side-thread drawer', immediate: true },
+  { cmd: '/steer', desc: 'Open Additive Steer Queue Drawer (token_budget: NULL)', immediate: true },
+  { cmd: '/swarm', desc: 'Inspect active Peer-Mesh swarm & Graphify graph', immediate: true },
+  { cmd: '/obs', desc: 'Open Lab-Grade AI Telemetry & Observatory', immediate: true },
+  { cmd: '/speedtest', desc: 'Run on-demand Speedtest & Bufferbloat probe', immediate: true },
+  { cmd: '/privacy', desc: 'Toggle Global Privacy Mask (P)', immediate: true },
+  { cmd: '/export', desc: 'Export Observatory diagnostic JSON', immediate: true },
+  { cmd: '/clear', desc: 'Clear current draft & attachment staging', immediate: true },
 ];
 
 export function Composer() {
@@ -56,6 +66,15 @@ export function Composer() {
   const [modelPickerOpen, setModelPickerOpen] = createSignal(false);
   const [slashIndex, setSlashIndex] = createSignal(0);
   const [attachMode, setAttachMode] = createSignal<'tray' | 'inline'>('tray');
+
+  let lastModelTrigger = modelPickerTriggerSeq();
+  createEffect(() => {
+    const seq = modelPickerTriggerSeq();
+    if (seq > lastModelTrigger) {
+      lastModelTrigger = seq;
+      setModelPickerOpen(true);
+    }
+  });
 
   const slashMatches = createMemo(() => {
     const val = composerDraft();
@@ -114,7 +133,6 @@ export function Composer() {
       insertAtCaret(` @[${name}](sha256:${sha256.slice(0, 12)}) `);
     }
 
-    // Persist asynchronously in SessionStore attachment_blobs (unless locked binary)
     let b64: string | undefined;
     if (!encryptedUnresolved && bytes.byteLength <= 1024 * 1024) {
       let binary = '';
@@ -157,7 +175,6 @@ export function Composer() {
       }
     }
     const text = e.clipboardData?.getData('text/plain') || '';
-    // Offer inline vs attachment chooser on large paste (>4096 bytes), Esc cancels with zero mutation
     if (text.length > 4096) {
       e.preventDefault();
       const bytes = new TextEncoder().encode(text);
@@ -183,16 +200,21 @@ export function Composer() {
       data-testid="band-composer"
       class="shrink-0 px-4 pb-3 pt-2 max-w-4xl w-full mx-auto relative"
     >
-      {/* Additive Steer / Queue Strip */}
+      {/* Interactive Additive Steer / Queue Strip */}
       <Show when={steerQueue.length > 0}>
-        <div class="mb-2 px-3 py-1.5 rounded border border-[var(--border-accent)] bg-[var(--accent-dim)] flex items-center justify-between text-[11.5px]">
-          <span class="font-semibold text-[var(--accent-cyan)]">
-            ADDITIVE_INTAKE Queue ({steerQueue.length}) — token_budget: NULL
+        <button
+          type="button"
+          onClick={() => setSteerDrawerOpen(true)}
+          class="w-full mb-2 px-3 py-1.5 rounded border border-[var(--border-accent)] bg-[var(--accent-dim)] flex items-center justify-between text-[11.5px] cursor-pointer hover:brightness-110"
+        >
+          <span class="font-semibold text-[var(--accent-cyan)] flex items-center gap-1.5">
+            <ListOrdered class="w-3.5 h-3.5" />
+            <span>ADDITIVE_INTAKE Queue ({steerQueue.length}) — token_budget: NULL</span>
           </span>
           <span class="font-mono-num text-[var(--ink-secondary)] truncate max-w-md">
-            Next: {steerQueue[steerQueue.length - 1]?.prompt}
+            Inspect Drawer · Next: {steerQueue[steerQueue.length - 1]?.prompt}
           </span>
-        </div>
+        </button>
       </Show>
 
       {/* Large-Paste Esc-Zero-Mutation Chooser */}
@@ -240,31 +262,38 @@ export function Composer() {
         )}
       </Show>
 
-      {/* Slash Command Overlay */}
+      {/* Slash Command Overlay (Executes Real Actions!) */}
       <Show when={slashMatches().length > 0}>
         <div class="mb-2 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-[var(--shadow-md)] overflow-hidden">
           <div class="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-muted)] border-b border-[var(--border-subtle)]">
-            Slash Commands
+            Slash Commands (Click or Enter to Execute)
           </div>
-          <For each={slashMatches()}>
-            {(item, i) => (
-              <button
-                type="button"
-                class="w-full flex items-center justify-between px-3 py-1.5 text-left text-[12px] cursor-pointer"
-                classList={{
-                  'bg-[var(--bg-interactive)] text-[var(--ink-primary)]': slashIndex() === i(),
-                  'text-[var(--ink-secondary)]': slashIndex() !== i(),
-                }}
-                onClick={() => {
-                  setComposerDraft(`${item.cmd} `);
-                  textareaRef?.focus();
-                }}
-              >
-                <span class="font-mono-num font-bold text-[var(--accent-cyan)]">{item.cmd}</span>
-                <span class="text-[var(--ink-muted)]">{item.desc}</span>
-              </button>
-            )}
-          </For>
+          <div class="max-h-48 overflow-y-auto">
+            <For each={slashMatches()}>
+              {(item, i) => (
+                <button
+                  type="button"
+                  class="w-full flex items-center justify-between px-3 py-1.5 text-left text-[12px] cursor-pointer"
+                  classList={{
+                    'bg-[var(--bg-interactive)] text-[var(--ink-primary)]': slashIndex() === i(),
+                    'text-[var(--ink-secondary)]': slashIndex() !== i(),
+                  }}
+                  onMouseEnter={() => setSlashIndex(i())}
+                  onClick={() => {
+                    if (item.immediate) {
+                      void handleSlashCommand(item.cmd);
+                    } else {
+                      setComposerDraft(`${item.cmd} `);
+                      textareaRef?.focus();
+                    }
+                  }}
+                >
+                  <span class="font-mono-num font-bold text-[var(--accent-cyan)]">{item.cmd}</span>
+                  <span class="text-[var(--ink-muted)] truncate ml-2">{item.desc}</span>
+                </button>
+              )}
+            </For>
+          </div>
         </div>
       </Show>
 
@@ -304,7 +333,7 @@ export function Composer() {
         </div>
       </Show>
 
-      {/* Dual-Scope Main vs Subagent Model & Effort (incl. max) Popover */}
+      {/* Dual-Scope Main vs Subagent Model & 5-Level Effort Popover */}
       <Show when={modelPickerOpen()}>
         <div class="mb-2 p-3 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-[var(--shadow-md)] grid grid-cols-1 sm:grid-cols-2 gap-3 text-[12px]">
           <div class="space-y-1.5">
@@ -321,7 +350,7 @@ export function Composer() {
                 {(m) => <option value={m.spec}>{m.name} ({m.provider})</option>}
               </For>
             </select>
-            <div class="flex items-center gap-1">
+            <div class="flex flex-wrap items-center gap-1">
               <For each={activeMainModel().efforts}>
                 {(eff) => (
                   <button
@@ -343,9 +372,14 @@ export function Composer() {
           </div>
 
           <div class="space-y-1.5">
-            <div class="font-semibold text-[var(--accent-amber)] flex items-center gap-1.5">
-              <GitBranch class="w-3.5 h-3.5" />
-              <span>Subagent / Verifier Scope</span>
+            <div class="font-semibold text-[var(--accent-amber)] flex items-center justify-between gap-1.5">
+              <span class="flex items-center gap-1.5">
+                <GitBranch class="w-3.5 h-3.5" />
+                <span>Subagent / Verifier Scope</span>
+              </span>
+              <button type="button" class="omnia-btn px-1.5 py-0.5 text-[10px]" onClick={() => setModelPickerOpen(false)}>
+                <X class="w-3 h-3" />
+              </button>
             </div>
             <select
               value={modelConfig.subagentModel}
@@ -356,7 +390,7 @@ export function Composer() {
                 {(m) => <option value={m.spec}>{m.name} ({m.provider})</option>}
               </For>
             </select>
-            <div class="flex items-center gap-1">
+            <div class="flex flex-wrap items-center gap-1">
               <For each={activeSubModel().efforts}>
                 {(eff) => (
                   <button
@@ -434,8 +468,19 @@ export function Composer() {
               setPendingPasteChoice(null);
               return;
             }
+            if (slashMatches().length > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+              e.preventDefault();
+              const len = slashMatches().length;
+              setSlashIndex((idx) => (e.key === 'ArrowDown' ? (idx + 1) % len : (idx - 1 + len) % len));
+              return;
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
+              if (slashMatches().length > 0 && composerDraft().trim() === '/') {
+                const chosen = slashMatches()[slashIndex()];
+                if (chosen) void handleSlashCommand(chosen.cmd);
+                return;
+              }
               void sendComposerMessage();
             }
           }}
@@ -468,7 +513,7 @@ export function Composer() {
               data-testid="dual-model-trigger"
               onClick={() => setModelPickerOpen(!modelPickerOpen())}
               class="omnia-btn text-[11px]"
-              title="Main & Subagent Model + Effort"
+              title="Main & Subagent Model + 5-Level Effort"
             >
               <Cpu class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
               <span class="max-w-[140px] truncate">{activeMainModel().name}</span>
@@ -487,7 +532,10 @@ export function Composer() {
 
             <button
               type="button"
-              onClick={() => setComposerDraft('/')}
+              onClick={() => {
+                setComposerDraft('/');
+                textareaRef?.focus();
+              }}
               class="omnia-btn text-[11px]"
               title="Slash Commands"
             >
@@ -521,6 +569,23 @@ export function Composer() {
           </div>
 
           <div class="flex items-center gap-1.5">
+            <Show when={composerDraft().trim().length > 0 && !isStreaming()}>
+              <button
+                type="button"
+                class="omnia-btn text-[11.5px]"
+                title="Enqueue as ADDITIVE_INTAKE without interrupting active goal"
+                onClick={async () => {
+                  const text = composerDraft().trim();
+                  if (!text) return;
+                  setComposerDraft('');
+                  await enqueueAdditiveSteer(text, 'queue');
+                  setSteerDrawerOpen(true);
+                }}
+              >
+                <ListOrdered class="w-3.5 h-3.5 text-[var(--accent-amber)]" />
+                <span class="hidden sm:inline">Queue</span>
+              </button>
+            </Show>
             <Show when={isStreaming()}>
               <button
                 type="button"

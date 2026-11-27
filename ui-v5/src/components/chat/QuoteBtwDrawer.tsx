@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createSignal } from 'solid-js';
-import { ArrowUpRight, MessageSquareQuote, Send, X } from 'lucide-solid';
+import { ArrowUpRight, MessageSquareQuote, Plus, Send, X } from 'lucide-solid';
 import { api } from '@/api/client';
 import {
   activeBtwQuote,
@@ -7,7 +7,9 @@ import {
   activeSessionId,
   btwDrawerOpen,
   btwThreads,
+  flashNotice,
   modelConfig,
+  privacyMask,
   setActiveBtwThreadId,
   setBtwDrawerOpen,
   setBtwThreads,
@@ -15,10 +17,12 @@ import {
 } from '@/state/studio';
 import type { BtwThread } from '@/types';
 import { renderRichMarkdown } from '@/utils/markdown';
+import { maskText } from '@/utils/privacy';
 
 export function QuoteBtwDrawer() {
   const [question, setQuestion] = createSignal('');
   const [loading, setLoading] = createSignal(false);
+  const [statusNote, setStatusNote] = createSignal('');
 
   const activeThread = () => btwThreads.find((t) => t.id === activeBtwThreadId()) ?? null;
 
@@ -26,7 +30,7 @@ export function QuoteBtwDrawer() {
     if (btwDrawerOpen()) {
       const q = activeBtwQuote();
       if (q) {
-        const scopeId = q.surface === 'notebook' ? (q.notebookId || 'nb-default') : activeSessionId();
+        const scopeId = q.surface === 'notebook' ? q.notebookId || 'nb-default' : activeSessionId();
         void api.listBtw(scopeId, q.surface).then((res) => {
           if (res.ok && Array.isArray(res.data.threads)) {
             setBtwThreads(res.data.threads);
@@ -41,13 +45,21 @@ export function QuoteBtwDrawer() {
     const quote = activeBtwQuote();
     if (!qText || !quote) return;
     setLoading(true);
+    setStatusNote('');
     setQuestion('');
 
     const currentThread = activeThread();
     if (currentThread) {
-      const res = await api.appendBtw(currentThread.id, qText, modelConfig.subagentModel);
+      const res = await api.appendBtw(
+        currentThread.id,
+        qText,
+        modelConfig.subagentModel,
+        modelConfig.subagentEffort,
+      );
       if (res.ok && res.data.thread) {
         setBtwThreads(btwThreads.map((t) => (t.id === res.data.thread!.id ? res.data.thread! : t)));
+      } else if (!res.ok) {
+        setStatusNote(`Follow-up error (${res.error.code}): ${res.error.message}`);
       }
     } else {
       const res = await api.askBtw({
@@ -68,7 +80,6 @@ export function QuoteBtwDrawer() {
         setBtwThreads([res.data.thread, ...btwThreads]);
         setActiveBtwThreadId(res.data.thread.id);
       } else {
-        // Explicit client-side fallback record when backend returns an error
         const localThread: BtwThread = {
           id: `btw-${Date.now()}`,
           surface: quote.surface,
@@ -79,7 +90,9 @@ export function QuoteBtwDrawer() {
             {
               id: `ba-${Date.now() + 1}`,
               role: 'assistant',
-              content: res.ok ? String(res.data.answer ?? '') : `Backend status (${res.error.code}): ${res.error.message}`,
+              content: res.ok
+                ? String(res.data.answer ?? '')
+                : `Backend status (${res.error.code}): ${res.error.message}`,
               model: modelConfig.subagentModel,
             },
           ],
@@ -92,10 +105,11 @@ export function QuoteBtwDrawer() {
   };
 
   const handlePromote = async (thread: BtwThread) => {
-    await api.promoteBtw(thread.id, thread.quote.source_label);
+    const res = await api.promoteBtw(thread.id, thread.quote.source_label);
     const summary = thread.messages.map((m) => `**${m.role.toUpperCase()}**: ${m.content}`).join('\n');
     setComposerDraft(`> ${thread.quote.text}\n\n[Promoted BTW]\n${summary}\n`);
     setBtwDrawerOpen(false);
+    flashNotice(res.ok ? 'Promoted BTW side-thread to composer' : `Promoted locally (${res.error.code})`);
   };
 
   return (
@@ -104,19 +118,48 @@ export function QuoteBtwDrawer() {
         data-testid="quote-btw-drawer"
         class="w-96 max-w-[92vw] shrink-0 h-full border-l border-[var(--border-subtle)] bg-[var(--bg-rail)] flex flex-col"
       >
-        <div class="p-3 border-b border-[var(--border-subtle)] flex items-center justify-between">
-          <div class="flex items-center gap-2 font-semibold text-[13px]">
-            <MessageSquareQuote class="w-4 h-4 text-[var(--accent-amber)]" />
-            <span>Quote + BTW Side-Thread</span>
+        <div class="p-3 border-b border-[var(--border-subtle)] flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 font-semibold text-[13px] min-w-0">
+            <MessageSquareQuote class="w-4 h-4 text-[var(--accent-amber)] shrink-0" />
+            <span class="truncate">Quote + /btw Side-Thread</span>
           </div>
-          <button
-            type="button"
-            class="omnia-btn px-1.5 py-1"
-            onClick={() => setBtwDrawerOpen(false)}
-          >
-            <X class="w-3.5 h-3.5" />
-          </button>
+          <div class="flex items-center gap-1">
+            <button
+              type="button"
+              class="omnia-btn px-1.5 py-1 text-[10.5px]"
+              title="Start Fresh Side-Thread"
+              onClick={() => setActiveBtwThreadId(null)}
+            >
+              <Plus class="w-3.5 h-3.5" />
+            </button>
+            <button type="button" class="omnia-btn px-1.5 py-1" onClick={() => setBtwDrawerOpen(false)}>
+              <X class="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
+
+        {/* Thread Switcher Pills */}
+        <Show when={btwThreads.length > 0}>
+          <div class="px-3 py-1.5 border-b border-[var(--border-subtle)] flex items-center gap-1 overflow-x-auto bg-[var(--bg-canvas)]">
+            <For each={btwThreads}>
+              {(t, idx) => (
+                <button
+                  type="button"
+                  onClick={() => setActiveBtwThreadId(t.id)}
+                  class="px-2 py-0.5 rounded border text-[10.5px] font-mono-num shrink-0 cursor-pointer"
+                  classList={{
+                    'border-[var(--accent-amber)] bg-[var(--accent-amber-dim)] text-[var(--accent-amber)] font-semibold':
+                      activeBtwThreadId() === t.id,
+                    'border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-muted)]':
+                      activeBtwThreadId() !== t.id,
+                  }}
+                >
+                  #{idx() + 1} · {t.messages.length}m
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
 
         <Show when={activeBtwQuote()}>
           {(q) => (
@@ -125,23 +168,32 @@ export function QuoteBtwDrawer() {
                 {q().surface} quote · {q().sourceLabel || 'selection'}
               </div>
               <blockquote class="text-[12px] text-[var(--ink-secondary)] border-l-2 border-[var(--accent-amber)] pl-2.5 line-clamp-4">
-                {q().text}
+                {maskText(q().text, privacyMask())}
               </blockquote>
             </div>
           )}
         </Show>
 
+        <Show when={statusNote()}>
+          <div class="px-3 py-1.5 border-b border-[var(--status-coral)] bg-[var(--status-coral-dim)] text-[11px] font-mono-num text-[var(--status-coral)]">
+            {statusNote()}
+          </div>
+        </Show>
+
         <div class="flex-1 overflow-y-auto p-3 space-y-2.5">
-          <Show when={activeThread()}>
+          <Show
+            when={activeThread()}
+            fallback={
+              <div class="p-3 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[12px] text-[var(--ink-muted)]">
+                Ask a focused question below to open a non-polluting side-thread anchored to the selected quote.
+              </div>
+            }
+          >
             {(t) => (
               <>
                 <div class="flex items-center justify-between">
                   <span class="text-[11px] font-mono-num text-[var(--ink-muted)]">Thread {t().id.slice(0, 10)}</span>
-                  <button
-                    type="button"
-                    class="omnia-btn text-[11px]"
-                    onClick={() => void handlePromote(t())}
-                  >
+                  <button type="button" class="omnia-btn text-[11px]" onClick={() => void handlePromote(t())}>
                     <ArrowUpRight class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
                     <span>Promote to Main</span>
                   </button>
@@ -158,7 +210,10 @@ export function QuoteBtwDrawer() {
                       <div class="text-[10px] font-mono-num text-[var(--ink-muted)] mb-1 uppercase">
                         {m.role} {m.model ? `· ${m.model}` : ''}
                       </div>
-                      <div class="omnia-prose text-[12.5px]" innerHTML={renderRichMarkdown(m.content)} />
+                      <div
+                        class="omnia-prose text-[12.5px]"
+                        innerHTML={renderRichMarkdown(maskText(m.content, privacyMask()))}
+                      />
                     </div>
                   )}
                 </For>

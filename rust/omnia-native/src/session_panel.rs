@@ -6,7 +6,8 @@ use omnia_storage::StoreError;
 use windows_sys::core::PCWSTR;
 use windows_sys::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, InvalidateRect, SetBkColor, SetTextColor, HBRUSH, HDC, HFONT,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect, SetBkColor,
+    SetTextColor, HBRUSH, HDC, HFONT, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{EM_SETLIMITTEXT, WC_EDITW};
@@ -17,9 +18,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT, GWLP_USERDATA, IDYES, LBN_SELCHANGE, LBS_NOINTEGRALHEIGHT,
     LBS_NOTIFY, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LB_SETCURSEL, MB_DEFBUTTON2,
     MB_ICONWARNING, MB_OK, MB_YESNO, SW_SHOW, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN,
-    WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_NCDESTROY, WM_SETFONT, WM_SIZE,
-    WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT,
+    WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::dpi::{compute_session_panel_layout, window_dpi, RectPx};
@@ -119,9 +120,10 @@ fn set_text_utf8(hwnd: HWND, text: &str) {
         return;
     }
     let wide = utf8_to_wide(text);
-    // SAFETY: `wide` is NUL-terminated UTF-16 for a live Win32 child control.
+    // SAFETY: `wide` is NUL-terminated UTF-16 for a live Win32 child control; invalidate clears stale glyphs.
     unsafe {
         let _ = SetWindowTextW(hwnd, wide.as_ptr());
+        let _ = InvalidateRect(hwnd, null(), 1);
     }
 }
 
@@ -630,7 +632,7 @@ fn init_panel_controls(hwnd: HWND, instance: HINSTANCE, state: &mut SessionPanel
         if state.db_path.is_some() {
             "Opening session storage..."
         } else {
-            "Storage disconnected.\n\nLaunch with --session-db <isolated absolute path> to evaluate durable sessions.\n\nNo personal database is opened automatically."
+            "Storage disconnected.\nLaunch with --session-db <isolated absolute path> to evaluate durable sessions.\nNo personal database is opened automatically."
         },
         static_style,
         0,
@@ -736,6 +738,41 @@ unsafe extern "system" fn panel_wnd_proc(
     match umsg {
         WM_SIZE => {
             layout_panel_controls(state);
+            // SAFETY: Repaint card background cleanly across updated child gaps.
+            unsafe {
+                let _ = InvalidateRect(hwnd, null(), 1);
+            }
+            0
+        }
+        WM_ERASEBKGND => {
+            let hdc = wparam as HDC;
+            let mut rc = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            // SAFETY: Fill panel background with `COLOR_CARD_BG` so underlying desktop pixels never bleed through child gaps.
+            unsafe {
+                if !hdc.is_null()
+                    && !state.card_brush.is_null()
+                    && GetClientRect(hwnd, &raw mut rc) != 0
+                {
+                    let _ = FillRect(hdc, &raw const rc, state.card_brush);
+                }
+            }
+            1
+        }
+        WM_PAINT => {
+            // SAFETY: Bracket WM_PAINT and fill dirty panel surface with `COLOR_CARD_BG`.
+            unsafe {
+                let mut ps: PAINTSTRUCT = core::mem::zeroed();
+                let hdc = BeginPaint(hwnd, &raw mut ps);
+                if !hdc.is_null() && !state.card_brush.is_null() {
+                    let _ = FillRect(hdc, &raw const ps.rcPaint, state.card_brush);
+                }
+                let _ = EndPaint(hwnd, &raw const ps);
+            }
             0
         }
         WM_SESSION_WORKER_WAKE => {

@@ -1,19 +1,23 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import {
   BookOpen,
   CheckCircle2,
   FileText,
   Layers,
   MessageSquareQuote,
+  Mic,
   Plus,
+  RefreshCw,
   Send,
   Share2,
   Sparkles,
+  Trash2,
 } from 'lucide-solid';
 import { api } from '@/api/client';
-import { openQuoteBtw } from '@/state/studio';
+import { openQuoteBtw, privacyMask } from '@/state/studio';
 import type { EffortLevel } from '@/types';
 import { renderRichMarkdown } from '@/utils/markdown';
+import { maskText } from '@/utils/privacy';
 
 const ARTIFACT_KINDS = [
   { kind: 'audio_overview', label: 'Audio Overview' },
@@ -27,6 +31,36 @@ const ARTIFACT_KINDS = [
   { kind: 'study_guide', label: 'Study Guide' },
 ];
 
+function extractSlides(art: Record<string, unknown>): string[] {
+  if (Array.isArray(art.slides) && art.slides.length > 0) {
+    return art.slides.map((s) => (typeof s === 'string' ? s : JSON.stringify(s, null, 2)));
+  }
+  const md = String(art.content_markdown ?? art.body ?? art.content ?? '');
+  const byRule = md.split(/\n---+\n/).map((s) => s.trim()).filter(Boolean);
+  if (byRule.length > 1) return byRule;
+  const byHeading = md.split(/(?=^##\s)/m).map((s) => s.trim()).filter(Boolean);
+  return byHeading.length > 0 ? byHeading : [md || 'Slide deck generated'];
+}
+
+function extractFlashcards(art: Record<string, unknown>): Array<{ q: string; a: string }> {
+  if (Array.isArray(art.cards) && art.cards.length > 0) {
+    return (art.cards as Array<Record<string, unknown>>).map((c) => ({
+      q: String(c.question ?? c.front ?? c.prompt ?? 'Question'),
+      a: String(c.answer ?? c.back ?? 'Answer'),
+    }));
+  }
+  const md = String(art.content_markdown ?? art.body ?? art.content ?? '');
+  const pairs: Array<{ q: string; a: string }> = [];
+  const blocks = md.split(/\n\s*\n/).filter(Boolean);
+  for (let i = 0; i < blocks.length; i += 2) {
+    pairs.push({
+      q: blocks[i],
+      a: blocks[i + 1] ?? 'Review cited notebook source passages for the grounded explanation.',
+    });
+  }
+  return pairs.length > 0 ? pairs : [{ q: 'Prompt', a: md || 'Flashcard generated' }];
+}
+
 export function AtelierView() {
   const [layoutMode, setLayoutMode] = createSignal<'gemini' | 'notebook' | 'ke_nhau'>('ke_nhau');
   const [notebooks, setNotebooks] = createSignal<Array<Record<string, unknown>>>([]);
@@ -34,14 +68,17 @@ export function AtelierView() {
   const [sources, setSources] = createSignal<Array<Record<string, unknown>>>([]);
   const [artifacts, setArtifacts] = createSignal<Array<Record<string, unknown>>>([]);
   const [selectedArtifact, setSelectedArtifact] = createSignal<Record<string, unknown> | null>(null);
+  const [flashcardIdx, setFlashcardIdx] = createSignal(0);
   const [flashcardFlip, setFlashcardFlip] = createSignal(false);
   const [slideIdx, setSlideIdx] = createSignal(0);
 
   const [newSourceName, setNewSourceName] = createSignal('');
   const [newSourceText, setNewSourceText] = createSignal('');
+  const [audioPath, setAudioPath] = createSignal('');
   const [shareUrl, setShareUrl] = createSignal('');
+  const [shareGateState, setShareGateState] = createSignal<'idle' | 'ok' | 'auth_required' | 'captcha_blocked' | 'error'>('idle');
   const [askPrompt, setAskPrompt] = createSignal('');
-  const [effort, setEffort] = createSignal<EffortLevel>('medium');
+  const [effort, setEffort] = createSignal<EffortLevel>('max');
   const [qaHistory, setQaHistory] = createSignal<Array<{ q: string; a: string; citations?: string[] }>>([]);
   const [statusMsg, setStatusMsg] = createSignal('');
 
@@ -81,6 +118,8 @@ export function AtelierView() {
         setActiveNbId(id);
         await refreshNotebookData(id);
       }
+    } else if (!res.ok) {
+      setStatusMsg(`Create error (${res.error.code}): ${res.error.message}`);
     }
   };
 
@@ -101,24 +140,66 @@ export function AtelierView() {
       setStatusMsg('Source indexed into Atelier Notebook');
       await refreshNotebookData(nbId);
     } else {
-      setStatusMsg(`Ingest error: ${res.error.message}`);
+      setStatusMsg(`Ingest error (${res.error.code}): ${res.error.message}`);
     }
+  };
+
+  const handleDeleteSource = async (sourceId: string) => {
+    if (!activeNbId()) return;
+    const res = await api.deleteSource(activeNbId(), sourceId);
+    if (res.ok) {
+      setStatusMsg(`Deleted source ${sourceId.slice(0, 10)}`);
+      await refreshNotebookData(activeNbId());
+    } else {
+      setStatusMsg(`Delete error (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleTranscribe = async () => {
+    if (!audioPath().trim()) return;
+    const nbId = await ensureNotebookId();
+    if (!nbId) return;
+    setStatusMsg('Running Whisper audio transcription...');
+    const res = await api.transcribeAudio(nbId, audioPath().trim());
+    if (res.ok) {
+      setAudioPath('');
+      setStatusMsg('Audio transcribed & ingested');
+      await refreshNotebookData(nbId);
+    } else {
+      setStatusMsg(`Whisper (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleReconcileSync = async () => {
+    const nbId = activeNbId();
+    if (!nbId) return;
+    const res = await api.reconcileNotebookSync(nbId);
+    setStatusMsg(res.ok ? 'Notebook tombstones reconciled' : `Sync error (${res.error.code}): ${res.error.message}`);
+    await refreshNotebookData(nbId);
   };
 
   const handleImportShare = async () => {
     if (!shareUrl().trim()) return;
     const nbId = await ensureNotebookId();
     if (!nbId) return;
-    const res = await api.safeJson('/api/notebooks/import-share', {
+    const res = await api.safeJson<Record<string, unknown>>('/api/notebooks/import-share', {
       method: 'POST',
       body: JSON.stringify({ notebook_id: nbId, share_url: shareUrl().trim() }),
     });
     if (res.ok) {
-      setStatusMsg('Public Gemini share imported');
-      await refreshNotebookData(nbId);
+      const gate = String(res.data.state ?? res.data.status ?? '');
+      if (gate === 'auth_required' || gate === 'captcha_blocked') {
+        setShareGateState(gate);
+        setStatusMsg(`Import halted honestly (${gate}) — never bypassing auth/CAPTCHA`);
+      } else {
+        setShareGateState('ok');
+        setStatusMsg('Public Gemini share imported');
+        await refreshNotebookData(nbId);
+      }
     } else {
-      // Explicitly surface auth_required / captcha_blocked without bypass
-      setStatusMsg(`Import blocked (${res.error.code}): ${res.error.message}`);
+      const code = res.error.code;
+      setShareGateState(code === 'auth_required' || code === 'captcha_blocked' ? code : 'error');
+      setStatusMsg(`Import blocked (${code}): ${res.error.message}`);
     }
   };
 
@@ -130,7 +211,10 @@ export function AtelierView() {
     setAskPrompt('');
     const res = await api.askNotebook(nbId, q, undefined, effort());
     if (res.ok) {
-      const inner = (res.data.result && typeof res.data.result === 'object' ? res.data.result : res.data) as Record<string, unknown>;
+      const inner = (res.data.result && typeof res.data.result === 'object' ? res.data.result : res.data) as Record<
+        string,
+        unknown
+      >;
       const answer = String(inner.answer ?? inner.response_markdown ?? JSON.stringify(inner));
       const citations = Array.isArray(inner.citations) ? inner.citations.map(String) : [];
       setQaHistory([...qaHistory(), { q, a: answer, citations }]);
@@ -149,6 +233,7 @@ export function AtelierView() {
       setArtifacts([art, ...artifacts()]);
       setSelectedArtifact(art);
       setSlideIdx(0);
+      setFlashcardIdx(0);
       setFlashcardFlip(false);
       setStatusMsg(`Generated ${label}`);
     } else if (!res.ok) {
@@ -156,11 +241,14 @@ export function AtelierView() {
     }
   };
 
+  const activeSlides = createMemo(() => (selectedArtifact() ? extractSlides(selectedArtifact()!) : []));
+  const activeCards = createMemo(() => (selectedArtifact() ? extractFlashcards(selectedArtifact()!) : []));
+
   return (
     <div data-testid="atelier-workbench" class="flex-1 min-h-0 flex flex-col overflow-hidden bg-[var(--bg-canvas)]">
       {/* Atelier Header */}
       <div class="px-4 py-2.5 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)] flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-2.5">
+        <div class="flex flex-wrap items-center gap-2">
           <BookOpen class="w-4 h-4 text-[var(--accent-amber)]" />
           <span class="font-bold text-[13.5px]">Atelier Research Studio</span>
           <select
@@ -180,13 +268,16 @@ export function AtelierView() {
             <Plus class="w-3.5 h-3.5" />
             <span>New Notebook</span>
           </button>
+          <button type="button" class="omnia-btn text-[11px]" onClick={() => void handleReconcileSync()} title="Reconcile Sync Tombstones">
+            <RefreshCw class="w-3 h-3" />
+            <span>Sync</span>
+          </button>
         </div>
 
         <div class="flex items-center gap-2">
           <Show when={statusMsg()}>
             <span class="text-[11.5px] font-mono-num text-[var(--accent-cyan)]">{statusMsg()}</span>
           </Show>
-          {/* Gemini | Notebook | Ke nhau */}
           <div class="omp-segmented text-[11.5px]">
             {(
               [
@@ -195,11 +286,7 @@ export function AtelierView() {
                 { id: 'ke_nhau', label: 'Kế nhau' },
               ] as const
             ).map((m) => (
-              <button
-                type="button"
-                aria-pressed={layoutMode() === m.id}
-                onClick={() => setLayoutMode(m.id)}
-              >
+              <button type="button" aria-pressed={layoutMode() === m.id} onClick={() => setLayoutMode(m.id)}>
                 {m.label}
               </button>
             ))}
@@ -207,11 +294,11 @@ export function AtelierView() {
         </div>
       </div>
 
-      {/* 3-Column Studio Grid (responsive to Gemini / Notebook / Ke nhau at >=1280px) */}
+      {/* 3-Column Studio Grid */}
       <div
         class="flex-1 min-h-0 grid overflow-hidden"
         classList={{
-          'grid-cols-1 lg:grid-cols-[minmax(210px,240px)_minmax(260px,1fr)_minmax(240px,295px)]':
+          'grid-cols-1 lg:grid-cols-[minmax(210px,250px)_minmax(260px,1fr)_minmax(240px,305px)]':
             layoutMode() === 'ke_nhau',
           'grid-cols-1': layoutMode() === 'gemini',
           'grid-cols-1 lg:grid-cols-[minmax(220px,260px)_minmax(0,1fr)]': layoutMode() === 'notebook',
@@ -226,14 +313,31 @@ export function AtelierView() {
             </div>
             <div class="flex-1 overflow-y-auto p-3 space-y-2">
               <For each={sources()}>
-                {(s) => (
-                  <div class="p-2 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[12px]">
-                    <div class="font-semibold truncate">{String(s.title || s.safe_filename || s.filename || s.source_id || s.id)}</div>
-                    <div class="text-[10.5px] font-mono-num text-[var(--ink-muted)] mt-0.5">
-                      {String(s.source_kind || s.kind || 'document')} · {String(s.chunk_count ?? 1)} chunks
+                {(s) => {
+                  const sid = String(s.source_id ?? s.id ?? '');
+                  return (
+                    <div class="p-2 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[12px] flex items-start justify-between gap-1.5">
+                      <div class="min-w-0">
+                        <div class="font-semibold truncate">
+                          {maskText(String(s.title || s.safe_filename || s.filename || sid), privacyMask())}
+                        </div>
+                        <div class="text-[10.5px] font-mono-num text-[var(--ink-muted)] mt-0.5">
+                          {String(s.source_kind || s.kind || 'document')} · {String(s.chunk_count ?? 1)} chunks
+                        </div>
+                      </div>
+                      <Show when={sid}>
+                        <button
+                          type="button"
+                          class="p-1 text-[var(--ink-muted)] hover:text-[var(--status-coral)] cursor-pointer"
+                          title="Delete source"
+                          onClick={() => void handleDeleteSource(sid)}
+                        >
+                          <Trash2 class="w-3 h-3" />
+                        </button>
+                      </Show>
                     </div>
-                  </div>
-                )}
+                  );
+                }}
               </For>
 
               <div class="pt-2 border-t border-[var(--border-subtle)] space-y-1.5">
@@ -256,6 +360,22 @@ export function AtelierView() {
                 </button>
               </div>
 
+              {/* Whisper Audio Transcribe */}
+              <div class="pt-2 border-t border-[var(--border-subtle)] space-y-1.5">
+                <input
+                  type="text"
+                  placeholder="Audio path for Whisper transcribe..."
+                  value={audioPath()}
+                  onInput={(e) => setAudioPath(e.currentTarget.value)}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11.5px]"
+                />
+                <button type="button" class="omnia-btn w-full justify-center text-[11px]" onClick={() => void handleTranscribe()}>
+                  <Mic class="w-3 h-3 text-[var(--accent-cyan)]" />
+                  <span>Whisper Transcribe</span>
+                </button>
+              </div>
+
+              {/* Public Gemini Share Import (Non-Bypassing) */}
               <div class="pt-2 border-t border-[var(--border-subtle)] space-y-1.5">
                 <input
                   type="text"
@@ -268,6 +388,11 @@ export function AtelierView() {
                   <Share2 class="w-3 h-3" />
                   <span>Import Public Share</span>
                 </button>
+                <Show when={shareGateState() === 'auth_required' || shareGateState() === 'captcha_blocked'}>
+                  <div class="px-2 py-1 rounded border border-[var(--accent-amber)] bg-[var(--accent-amber-dim)] text-[10.5px] font-mono-num text-[var(--accent-amber)]">
+                    Gate: {shareGateState()} (non-bypass enforced)
+                  </div>
+                </Show>
               </div>
             </div>
           </div>
@@ -282,7 +407,8 @@ export function AtelierView() {
                 [
                   { eff: 'low', label: 'Nhanh' },
                   { eff: 'medium', label: 'Tư duy' },
-                  { eff: 'max', label: 'Pro' },
+                  { eff: 'high', label: 'Deep' },
+                  { eff: 'max', label: 'Pro Max' },
                 ] as const
               ).map((p) => (
                 <button
@@ -306,7 +432,29 @@ export function AtelierView() {
               {(turn) => (
                 <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2">
                   <div class="text-[12.5px] font-semibold text-[var(--accent-cyan)]">{turn.q}</div>
-                  <div class="omnia-prose text-[13px]" innerHTML={renderRichMarkdown(turn.a)} />
+                  <div class="omnia-prose text-[13px]" innerHTML={renderRichMarkdown(maskText(turn.a, privacyMask()))} />
+                  <Show when={(turn.citations ?? []).length > 0}>
+                    <div class="flex flex-wrap gap-1 pt-1">
+                      <For each={turn.citations}>
+                        {(cit, idx) => (
+                          <button
+                            type="button"
+                            class="omnia-badge text-[var(--status-emerald)] cursor-pointer hover:border-[var(--border-accent)]"
+                            onClick={() =>
+                              openQuoteBtw({
+                                text: cit,
+                                sourceLabel: `Citation [${idx() + 1}]`,
+                                surface: 'notebook',
+                                notebookId: activeNbId(),
+                              })
+                            }
+                          >
+                            [{idx() + 1}] {cit.slice(0, 36)}
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
                   <div class="flex items-center justify-between pt-2 border-t border-[var(--border-subtle)]">
                     <button
                       type="button"
@@ -323,11 +471,9 @@ export function AtelierView() {
                       <MessageSquareQuote class="w-3 h-3 text-[var(--accent-amber)]" />
                       <span>Quote + BTW</span>
                     </button>
-                    <Show when={(turn.citations ?? []).length > 0}>
-                      <span class="text-[11px] font-mono-num text-[var(--status-emerald)]">
-                        {turn.citations!.length} citations
-                      </span>
-                    </Show>
+                    <span class="text-[11px] font-mono-num text-[var(--ink-muted)]">
+                      {(turn.citations ?? []).length} citations
+                    </span>
                   </div>
                 </div>
               )}
@@ -383,6 +529,7 @@ export function AtelierView() {
                     onClick={() => {
                       setSelectedArtifact(art);
                       setSlideIdx(0);
+                      setFlashcardIdx(0);
                       setFlashcardFlip(false);
                     }}
                     class="w-full p-2 rounded border text-left text-[12px] cursor-pointer"
@@ -404,29 +551,87 @@ export function AtelierView() {
                 {(art) => (
                   <div class="omnia-surface-panel rounded p-3 space-y-2 text-[12px]">
                     <div class="font-bold text-[var(--accent-cyan)]">{String(art().title || art().kind)}</div>
+
                     <Show when={art().kind === 'flashcards'}>
-                      <button
-                        type="button"
-                        onClick={() => setFlashcardFlip(!flashcardFlip())}
-                        class="w-full p-4 rounded border border-[var(--border-strong)] bg-[var(--bg-canvas)] text-center cursor-pointer"
-                      >
-                        <div class="text-[10px] font-mono-num uppercase text-[var(--accent-amber)] mb-1">
-                          {flashcardFlip() ? 'Answer (Click to Flip)' : 'Prompt (Click to Flip)'}
+                      <div class="space-y-1.5">
+                        <div class="flex items-center justify-between text-[10.5px] font-mono-num">
+                          <button
+                            type="button"
+                            class="omnia-btn px-2 py-0.5"
+                            onClick={() => {
+                              setFlashcardIdx((i) => Math.max(0, i - 1));
+                              setFlashcardFlip(false);
+                            }}
+                          >
+                            Prev
+                          </button>
+                          <span>
+                            Card {Math.min(flashcardIdx() + 1, activeCards().length)} / {activeCards().length}
+                          </span>
+                          <button
+                            type="button"
+                            class="omnia-btn px-2 py-0.5"
+                            onClick={() => {
+                              setFlashcardIdx((i) => Math.min(activeCards().length - 1, i + 1));
+                              setFlashcardFlip(false);
+                            }}
+                          >
+                            Next
+                          </button>
                         </div>
-                        <div>{String(art().content_markdown || art().content || 'Flashcard deck generated')}</div>
-                      </button>
-                    </Show>
-                    <Show when={art().kind === 'slide_deck'}>
-                      <div class="flex items-center justify-between text-[11px] font-mono-num">
-                        <button type="button" class="omnia-btn px-2 py-0.5" onClick={() => setSlideIdx(Math.max(0, slideIdx() - 1))}>Prev</button>
-                        <span>Slide {slideIdx() + 1}</span>
-                        <button type="button" class="omnia-btn px-2 py-0.5" onClick={() => setSlideIdx(slideIdx() + 1)}>Next</button>
+                        <button
+                          type="button"
+                          onClick={() => setFlashcardFlip(!flashcardFlip())}
+                          class="w-full p-3.5 rounded border border-[var(--border-strong)] bg-[var(--bg-canvas)] text-left cursor-pointer"
+                        >
+                          <div class="text-[10px] font-mono-num uppercase text-[var(--accent-amber)] mb-1">
+                            {flashcardFlip() ? 'Answer (Click to Flip)' : 'Prompt (Click to Flip)'}
+                          </div>
+                          <div class="text-[12px]">
+                            {flashcardFlip()
+                              ? activeCards()[flashcardIdx()]?.a
+                              : activeCards()[flashcardIdx()]?.q}
+                          </div>
+                        </button>
                       </div>
                     </Show>
-                    <div
-                      class="omnia-prose text-[12px] max-h-60 overflow-y-auto"
-                      innerHTML={renderRichMarkdown(String(art().content_markdown || art().body || JSON.stringify(art(), null, 2)))}
-                    />
+
+                    <Show when={art().kind === 'slide_deck'}>
+                      <div class="space-y-1.5">
+                        <div class="flex items-center justify-between text-[11px] font-mono-num">
+                          <button
+                            type="button"
+                            class="omnia-btn px-2 py-0.5"
+                            onClick={() => setSlideIdx((i) => Math.max(0, i - 1))}
+                          >
+                            Prev
+                          </button>
+                          <span>
+                            Slide {Math.min(slideIdx() + 1, activeSlides().length)} / {activeSlides().length}
+                          </span>
+                          <button
+                            type="button"
+                            class="omnia-btn px-2 py-0.5"
+                            onClick={() => setSlideIdx((i) => Math.min(activeSlides().length - 1, i + 1))}
+                          >
+                            Next
+                          </button>
+                        </div>
+                        <div
+                          class="omnia-prose text-[12px] p-2.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]"
+                          innerHTML={renderRichMarkdown(activeSlides()[slideIdx()] ?? '')}
+                        />
+                      </div>
+                    </Show>
+
+                    <Show when={art().kind !== 'flashcards' && art().kind !== 'slide_deck'}>
+                      <div
+                        class="omnia-prose text-[12px] max-h-60 overflow-y-auto"
+                        innerHTML={renderRichMarkdown(
+                          String(art().content_markdown || art().body || JSON.stringify(art(), null, 2)),
+                        )}
+                      />
+                    </Show>
                   </div>
                 )}
               </Show>

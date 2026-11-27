@@ -50,6 +50,8 @@ pub const MAX_SETTING_CHARS: usize = 512;
 /// Win32 STATIC control styles omitted from `windows-sys` `WindowsAndMessaging`.
 pub const SS_LEFT: u32 = 0x0000;
 pub const SS_NOPREFIX: u32 = 0x0080;
+pub const SS_CENTERIMAGE: u32 = 0x0200;
+pub const SS_ENDELLIPSIS: u32 = 0x4000;
 
 /// Win32 color constants (`0x00BBGGRR` for GDI `COLORREF`).
 pub const COLOR_WINDOW_BG: u32 = 0x001B_130E; // RGB(14, 19, 27)

@@ -11,35 +11,72 @@ import type {
   EffortLevel,
   HealthSnapshot,
   ModelConfigEntry,
+  ObservabilitySubTab,
   OpenEditorTab,
+  RewindPreviewState,
   SessionRecord,
+  SmartAlert,
   SteerQueueEntry,
   ThemeId,
   TopMode,
   WorkbenchTab,
   WorkspaceEntry,
 } from '@/types';
+import { downloadTextFile, maskJson, maskText } from '@/utils/privacy';
 
 // Global Shell state — `topMode` starts on `'chat'` and is NEVER mutated by async startup hydration
 export const [topMode, setTopModeSignal] = createSignal<TopMode>('chat');
 export const [workbenchTab, setWorkbenchTab] = createSignal<WorkbenchTab>('chat');
+export const [obsSubTab, setObsSubTab] = createSignal<ObservabilitySubTab>('telemetry');
 export const [sidebarOpen, setSidebarOpen] = createSignal<boolean>(true);
 export const [ideChatDrawerOpen, setIdeChatDrawerOpen] = createSignal<boolean>(true);
 export const [browserChatDrawerOpen, setBrowserChatDrawerOpen] = createSignal<boolean>(true);
 export const [commandPaletteOpen, setCommandPaletteOpen] = createSignal<boolean>(false);
 export const [btwDrawerOpen, setBtwDrawerOpen] = createSignal<boolean>(false);
+export const [steerDrawerOpen, setSteerDrawerOpen] = createSignal<boolean>(false);
 export const [wsConnected, setWsConnected] = createSignal<boolean>(false);
+export const [modelPickerTriggerSeq, setModelPickerTriggerSeq] = createSignal<number>(0);
+export const [speedtestTriggerSeq, setSpeedtestTriggerSeq] = createSignal<number>(0);
+export const [dnsBenchTriggerSeq, setDnsBenchTriggerSeq] = createSignal<number>(0);
+export const [globalNotice, setGlobalNotice] = createSignal<string>('');
 
-const storedTheme = (typeof localStorage !== 'undefined' && (localStorage.getItem('omnia.studio.theme') as ThemeId)) || 'obsidian';
+const storedPrivacy =
+  typeof localStorage !== 'undefined' && localStorage.getItem('omnia.studio.privacyMask') === 'true';
+export const [privacyMask, setPrivacyMaskSignal] = createSignal<boolean>(storedPrivacy);
+
+export function setPrivacyMask(enabled: boolean): void {
+  setPrivacyMaskSignal(enabled);
+  try {
+    localStorage.setItem('omnia.studio.privacyMask', String(enabled));
+  } catch {
+    // ignore storage quota errors
+  }
+  flashNotice(enabled ? 'Privacy Mask ON (IPs/MACs/SSIDs/paths masked)' : 'Privacy Mask OFF');
+}
+
+export function togglePrivacyMask(): void {
+  setPrivacyMask(!privacyMask());
+}
+
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+export function flashNotice(msg: string, durationMs = 2800): void {
+  setGlobalNotice(msg);
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => setGlobalNotice(''), durationMs);
+}
+
+const storedTheme =
+  (typeof localStorage !== 'undefined' && (localStorage.getItem('omnia.studio.theme') as ThemeId)) || 'obsidian';
 export const [themePref, setThemePrefSignal] = createSignal<ThemeId>(storedTheme);
 
 export function applyTheme(pref: ThemeId): void {
   setThemePrefSignal(pref);
   let resolved = pref;
   if (pref === 'system') {
-    resolved = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)').matches
-      ? 'alabaster'
-      : 'obsidian';
+    resolved =
+      typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'alabaster'
+        : 'obsidian';
   }
   if (typeof document !== 'undefined') {
     document.documentElement.setAttribute('data-theme', resolved);
@@ -62,14 +99,30 @@ export function applyTheme(pref: ThemeId): void {
 
 export function setTopMode(mode: TopMode): void {
   setTopModeSignal(mode);
-  if (mode === 'chat' && workbenchTab() !== 'chat') {
-    // Keep chosen workbench unless directly toggling back
-  }
 }
 
 export function openWorkbench(tab: WorkbenchTab): void {
   setTopModeSignal('chat');
   setWorkbenchTab(tab);
+  if (tab === 'benchmarks') {
+    setObsSubTab('benchmarks');
+  }
+}
+
+export function openObservabilityTab(subTab: ObservabilitySubTab): void {
+  setTopModeSignal('chat');
+  setWorkbenchTab(subTab === 'benchmarks' ? 'benchmarks' : 'observability');
+  setObsSubTab(subTab);
+}
+
+export function triggerQuickSpeedtest(): void {
+  openObservabilityTab('network');
+  setSpeedtestTriggerSeq((n) => n + 1);
+}
+
+export function triggerDnsBenchmark(): void {
+  openObservabilityTab('network');
+  setDnsBenchTriggerSeq((n) => n + 1);
 }
 
 // Live Health & Telemetry
@@ -84,9 +137,19 @@ export const [health, setHealth] = createStore<HealthSnapshot>({
   runtimeOnline: false,
 });
 
+// Live WS feeds for Network Speedtest & Smart Alerts
+export const [smartAlerts, setSmartAlerts] = createStore<SmartAlert[]>([]);
+export const [liveSpeedtestWsEvent, setLiveSpeedtestWsEvent] = createSignal<{
+  event: string;
+  payload: Record<string, unknown>;
+  seq: number;
+} | null>(null);
+let speedtestWsSeq = 0;
+
 // Unified SQLite Sessions
 export const [sessions, setSessions] = createStore<SessionRecord[]>([]);
 export const [activeSessionId, setActiveSessionId] = createSignal<string>('session-default');
+export const [rewindPreview, setRewindPreview] = createSignal<RewindPreviewState | null>(null);
 
 // Chat & Agent Streaming State
 export const [agentRunMode, setAgentRunMode] = createSignal<AgentRunMode>('builder');
@@ -103,38 +166,56 @@ export const [pendingPasteChoice, setPendingPasteChoice] = createSignal<{
   name: string;
 } | null>(null);
 
-// Dual-Scope Main vs Subagent Model + Effort
+const ALL_FIVE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// Dual-Scope Main vs Subagent Model + Effort (Steer #16 aligned: 5 effort levels, default max)
 export const DEFAULT_MODEL_CATALOG: ModelConfigEntry[] = [
   {
     spec: 'htmustc-claude/claude-sonnet-5-5',
     name: 'Claude Sonnet 5.5',
     provider: 'htmustc-claude',
-    efforts: ['low', 'medium', 'high', 'max'],
-    defaultEffort: 'high',
+    efforts: ALL_FIVE_EFFORTS,
+    defaultEffort: 'max',
+    contextWindow: 200000,
+  },
+  {
+    spec: 'htmustc-claude/claude-opus-5-5',
+    name: 'Claude Opus 5.5',
+    provider: 'htmustc-claude',
+    efforts: ALL_FIVE_EFFORTS,
+    defaultEffort: 'max',
     contextWindow: 200000,
   },
   {
     spec: 'htmustc-openai/gpt-6.2-sol',
     name: 'GPT-6.2 Sol',
     provider: 'htmustc-openai',
-    efforts: ['low', 'medium', 'high', 'max'],
-    defaultEffort: 'high',
+    efforts: ALL_FIVE_EFFORTS,
+    defaultEffort: 'max',
     contextWindow: 400000,
   },
   {
-    spec: 'htmustc-gemini/gemini-3.8-pro',
-    name: 'Gemini 3.8 Pro',
+    spec: 'htmustc-openai/gpt-6-luna',
+    name: 'GPT-6 Luna',
+    provider: 'htmustc-openai',
+    efforts: ALL_FIVE_EFFORTS,
+    defaultEffort: 'max',
+    contextWindow: 400000,
+  },
+  {
+    spec: 'htmustc-gemini/gemini-4-carbon',
+    name: 'Gemini 4 Carbon',
     provider: 'htmustc-gemini',
-    efforts: ['low', 'medium', 'high', 'max'],
-    defaultEffort: 'medium',
+    efforts: ALL_FIVE_EFFORTS,
+    defaultEffort: 'max',
     contextWindow: 1000000,
   },
   {
     spec: 'htmustc-gemini/gemini-3.8-flash',
     name: 'Gemini 3.8 Flash',
     provider: 'htmustc-gemini',
-    efforts: ['low', 'medium', 'high'],
-    defaultEffort: 'low',
+    efforts: ALL_FIVE_EFFORTS,
+    defaultEffort: 'medium',
     contextWindow: 1000000,
   },
 ];
@@ -142,15 +223,18 @@ export const DEFAULT_MODEL_CATALOG: ModelConfigEntry[] = [
 export const [modelCatalog, setModelCatalog] = createStore<ModelConfigEntry[]>(DEFAULT_MODEL_CATALOG);
 export const [modelConfig, setModelConfig] = createStore<DualScopeModelConfig>({
   mainModel: 'htmustc-claude/claude-sonnet-5-5',
-  mainEffort: 'high',
+  mainEffort: 'max',
   subagentModel: 'htmustc-gemini/gemini-3.8-flash',
-  subagentEffort: 'medium',
+  subagentEffort: 'high',
 });
 
 export async function updateDualModelConfig(patch: Partial<DualScopeModelConfig>): Promise<void> {
   const next: DualScopeModelConfig = { ...modelConfig, ...patch };
   setModelConfig(next);
-  await api.saveModelsConfig(next);
+  const res = await api.saveModelsConfig(next);
+  if (!res.ok) {
+    flashNotice(`Model config save note (${res.error.code}): ${res.error.message}`);
+  }
 }
 
 // Unified Quote + BTW Side-Thread State
@@ -178,6 +262,7 @@ export function openQuoteBtw(quote: {
     surface: quote.surface ?? 'chat',
     notebookId: quote.notebookId,
   });
+  setActiveBtwThreadId(null);
   setBtwDrawerOpen(true);
 }
 
@@ -209,13 +294,52 @@ export function abortActiveStream(): void {
   void api.stopChat(activeSessionId());
 }
 
+export async function refreshSteerQueue(): Promise<void> {
+  const res = await api.listSteerQueue();
+  if (res.ok) {
+    const raw = (res.data.items ?? res.data.queue ?? res.data.entries) as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(raw)) {
+      setSteerQueue(
+        raw.map((item, idx) => ({
+          id: String(item.id ?? item.itemId ?? `steer-${idx}`),
+          prompt: String(item.prompt ?? item.text ?? item.message ?? ''),
+          mode: (String(item.mode ?? 'ADDITIVE_INTAKE') as SteerQueueEntry['mode']),
+          status: (String(item.status ?? 'queued') as SteerQueueEntry['status']),
+          createdAt: Number(item.createdAtMs ?? item.created_at_ms ?? item.createdAt ?? Date.now()),
+          tokenBudget: null,
+        })),
+      );
+    }
+  }
+}
+
+export async function refreshSmartAlerts(): Promise<void> {
+  const res = await api.getSmartAlerts(privacyMask());
+  if (res.ok) {
+    const list = (res.data.alerts ?? res.data.items) as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(list)) {
+      setSmartAlerts(
+        list.map((a, idx) => ({
+          id: String(a.id ?? `alert-${idx}`),
+          severity: (a.severity === 'critical' || a.severity === 'warning' ? a.severity : 'info') as SmartAlert['severity'],
+          category: String(a.category ?? 'telemetry'),
+          title: String(a.title ?? a.code ?? 'System Notice'),
+          detail: String(a.detail ?? a.message ?? ''),
+          targetTab: (a.targetTab as ObservabilitySubTab | undefined) ?? 'telemetry',
+          recordedAtMs: Number(a.recordedAtMs ?? Date.now()),
+        })),
+      );
+    }
+  }
+}
+
 export async function selectAndLoadSession(sessionId: string): Promise<void> {
   setActiveSessionId(sessionId);
   const res = await api.getSessionMessages(sessionId);
   if (res.ok && Array.isArray(res.data.messages)) {
     const loaded: ChatTurnMessage[] = res.data.messages.map((m, i) => ({
       id: String(m.id ?? `msg-${i}`),
-      role: (m.role === 'user' || m.role === 'assistant' || m.role === 'system' ? m.role : 'assistant'),
+      role: m.role === 'user' || m.role === 'assistant' || m.role === 'system' ? m.role : 'assistant',
       content: String(m.content ?? ''),
       thinking: m.thinking ? String(m.thinking) : undefined,
       model: m.model ? String(m.model) : undefined,
@@ -228,23 +352,294 @@ export async function selectAndLoadSession(sessionId: string): Promise<void> {
   }
 }
 
+export async function openRewindPreview(targetTurn: number): Promise<void> {
+  const sid = activeSessionId();
+  const clamped = Math.max(0, Math.min(targetTurn, Math.max(messages.length - 1, 0)));
+  const res = await api.previewRewind(sid, clamped);
+  if (res.ok) {
+    const d = res.data;
+    const files = Array.isArray(d.affectedFiles ?? d.affected_files)
+      ? ((d.affectedFiles ?? d.affected_files) as unknown[]).map(String)
+      : [];
+    setRewindPreview({
+      sessionId: sid,
+      targetTurn: clamped,
+      totalTurns: messages.length,
+      turnsToDrop: Number(d.turnsToDrop ?? d.turns_to_drop ?? Math.max(0, messages.length - clamped - 1)),
+      affectedFiles: files,
+      diffPatch: String(d.diffPatch ?? d.diff_patch ?? d.patch ?? ''),
+      summary: String(
+        d.summary ?? d.note ?? `Rewind session ${sid} to turn T${clamped} (${Math.max(0, messages.length - clamped - 1)} turns truncated).`,
+      ),
+      checkpointHash: d.checkpointHash ? String(d.checkpointHash) : undefined,
+    });
+  } else {
+    const dropped = messages.slice(clamped + 1);
+    const localPatch = dropped
+      .map((m, idx) => `--- turn/T${clamped + 1 + idx} (${m.role})\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-${m.content.slice(0, 140).replace(/\r?\n/g, ' ')}`)
+      .join('\n');
+    setRewindPreview({
+      sessionId: sid,
+      targetTurn: clamped,
+      totalTurns: messages.length,
+      turnsToDrop: dropped.length,
+      affectedFiles: [],
+      diffPatch: localPatch,
+      summary: `Preview generated locally (${res.error.code}): rewinding to T${clamped} drops ${dropped.length} subsequent turn(s).`,
+    });
+  }
+}
+
+export async function confirmRewindExecution(): Promise<void> {
+  const preview = rewindPreview();
+  if (!preview) return;
+  const res = await api.rewindSession(preview.sessionId, preview.targetTurn);
+  setRewindPreview(null);
+  if (res.ok) {
+    await selectAndLoadSession(preview.sessionId);
+    flashNotice(`Rewound session to turn T${preview.targetTurn}`);
+  } else {
+    flashNotice(`Rewind failed (${res.error.code}): ${res.error.message}`);
+  }
+}
+
+export async function compactActiveSession(): Promise<void> {
+  const res = await api.compactSession(activeSessionId());
+  if (res.ok) {
+    flashNotice(String(res.data.summary ?? res.data.message ?? 'Lakeview anchored compaction completed'));
+    await selectAndLoadSession(activeSessionId());
+  } else {
+    flashNotice(`Compact failed (${res.error.code}): ${res.error.message}`);
+  }
+}
+
+export function exportActiveSession(format: 'json' | 'markdown'): void {
+  const masked = privacyMask();
+  const payload = maskJson(
+    {
+      exportedAt: new Date().toISOString(),
+      privacyMask: masked,
+      sessionId: activeSessionId(),
+      modelConfig: { ...modelConfig },
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        model: m.model,
+        effort: m.effort,
+        timestamp: m.timestamp,
+      })),
+    },
+    masked,
+  );
+  if (format === 'json') {
+    downloadTextFile(`omnia-session-${activeSessionId()}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
+  } else {
+    const md = [
+      `# Omnia Session Export (${maskText(activeSessionId(), masked)})`,
+      `- Exported: ${payload.exportedAt}`,
+      `- Privacy Mask: ${masked ? 'ON' : 'OFF'}`,
+      `- Main Model: ${modelConfig.mainModel} [${modelConfig.mainEffort}]`,
+      '',
+      ...payload.messages.map((m, i) => `## Turn ${i} — ${m.role.toUpperCase()}\n\n${m.content}\n`),
+    ].join('\n');
+    downloadTextFile(`omnia-session-${activeSessionId()}.md`, md, 'text/markdown;charset=utf-8');
+  }
+  flashNotice(`Exported session (${format.toUpperCase()}, mask=${masked ? 'ON' : 'OFF'})`);
+}
+
+export async function triggerV5Export(format: 'json' | 'csv' | 'markdown' | 'diagnostic'): Promise<void> {
+  const masked = privacyMask();
+  const res = await api.fetchExport(format, masked, '24h');
+  const ext = format === 'csv' ? 'csv' : format === 'markdown' ? 'md' : 'json';
+  const mime =
+    format === 'csv'
+      ? 'text/csv;charset=utf-8'
+      : format === 'markdown'
+        ? 'text/markdown;charset=utf-8'
+        : 'application/json;charset=utf-8';
+  const filename = `omnia-observatory-${format}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`;
+
+  if (res.ok && res.text.trim().length > 0) {
+    const body = masked ? maskText(res.text, true) : res.text;
+    downloadTextFile(filename, body, mime);
+    flashNotice(`Downloaded ${format.toUpperCase()} export (Privacy Mask ${masked ? 'ON' : 'OFF'})`);
+    return;
+  }
+
+  // Deterministic client-side fallback when offline or endpoint unavailable
+  const snapshot = maskJson(
+    {
+      exportedAt: new Date().toISOString(),
+      format,
+      privacyMask: masked,
+      health: { ...health },
+      modelConfig: { ...modelConfig },
+      alerts: [...smartAlerts],
+      sessionId: activeSessionId(),
+      messageCount: messages.length,
+    },
+    masked,
+  );
+  if (format === 'csv') {
+    const csv = [
+      'metric,value',
+      `exported_at,${snapshot.exportedAt}`,
+      `privacy_mask,${masked}`,
+      `crates,${snapshot.health.crateCount ?? ''}`,
+      `working_set_bytes,${snapshot.health.workingSetBytes ?? ''}`,
+      `main_model,${snapshot.modelConfig.mainModel}`,
+      `main_effort,${snapshot.modelConfig.mainEffort}`,
+      `alerts_count,${snapshot.alerts.length}`,
+    ].join('\n');
+    downloadTextFile(filename, csv, mime);
+  } else if (format === 'markdown') {
+    const md = [
+      '# Omnia Studio Executive Report',
+      `- Generated: ${snapshot.exportedAt}`,
+      `- Privacy Mask: ${masked ? 'ON' : 'OFF'}`,
+      `- Branch: ${snapshot.health.branch ?? 'omnia-sota-harness'}`,
+      `- Main Model: ${snapshot.modelConfig.mainModel} (${snapshot.modelConfig.mainEffort})`,
+      `- Active Alerts: ${snapshot.alerts.length}`,
+    ].join('\n');
+    downloadTextFile(filename, md, mime);
+  } else {
+    downloadTextFile(filename, JSON.stringify(snapshot, null, 2), mime);
+  }
+  flashNotice(`Exported local ${format.toUpperCase()} snapshot (Privacy Mask ${masked ? 'ON' : 'OFF'})`);
+}
+
+/**
+ * Execute Studio slash commands locally when typed in the Composer so zero commands are dead.
+ * Returns `true` when handled locally (caller should NOT dispatch as raw chat text).
+ */
+export async function handleSlashCommand(rawPrompt: string): Promise<boolean> {
+  const trimmed = rawPrompt.trim();
+  if (!trimmed.startsWith('/')) return false;
+  const [cmdRaw, ...rest] = trimmed.split(/\s+/);
+  const cmd = cmdRaw.toLowerCase();
+  const arg = rest.join(' ').trim();
+
+  if (cmd === '/clear') {
+    setComposerDraft('');
+    setAttachments([]);
+    flashNotice('Cleared draft and staged attachments');
+    return true;
+  }
+  if (cmd === '/model') {
+    setModelPickerTriggerSeq((n) => n + 1);
+    setComposerDraft('');
+    return true;
+  }
+  if (cmd === '/swarm') {
+    openWorkbench('swarm');
+    setComposerDraft('');
+    return true;
+  }
+  if (cmd === '/obs' || cmd === '/status' || cmd === '/telemetry') {
+    openObservabilityTab('telemetry');
+    setComposerDraft('');
+    return true;
+  }
+  if (cmd === '/net' || cmd === '/network') {
+    openObservabilityTab('network');
+    setComposerDraft('');
+    return true;
+  }
+  if (cmd === '/speedtest') {
+    triggerQuickSpeedtest();
+    setComposerDraft('');
+    return true;
+  }
+  if (cmd === '/privacy') {
+    togglePrivacyMask();
+    setComposerDraft('');
+    return true;
+  }
+  if (cmd === '/compact') {
+    setComposerDraft('');
+    await compactActiveSession();
+    return true;
+  }
+  if (cmd === '/fork') {
+    setComposerDraft('');
+    const res = await api.forkSession(activeSessionId());
+    if (res.ok && res.data.session) {
+      setSessions([res.data.session, ...sessions]);
+      await selectAndLoadSession(res.data.session.id);
+      flashNotice(`Forked session -> ${res.data.session.title}`);
+    } else if (!res.ok) {
+      flashNotice(`Fork failed (${res.error.code}): ${res.error.message}`);
+    }
+    return true;
+  }
+  if (cmd === '/rewind') {
+    setComposerDraft('');
+    const parsedTurn = arg ? Number.parseInt(arg, 10) : Math.max(messages.length - 2, 0);
+    await openRewindPreview(Number.isFinite(parsedTurn) ? parsedTurn : 0);
+    return true;
+  }
+  if (cmd === '/btw') {
+    setComposerDraft('');
+    openQuoteBtw({
+      text: arg || messages[messages.length - 1]?.content.slice(0, 280) || 'Current conversation context',
+      sourceLabel: 'Slash /btw',
+      surface: 'chat',
+    });
+    return true;
+  }
+  if (cmd === '/steer' || cmd === '/queue') {
+    setComposerDraft('');
+    if (arg) {
+      await enqueueAdditiveSteer(arg, cmd === '/queue' ? 'queue' : 'steer');
+    }
+    setSteerDrawerOpen(true);
+    return true;
+  }
+  if (cmd === '/export') {
+    setComposerDraft('');
+    const fmt = (arg === 'csv' || arg === 'markdown' || arg === 'diagnostic' ? arg : 'json') as
+      | 'json'
+      | 'csv'
+      | 'markdown'
+      | 'diagnostic';
+    await triggerV5Export(fmt);
+    return true;
+  }
+  return false;
+}
+
+export async function enqueueAdditiveSteer(prompt: string, mode: 'steer' | 'queue' = 'queue'): Promise<void> {
+  const clean = prompt.trim();
+  if (!clean) return;
+  const entry: SteerQueueEntry = {
+    id: `steer-${Date.now()}`,
+    prompt: clean,
+    mode: mode === 'steer' ? 'steer' : 'ADDITIVE_INTAKE',
+    status: 'queued',
+    createdAt: Date.now(),
+    tokenBudget: null,
+  };
+  setSteerQueue(steerQueue.length, entry);
+  const res = await api.steerChat(activeSessionId(), clean, mode);
+  if (!res.ok) {
+    await api.enqueueSteer(clean, 'ADDITIVE_INTAKE');
+  }
+  await refreshSteerQueue();
+  flashNotice(`Enqueued ADDITIVE_INTAKE (${mode}, token_budget: NULL)`);
+}
+
 export async function sendComposerMessage(overridePrompt?: string): Promise<void> {
   const prompt = (overridePrompt ?? composerDraft()).trim();
   if (!prompt && attachments.length === 0) return;
 
+  if (!overridePrompt && (await handleSlashCommand(prompt))) {
+    return;
+  }
+
   // If currently streaming, enqueue strictly as ADDITIVE_INTAKE Steer without dropping active stream
   if (isStreaming()) {
-    const entry: SteerQueueEntry = {
-      id: `steer-${Date.now()}`,
-      prompt,
-      mode: 'ADDITIVE_INTAKE',
-      status: 'queued',
-      createdAt: Date.now(),
-      tokenBudget: null,
-    };
-    setSteerQueue(steerQueue.length, entry);
+    await enqueueAdditiveSteer(prompt, 'steer');
     if (!overridePrompt) setComposerDraft('');
-    await api.steerChat(activeSessionId(), prompt, 'steer');
     return;
   }
 
@@ -456,7 +851,13 @@ export async function hydrateStudioStartup(): Promise<void> {
   }
 
   if (modelsRes && modelsRes.ok && Array.isArray(modelsRes.data.models) && modelsRes.data.models.length > 0) {
-    setModelCatalog(modelsRes.data.models);
+    setModelCatalog(
+      modelsRes.data.models.map((m) => ({
+        ...m,
+        efforts: m.efforts?.length ? m.efforts : ALL_FIVE_EFFORTS,
+        defaultEffort: m.defaultEffort ?? 'max',
+      })),
+    );
   }
 
   if (cfgRes.ok) {
@@ -485,8 +886,8 @@ export async function hydrateStudioStartup(): Promise<void> {
             spec: id.includes('/') ? id : `${pid}/${id}`,
             name: String(m.name ?? id),
             provider: pid,
-            efforts: ['low', 'medium', 'high', 'max'],
-            defaultEffort: 'high',
+            efforts: ALL_FIVE_EFFORTS,
+            defaultEffort: 'max',
             contextWindow: Number(m.contextWindow ?? 200000),
           });
         }
@@ -496,6 +897,10 @@ export async function hydrateStudioStartup(): Promise<void> {
       }
     }
   }
+
+  // Hydrate Steer Queue and Smart Alerts passively in background
+  void refreshSteerQueue();
+  void refreshSmartAlerts();
 
   // Subscribe to multiplexed /ws updates without changing topMode
   api.connectMultiplexedWs(
@@ -507,6 +912,27 @@ export async function hydrateStudioStartup(): Promise<void> {
         if (typeof p.cursor_y === 'number') setBrowserState('cursorY', p.cursor_y);
         if (typeof p.cursor_label === 'string') setBrowserState('cursorLabel', p.cursor_label);
         if (typeof p.url === 'string') setBrowserState('url', p.url);
+      } else if (msg.channel === 'network' && msg.payload && typeof msg.payload === 'object') {
+        setLiveSpeedtestWsEvent({
+          event: msg.event,
+          payload: msg.payload as Record<string, unknown>,
+          seq: ++speedtestWsSeq,
+        });
+      } else if (msg.channel === 'alerts' && msg.payload && typeof msg.payload === 'object') {
+        const p = msg.payload as Record<string, unknown>;
+        if (Array.isArray(p.alerts)) {
+          setSmartAlerts(p.alerts as SmartAlert[]);
+        } else if (p.title || p.code) {
+          const nextAlert: SmartAlert = {
+            id: String(p.id ?? `ws-alert-${Date.now()}`),
+            severity: (p.severity === 'critical' || p.severity === 'warning' ? p.severity : 'info'),
+            category: String(p.category ?? 'system'),
+            title: String(p.title ?? p.code),
+            detail: String(p.detail ?? p.message ?? ''),
+            recordedAtMs: Date.now(),
+          };
+          setSmartAlerts((prev) => [nextAlert, ...prev.slice(0, 19)]);
+        }
       }
     },
     () => {

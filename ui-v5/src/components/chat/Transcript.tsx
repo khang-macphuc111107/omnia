@@ -18,16 +18,20 @@ import { api } from '@/api/client';
 import { DiffCard } from '@/components/chat/DiffCard';
 import {
   activeSessionId,
+  flashNotice,
   messages,
   openQuoteBtw,
+  openRewindPreview,
+  privacyMask,
   selectAndLoadSession,
   sendComposerMessage,
+  sessions,
   setComposerDraft,
   setSessions,
-  sessions,
 } from '@/state/studio';
 import type { ChatTurnMessage } from '@/types';
 import { renderRichMarkdown } from '@/utils/markdown';
+import { maskText } from '@/utils/privacy';
 
 let mermaidModule: typeof import('mermaid').default | null = null;
 let mermaidSeq = 0;
@@ -61,7 +65,7 @@ async function hydrateMermaidBlocks(container: HTMLElement): Promise<void> {
 
 function RichMessageBody(props: { content: string; streaming?: boolean }) {
   let bodyRef: HTMLDivElement | undefined;
-  const html = createMemo(() => renderRichMarkdown(props.content));
+  const html = createMemo(() => renderRichMarkdown(maskText(props.content, privacyMask())));
 
   createEffect(() => {
     html();
@@ -87,11 +91,11 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(props.msg.content);
+      await navigator.clipboard.writeText(maskText(props.msg.content, privacyMask()));
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
-      // ignore clipboard denial
+      flashNotice('Clipboard access blocked by browser policy');
     }
   };
 
@@ -100,12 +104,14 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
     if (res.ok && res.data.session) {
       setSessions([res.data.session, ...sessions]);
       await selectAndLoadSession(res.data.session.id);
+      flashNotice(`Forked from T${props.index}`);
+    } else if (!res.ok) {
+      flashNotice(`Fork failed (${res.error.code}): ${res.error.message}`);
     }
   };
 
   const handleRewindHere = async () => {
-    await api.rewindSession(activeSessionId(), props.msg.turnIdx ?? props.index);
-    await selectAndLoadSession(activeSessionId());
+    await openRewindPreview(props.msg.turnIdx ?? props.index);
   };
 
   const handleQuoteBtw = () => {
@@ -120,10 +126,7 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
   };
 
   return (
-    <article
-      data-turn-index={props.index}
-      class="px-4 py-2.5 max-w-4xl mx-auto w-full"
-    >
+    <article data-turn-index={props.index} class="px-4 py-2.5 max-w-4xl mx-auto w-full">
       <Show
         when={props.msg.role === 'user'}
         fallback={
@@ -151,7 +154,7 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
                   </span>
                 </Show>
                 <Show when={props.msg.costUsd !== undefined}>
-                  <span>${props.msg.costUsd!.toFixed(4)}</span>
+                  <span>${props.msg.costUsd!.toFixed(6)}</span>
                 </Show>
               </div>
             </div>
@@ -172,13 +175,13 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
                 </button>
                 <Show when={thinkingOpen()}>
                   <div class="px-3 pb-2.5 pt-1 text-[12px] text-[var(--ink-secondary)] whitespace-pre-wrap border-t border-[var(--border-subtle)] max-h-60 overflow-y-auto font-mono-num">
-                    {props.msg.thinking}
+                    {maskText(props.msg.thinking!, privacyMask())}
                   </div>
                 </Show>
               </div>
             </Show>
 
-            {/* Grouped Tool Execution Cards (OMP .omp-execution-group) */}
+            {/* Grouped Tool Execution Cards */}
             <Show when={(props.msg.toolCalls ?? []).length > 0}>
               <div class="mb-3 rounded border border-[var(--border-subtle)] bg-[var(--bg-rail)] overflow-hidden">
                 <button
@@ -206,9 +209,16 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
                         >
                           <div class="flex items-center justify-between font-mono-num">
                             <span class="flex items-center gap-1.5 font-semibold text-[var(--ink-primary)]">
-                              <Show when={tc.status === 'running'} fallback={
-                                tc.status === 'error' ? <AlertTriangle class="w-3.5 h-3.5 text-[var(--status-coral)]" /> : <Check class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
-                              }>
+                              <Show
+                                when={tc.status === 'running'}
+                                fallback={
+                                  tc.status === 'error' ? (
+                                    <AlertTriangle class="w-3.5 h-3.5 text-[var(--status-coral)]" />
+                                  ) : (
+                                    <Check class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
+                                  )
+                                }
+                              >
                                 <Loader2 class="w-3.5 h-3.5 animate-spin text-[var(--accent-cyan)]" />
                               </Show>
                               <span>{tc.name}</span>
@@ -219,16 +229,16 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
                           </div>
                           <Show when={tc.arguments}>
                             <div class="mt-1 text-[11px] font-mono-num text-[var(--ink-muted)] truncate">
-                              {tc.arguments}
+                              {maskText(tc.arguments!, privacyMask())}
                             </div>
                           </Show>
                           <Show when={tc.output}>
                             <pre class="mt-1.5 p-2 rounded bg-[var(--bg-code)] border border-[var(--border-subtle)] text-[11px] font-mono-num text-[var(--ink-secondary)] max-h-40 overflow-auto whitespace-pre-wrap">
-                              {tc.output}
+                              {maskText(tc.output!, privacyMask())}
                             </pre>
                           </Show>
                           <Show when={tc.diffPatch}>
-                            <DiffCard patch={tc.diffPatch!} path={tc.diffPath} />
+                            <DiffCard patch={maskText(tc.diffPatch!, privacyMask())} path={tc.diffPath} />
                           </Show>
                         </div>
                       )}
@@ -240,7 +250,7 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
 
             <Show when={props.msg.error}>
               <div class="mb-2 px-3 py-2 rounded border border-[var(--status-coral)] bg-[var(--status-coral-dim)] text-[12.5px] text-[var(--status-coral)]">
-                {props.msg.error}
+                {maskText(props.msg.error!, privacyMask())}
               </div>
             </Show>
 
@@ -291,7 +301,9 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
               <span>BTW</span>
             </button>
           </div>
-          <div class="text-[13.5px] whitespace-pre-wrap text-[var(--ink-primary)]">{props.msg.content}</div>
+          <div class="text-[13.5px] whitespace-pre-wrap text-[var(--ink-primary)]">
+            {maskText(props.msg.content, privacyMask())}
+          </div>
           <Show when={(props.msg.attachments ?? []).length > 0}>
             <div class="mt-2 flex flex-wrap gap-1.5">
               <For each={props.msg.attachments}>
@@ -357,7 +369,7 @@ export function Transcript(props: { compact?: boolean } = {}) {
                 <h1 class="text-lg font-bold tracking-tight">Omnia Flagship Studio</h1>
               </div>
               <p class="text-[13px] text-[var(--ink-secondary)] mb-5">
-                Pure-Rust agentic workbench unifying OMP editorial streaming, Trae/VS Code IDE editing, isolated CDP browser inspection, and zero-CDN KaTeX/Mermaid rendering.
+                Pure-Rust agentic workbench unifying OMP editorial streaming, Trae/VS Code IDE editing, isolated CDP browser inspection, lab-grade telemetry, and zero-CDN KaTeX/Mermaid rendering.
               </p>
               <div
                 class="grid gap-3"

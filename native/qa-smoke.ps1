@@ -12,6 +12,10 @@ $out = $qaPaths.OutputDirectory
 $exe = $qaPaths.Executable
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName UIAutomationClientsideProviders
+$null = [Windows.Automation.AutomationElement]::RootElement
+[Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
+    [Reflection.AssemblyName]::new('UIAutomationClientsideProviders'))
 Add-Type @'
 using System;
 using System.Text;
@@ -59,10 +63,17 @@ try {
             Set-Content (Join-Path $out 'native-shell-cycle24-uia-failure.txt')
         throw "Missing UIA control: $type $name"
     }
-    # Keep UIA failures visible; native control-message smoke is a separate
-    # interaction method and cannot certify accessibility or physical input.
+    # Keep UIA failures visible; verify both single-line Edit (114) and multiline Document (112)
+    # invariants without conflating control-message smoke with physical keyboard/IME verification.
     $uiaIssue = $null
-    try { $null = Find-Control 'Edit' '' } catch { $uiaIssue = $_.Exception.Message }
+    try {
+        $null = Find-Control 'Edit' ''
+        $draftEl = $root.FindFirst($scope, [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::AutomationIdProperty, '112'))
+        if ($null -eq $draftEl -or $draftEl.Current.ControlType -ne [Windows.Automation.ControlType]::Document) {
+            throw 'Multiline draft (112) must expose ControlType.Document'
+        }
+    } catch { $uiaIssue = $_.Exception.Message }
     $edit = [OmniaShellQa]::GetDlgItem($process.MainWindowHandle, 112)
     if ($edit -eq [IntPtr]::Zero) { throw 'Native edit HWND missing.' }
     function Read-Text([IntPtr]$hwnd) {

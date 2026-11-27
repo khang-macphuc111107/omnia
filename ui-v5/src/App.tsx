@@ -5,8 +5,10 @@ import { Transcript } from '@/components/chat/Transcript';
 import { BrowserWorkbench } from '@/components/browser/BrowserWorkbench';
 import { IdeWorkbench } from '@/components/ide/IdeWorkbench';
 import { CommandPalette } from '@/components/shell/CommandPalette';
+import { RewindPreviewModal } from '@/components/shell/RewindPreviewModal';
 import { SessionSidebar } from '@/components/shell/SessionSidebar';
 import { StatusBar } from '@/components/shell/StatusBar';
+import { SteerQueueDrawer } from '@/components/shell/SteerQueueDrawer';
 import { TopBar } from '@/components/shell/TopBar';
 import { AtelierView } from '@/components/workbenches/AtelierView';
 import { KnowledgeExtensionsView } from '@/components/workbenches/KnowledgeExtensionsView';
@@ -17,12 +19,23 @@ import {
   applyTheme,
   commandPaletteOpen,
   hydrateStudioStartup,
+  privacyMask,
   setCommandPaletteOpen,
   sidebarOpen,
   themePref,
+  togglePrivacyMask,
   topMode,
   workbenchTab,
 } from '@/state/studio';
+
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if (target.isContentEditable) return true;
+  if (target.closest('.cm-editor') || target.closest('.xterm')) return true;
+  return false;
+}
 
 export function App() {
   onMount(() => {
@@ -33,6 +46,18 @@ export function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setCommandPaletteOpen(!commandPaletteOpen());
+        return;
+      }
+      if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === 'p' &&
+        !commandPaletteOpen() &&
+        !isEditableElement(e.target)
+      ) {
+        e.preventDefault();
+        togglePrivacyMask();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -40,7 +65,7 @@ export function App() {
   });
 
   return (
-    <div class="omnia-shell">
+    <div class="omnia-shell" data-privacy-masked={privacyMask() ? 'true' : 'false'}>
       <TopBar />
 
       <main class="min-h-0 flex overflow-hidden">
@@ -65,17 +90,15 @@ export function App() {
               <Show when={workbenchTab() === 'swarm'}>
                 <SwarmView />
               </Show>
-              <Show when={workbenchTab() === 'observability'}>
-                <ObservabilityView initialTab="router" />
-              </Show>
-              <Show when={workbenchTab() === 'benchmarks'}>
-                <ObservabilityView initialTab="benchmarks" />
+              <Show when={workbenchTab() === 'observability' || workbenchTab() === 'benchmarks'}>
+                <ObservabilityView />
               </Show>
               <Show when={workbenchTab() === 'knowledge'}>
                 <KnowledgeExtensionsView />
               </Show>
             </div>
             <QuoteBtwDrawer />
+            <SteerQueueDrawer />
           </div>
         </Show>
 
@@ -92,6 +115,7 @@ export function App() {
 
       <StatusBar />
       <CommandPalette />
+      <RewindPreviewModal />
     </div>
   );
 }

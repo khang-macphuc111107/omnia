@@ -7,6 +7,7 @@ import type {
   ModelConfigEntry,
   RouterCandidate,
   SessionRecord,
+  TelemetryWindow,
   WorkspaceEntry,
 } from '@/types';
 
@@ -26,6 +27,18 @@ export class StudioApiClient {
   private url(path: string): string {
     if (/^https?:\/\//i.test(path)) return path;
     return `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+  }
+
+  private withQuery(path: string, params: Record<string, string | number | boolean | undefined | null>): string {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') {
+        qs.set(k, String(v));
+      }
+    }
+    const encoded = qs.toString();
+    if (!encoded) return path;
+    return path.includes('?') ? `${path}&${encoded}` : `${path}?${encoded}`;
   }
 
   async json<T = Record<string, unknown>>(path: string, init?: RequestInit): Promise<T> {
@@ -54,7 +67,10 @@ export class StudioApiClient {
     return parsed as T;
   }
 
-  async safeJson<T = Record<string, unknown>>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: ApiError }> {
+  async safeJson<T = Record<string, unknown>>(
+    path: string,
+    init?: RequestInit,
+  ): Promise<{ ok: true; data: T } | { ok: false; error: ApiError }> {
     try {
       const data = await this.json<T>(path, init);
       return { ok: true, data };
@@ -67,6 +83,25 @@ export class StudioApiClient {
           code: err.code ?? 'network_unreachable',
           message: err.message ?? (e instanceof Error ? e.message : 'Network error'),
         },
+      };
+    }
+  }
+
+  async safeText(path: string): Promise<{ ok: true; text: string; contentType: string } | { ok: false; error: ApiError }> {
+    try {
+      const res = await fetch(this.url(path));
+      const text = await res.text();
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: { status: res.status, code: `http_${res.status}`, message: text.slice(0, 200) || res.statusText },
+        };
+      }
+      return { ok: true, text, contentType: res.headers.get('content-type') || 'text/plain' };
+    } catch (e) {
+      return {
+        ok: false,
+        error: { status: 0, code: 'network_unreachable', message: e instanceof Error ? e.message : 'Network error' },
       };
     }
   }
@@ -104,10 +139,24 @@ export class StudioApiClient {
     });
   }
 
+  previewRewind(sessionId: string, turnIdx: number) {
+    return this.safeJson<Record<string, unknown>>('/api/sessions/rewind/preview', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, session_id: sessionId, turn: turnIdx, turn_idx: turnIdx }),
+    });
+  }
+
   rewindSession(sessionId: string, turnIdx: number) {
     return this.safeJson('/api/sessions/rewind', {
       method: 'POST',
       body: JSON.stringify({ sessionId, session_id: sessionId, turn: turnIdx, turn_idx: turnIdx }),
+    });
+  }
+
+  compactSession(sessionId: string) {
+    return this.safeJson<Record<string, unknown>>('/api/sessions/compact', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, session_id: sessionId }),
     });
   }
 
@@ -178,7 +227,7 @@ export class StudioApiClient {
 
   steerChat(sessionId: string, prompt: string, mode: 'steer' | 'queue' = 'steer') {
     const path = mode === 'steer' ? '/api/chat/steer' : '/api/chat/queue';
-    return this.safeJson(path, {
+    return this.safeJson<Record<string, unknown>>(path, {
       method: 'POST',
       body: JSON.stringify({
         sessionId,
@@ -189,6 +238,35 @@ export class StudioApiClient {
         token_budget: null,
       }),
     });
+  }
+
+  listSteerQueue() {
+    return this.safeJson<Record<string, unknown>>('/api/steer');
+  }
+
+  enqueueSteer(prompt: string, mode: 'steer' | 'queue' | 'ADDITIVE_INTAKE' = 'ADDITIVE_INTAKE') {
+    return this.safeJson<Record<string, unknown>>('/api/steer/enqueue', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, mode, token_budget: null, tokenBudget: null }),
+    });
+  }
+
+  updateSteerStatus(id: string, status: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/steer/status', {
+      method: 'POST',
+      body: JSON.stringify({ id, itemId: id, status }),
+    });
+  }
+
+  reconcileSteer(sessionId?: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/steer/reconcile', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, session_id: sessionId }),
+    });
+  }
+
+  getAgentCache(sessionId?: string) {
+    return this.safeJson<Record<string, unknown>>(this.withQuery('/api/agent/cache', { sessionId }));
   }
 
   uploadAttachment(payload: {
@@ -313,7 +391,7 @@ export class StudioApiClient {
   }
 
   private normalizeBtwThread(raw: Record<string, unknown>, surface: 'chat' | 'notebook'): BtwThread {
-    const rawQuote = raw.quote;
+    const rawQuote = raw.quote ?? raw.anchorQuote;
     const quoteObj =
       rawQuote && typeof rawQuote === 'object'
         ? (rawQuote as Record<string, unknown>)
@@ -424,7 +502,7 @@ export class StudioApiClient {
     return { ok: true as const, data: { thread: norm, answer: askRes.ok ? askRes.data.result?.answer : undefined } };
   }
 
-  async appendBtw(btwId: string, content: string, model?: string) {
+  async appendBtw(btwId: string, content: string, model?: string, effort?: EffortLevel) {
     const isChat = btwId.startsWith('cbtw_');
     const path = isChat ? '/api/sessions/btw/append' : '/api/btw/append';
     const body = isChat
@@ -435,12 +513,22 @@ export class StudioApiClient {
       body: JSON.stringify(body),
     });
     if (!res.ok) return res;
-    return {
-      ok: true as const,
-      data: {
-        thread: res.data.thread ? this.normalizeBtwThread(res.data.thread, isChat ? 'chat' : 'notebook') : undefined,
-      },
-    };
+    const thread = res.data.thread ? this.normalizeBtwThread(res.data.thread, isChat ? 'chat' : 'notebook') : undefined;
+    if (!isChat && thread) {
+      const askRes = await this.safeJson<{ result?: { answer?: string } }>('/api/notebooks/btw/ask', {
+        method: 'POST',
+        body: JSON.stringify({ btw_id: btwId, question: content, model, effort }),
+      });
+      if (askRes.ok && askRes.data.result?.answer) {
+        thread.messages.push({
+          id: `ba-${Date.now()}`,
+          role: 'assistant',
+          content: askRes.data.result.answer,
+          model,
+        });
+      }
+    }
+    return { ok: true as const, data: { thread } };
   }
 
   promoteBtw(btwId: string, title?: string) {
@@ -450,7 +538,7 @@ export class StudioApiClient {
     });
   }
 
-  // Workspace / IDE / Git / LSP / Terminal
+  // Workspace / IDE / Git / LSP / Terminal / DAP
   getWorkspaceTree(path = '', maxDepth = 4) {
     return this.safeJson<{ entries?: WorkspaceEntry[]; root?: string }>(
       `/api/workspace/tree?path=${encodeURIComponent(path)}&max_depth=${maxDepth}`,
@@ -479,26 +567,58 @@ export class StudioApiClient {
     return this.safeJson<{ diff?: string; files?: Array<Record<string, unknown>> }>(`/api/git/diff${q}`);
   }
 
-  queryLsp(action: 'problems' | 'outline' | 'hover' | 'definition', path?: string) {
+  queryLsp(action: 'problems' | 'outline' | 'hover' | 'definition', path?: string, line?: number, character?: number) {
     return this.safeJson<Record<string, unknown>>('/api/ide/lsp', {
       method: 'POST',
-      body: JSON.stringify({ action, path }),
+      body: JSON.stringify({ action, path, line, character }),
     });
+  }
+
+  listDapSessions() {
+    return this.safeJson<Record<string, unknown>>('/api/dap/sessions');
+  }
+
+  launchDap(adapter: string, program: string, cwd?: string) {
+    return this.safeJson<Record<string, unknown>>('/api/dap/launch', {
+      method: 'POST',
+      body: JSON.stringify({ adapter, program, cwd }),
+    });
+  }
+
+  terminateDap(sessionId: string) {
+    return this.safeJson<Record<string, unknown>>('/api/dap/terminate', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, session_id: sessionId }),
+    });
+  }
+
+  listTerminals() {
+    return this.safeJson<{ terminals?: Array<Record<string, unknown>> }>('/api/terminal/list');
   }
 
   createTerminal(cwd?: string, cols = 100, rows = 28) {
     const body: Record<string, unknown> = { cols, rows };
     if (cwd && cwd.trim()) body.cwd = cwd.trim();
-    return this.safeJson<{ id?: string; terminal_id?: string; ptyId?: string; terminal?: { ptyId?: string } }>('/api/terminal/create', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+    return this.safeJson<{ id?: string; terminal_id?: string; ptyId?: string; terminal?: { ptyId?: string } }>(
+      '/api/terminal/create',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    );
   }
 
   resizeTerminal(id: string, cols: number, rows: number) {
     return this.safeJson('/api/terminal/resize', {
       method: 'POST',
       body: JSON.stringify({ id, ptyId: id, cols, rows }),
+    });
+  }
+
+  sendTerminalInput(id: string, data: string) {
+    return this.safeJson('/api/terminal/input', {
+      method: 'POST',
+      body: JSON.stringify({ id, ptyId: id, data }),
     });
   }
 
@@ -509,8 +629,11 @@ export class StudioApiClient {
     });
   }
 
-  // Browser CDP (Isolated temp Chrome/Edge, zero Thorium)
-  browserAction(action: 'launch' | 'status' | 'navigate' | 'click' | 'type' | 'screenshot' | 'close', body: Record<string, unknown> = {}) {
+  // Browser CDP, Win32 Capture, OBS v5, Remote Control
+  browserAction(
+    action: 'launch' | 'status' | 'navigate' | 'click' | 'type' | 'screenshot' | 'snapshot' | 'close',
+    body: Record<string, unknown> = {},
+  ) {
     if (action === 'status') return this.safeJson<Record<string, unknown>>('/api/browser/status');
     return this.safeJson<Record<string, unknown>>(`/api/browser/${action}`, {
       method: 'POST',
@@ -529,12 +652,155 @@ export class StudioApiClient {
     });
   }
 
-  // Router, Stats, Benchmarks, Credentials
-  getRouterState() {
-    return this.safeJson<{ candidates?: RouterCandidate[]; breakers?: Record<string, boolean> }>('/api/router/state');
+  getObsStatus() {
+    return this.safeJson<Record<string, unknown>>('/api/media/obs/status');
   }
 
-  decideRoute(payload: {
+  getMediaCapabilities() {
+    return this.safeJson<Record<string, unknown>>('/api/media/capabilities');
+  }
+
+  getMediaIsolation() {
+    return this.safeJson<Record<string, unknown>>('/api/media/isolation');
+  }
+
+  getRemoteStatus() {
+    return this.safeJson<Record<string, unknown>>('/api/remote/status');
+  }
+
+  pairRemote(deviceLabel: string) {
+    return this.safeJson<Record<string, unknown>>('/api/remote/pair', {
+      method: 'POST',
+      body: JSON.stringify({ deviceLabel, device_label: deviceLabel }),
+    });
+  }
+
+  // Steer #17 Lab-Grade Network Diagnostics & Pro Speedtest
+  getNetworkOverview(privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/network/overview', { privacy_mask: privacyMask }),
+    );
+  }
+
+  getNetworkIdentity(force = false, privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/network/identity', { force, privacy_mask: privacyMask }),
+    );
+  }
+
+  runDnsBenchmark(privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/network/dns/benchmark', { privacy_mask: privacyMask }),
+      { method: 'POST', body: JSON.stringify({ privacy_mask: privacyMask }) },
+    );
+  }
+
+  getProxyTls(force = false, privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/network/proxy-tls', { force, privacy_mask: privacyMask }),
+      { method: 'POST', body: JSON.stringify({ force, privacy_mask: privacyMask }) },
+    );
+  }
+
+  startSpeedtest(profile: 'quick' | 'standard' = 'quick') {
+    return this.safeJson<Record<string, unknown>>('/api/v5/network/speedtest/start', {
+      method: 'POST',
+      body: JSON.stringify({ profile }),
+    });
+  }
+
+  cancelSpeedtest(runId: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/network/speedtest/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ runId, run_id: runId }),
+    });
+  }
+
+  getSpeedtestHistory(limit = 30, privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/network/speedtest/history', { limit, privacy_mask: privacyMask }),
+    );
+  }
+
+  // Steer #17 AI Telemetry, Host System, Alerts, Diffs, Exports
+  getTelemetrySummary(params: {
+    window?: TelemetryWindow;
+    model?: string;
+    role?: string;
+    sessionId?: string;
+    privacyMask?: boolean;
+  } = {}) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/telemetry/summary', {
+        window: params.window ?? '24h',
+        model: params.model,
+        role: params.role,
+        sessionId: params.sessionId,
+        privacy_mask: params.privacyMask,
+      }),
+    );
+  }
+
+  getTelemetryRequests(params: {
+    window?: TelemetryWindow;
+    model?: string;
+    role?: string;
+    sessionId?: string;
+    limit?: number;
+    privacyMask?: boolean;
+  } = {}) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/telemetry/requests', {
+        window: params.window ?? '24h',
+        model: params.model,
+        role: params.role,
+        sessionId: params.sessionId,
+        limit: params.limit ?? 100,
+        privacy_mask: params.privacyMask,
+      }),
+    );
+  }
+
+  getSystemSnapshot(privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/system/snapshot', { privacy_mask: privacyMask }),
+    );
+  }
+
+  getNvidiaHardware() {
+    return this.safeJson<Record<string, unknown>>('/api/hardware/nvidia');
+  }
+
+  getSmartAlerts(privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/v5/alerts', { privacy_mask: privacyMask }),
+    );
+  }
+
+  getDiff(kind: 'sessions' | 'speedtests' | 'models' | 'benchmarks', a: string, b: string, privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery(`/api/v5/diff/${kind}`, { a, b, privacy_mask: privacyMask }),
+    );
+  }
+
+  fetchExport(format: 'json' | 'csv' | 'markdown' | 'diagnostic', privacyMask = false, window: TelemetryWindow = '24h') {
+    return this.safeText(
+      this.withQuery('/api/v5/export', { format, privacy_mask: privacyMask, window }),
+    );
+  }
+
+  // Router Lab (v5 persistent SQLite + legacy fallback)
+  async getRouterState(privacyMask = false) {
+    const v5 = await this.safeJson<{ candidates?: RouterCandidate[]; breakers?: Record<string, boolean> } & Record<string, unknown>>(
+      this.withQuery('/api/v5/router/state', { privacy_mask: privacyMask }),
+    );
+    if (v5.ok) return v5;
+    return this.safeJson<{ candidates?: RouterCandidate[]; breakers?: Record<string, boolean> } & Record<string, unknown>>(
+      '/api/router/state',
+    );
+  }
+
+  async decideRoute(payload: {
     task_class: string;
     token_estimate: number;
     privacy_boundary: string;
@@ -542,21 +808,51 @@ export class StudioApiClient {
     trip_provider?: string;
     reset_provider?: string;
   }) {
-    return this.safeJson<Record<string, unknown>>('/api/route', {
+    const body = JSON.stringify({
+      requestId: `studio-route-${Date.now()}`,
+      privacyTier: payload.privacy_boundary,
+      taskRisk: payload.task_class,
+      task_class: payload.task_class,
+      token_estimate: payload.token_estimate,
+      privacy_boundary: payload.privacy_boundary,
+      streaming: payload.streaming,
+      tripCandidate: payload.trip_provider,
+      resetCandidate: payload.reset_provider,
+      trip_provider: payload.trip_provider,
+      reset_provider: payload.reset_provider,
+    });
+    const v5 = await this.safeJson<Record<string, unknown>>('/api/v5/router/decide', { method: 'POST', body });
+    if (v5.ok) return v5;
+    return this.safeJson<Record<string, unknown>>('/api/route', { method: 'POST', body });
+  }
+
+  async tripRouterCandidate(candidateId: string, reason = 'manual_operator_trip') {
+    const v5 = await this.safeJson<Record<string, unknown>>('/api/v5/router/trip', {
       method: 'POST',
-      body: JSON.stringify({
-        requestId: `studio-route-${Date.now()}`,
-        privacyTier: payload.privacy_boundary,
-        taskRisk: payload.task_class,
-        task_class: payload.task_class,
-        token_estimate: payload.token_estimate,
-        privacy_boundary: payload.privacy_boundary,
-        streaming: payload.streaming,
-        tripCandidate: payload.trip_provider,
-        resetCandidate: payload.reset_provider,
-        trip_provider: payload.trip_provider,
-        reset_provider: payload.reset_provider,
-      }),
+      body: JSON.stringify({ candidateId, candidate_id: candidateId, provider: candidateId, reason }),
+    });
+    if (v5.ok) return v5;
+    return this.decideRoute({
+      task_class: 'coding',
+      token_estimate: 8000,
+      privacy_boundary: 'standard',
+      streaming: true,
+      trip_provider: candidateId,
+    });
+  }
+
+  async resetRouterCandidate(candidateId: string) {
+    const v5 = await this.safeJson<Record<string, unknown>>('/api/v5/router/reset', {
+      method: 'POST',
+      body: JSON.stringify({ candidateId, candidate_id: candidateId, provider: candidateId }),
+    });
+    if (v5.ok) return v5;
+    return this.decideRoute({
+      task_class: 'coding',
+      token_estimate: 8000,
+      privacy_boundary: 'standard',
+      streaming: true,
+      reset_provider: candidateId,
     });
   }
 
@@ -568,31 +864,46 @@ export class StudioApiClient {
     return this.safeJson<Record<string, unknown>>('/api/traces');
   }
 
-  getBenchmarks() {
-    return this.safeJson<Record<string, unknown>>('/api/benchmarks/scoreboard');
+  getBenchmarks(privacyMask = false) {
+    return this.safeJson<Record<string, unknown>>(
+      this.withQuery('/api/benchmarks/scoreboard', { privacy_mask: privacyMask }),
+    );
   }
 
-  listCredentials() {
-    return this.safeJson<{ credentials?: Array<{ target: string; kind: string; label: string; masked_hint: string }> }>('/api/credentials');
+  async listCredentials(privacyMask = false) {
+    const v5 = await this.safeJson<{ credentials?: Array<{ target: string; kind: string; label: string; masked_hint?: string; maskedHint?: string }> }>(
+      this.withQuery('/api/v5/creds', { privacy_mask: privacyMask }),
+    );
+    if (v5.ok) return v5;
+    return this.safeJson<{ credentials?: Array<{ target: string; kind: string; label: string; masked_hint?: string; maskedHint?: string }> }>(
+      '/api/credentials',
+    );
   }
 
-  saveCredential(target: string, kind: string, label: string, value: string) {
-    return this.safeJson('/api/credentials', {
-      method: 'POST',
-      body: JSON.stringify({ target, kind, label, secret: value, value }),
-    });
+  async saveCredential(target: string, kind: string, label: string, value: string) {
+    const body = JSON.stringify({ target, kind, label, secret: value, value });
+    const v5 = await this.safeJson('/api/v5/creds', { method: 'POST', body });
+    if (v5.ok) return v5;
+    return this.safeJson('/api/credentials', { method: 'POST', body });
   }
 
-  deleteCredential(target: string) {
-    return this.safeJson('/api/credentials/delete', {
-      method: 'POST',
-      body: JSON.stringify({ target }),
-    });
+  async deleteCredential(target: string) {
+    const body = JSON.stringify({ target });
+    const v5 = await this.safeJson('/api/v5/creds/delete', { method: 'POST', body });
+    if (v5.ok) return v5;
+    return this.safeJson('/api/credentials/delete', { method: 'POST', body });
   }
 
-  // Swarm, Graphify, Memory, RAG, Skills, MCP, Hooks, Recipes
+  // Swarm, Graphify, Memory, RAG, Skills, MCP, Hooks, Recipes, Cordis
   getGraphSnapshot() {
     return this.safeJson<Record<string, unknown>>('/api/graph');
+  }
+
+  registerPeer(id: string, role: string, disjointPaths: string[]) {
+    return this.safeJson<Record<string, unknown>>('/api/graph/peers', {
+      method: 'POST',
+      body: JSON.stringify({ id, role, disjointPaths, disjoint_paths: disjointPaths }),
+    });
   }
 
   sendPeerMessage(from: string, to: string, payload: string, maxHops = 4) {
@@ -621,6 +932,27 @@ export class StudioApiClient {
     });
   }
 
+  retainMemory(bank: string, content: string, tags: string[] = []) {
+    return this.safeJson<Record<string, unknown>>('/api/memory/retain', {
+      method: 'POST',
+      body: JSON.stringify({ bank, content, tags }),
+    });
+  }
+
+  recallMemory(query: string, limit = 8) {
+    return this.safeJson<Record<string, unknown>>('/api/memory/recall', {
+      method: 'POST',
+      body: JSON.stringify({ query, limit }),
+    });
+  }
+
+  reflectMemory(topic: string) {
+    return this.safeJson<Record<string, unknown>>('/api/memory/reflect', {
+      method: 'POST',
+      body: JSON.stringify({ topic }),
+    });
+  }
+
   eraseMemory(namespace: string, key: string, sha256Digest: string) {
     return this.safeJson<Record<string, unknown>>('/api/memory/erase', {
       method: 'POST',
@@ -643,12 +975,62 @@ export class StudioApiClient {
     return this.safeJson<Record<string, unknown>>('/api/mcp/servers');
   }
 
+  connectMcp(name: string, transport: string, endpoint: string) {
+    return this.safeJson<Record<string, unknown>>('/api/mcp/servers', {
+      method: 'POST',
+      body: JSON.stringify({ name, transport, endpoint, url: endpoint, command: endpoint }),
+    });
+  }
+
+  disconnectMcp(name: string) {
+    return this.safeJson<Record<string, unknown>>('/api/mcp/servers/disconnect', {
+      method: 'POST',
+      body: JSON.stringify({ name, serverId: name }),
+    });
+  }
+
+  searchMcpTools(q: string) {
+    return this.safeJson<Record<string, unknown>>(`/api/mcp/tools/search?q=${encodeURIComponent(q)}`);
+  }
+
   listHooks() {
     return this.safeJson<Record<string, unknown>>('/api/hooks');
   }
 
+  toggleHook(id: string, enabled: boolean) {
+    return this.safeJson<Record<string, unknown>>('/api/hooks/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ id, hookId: id, enabled }),
+    });
+  }
+
   listRecipes() {
     return this.safeJson<Record<string, unknown>>('/api/recipes');
+  }
+
+  renderRecipe(name: string, params: Record<string, string> = {}) {
+    return this.safeJson<Record<string, unknown>>('/api/recipes/render', {
+      method: 'POST',
+      body: JSON.stringify({ name, recipe: name, params }),
+    });
+  }
+
+  listCordis() {
+    return this.safeJson<Record<string, unknown>>('/api/plugins/cordis');
+  }
+
+  toggleCordis(id: string, enabled: boolean) {
+    return this.safeJson<Record<string, unknown>>('/api/plugins/cordis/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ id, pluginId: id, enabled }),
+    });
+  }
+
+  rollbackCordis(id: string) {
+    return this.safeJson<Record<string, unknown>>('/api/plugins/cordis/rollback', {
+      method: 'POST',
+      body: JSON.stringify({ id, pluginId: id }),
+    });
   }
 
   // Atelier / Notebooks
@@ -673,6 +1055,33 @@ export class StudioApiClient {
     return this.safeJson('/api/notebooks/sources/ingest', {
       method: 'POST',
       body: JSON.stringify({ notebook_id: notebookId, filename, text }),
+    });
+  }
+
+  deleteSource(notebookId: string, sourceId: string) {
+    return this.safeJson('/api/notebooks/sources/delete', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: notebookId, source_id: sourceId }),
+    });
+  }
+
+  transcribeAudio(notebookId: string, audioPath: string, language = 'auto') {
+    return this.safeJson<Record<string, unknown>>('/api/notebooks/transcribe', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: notebookId, path: audioPath, language }),
+    });
+  }
+
+  listSyncTombstones(notebookId: string) {
+    return this.safeJson<Record<string, unknown>>(
+      `/api/notebooks/sync/tombstones?notebook_id=${encodeURIComponent(notebookId)}`,
+    );
+  }
+
+  reconcileNotebookSync(notebookId: string) {
+    return this.safeJson<Record<string, unknown>>('/api/notebooks/sync/reconcile', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: notebookId }),
     });
   }
 
@@ -729,6 +1138,13 @@ export class StudioApiClient {
     });
   }
 
+  muxMedia(videoPath: string, audioPath: string, outputPath: string) {
+    return this.safeJson<Record<string, unknown>>('/api/downloads/media/mux', {
+      method: 'POST',
+      body: JSON.stringify({ video: videoPath, audio: audioPath, output: outputPath }),
+    });
+  }
+
   crawlUrl(kind: 'moodle' | 'youtube' | 'web', url: string) {
     return this.safeJson<Record<string, unknown>>(`/api/downloads/crawl/${kind}`, {
       method: 'POST',
@@ -743,10 +1159,17 @@ export class StudioApiClient {
     });
   }
 
-  sealCaptureBundle(sourceUrl = 'about:blank', parts: Array<{ name: string; text?: string }> = []) {
+  sealCaptureBundle(sourceUrl = 'https://example.com', parts: Array<{ name: string; text?: string }> = []) {
     return this.safeJson<Record<string, unknown>>('/api/downloads/capture-bundles', {
       method: 'POST',
       body: JSON.stringify({ sourceUrl, parts }),
+    });
+  }
+
+  verifyCaptureBundle(bundleId: string) {
+    return this.safeJson<Record<string, unknown>>('/api/downloads/capture-bundles/verify', {
+      method: 'POST',
+      body: JSON.stringify({ bundleId, bundle_id: bundleId }),
     });
   }
 
@@ -799,15 +1222,9 @@ export class StudioApiClient {
         }
       },
       sendPtyStdin: (id, data) => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const encoded = new TextEncoder().encode(data);
-        const idBytes = new TextEncoder().encode(id);
-        const frame = new Uint8Array(2 + idBytes.length + encoded.length);
-        frame[0] = 0x00;
-        frame[1] = idBytes.length;
-        frame.set(idBytes, 2);
-        frame.set(encoded, 2 + idBytes.length);
-        ws.send(frame.buffer);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ channel: 'pty', event: 'stdin', payload: { id, ptyId: id, data } }));
+        }
       },
       close: () => {
         closedByUser = true;

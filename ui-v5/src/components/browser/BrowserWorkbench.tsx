@@ -1,12 +1,16 @@
 import { For, Show, createSignal } from 'solid-js';
 import {
   Camera,
+  Code2,
   Globe,
   Hand,
   MousePointer2,
   Play,
+  Radio,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
+  Terminal,
   XCircle,
 } from 'lucide-solid';
 import { api } from '@/api/client';
@@ -15,14 +19,28 @@ import { Transcript } from '@/components/chat/Transcript';
 import {
   browserChatDrawerOpen,
   browserState,
+  privacyMask,
   setBrowserState,
 } from '@/state/studio';
+import { maskJson, maskText } from '@/utils/privacy';
+
+type InspectorTab = 'dom' | 'console' | 'obs' | 'remote';
 
 export function BrowserWorkbench() {
   const [urlInput, setUrlInput] = createSignal(browserState.url || 'https://example.com');
   const [typeInput, setTypeInput] = createSignal('');
   const [windows, setWindows] = createSignal<Array<{ hwnd: number; title: string }>>([]);
   const [busy, setBusy] = createSignal(false);
+  const [inspectorOpen, setInspectorOpen] = createSignal(false);
+  const [inspectorTab, setInspectorTab] = createSignal<InspectorTab>('dom');
+  const [domSnapshot, setDomSnapshot] = createSignal<Record<string, unknown> | null>(null);
+  const [obsInfo, setObsInfo] = createSignal<Record<string, unknown> | null>(null);
+  const [remoteInfo, setRemoteInfo] = createSignal<Record<string, unknown> | null>(null);
+  const [deviceLabel, setDeviceLabel] = createSignal('omnia-peer-device');
+
+  const logLine = (msg: string) => {
+    setBrowserState('consoleLogs', (prev) => [...prev.slice(-39), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  };
 
   const handleLaunch = async () => {
     setBusy(true);
@@ -35,8 +53,10 @@ export function BrowserWorkbench() {
         screenshotBase64: typeof res.data.screenshot_base64 === 'string' ? res.data.screenshot_base64 : undefined,
         error: undefined,
       });
+      logLine(`Launched isolated CDP at ${urlInput()}`);
     } else {
       setBrowserState({ error: `${res.error.code}: ${res.error.message}` });
+      logLine(`Launch error: ${res.error.code}`);
     }
     setBusy(false);
   };
@@ -48,9 +68,11 @@ export function BrowserWorkbench() {
       setBrowserState({
         url: String(res.data.url ?? urlInput()),
         title: typeof res.data.title === 'string' ? res.data.title : undefined,
-        screenshotBase64: typeof res.data.screenshot_base64 === 'string' ? res.data.screenshot_base64 : browserState.screenshotBase64,
+        screenshotBase64:
+          typeof res.data.screenshot_base64 === 'string' ? res.data.screenshot_base64 : browserState.screenshotBase64,
         error: undefined,
       });
+      logLine(`Navigated -> ${urlInput()}`);
     } else {
       setBrowserState({ error: `${res.error.code}: ${res.error.message}` });
     }
@@ -64,8 +86,13 @@ export function BrowserWorkbench() {
     const y = Math.round(((e.clientY - rect.top) / rect.height) * 800);
     setBrowserState({ cursorX: x, cursorY: y, cursorLabel: `click(${x}, ${y})` });
     const res = await api.browserAction('click', { x, y });
-    if (res.ok && typeof res.data.screenshot_base64 === 'string') {
-      setBrowserState({ screenshotBase64: res.data.screenshot_base64 });
+    if (res.ok) {
+      if (typeof res.data.screenshot_base64 === 'string') {
+        setBrowserState({ screenshotBase64: res.data.screenshot_base64, error: undefined });
+      }
+      logLine(`CDP click(${x}, ${y})`);
+    } else {
+      setBrowserState({ error: `${res.error.code}: ${res.error.message}` });
     }
   };
 
@@ -73,18 +100,66 @@ export function BrowserWorkbench() {
     const res = await api.browserAction('screenshot');
     if (res.ok && typeof res.data.screenshot_base64 === 'string') {
       setBrowserState({ screenshotBase64: res.data.screenshot_base64, error: undefined });
+      logLine('Captured CDP frame');
+    } else if (!res.ok) {
+      setBrowserState({ error: `${res.error.code}: ${res.error.message}` });
+    }
+  };
+
+  const handleTypeText = async () => {
+    const text = typeInput();
+    if (!text) return;
+    const res = await api.browserAction('type', { text });
+    if (res.ok) {
+      setTypeInput('');
+      setBrowserState({ error: undefined });
+      logLine(`Typed ${text.length} chars into focused element`);
+    } else {
+      setBrowserState({ error: `${res.error.code}: ${res.error.message}` });
     }
   };
 
   const handleClose = async () => {
-    await api.browserAction('close');
-    setBrowserState({ active: false, sessionId: undefined });
+    const res = await api.browserAction('close');
+    if (res.ok) {
+      setBrowserState({ active: false, sessionId: undefined, error: undefined });
+      logLine('Closed isolated CDP browser');
+    } else {
+      setBrowserState({ error: `${res.error.code}: ${res.error.message}` });
+    }
   };
 
   const handleListWindows = async () => {
     const res = await api.listWindows();
     if (res.ok && Array.isArray(res.data.windows)) {
       setWindows(res.data.windows);
+      setBrowserState({ error: undefined });
+      logLine(`Enumerated ${res.data.windows.length} Win32 top-level windows`);
+    } else if (!res.ok) {
+      setBrowserState({ error: `${res.error.code}: ${res.error.message}` });
+    }
+  };
+
+  const openInspector = async (tab: InspectorTab) => {
+    setInspectorTab(tab);
+    setInspectorOpen(true);
+    if (tab === 'dom') {
+      const res = await api.browserAction('snapshot');
+      setDomSnapshot(res.ok ? res.data : { error: res.error.code, message: res.error.message });
+    } else if (tab === 'obs') {
+      const [obsRes, capRes, isoRes] = await Promise.all([
+        api.getObsStatus(),
+        api.getMediaCapabilities(),
+        api.getMediaIsolation(),
+      ]);
+      setObsInfo({
+        obs: obsRes.ok ? obsRes.data : obsRes.error,
+        capabilities: capRes.ok ? capRes.data : capRes.error,
+        isolation: isoRes.ok ? isoRes.data : isoRes.error,
+      });
+    } else if (tab === 'remote') {
+      const res = await api.getRemoteStatus();
+      setRemoteInfo(res.ok ? res.data : { error: res.error.code, message: res.error.message });
     }
   };
 
@@ -96,10 +171,10 @@ export function BrowserWorkbench() {
         <div class="px-3 py-2 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)] flex flex-wrap items-center gap-2">
           <div class="omnia-badge text-[var(--status-emerald)]">
             <ShieldCheck class="w-3.5 h-3.5" />
-            <span>Isolated CDP (Temp Profile · Zero Thorium)</span>
+            <span>Isolated CDP (Zero Thorium)</span>
           </div>
 
-          <div class="flex-1 min-w-[220px] flex items-center gap-1.5">
+          <div class="flex-1 min-w-[200px] flex items-center gap-1.5">
             <input
               type="text"
               value={urlInput()}
@@ -117,11 +192,11 @@ export function BrowserWorkbench() {
               <Globe class="w-3.5 h-3.5" />
               <span>Go</span>
             </button>
-            <button type="button" class="omnia-btn text-[11.5px]" onClick={() => void handleScreenshot()}>
+            <button type="button" class="omnia-btn text-[11.5px]" title="Refresh Screenshot" onClick={() => void handleScreenshot()}>
               <RefreshCw class="w-3.5 h-3.5" />
             </button>
             <Show when={browserState.active}>
-              <button type="button" class="omnia-btn omnia-btn-danger text-[11.5px]" onClick={() => void handleClose()}>
+              <button type="button" class="omnia-btn omnia-btn-danger text-[11.5px]" title="Close Browser" onClick={() => void handleClose()}>
                 <XCircle class="w-3.5 h-3.5" />
               </button>
             </Show>
@@ -134,18 +209,33 @@ export function BrowserWorkbench() {
             onClick={() => setBrowserState({ manualControl: !browserState.manualControl })}
           >
             <Hand class="w-3.5 h-3.5" />
-            <span>{browserState.manualControl ? 'Manual Takeover ON' : 'Agent Control'}</span>
+            <span>{browserState.manualControl ? 'Manual ON' : 'Agent Ctrl'}</span>
           </button>
 
           <button type="button" class="omnia-btn text-[11.5px]" onClick={() => void handleListWindows()}>
             <Camera class="w-3.5 h-3.5" />
-            <span>Win32 Windows</span>
+            <span>Win32</span>
+          </button>
+
+          <button type="button" class="omnia-btn text-[11.5px]" onClick={() => void openInspector('dom')}>
+            <Code2 class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
+            <span>DOM</span>
+          </button>
+
+          <button type="button" class="omnia-btn text-[11.5px]" onClick={() => void openInspector('obs')}>
+            <Radio class="w-3.5 h-3.5 text-[var(--accent-amber)]" />
+            <span>OBS v5</span>
+          </button>
+
+          <button type="button" class="omnia-btn text-[11.5px]" onClick={() => void openInspector('remote')}>
+            <Smartphone class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
+            <span>Remote</span>
           </button>
         </div>
 
         <Show when={browserState.error}>
           <div class="px-3 py-2 bg-[var(--status-coral-dim)] border-b border-[var(--status-coral)] text-[12px] text-[var(--status-coral)] font-mono-num">
-            {browserState.error}
+            {maskText(browserState.error!, privacyMask())}
           </div>
         </Show>
 
@@ -162,7 +252,8 @@ export function BrowserWorkbench() {
                   <Globe class="w-10 h-10 text-[var(--accent-cyan)] opacity-70" />
                   <div class="text-[14px] font-semibold">Isolated CDP Viewport Ready</div>
                   <div class="text-[12px] text-[var(--ink-muted)] max-w-md">
-                    Click <strong>Launch</strong> to start an isolated headless Chrome/Edge session under <code class="font-mono-num">D:\OmniaData\tmp\omnia-cdp-*</code>. User Thorium browser is strictly untouched.
+                    Click <strong>Launch</strong> to start an isolated headless Chrome/Edge session under{' '}
+                    <code class="font-mono-num">D:\OmniaData\tmp\omnia-cdp-*</code>. User Thorium browser is strictly untouched.
                   </div>
                 </div>
               }
@@ -194,6 +285,76 @@ export function BrowserWorkbench() {
           </div>
         </div>
 
+        {/* Collapsible DOM / Console / OBS v5 / Remote Control Inspector Strip */}
+        <Show when={inspectorOpen()}>
+          <div class="h-44 shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)] flex flex-col">
+            <div class="px-3 py-1.5 border-b border-[var(--border-subtle)] bg-[var(--bg-rail)] flex items-center justify-between gap-2 text-[11px]">
+              <div class="omp-segmented text-[11px]">
+                <button type="button" aria-pressed={inspectorTab() === 'dom'} onClick={() => void openInspector('dom')}>
+                  DOM Snapshot
+                </button>
+                <button type="button" aria-pressed={inspectorTab() === 'console'} onClick={() => setInspectorTab('console')}>
+                  Console ({browserState.consoleLogs.length})
+                </button>
+                <button type="button" aria-pressed={inspectorTab() === 'obs'} onClick={() => void openInspector('obs')}>
+                  OBS v5 & Media
+                </button>
+                <button type="button" aria-pressed={inspectorTab() === 'remote'} onClick={() => void openInspector('remote')}>
+                  Remote Control
+                </button>
+              </div>
+              <button type="button" class="omnia-btn px-2 py-0.5 text-[10.5px]" onClick={() => setInspectorOpen(false)}>
+                Hide
+              </button>
+            </div>
+
+            <div class="flex-1 overflow-auto p-2.5 text-[11px] font-mono-num">
+              <Show when={inspectorTab() === 'dom'}>
+                <pre class="whitespace-pre-wrap text-[var(--ink-secondary)]">
+                  {JSON.stringify(maskJson(domSnapshot() ?? { hint: 'Click DOM to query /api/browser/snapshot' }, privacyMask()), null, 2)}
+                </pre>
+              </Show>
+              <Show when={inspectorTab() === 'console'}>
+                <div class="space-y-0.5 text-[var(--ink-secondary)]">
+                  <Show when={browserState.consoleLogs.length > 0} fallback={<span class="text-[var(--ink-muted)]">No CDP actions logged yet.</span>}>
+                    <For each={browserState.consoleLogs}>{(line) => <div>{maskText(line, privacyMask())}</div>}</For>
+                  </Show>
+                </div>
+              </Show>
+              <Show when={inspectorTab() === 'obs'}>
+                <pre class="whitespace-pre-wrap text-[var(--ink-secondary)]">
+                  {JSON.stringify(maskJson(obsInfo() ?? { status: 'Probing OBS v5 & desktop isolation...' }, privacyMask()), null, 2)}
+                </pre>
+              </Show>
+              <Show when={inspectorTab() === 'remote'}>
+                <div class="space-y-2">
+                  <div class="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={deviceLabel()}
+                      onInput={(e) => setDeviceLabel(e.currentTarget.value)}
+                      class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11px]"
+                    />
+                    <button
+                      type="button"
+                      class="omnia-btn omnia-btn-primary text-[11px]"
+                      onClick={async () => {
+                        const r = await api.pairRemote(deviceLabel());
+                        setRemoteInfo(r.ok ? r.data : { error: r.error.code, message: r.error.message });
+                      }}
+                    >
+                      Pair Remote Device
+                    </button>
+                  </div>
+                  <pre class="whitespace-pre-wrap text-[var(--ink-secondary)]">
+                    {JSON.stringify(maskJson(remoteInfo() ?? { status: 'Inspecting omnia-remote-control...' }, privacyMask()), null, 2)}
+                  </pre>
+                </div>
+              </Show>
+            </div>
+          </div>
+        </Show>
+
         {/* Type Text + Win32 Capture Strip */}
         <div class="px-3 py-2 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)] flex flex-wrap items-center gap-2 text-[12px]">
           <input
@@ -201,14 +362,18 @@ export function BrowserWorkbench() {
             placeholder="Type text into focused element via CDP..."
             value={typeInput()}
             onInput={(e) => setTypeInput(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void handleTypeText();
+            }}
             class="flex-1 min-w-[200px] rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1 outline-none"
           />
-          <button
-            type="button"
-            class="omnia-btn text-[11.5px]"
-            onClick={() => void api.browserAction('type', { text: typeInput() })}
-          >
+          <button type="button" class="omnia-btn text-[11.5px]" onClick={() => void handleTypeText()}>
             Send Type
+          </button>
+
+          <button type="button" class="omnia-btn text-[11.5px]" onClick={() => setInspectorOpen(!inspectorOpen())}>
+            <Terminal class="w-3.5 h-3.5" />
+            <span>Inspector</span>
           </button>
 
           <Show when={windows().length > 0}>
@@ -219,16 +384,17 @@ export function BrowserWorkbench() {
                 if (hwnd) {
                   void api.captureWindow(hwnd).then((r) => {
                     if (r.ok && r.data.image_base64) {
-                      setBrowserState({ screenshotBase64: r.data.image_base64 });
+                      setBrowserState({ screenshotBase64: r.data.image_base64, error: undefined });
+                      logLine(`Captured Win32 HWND ${hwnd}`);
+                    } else if (!r.ok) {
+                      setBrowserState({ error: `${r.error.code}: ${r.error.message}` });
                     }
                   });
                 }
               }}
             >
               <option value="">Capture Win32 HWND...</option>
-              <For each={windows()}>
-                {(w) => <option value={w.hwnd}>{w.title} ({w.hwnd})</option>}
-              </For>
+              <For each={windows()}>{(w) => <option value={w.hwnd}>{w.title} ({w.hwnd})</option>}</For>
             </select>
           </Show>
         </div>
