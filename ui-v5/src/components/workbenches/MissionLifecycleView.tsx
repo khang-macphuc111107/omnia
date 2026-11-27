@@ -293,19 +293,19 @@ export function MissionLifecycleView() {
           </div>
 
           <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-4">
-            <div class="space-y-3">
+            <div class="space-y-3 min-w-0">
               {/* Create / Update Artifact */}
-              <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2 text-[12px]">
+              <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2 text-[12px] min-w-0">
                 <div class="font-bold text-[12.5px] flex items-center gap-1.5">
                   <BookMarked class="w-4 h-4 text-[var(--accent-amber)]" />
                   <span>Create / Update Cross-Linked Artifact (SQLite WAL + Atomic LF)</span>
                 </div>
-                <div class="grid grid-cols-1 sm:grid-cols-[150px_1fr] gap-2">
+                <div class="grid grid-cols-1 sm:grid-cols-[150px_minmax(0,1fr)] gap-2">
                   <select
                     aria-label="Artifact Kind"
                     value={artKind()}
                     onChange={(e) => setArtKind(e.currentTarget.value)}
-                    class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1.5 uppercase font-mono-num text-[11.5px]"
+                    class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1.5 uppercase font-mono-num text-[11.5px]"
                   >
                     {ARTIFACT_KINDS.map((k) => (
                       <option value={k}>{k}</option>
@@ -316,7 +316,7 @@ export function MissionLifecycleView() {
                     placeholder="Title (e.g. GOAL-01 Deep Research Default-ON)"
                     value={artTitle()}
                     onInput={(e) => setArtTitle(e.currentTarget.value)}
-                    class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5"
+                    class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5"
                   />
                 </div>
                 <textarea
@@ -380,8 +380,8 @@ export function MissionLifecycleView() {
             </div>
 
             {/* Right Inspector: Selected Artifact + Deterministic Verifier + Cross-Links */}
-            <div class="space-y-3">
-              <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2.5">
+            <div class="space-y-3 min-w-0">
+              <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2.5 min-w-0">
                 <div class="flex items-center justify-between gap-2">
                   <span class="font-bold text-[12.5px] flex items-center gap-1.5">
                     <FileCheck2 class="w-4 h-4 text-[var(--status-emerald)]" />
@@ -410,23 +410,23 @@ export function MissionLifecycleView() {
                 </Show>
               </div>
 
-              <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2 text-[11.5px]">
+              <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2 text-[11.5px] min-w-0 overflow-hidden">
                 <div class="font-bold text-[12.5px] flex items-center gap-1.5">
                   <Link2 class="w-4 h-4 text-[var(--accent-cyan)]" />
                   <span>Bidirectional Artifact Links ({links().length})</span>
                 </div>
-                <div class="grid grid-cols-[1fr_auto_1fr_auto] gap-1.5">
+                <div class="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] gap-1.5 items-center">
                   <input
                     type="text"
                     placeholder="from_id"
                     value={linkFrom()}
                     onInput={(e) => setLinkFrom(e.currentTarget.value)}
-                    class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 font-mono-num"
+                    class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 font-mono-num"
                   />
                   <select
                     value={linkRel()}
                     onChange={(e) => setLinkRel(e.currentTarget.value)}
-                    class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-1.5 py-1 font-mono-num"
+                    class="shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-1.5 py-1 font-mono-num"
                   >
                     <option value="satisfies">satisfies</option>
                     <option value="blocks">blocks</option>
@@ -440,9 +440,14 @@ export function MissionLifecycleView() {
                     placeholder="to_id"
                     value={linkTo()}
                     onInput={(e) => setLinkTo(e.currentTarget.value)}
-                    class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 font-mono-num"
+                    class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 font-mono-num"
                   />
-                  <button type="button" class="omnia-btn px-2 py-1" onClick={() => void handleLinkArtifacts()}>
+                  <button
+                    type="button"
+                    data-testid="lifecycle-link-btn"
+                    class="omnia-btn shrink-0 px-2 py-1"
+                    onClick={() => void handleLinkArtifacts()}
+                  >
                     Link
                   </button>
                 </div>
@@ -609,23 +614,23 @@ export function MissionLifecycleView() {
         {/* 4. 2-Tier Learn, Lessons & Crystallize -> Skill + Gap Radar */}
         <Show when={subTab() === 'learn'}>
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <div class="omnia-surface-panel rounded-lg p-4 space-y-2.5 text-[12px]">
+            <div class="omnia-surface-panel rounded-lg p-4 space-y-2.5 text-[12px] min-w-0">
               <div class="font-bold text-[13px] flex items-center gap-2">
                 <GraduationCap class="w-4 h-4 text-[var(--status-emerald)]" />
                 <span>2-Tier Auto-Learn &amp; Lessons ({lessons().length})</span>
               </div>
-              <div class="grid grid-cols-1 sm:grid-cols-[1fr_130px] gap-2">
+              <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_130px] gap-2">
                 <input
                   type="text"
                   placeholder="Lesson title..."
                   value={lessonTitle()}
                   onInput={(e) => setLessonTitle(e.currentTarget.value)}
-                  class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5"
+                  class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5"
                 />
                 <select
                   value={lessonScope()}
                   onChange={(e) => setLessonScope(e.currentTarget.value as 'project' | 'global')}
-                  class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1.5"
+                  class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1.5"
                 >
                   <option value="project">Project Tier-1</option>
                   <option value="global">Global Tier-2</option>
@@ -642,20 +647,20 @@ export function MissionLifecycleView() {
                 Capture Lesson
               </button>
 
-              <div class="pt-2 border-t border-[var(--border-subtle)] grid grid-cols-2 gap-1.5 text-[11px]">
+              <div class="pt-2 border-t border-[var(--border-subtle)] grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px]">
                 <input
                   type="text"
                   placeholder="Target skill slug (e.g. win32-dpi-guard)"
                   value={promoteSlug()}
                   onInput={(e) => setPromoteSlug(e.currentTarget.value)}
-                  class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 font-mono-num"
+                  class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 font-mono-num"
                 />
                 <input
                   type="text"
                   placeholder="Use when ..."
                   value={promoteTrigger()}
                   onInput={(e) => setPromoteTrigger(e.currentTarget.value)}
-                  class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1"
+                  class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1"
                 />
               </div>
 
@@ -698,42 +703,42 @@ export function MissionLifecycleView() {
         {/* 5. Deep Think Multi-Hypothesis Lab */}
         <Show when={subTab() === 'think'}>
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <div class="omnia-surface-panel rounded-lg p-4 space-y-2.5 text-[12px]">
+            <div class="omnia-surface-panel rounded-lg p-4 space-y-2.5 text-[12px] min-w-0">
               <div class="font-bold text-[13px] flex items-center gap-2">
                 <Brain class="w-4 h-4 text-[var(--accent-amber)]" />
                 <span>Deep Think Deliberation Engine (Hypotheses · Falsification · Red-Team)</span>
               </div>
-              <div class="flex gap-2">
+              <div class="flex gap-2 min-w-0">
                 <input
                   type="text"
                   placeholder="Frame complex engineering or math problem..."
                   value={thinkProblem()}
                   onInput={(e) => setThinkProblem(e.currentTarget.value)}
-                  class="flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5"
+                  class="flex-1 min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5"
                 />
-                <button type="button" class="omnia-btn omnia-btn-primary text-[11.5px]" onClick={() => void handleStartThink()}>
+                <button type="button" class="omnia-btn omnia-btn-primary shrink-0 text-[11.5px]" onClick={() => void handleStartThink()}>
                   Start Think
                 </button>
               </div>
 
               <Show when={activeThinkId()}>
-                <div class="pt-2 border-t border-[var(--border-subtle)] space-y-1.5">
+                <div class="pt-2 border-t border-[var(--border-subtle)] space-y-1.5 min-w-0">
                   <div class="text-[11px] font-mono-num text-[var(--accent-cyan)]">Active Think ID: {activeThinkId()}</div>
-                  <div class="grid grid-cols-[140px_1fr_auto] gap-1.5">
+                  <div class="grid grid-cols-[minmax(0,130px)_minmax(0,1fr)_auto] gap-1.5 items-center">
                     <input
                       type="text"
                       value={branchLabel()}
                       onInput={(e) => setBranchLabel(e.currentTarget.value)}
-                      class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11px]"
+                      class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11px]"
                     />
                     <input
                       type="text"
                       placeholder="Alternative hypothesis / contrarian design..."
                       value={branchHyp()}
                       onInput={(e) => setBranchHyp(e.currentTarget.value)}
-                      class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11px]"
+                      class="min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[11px]"
                     />
-                    <button type="button" class="omnia-btn px-2 py-1 text-[11px]" onClick={() => void handleAddBranch()}>
+                    <button type="button" class="omnia-btn shrink-0 px-2 py-1 text-[11px]" onClick={() => void handleAddBranch()}>
                       Add Branch
                     </button>
                   </div>
