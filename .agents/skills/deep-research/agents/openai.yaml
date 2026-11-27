@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Research & Persistent RAG Ledger"
+  short_description: "Default-ON web/academic search, local+global RAG, S/G citations"
+  default_prompt: "Use $deep-research to investigate with parallel web/academic search, live extraction into the persistent Local+Global RAG vault, inline [S###]/[G###] citations, evidence grading, and a full Sources (Searched, Viewed & Extracted) ledger."

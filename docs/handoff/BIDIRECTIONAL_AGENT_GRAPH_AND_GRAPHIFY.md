@@ -2,7 +2,7 @@
 
 > **Audience**: Collaborator **HTMusTC**, Omnia **Full Native Rust** & Studio UI maintainers, and Codex / Antigravity / Omnia swarm agents
 >
-> **Authoritative Rust & UI Implementation**: [peer_mesh.rs](../../rust/omnia-graph/src/peer_mesh.rs), [graphify_index.rs](../../rust/omnia-graph/src/graphify_index.rs), [graph_tests.rs](../../rust/omnia-graph/tests/graph_tests.rs), [graph_locator.rs](../../rust/omnia-agent/src/graph_locator.rs), and [ui/app/peer-graph.js](../../ui/app/peer-graph.js) *(archived Wave 4 C++20 implementation backed up externally in `D:\OmniaData\backups\pre-full-rust-20261115\`)*
+> **Authoritative Rust & UI Implementation**: [peer_mesh.rs](../../rust/omnia-graph/src/peer_mesh.rs), [graphify_index.rs](../../rust/omnia-graph/src/graphify_index.rs), [graph_tests.rs](../../rust/omnia-graph/tests/graph_tests.rs), [graph_locator.rs](../../rust/omnia-agent/src/graph_locator.rs), and [ui/app/views/agents/graph-canvas.js](../../ui/app/views/agents/graph-canvas.js) *(archived Wave 4 C++20 implementation backed up externally in `D:\OmniaData\backups\pre-full-rust-20261115\`)*
 >
 > **Related Skills**: [`.agents/skills/deep-general-graph-orchestration`](../../.agents/skills/deep-general-graph-orchestration/SKILL.md), [`.agents/skills/deep-cpp-native`](../../.agents/skills/deep-cpp-native/SKILL.md) *(historical C++ diagnostics)*, [`.agents/skills/autonomous-power-continuity`](../../.agents/skills/autonomous-power-continuity/SKILL.md), [`.agents/skills/omni-bilingual-skill-router`](../../.agents/skills/omni-bilingual-skill-router/SKILL.md)
 >
@@ -17,7 +17,7 @@ Conventional agent frameworks force communication into a rigid **1-way parent-to
 2. **Broken Iterative Repair Loops**: Real verification (`author <-> build-specialist <-> verifier`) is inherently cyclic until `0` defects remain; flattening it into a one-shot DAG either drops repair turns or hides ad-hoc retries outside the graph ledger.
 3. **One-Way Context Blindness**: Child or specialist agents cannot query upstream/peer rationale or traverse reverse provenance links (*"what depends on this Rust module or spec?"*) on demand.
 
-Omnia's native **Rust** `omnia-graph` crate (`omnia_graph::PeerMeshGraph` + `omnia_graph::GraphifyIndex`), exposed via Rust `omnia-studio.exe` (`/api/graph/snapshot`, `/api/graph/send`, `/api/graph/traverse`) and rendered interactively in [ui/app/peer-graph.js](../../ui/app/peer-graph.js), models agent collaboration and codebase/knowledge navigation as a **general bidirectional multigraph**:
+Omnia's native **Rust** `omnia-graph` crate (`omnia_graph::PeerMeshGraph` + `omnia_graph::GraphifyIndex`), exposed via Rust `omnia-studio.exe` (`/api/graph/snapshot`, `/api/graph/send`, `/api/graph/traverse`) and rendered interactively in [ui/app/views/agents/graph-canvas.js](../../ui/app/views/agents/graph-canvas.js), models agent collaboration and codebase/knowledge navigation as a **general bidirectional multigraph**:
 
 ```mermaid
 flowchart LR
@@ -65,7 +65,7 @@ Qualified from `Graphify-Labs/graphify` (`Apache-2.0`, clean-room architectural 
    - `Extracted` (`10000` bps default): Deterministically parsed from Rust/Cargo syntax, SQL foreign keys, or explicit file/URI links.
    - `Inferred`: Derived from structural clustering, symbol resolution, or cross-document correspondence with recorded `rationale`.
    - `Ambiguous` (**quarantined by default**): Retained in `quarantined_ambiguous` when `include_ambiguous == false` rather than silently merged into active traversal paths.
-4. **Interactive Studio Visualization ([ui/app/peer-graph.js](../../ui/app/peer-graph.js))**:
+4. **Interactive Studio Visualization ([ui/app/views/agents/graph-canvas.js](../../ui/app/views/agents/graph-canvas.js))**:
    - Renders High-DPI `A <-> B` duplex peer channels, animated directional message pulses (`POST /api/graph/send`), `disjoint_paths` ownership inspectors, and live `Forward` / `Reverse` / `Both` `GraphifyIndex` BFS neighborhoods (`GET /api/graph/traverse`).
 
 ---

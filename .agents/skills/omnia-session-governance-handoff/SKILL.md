@@ -31,7 +31,7 @@ Before modifying tracked repository files or resuming an interrupted session:
 
 ## Phase 3 — Quantitative Runtime Verification
 
-Run objective checks (`cargo test --locked`, `native/qa-*.ps1`, `git diff --check`, `quick_validate.py`, or `omni-deterministic-verifiers`) and record exact exit codes, test counts, and SHA-256 digests.
+Run objective checks (`cargo test --locked`, standalone feature-isolated `-p <cli>` release builds after `--workspace`, `native/qa-*.ps1` via `pwsh`, system `python -B` unit/audit/skill-parity checks, `git diff --check`, and `omni-deterministic-verifiers`) and record exact exit codes, test counts, binary sizes/latencies, and SHA-256 digests. Keep landed verified subsystems distinct from remaining open targets or environment blockers (such as Dockerless container suites) without prematurely advancing admission gates.
 
 ## Phase 4 — 6-State Completion & Handoff Receipt
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Super Plan, Run & 12-Artifact Lifecycle OS"
+  short_description: "Proactive Goal, Spec, Blueprint, Plan, Todo, DoD, Handoff, Learn"
+  default_prompt: "Use $super-plan-run-lifecycle to create, cross-link, verify, and evolve Goal, Spec, Blueprint, Plan, Todo, Progress, receipt-gated DoD, Handoff, Memory, 2-Tier Lessons, and Skills with zero overlap."

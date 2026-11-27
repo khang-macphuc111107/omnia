@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Think & Executable Proof Engine"
+  short_description: "Multi-hypothesis Tree-of-Thought, executable proofs & red-team"
+  default_prompt: "Use $deep-think to frame formal invariants, explore at least 3 distinct solution branches, run executable falsification probes, perform adversarial red-team critique, and emit a Rejected Alternatives Matrix with verified receipts."
