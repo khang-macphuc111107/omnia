@@ -393,11 +393,12 @@ fn compute_token_progress_wait_with_phase(
 }
 
 const PRE_TOOL_PREAMBLE_MAX_BYTES: usize = 512;
+const PRE_TOOL_ARGS_HEADER_MAX_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct AttemptPolicyHint {
     slow_step_downs: u32,
-    pre_ttft_cap: Option<Duration>,
+    hard_run_remaining: Option<Duration>,
     rem_run_budget: Option<Duration>,
     total_run_budget: Option<Duration>,
 }
@@ -437,36 +438,30 @@ pub fn apply_retry_effort_step_down(
     clamp_effort_for_model(model_id, stepped).or(Some(stepped))
 }
 
-/// Cap Attempt-0 pre-TTFT keepalive waiting on multi-retry production turns (`>= 120s`)
-/// so a stuck zero-token keepalive socket never leaves Attempt 1+ starved below ~55% budget.
-fn attempt0_pre_ttft_keepalive_cap(rem_run: Duration, max_attempts: u32) -> Option<Duration> {
-    if max_attempts > 1 && rem_run >= Duration::from_secs(120) {
-        Some(
-            rem_run
-                .mul_f64(0.45)
-                .clamp(Duration::from_secs(75), Duration::from_secs(115)),
-        )
-    } else {
-        None
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compute_sse_loop_wait(
-    req_started_at: Instant,
     stream_started_at: Instant,
     last_meaningful_delta_at: Option<Instant>,
     last_wire_activity_at: Option<Instant>,
     first_delta_timeout: Duration,
     post_delta_token_timeout: Duration,
-    turn_deadline: Instant,
-    pre_ttft_attempt_cap: Option<Duration>,
+    attempt_deadline: Instant,
+    active_stream_deadline: Instant,
     dialect_label: &str,
     visible_text_len: usize,
     has_started_tools: bool,
+    tool_arg_bytes: usize,
 ) -> std::result::Result<(Duration, bool), StreamTurnError> {
     let now = Instant::now();
-    let rem_turn = turn_deadline.saturating_duration_since(now);
+    // Pre-TTFT waits honor `attempt_deadline` (reserving Attempt 1+ headroom if hung), whereas
+    // actively streaming responses (`last_meaningful_delta_at.is_some()`) keep the full run/attempt
+    // window (`active_stream_deadline`) so live thinking/generation is never self-aborted on serialized proxies.
+    let effective_deadline = if last_meaningful_delta_at.is_some() {
+        active_stream_deadline
+    } else {
+        attempt_deadline
+    };
+    let rem_turn = effective_deadline.saturating_duration_since(now);
     if rem_turn.is_zero() {
         return Err(StreamTurnError::Retryable {
             status: None,
@@ -476,17 +471,17 @@ fn compute_sse_loop_wait(
         });
     }
 
-    let is_preamble_keepalive = visible_text_len > 0
+    let is_pure_reasoning = visible_text_len == 0 && !has_started_tools;
+    let is_preamble_or_tool_compose_keepalive = !is_pure_reasoning
         && visible_text_len <= PRE_TOOL_PREAMBLE_MAX_BYTES
-        && !has_started_tools
+        && tool_arg_bytes <= PRE_TOOL_ARGS_HEADER_MAX_BYTES
         && has_fresh_wire_keepalive(
             now,
             first_delta_timeout,
             post_delta_token_timeout,
             last_wire_activity_at,
         );
-    let in_reasoning_or_pretool =
-        (visible_text_len == 0 && !has_started_tools) || is_preamble_keepalive;
+    let in_reasoning_or_pretool = is_pure_reasoning || is_preamble_or_tool_compose_keepalive;
 
     let far_deadline = now + Duration::from_secs(86_400);
     let mut ideal_wait = compute_token_progress_wait_with_phase(
@@ -500,44 +495,23 @@ fn compute_sse_loop_wait(
         in_reasoning_or_pretool,
     )?;
 
-    if last_meaningful_delta_at.is_none() {
-        if let Some(cap) = pre_ttft_attempt_cap {
-            let header_elapsed = stream_started_at.saturating_duration_since(req_started_at);
-            let stream_cap = cap
-                .saturating_sub(header_elapsed)
-                .max(Duration::from_secs(15));
-            let stream_elapsed = now.saturating_duration_since(stream_started_at);
-            if stream_elapsed >= stream_cap {
-                return Err(StreamTurnError::Retryable {
-                    status: None,
-                    retry_after_secs: None,
-                    kind: RetryKind::ChunkStall,
-                    detail: format!(
-                        "{dialect_label} pre-TTFT retry-reserved timeout after {}ms (cap {}ms)",
-                        now.saturating_duration_since(req_started_at).as_millis(),
-                        cap.as_millis()
-                    ),
-                });
-            }
-            ideal_wait = ideal_wait.min(stream_cap - stream_elapsed);
-        }
-    } else if is_preamble_keepalive {
+    if is_preamble_or_tool_compose_keepalive {
         if let Some(ts) = last_meaningful_delta_at {
             let elapsed = now.saturating_duration_since(ts);
-            let preamble_cap = first_delta_timeout.max(post_delta_token_timeout);
-            if elapsed >= preamble_cap {
+            let compose_cap = first_delta_timeout.max(post_delta_token_timeout);
+            if elapsed >= compose_cap {
                 return Err(StreamTurnError::Retryable {
                     status: None,
                     retry_after_secs: None,
                     kind: RetryKind::ChunkStall,
                     detail: format!(
-                        "{dialect_label} pre-tool preamble keepalive timeout after {}ms (limit {}ms)",
+                        "{dialect_label} pre-tool compose keepalive timeout after {}ms (limit {}ms)",
                         elapsed.as_millis(),
-                        preamble_cap.as_millis()
+                        compose_cap.as_millis()
                     ),
                 });
             }
-            ideal_wait = ideal_wait.min(preamble_cap - elapsed);
+            ideal_wait = ideal_wait.min(compose_cap - elapsed);
         }
     }
 
@@ -549,9 +523,8 @@ fn format_chunk_timeout_detail(
     dialect_label: &str,
     chunk_budget: Duration,
     capped_by_turn_deadline: bool,
-    turn_deadline: Instant,
 ) -> String {
-    if capped_by_turn_deadline || turn_deadline.saturating_duration_since(Instant::now()).is_zero() {
+    if capped_by_turn_deadline {
         format!(
             "Timed out waiting for {dialect_label} turn deadline (remaining {}ms)",
             chunk_budget.as_millis()
@@ -3044,14 +3017,10 @@ impl NativeSuperEngine {
             let t_attempt = Instant::now();
             let api_kind = self.active_wire_dialect();
             let force_fresh_socket = attempt > 0;
-            let pre_ttft_cap = if attempt == 0 {
-                attempt0_pre_ttft_keepalive_cap(rem_run, max_attempts)
-            } else {
-                None
-            };
+            let hard_run_remaining = rem_run.min(self.stream_budget.per_attempt_deadline);
             let attempt_hint = AttemptPolicyHint {
                 slow_step_downs,
-                pre_ttft_cap,
+                hard_run_remaining: Some(hard_run_remaining),
                 rem_run_budget: Some(rem_run),
                 total_run_budget: Some(total_run_budget),
             };
@@ -3769,23 +3738,29 @@ impl NativeSuperEngine {
         let mut pending_think_delta = String::new();
         let mut last_flush = Instant::now();
 
+        let active_stream_deadline = t_req
+            + attempt_hint
+                .hard_run_remaining
+                .unwrap_or(total_remaining)
+                .max(total_remaining);
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
         let mut line_buf = Vec::<u8>::new();
 
         'sse: loop {
+            let tool_arg_bytes: usize = tool_accum.values().map(|tc| tc.arguments.len()).sum();
             let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
-                t_req,
                 stream_started_at,
                 last_delta_at,
                 last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
-                attempt_hint.pre_ttft_cap,
+                active_stream_deadline,
                 "OpenAI SSE",
                 text.len(),
                 !tool_accum.is_empty(),
+                tool_arg_bytes,
             )?;
 
             let next_res = if first_delta_at.is_none() {
@@ -3822,7 +3797,6 @@ impl NativeSuperEngine {
                     "OpenAI SSE",
                     chunk_budget,
                     hit_turn_deadline,
-                    turn_deadline,
                 ),
             })?;
 
@@ -4371,6 +4345,11 @@ impl NativeSuperEngine {
         let ws_url = openai_responses_ws_url(&self.endpoint.base_url);
         let t_req = Instant::now();
         let turn_deadline = t_req + total_remaining;
+        let active_stream_deadline = t_req
+            + attempt_hint
+                .hard_run_remaining
+                .unwrap_or(total_remaining)
+                .max(total_remaining);
         let instructions_hash = blake3_hex(self.system_prompt.as_bytes());
         let resp_tools = self.build_openai_responses_tools();
         let tools_json = serde_json::to_string(&resp_tools).unwrap_or_default();
@@ -4527,18 +4506,20 @@ impl NativeSuperEngine {
             let mut saw_data_frame = false;
 
             loop {
+                let tool_arg_bytes: usize =
+                    acc.tool_calls.iter().map(|tc| tc.arguments.len()).sum();
                 let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
-                    t_req,
                     stream_started_at,
                     acc.last_delta_at,
                     acc.last_wire_activity_at,
                     first_delta_timeout,
                     inter_chunk_timeout,
                     turn_deadline,
-                    attempt_hint.pre_ttft_cap,
+                    active_stream_deadline,
                     "OpenAI Responses WS",
                     acc.text.len(),
                     !acc.tool_calls.is_empty(),
+                    tool_arg_bytes,
                 )?;
                 let next_frame = tokio::time::timeout(chunk_budget, ws.next())
                     .await
@@ -4553,7 +4534,6 @@ impl NativeSuperEngine {
                                 "Responses WS",
                                 chunk_budget,
                                 hit_turn_deadline,
-                                turn_deadline,
                             ),
                         }
                     })?;
@@ -4823,24 +4803,30 @@ impl NativeSuperEngine {
 
         let mut acc = ResponsesFrameState::new(t_req);
         let mut spec_pool = SpeculativeTaskPool::new();
+        let active_stream_deadline = t_req
+            + attempt_hint
+                .hard_run_remaining
+                .unwrap_or(total_remaining)
+                .max(total_remaining);
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
         let mut line_buf = Vec::<u8>::new();
         let mut raw_sse_log: Vec<u8> = Vec::new();
 
         'resp_sse: loop {
+            let tool_arg_bytes: usize = acc.tool_calls.iter().map(|tc| tc.arguments.len()).sum();
             let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
-                t_req,
                 stream_started_at,
                 acc.last_delta_at,
                 acc.last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
-                attempt_hint.pre_ttft_cap,
+                active_stream_deadline,
                 "OpenAI Responses SSE",
                 acc.text.len(),
                 !acc.tool_calls.is_empty(),
+                tool_arg_bytes,
             )?;
             let next_res = if acc.first_delta_at.is_none() {
                 if let Some((winner, notify, slot)) = hedge_slot {
@@ -4876,7 +4862,6 @@ impl NativeSuperEngine {
                     "Responses SSE",
                     chunk_budget,
                     hit_turn_deadline,
-                    turn_deadline,
                 ),
             })?;
             let Some(chunk_res) = next_opt else {
@@ -5202,19 +5187,25 @@ impl NativeSuperEngine {
         let mut stream = resp.bytes_stream();
         let mut line_buf = Vec::<u8>::new();
 
+        let active_stream_deadline = t_req
+            + attempt_hint
+                .hard_run_remaining
+                .unwrap_or(total_remaining)
+                .max(total_remaining);
         'ant: loop {
+            let tool_arg_bytes: usize = tool_calls.iter().map(|tc| tc.arguments.len()).sum();
             let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
-                t_req,
                 stream_started_at,
                 last_delta_at,
                 last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
-                attempt_hint.pre_ttft_cap,
+                active_stream_deadline,
                 "Anthropic SSE",
                 text.len(),
                 !tool_calls.is_empty(),
+                tool_arg_bytes,
             )?;
             let next_opt = tokio::time::timeout(chunk_budget, stream.next())
                 .await
@@ -5226,7 +5217,6 @@ impl NativeSuperEngine {
                         "Anthropic SSE",
                         chunk_budget,
                         hit_turn_deadline,
-                        turn_deadline,
                     ),
                 })?;
             let Some(chunk_res) = next_opt else {
@@ -5734,7 +5724,7 @@ impl NativeSuperEngine {
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut thought_signature: Option<String> = None;
-        let mut tool_calls = Vec::new();
+        let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
         let mut finish_reason: Option<String> = None;
         let mut usage = TurnLlmUsage::default();
         let mut turn_ttft_ms = None;
@@ -5742,24 +5732,30 @@ impl NativeSuperEngine {
         let mut last_delta_at = None;
         let mut last_wire_activity_at = None;
         let mut active_decode_ms = 0u64;
+        let active_stream_deadline = t_req
+            + attempt_hint
+                .hard_run_remaining
+                .unwrap_or(total_remaining)
+                .max(total_remaining);
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
         let mut line_buf = Vec::<u8>::new();
         let mut raw_sse_log: Vec<u8> = Vec::new();
 
         loop {
+            let tool_arg_bytes: usize = tool_calls.iter().map(|tc| tc.arguments.len()).sum();
             let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
-                t_req,
                 stream_started_at,
                 last_delta_at,
                 last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
-                attempt_hint.pre_ttft_cap,
+                active_stream_deadline,
                 "Gemini SSE",
                 text.len(),
                 !tool_calls.is_empty(),
+                tool_arg_bytes,
             )?;
             let next_opt = tokio::time::timeout(chunk_budget, stream.next())
                 .await
@@ -5771,7 +5767,6 @@ impl NativeSuperEngine {
                         "Gemini SSE",
                         chunk_budget,
                         hit_turn_deadline,
-                        turn_deadline,
                     ),
                 })?;
             let Some(chunk_res) = next_opt else {
@@ -9875,17 +9870,17 @@ data: [DONE]\n\n";
         // Short pre-tool preamble (`<= 512` bytes, zero started tools) with fresh `: ping` keepalives
         // MUST stay alive beyond 65s (eliminating `atlas_01`/`bfcl_01` 69.9s false aborts).
         let (preamble_wait, hit_dl) = compute_sse_loop_wait(
-            now - Duration::from_secs(75),
             now - Duration::from_secs(74),
             Some(now - Duration::from_secs(70)),
             Some(now - Duration::from_secs(5)),
             first_to,
             chunk_to,
             long_deadline,
-            None,
+            long_deadline,
             "Anthropic SSE",
             48,
             false,
+            0,
         )
         .unwrap();
         assert!(!hit_dl);
@@ -9894,99 +9889,158 @@ data: [DONE]\n\n";
             "active preamble keepalive should allow >=75s left (got {preamble_wait:?})"
         );
 
-        // Without fresh keepalives, a stalled preamble MUST still fail at 65s.
+        // Empty or header-only `tool_use` (`content_block_start` before `input_json_delta`, <=128B args)
+        // with fresh `: ping` keepalives MUST also stay alive past 65s (eliminates `refact_02` s=2/s=3 aborts).
+        for arg_len in [0usize, 32usize] {
+            let (tool_wait, tool_dl) = compute_sse_loop_wait(
+                now - Duration::from_secs(74),
+                Some(now - Duration::from_secs(70)),
+                Some(now - Duration::from_secs(5)),
+                first_to,
+                chunk_to,
+                long_deadline,
+                long_deadline,
+                "Anthropic SSE",
+                24,
+                true,
+                arg_len,
+            )
+            .unwrap();
+            assert!(!tool_dl);
+            assert!(
+                tool_wait >= Duration::from_secs(75),
+                "empty/header tool_use keepalive should allow >=75s (arg_len={arg_len}, got {tool_wait:?})"
+            );
+        }
+
+        // Without fresh keepalives, stalled preamble or empty `tool_use` MUST still fail at 65s.
         assert!(compute_sse_loop_wait(
-            now - Duration::from_secs(75),
             now - Duration::from_secs(74),
             Some(now - Duration::from_secs(70)),
             Some(now - Duration::from_secs(70)),
             first_to,
             chunk_to,
             long_deadline,
-            None,
+            long_deadline,
             "Anthropic SSE",
             48,
             false,
+            0,
+        )
+        .is_err());
+        assert!(compute_sse_loop_wait(
+            now - Duration::from_secs(74),
+            Some(now - Duration::from_secs(70)),
+            Some(now - Duration::from_secs(70)),
+            first_to,
+            chunk_to,
+            long_deadline,
+            long_deadline,
+            "Anthropic SSE",
+            0,
+            true,
+            0,
         )
         .is_err());
 
-        // Once >512 bytes of visible text or a tool_use block has started, strict 65s stall applies.
+        // Once >512 bytes of visible text or >128 bytes of tool arguments have streamed, strict 65s stall applies.
         assert!(compute_sse_loop_wait(
-            now - Duration::from_secs(75),
             now - Duration::from_secs(74),
             Some(now - Duration::from_secs(70)),
             Some(now - Duration::from_secs(5)),
             first_to,
             chunk_to,
             long_deadline,
-            None,
+            long_deadline,
             "Anthropic SSE",
             600,
             false,
+            0,
         )
         .is_err());
         assert!(compute_sse_loop_wait(
-            now - Duration::from_secs(75),
             now - Duration::from_secs(74),
             Some(now - Duration::from_secs(70)),
             Some(now - Duration::from_secs(5)),
             first_to,
             chunk_to,
             long_deadline,
-            None,
+            long_deadline,
             "Anthropic SSE",
             24,
             true,
+            256,
         )
         .is_err());
 
-        // Attempt-0 pre-TTFT keepalive cap reserves >=55% budget for recovery retries on >=120s runs.
-        assert_eq!(
-            attempt0_pre_ttft_keepalive_cap(Duration::from_secs(273), 4),
-            Some(Duration::from_secs(115))
-        );
-        assert_eq!(
-            attempt0_pre_ttft_keepalive_cap(Duration::from_secs(273), 1),
-            None
-        );
-        let (a0_wait, a0_dl) = compute_sse_loop_wait(
-            now - Duration::from_secs(36),
-            now,
-            None,
-            Some(now),
+        // Actively streaming Attempt 0 (`last_delta_at.is_some()`) MUST extend past `attempt_deadline`
+        // up to `active_stream_deadline` (never double-loading upstream like `atlas_02` GPT `s=5`),
+        // whereas unstarted Attempt 0 (`last_delta_at == None`) still stops at `attempt_deadline`.
+        let (active_wait, active_dl) = compute_sse_loop_wait(
+            now - Duration::from_secs(130),
+            Some(now - Duration::from_secs(1)),
+            Some(now - Duration::from_secs(1)),
             first_to,
             chunk_to,
-            long_deadline,
-            attempt0_pre_ttft_keepalive_cap(Duration::from_secs(273), 4),
-            "Anthropic SSE",
+            now,
+            now + Duration::from_secs(300),
+            "OpenAI Responses SSE",
             0,
             false,
+            0,
         )
         .unwrap();
-        assert!(!a0_dl);
-        assert!(
-            a0_wait <= Duration::from_secs(80) && a0_wait >= Duration::from_secs(75),
-            "expected ~79s remaining under 115s Attempt-0 pre-TTFT cap, got {a0_wait:?}"
-        );
+        assert!(!active_dl);
+        assert!(active_wait >= Duration::from_secs(200));
+        let (capped_active_wait, capped_active_dl) = compute_sse_loop_wait(
+            now - Duration::from_secs(130),
+            Some(now - Duration::from_secs(1)),
+            Some(now - Duration::from_secs(1)),
+            first_to,
+            chunk_to,
+            now,
+            now + Duration::from_secs(75),
+            "OpenAI Responses SSE",
+            0,
+            false,
+            0,
+        )
+        .unwrap();
+        assert!(capped_active_dl);
+        assert!(capped_active_wait >= Duration::from_secs(70));
+        assert!(compute_sse_loop_wait(
+            now - Duration::from_secs(130),
+            None,
+            Some(now - Duration::from_secs(1)),
+            first_to,
+            chunk_to,
+            now,
+            now + Duration::from_secs(75),
+            "OpenAI Responses SSE",
+            0,
+            false,
+            0,
+        )
+        .is_err());
 
         // Short remaining turn deadline (< stall limit) must label deadline expiry cleanly, not "stall".
         let short_dl = now + Duration::from_millis(2_593);
         let (dl_wait, capped_dl) = compute_sse_loop_wait(
-            now,
             now,
             None,
             Some(now),
             first_to,
             chunk_to,
             short_dl,
-            None,
+            short_dl,
             "Anthropic SSE",
             0,
             false,
+            0,
         )
         .unwrap();
         assert!(capped_dl);
-        let msg = format_chunk_timeout_detail("Anthropic SSE", dl_wait, capped_dl, short_dl);
+        let msg = format_chunk_timeout_detail("Anthropic SSE", dl_wait, capped_dl);
         assert!(
             msg.contains("turn deadline") && !msg.contains("stall timeout"),
             "unexpected deadline detail: {msg}"
