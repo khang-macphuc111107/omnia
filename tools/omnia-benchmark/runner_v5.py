@@ -1,16 +1,18 @@
-"""Suite v5 Clean-Room Benchmark Runner (33 tasks, 7 harnesses, GPT & Claude ONLY).
+"""Suite v5 Clean-Room Benchmark Runner (33 tasks, 7 harnesses, ALL HTMUSTC models, parallel workers & effort levels).
 
 Strict execution guarantees:
-  - Excludes `agy` and all `gemini-*` models (`https://htmustc.id.vn` GPT & Claude only).
+  - Excludes `agy` strictly while allowing ALL live `https://htmustc.id.vn` text/coding model families
+    (`claude-*`, `gpt-*`, `gemini-*`, `deepseek-*`, `glm-*`, `kimi-*`, `qwen*`, etc.).
   - Routes 100% of API traffic through loopback `BenchTelemetryProxy` with live
     non-loopback egress socket audits (`audit_non_loopback_sockets`).
   - Wraps every harness in `ProcessTreeMonitor` (Win32 Job Object + 50 ms RSS/CPU poll).
   - Separates harness cold start, wire TTFT, client TTFT, active decode TPS, E2E TPS,
-    canonical token totals, KV hit rate, tool/edit error rates, and container/OS checks.
+    canonical token totals, KV hit rate, tool/edit error rates, effort level, and container/OS checks.
 """
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -62,15 +64,15 @@ EDIT_TOOL_NAMES = frozenset({
 
 
 def validate_harness_and_model(harness: str, model: str) -> None:
-    """Enforce Suite v5 competitor allowlist (no agy) and model rule (no Gemini)."""
+    """Enforce Suite v5 competitor allowlist (no agy) while allowing all HTMUSTC text/coding models."""
     h = (harness or "").strip().lower()
     if h == "agy":
         raise ValueError("Harness 'agy' is strictly excluded from Suite v5 benchmarks")
     if h not in V5_HARNESSES:
         raise ValueError(f"Unsupported Suite v5 harness '{harness}'; expected one of {V5_HARNESSES}")
     m = (model or "").strip().lower()
-    if "gemini" in m or not m:
-        raise ValueError(f"Model '{model}' disallowed: live benchmarks permit GPT and Claude ONLY")
+    if not m:
+        raise ValueError(f"Model '{model}' disallowed: model name cannot be empty")
 
 
 def load_htmustc_api_key(model: str) -> Optional[str]:
@@ -80,33 +82,46 @@ def load_htmustc_api_key(model: str) -> Optional[str]:
         return env_key.strip()
     if not MODELS_YML_PATH.exists():
         return None
-    target_provider = "htmustc-claude" if "claude" in (model or "").lower() else "htmustc-openai"
+    low = (model or "").lower()
+    if "claude" in low:
+        preferred = ("htmustc-claude", "htmustc-openai", "htmustc-gemini")
+    elif "gemini" in low:
+        preferred = ("htmustc-gemini", "htmustc-openai", "htmustc-claude")
+    else:
+        preferred = ("htmustc-openai", "htmustc-claude", "htmustc-gemini")
     raw = MODELS_YML_PATH.read_text(encoding="utf-8", errors="replace")
     try:
         import yaml  # type: ignore
         parsed = yaml.safe_load(raw) or {}
-        prov = ((parsed.get("providers") or {}).get(target_provider) or {})
-        val = prov.get("apiKey")
-        return str(val).strip() if val else None
+        providers = parsed.get("providers") or {}
+        for pname in preferred:
+            val = (providers.get(pname) or {}).get("apiKey")
+            if val:
+                return str(val).strip()
+        for pname, prov in providers.items():
+            if "htmustc" in str(pname).lower() and isinstance(prov, dict) and prov.get("apiKey"):
+                return str(prov["apiKey"]).strip()
     except Exception:
         pass
-    # Minimal zero-dependency fallback YAML key extractor scoped strictly to target_provider
-    in_target = False
-    target_indent: Optional[int] = None
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        if re.match(rf"^{re.escape(target_provider)}\s*:", stripped):
-            in_target = True
-            target_indent = indent
-            continue
-        if in_target and target_indent is not None and indent <= target_indent and ":" in stripped:
-            break
-        if in_target and stripped.startswith("apiKey:"):
-            val = stripped.split(":", 1)[1].strip().strip("'\"")
-            return val or None
+    # Minimal zero-dependency fallback YAML key extractor scoped strictly to preferred providers
+    for target_provider in preferred:
+        in_target = False
+        target_indent: Optional[int] = None
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            if re.match(rf"^{re.escape(target_provider)}\s*:", stripped):
+                in_target = True
+                target_indent = indent
+                continue
+            if in_target and target_indent is not None and indent <= target_indent and ":" in stripped:
+                break
+            if in_target and stripped.startswith("apiKey:"):
+                val = stripped.split(":", 1)[1].strip().strip("'\"")
+                if val:
+                    return val
     return None
 
 
@@ -410,21 +425,24 @@ def run_single_trial_v5(
     results_root: Optional[Path] = None,
     timeout_override_s: Optional[int] = None,
     proxy_fault_mode: Optional[str] = None,
+    effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute one isolated clean-room Suite v5 trial and collect wire + tree telemetry."""
     validate_harness_and_model(harness, model)
     assert_clean_ancestors()
 
     tid = task["id"]
-    run_id = f"{phase}-{harness}-{model}-{tid}-r{repeat_idx}"
+    eff_label = (effort or "").strip().lower()
+    eff_suffix = f".{eff_label}" if eff_label else ""
+    run_id = f"{phase}-{harness}-{model}-{tid}-r{repeat_idx}" + (f"-{eff_label}" if eff_label else "")
     out_root = results_root or DEFAULT_RESULTS_ROOT
     logs_dir = out_root / "traces" / phase / harness / model
     ws_parent = out_root / "_workspaces"
     ws_parent.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    wire_log = logs_dir / f"{tid}.r{repeat_idx}.wire.jsonl"
-    stdout_log = logs_dir / f"{tid}.r{repeat_idx}.stdout.jsonl"
+    wire_log = logs_dir / f"{tid}.r{repeat_idx}{eff_suffix}.wire.jsonl"
+    stdout_log = logs_dir / f"{tid}.r{repeat_idx}{eff_suffix}.stdout.jsonl"
     wire_log.unlink(missing_ok=True)
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"v5_{harness}_{tid}_", dir=str(ws_parent)))
@@ -464,6 +482,7 @@ def run_single_trial_v5(
             run_id=run_id,
             timeout_s=timeout_s,
             omnia_bin=omnia_bin,
+            effort=effort,
         )
 
         wall_start_ns = time.perf_counter_ns()
@@ -544,6 +563,7 @@ def run_single_trial_v5(
             "run_id": run_id,
             "harness": harness,
             "model": model,
+            "effort": eff_label or "default",
             "task_id": tid,
             "axis": int(task["axis"]),
             "axis_name": task.get("axis_name", ""),
@@ -585,6 +605,12 @@ def run_single_trial_v5(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+    os.replace(str(tmp), str(path))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Suite v5 clean-room multi-harness benchmark runner")
     ap.add_argument("--phase", default="v5_wave3")
@@ -594,7 +620,10 @@ def main() -> int:
     ap.add_argument("--tasks", nargs="+", default=None)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--timeout-s", type=int, default=None)
-    ap.add_argument("--cooldown-s", type=float, default=2.0)
+    ap.add_argument("--cooldown-s", type=float, default=None, help="Per-trial sleep (defaults to 0.0 when --workers > 1, else 2.0)")
+    ap.add_argument("--workers", type=int, default=1, help="Parallel worker count (ThreadPoolExecutor)")
+    ap.add_argument("--effort", default=None, help="Reasoning effort: auto|none|minimal|low|medium|high|xhigh|max")
+    ap.add_argument("--efforts", nargs="+", default=None, help="Multiple reasoning effort levels to sweep in parallel")
     ap.add_argument("--omnia-bin", default=None)
     ap.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     ap.add_argument("--out", default=None)
@@ -604,6 +633,10 @@ def main() -> int:
     for m in args.models:
         for h in args.harnesses:
             validate_harness_and_model(h, m)
+
+    effort_list: List[Optional[str]] = list(args.efforts) if args.efforts else ([args.effort] if args.effort else [None])
+    workers = max(1, int(args.workers))
+    cooldown_s = (0.0 if workers > 1 else 2.0) if args.cooldown_s is None else float(args.cooldown_s)
 
     all_tasks = legacy_runner.discover_tasks(task_ids=args.tasks, axes=args.axes)
     tasks = all_tasks
@@ -618,53 +651,82 @@ def main() -> int:
             "phase": args.phase,
             "harnesses": args.harnesses,
             "models": args.models,
+            "efforts": [e or "default" for e in effort_list],
+            "workers": workers,
+            "cooldown_s": cooldown_s,
             "task_count": len(tasks),
             "repeats": args.repeats,
-            "planned_trials": len(args.harnesses) * len(args.models) * len(tasks) * args.repeats,
+            "planned_trials": len(args.harnesses) * len(args.models) * len(tasks) * args.repeats * len(effort_list),
             "task_ids": [t["id"] for t in tasks],
         }, indent=2))
         return 0
 
     records: List[Dict[str, Any]] = []
-    # Resume support if out_path exists for the same phase
     done_keys = set()
     if out_path.exists():
         try:
             prev = json.loads(out_path.read_text(encoding="utf-8"))
             records = list(prev.get("records") or [])
-            done_keys = {(r["harness"], r["model"], r["task_id"], int(r["repeat"])) for r in records}
+            done_keys = {
+                (r["harness"], r["model"], r["task_id"], int(r["repeat"]), str(r.get("effort") or "default").lower())
+                for r in records
+            }
         except Exception:
             records = []
 
+    jobs: List[Tuple[int, Dict[str, Any], str, str, Optional[str]]] = []
     for rep in range(args.repeats):
         for task in tasks:
             for model in args.models:
-                for h in args.harnesses:
-                    key = (h, model, task["id"], rep)
-                    if key in done_keys:
-                        continue
-                    print(f"[{args.phase}] r{rep} {h:8s} {model:18s} {task['id']:30s} ...", end=" ", flush=True)
-                    rec = run_single_trial_v5(
-                        args.phase, h, model, task, repeat_idx=rep,
-                        omnia_bin=omnia_bin, results_root=results_root, timeout_override_s=args.timeout_s,
-                    )
-                    records.append(rec)
-                    done_keys.add(key)
-                    status = "PASS" if rec["passed"] else ("TOUT" if rec["timed_out"] else "FAIL")
-                    print(
-                        f"{status} s={rec['score']:.2f} wall={rec['wall_s']:.1f}s "
-                        f"ttft={rec.get('wire_first_ttft_ms')}ms tok={rec.get('wire_total_tokens')} "
-                        f"tps={rec.get('wire_gen_tokens_per_sec')} rss={rec['peak_rss_mb']:.1f}MB",
-                        flush=True,
-                    )
-                    out_path.write_text(json.dumps({
-                        "schema_version": "5.0",
-                        "phase": args.phase,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "records": records,
-                    }, indent=2) + "\n", encoding="utf-8", newline="\n")
-                    if args.cooldown_s > 0:
-                        time.sleep(args.cooldown_s)
+                for eff in effort_list:
+                    eff_key = (eff or "default").strip().lower()
+                    for h in args.harnesses:
+                        key = (h, model, task["id"], rep, eff_key)
+                        if key in done_keys:
+                            continue
+                        jobs.append((rep, task, model, h, eff))
+
+    write_lock = threading.Lock()
+    print_lock = threading.Lock()
+
+    def _run_job(job: Tuple[int, Dict[str, Any], str, str, Optional[str]]) -> Dict[str, Any]:
+        rep, task, model, h, eff = job
+        eff_key = (eff or "default").strip().lower()
+        rec = run_single_trial_v5(
+            args.phase, h, model, task, repeat_idx=rep,
+            omnia_bin=omnia_bin, results_root=results_root, timeout_override_s=args.timeout_s, effort=eff,
+        )
+        status = "PASS" if rec["passed"] else ("TOUT" if rec["timed_out"] else "FAIL")
+        eff_disp = f" eff={eff_key}" if eff else ""
+        with write_lock:
+            records.append(rec)
+            done_keys.add((h, model, task["id"], rep, eff_key))
+            _atomic_write_json(out_path, {
+                "schema_version": "5.0",
+                "phase": args.phase,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "records": records,
+            })
+        with print_lock:
+            print(
+                f"[{args.phase}] r{rep} {h:8s} {model:22s}{eff_disp} {task['id']:30s} ... "
+                f"{status} s={rec['score']:.2f} wall={rec['wall_s']:.1f}s "
+                f"ttft={rec.get('wire_first_ttft_ms')}ms tok={rec.get('wire_total_tokens')} "
+                f"tps={rec.get('wire_gen_tokens_per_sec')} rss={rec['peak_rss_mb']:.1f}MB",
+                flush=True,
+            )
+        if cooldown_s > 0:
+            time.sleep(cooldown_s)
+        return rec
+
+    if workers == 1:
+        for job in jobs:
+            _run_job(job)
+    elif jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as ex:
+            futs = [ex.submit(_run_job, job) for job in jobs]
+            for fut in concurrent.futures.as_completed(futs):
+                fut.result()
 
     print(f"Saved {len(records)} Suite v5 records -> {out_path}", flush=True)
     return 0

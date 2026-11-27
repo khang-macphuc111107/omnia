@@ -59,6 +59,7 @@ def run_harness_in_workspace(
     omnia_bin: Optional[Path] = None,
     check_sockets: bool = True,
     logs_root: Optional[Path] = None,
+    effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute any Suite v5 harness cleanly inside `workspace` through loopback `BenchTelemetryProxy`."""
     runner_v5.validate_harness_and_model(harness, model)
@@ -67,11 +68,13 @@ def run_harness_in_workspace(
     out_root = logs_root or (DEFAULT_PUBLIC_OUT / suite_name / "traces" / harness / model)
     out_root.mkdir(parents=True, exist_ok=True)
     safe_tid = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id)[:80]
-    wire_log = out_root / f"{safe_tid}.wire.jsonl"
-    stdout_log = out_root / f"{safe_tid}.stdout.jsonl"
+    eff_label = (effort or "").strip().lower()
+    eff_suffix = f".{eff_label}" if eff_label else ""
+    wire_log = out_root / f"{safe_tid}{eff_suffix}.wire.jsonl"
+    stdout_log = out_root / f"{safe_tid}{eff_suffix}.stdout.jsonl"
     wire_log.unlink(missing_ok=True)
 
-    run_id = f"{suite_name}-{harness}-{model}-{safe_tid}"
+    run_id = f"{suite_name}-{harness}-{model}-{safe_tid}" + (f"-{eff_label}" if eff_label else "")
     api_key = runner_v5.load_htmustc_api_key(model)
     proxy = BenchTelemetryProxy(
         run_id=run_id,
@@ -91,7 +94,7 @@ def run_harness_in_workspace(
     try:
         port = proxy.start()
         launch = prepare_harness_launch(
-            harness, model, prompt, workspace, port, run_id=run_id, timeout_s=timeout_s, omnia_bin=omnia_bin
+            harness, model, prompt, workspace, port, run_id=run_id, timeout_s=timeout_s, omnia_bin=omnia_bin, effort=effort
         )
         wall_start_ns = time.perf_counter_ns()
         t0 = wall_start_ns / 1e9
@@ -163,6 +166,7 @@ def run_harness_in_workspace(
         rec = {
             "harness": harness,
             "model": model,
+            "effort": eff_label or "default",
             "task_id": task_id,
             "suite": suite_name,
             "exit_code": exit_code,
@@ -268,7 +272,7 @@ def call_htmustc_chat(
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         raw = ""
         last_err: Optional[Exception] = None
-        for attempt in range(4):
+        for attempt in range(6):
             try:
                 with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                     raw = resp.read().decode("utf-8", errors="replace")
@@ -276,16 +280,16 @@ def call_htmustc_chat(
                 break
             except urllib.error.HTTPError as exc:
                 last_err = exc
-                if exc.code not in (429, 500, 502, 503, 504) or attempt >= 3:
+                if exc.code not in (429, 500, 502, 503, 504) or attempt >= 5:
                     raise
                 ra = exc.headers.get("Retry-After") if exc.headers else None
-                wait_s = min(20.0, float(ra)) if (ra and str(ra).isdigit()) else min(16.0, 1.5 * (2 ** attempt))
+                wait_s = min(30.0, float(ra)) if (ra and str(ra).isdigit()) else min(25.0, 2.0 * (2 ** attempt))
                 time.sleep(wait_s)
             except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
                 last_err = exc
-                if attempt >= 3:
+                if attempt >= 5:
                     raise
-                time.sleep(min(12.0, 1.5 * (2 ** attempt)))
+                time.sleep(min(20.0, 2.0 * (2 ** attempt)))
         if last_err is not None:
             raise last_err
         wall_end_ns = time.perf_counter_ns()

@@ -57,8 +57,10 @@ def _ensure_bfcl_eval() -> Any:
 
         class _Map(dict):
             def __missing__(self, k: str) -> _MC:
-                kl = str(k).lower()
-                return _MC(underscore_to_dot=any(p in kl for p in ("gpt", "claude", "o3", "o4", "openai")))
+                # Both `run_single_turn_api` (via `name_map`) and `run_harness_single_turn`
+                # (via `task.json`) pass original dotted BFCL function names to `ast_checker`,
+                # so ground truth must keep dotted names rather than rewriting `.` -> `_`.
+                return _MC(underscore_to_dot=False)
 
         mc = types.ModuleType("bfcl_eval.constants.model_config")
         mc.MODEL_CONFIG_MAPPING = _Map()

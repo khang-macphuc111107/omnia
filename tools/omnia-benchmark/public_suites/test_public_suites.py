@@ -76,6 +76,16 @@ class PublicSuitesOfflineTests(unittest.TestCase):
         # Extract ground truth valid call automatically for smoke verification
         res = bfcl_v4.evaluate_entry(simple, [{"calculate_triangle_area": {"base": 10, "height": 5, "unit": "units"}}], model_name="gpt-6.2-sol")
         self.assertTrue(res["passed"], res)
+        par = bfcl_v4.load_category("parallel", limit=1)[0]
+        res_dot = bfcl_v4.evaluate_entry(
+            par,
+            [
+                {"spotify.play": {"artist": "Taylor Swift", "duration": 20}},
+                {"spotify.play": {"artist": "Maroon 5", "duration": 15}},
+            ],
+            model_name="gpt-6.2-sol",
+        )
+        self.assertTrue(res_dot["passed"], res_dot)
         irr = bfcl_v4.load_category("irrelevance", limit=1)[0]
         self.assertTrue(bfcl_v4.evaluate_entry(irr, [])["passed"])
         mt = bfcl_v4.load_category("multi_turn_base", limit=1)[0]
@@ -148,14 +158,16 @@ class PublicSuitesOfflineTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_cli_select_tasks_and_reject_agy_gemini(self):
+    def test_cli_select_tasks_and_reject_agy_allow_all_htmustc(self):
         import argparse
         from public_suites import cli, common
 
         with self.assertRaises(ValueError):
             cli.runner_v5.validate_harness_and_model("agy", "gpt-6.2-sol")
         with self.assertRaises(ValueError):
-            cli.runner_v5.validate_harness_and_model("omnia", "gemini-4-argon")
+            cli.runner_v5.validate_harness_and_model("omnia", "")
+        cli.runner_v5.validate_harness_and_model("omnia", "gemini-4-argon")
+        cli.runner_v5.validate_harness_and_model("omnia", "deepseek-v4-pro")
         items = cli._select_tasks_for_suite(argparse.Namespace(
             suite="aider_polyglot", limit=150, category="all", domain="mock", lang="all_runnable", stratified=True,
         ))

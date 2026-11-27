@@ -9,10 +9,12 @@ Matches `rubric_evaluation_config.yaml`:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
 import shutil
 import subprocess
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -21,6 +23,8 @@ from .common import SWE_ATLAS_PARQUET, call_htmustc_chat, make_temp_workspace, r
 
 REPO_CACHE_DIR = Path(r"D:\OmniaData\qa\v5-bench\repo_cache\swe_atlas")
 DEFAULT_JUDGE_MODEL = "gpt-6-luna"
+_REPO_CACHE_LOCK = threading.Lock()
+_REPO_LOCKS: Dict[str, threading.Lock] = {}
 
 CriterionJudge = Callable[[str, str, Dict[str, Any]], Dict[str, Any]]
 
@@ -107,23 +111,46 @@ def grade_answer(
     votes_per_criterion: int = 5,
     judge_fn: Optional[CriterionJudge] = None,
     judge_model: str = DEFAULT_JUDGE_MODEL,
+    judge_workers: int = 20,
 ) -> Dict[str, Any]:
     """Grade one answer against all task rubric criteria using 5-vote majority + negative polarity."""
     items = task.get("rubric_items") or []
-    fn = judge_fn or (lambda p, a, c: default_htmustc_judge(p, a, c, judge_model=judge_model))
     prompt_text = str(task.get("prompt") or "")
+
+    # Parallelize live default_htmustc_judge calls across all (criterion x vote) pairs;
+    # keep sequential execution when an injected custom judge_fn (e.g. unit-test iterator) is passed.
+    votes_by_idx: List[List[Dict[str, Any]]] = [[] for _ in items]
+    if judge_fn is None and judge_workers > 1 and items:
+        def _run_vote(pair: tuple[int, int, Dict[str, Any]]) -> tuple[int, int, Dict[str, Any]]:
+            c_idx, v_idx, crit = pair
+            v = default_htmustc_judge(prompt_text, answer_text, crit, judge_model=judge_model)
+            verdict = "YES" if str(v.get("verdict") or "").upper() == "YES" else "NO"
+            return c_idx, v_idx, {**v, "verdict": verdict}
+
+        vote_jobs = [
+            (ci, vi, crit)
+            for ci, crit in enumerate(items)
+            for vi in range(votes_per_criterion)
+        ]
+        per_crit: Dict[int, Dict[int, Dict[str, Any]]] = {ci: {} for ci in range(len(items))}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(judge_workers, len(vote_jobs))) as ex:
+            for ci, vi, res_v in ex.map(_run_vote, vote_jobs):
+                per_crit[ci][vi] = res_v
+        for ci in range(len(items)):
+            votes_by_idx[ci] = [per_crit[ci][vi] for vi in range(votes_per_criterion)]
+    else:
+        fn = judge_fn or (lambda p, a, c: default_htmustc_judge(p, a, c, judge_model=judge_model))
+        for ci, crit in enumerate(items):
+            for _ in range(votes_per_criterion):
+                v = fn(prompt_text, answer_text, crit)
+                verdict = "YES" if str(v.get("verdict") or "").upper() == "YES" else "NO"
+                votes_by_idx[ci].append({**v, "verdict": verdict})
 
     criterion_results: List[Dict[str, Any]] = []
     met_count = 0
-    for crit in items:
+    for ci, crit in enumerate(items):
         neg = is_negative_criterion(crit)
-        votes: List[Dict[str, Any]] = []
-        verdicts: List[str] = []
-        for _ in range(votes_per_criterion):
-            v = fn(prompt_text, answer_text, crit)
-            verdict = "YES" if str(v.get("verdict") or "").upper() == "YES" else "NO"
-            votes.append({**v, "verdict": verdict})
-            verdicts.append(verdict)
+        verdicts = [v["verdict"] for v in votes_by_idx[ci]]
         yes_n = Counter(verdicts)["YES"]
         no_n = Counter(verdicts)["NO"]
         majority_verdict = "YES" if yes_n > no_n else "NO"
@@ -157,35 +184,39 @@ def prepare_repo_workspace(task: Dict[str, Any], workspace: Path) -> Path:
     slug = str(task["repository_url"]).strip()
     commit = str(task["repository_base_commit"]).strip()
     REPO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_dir = REPO_CACHE_DIR / f"{slug.replace('/', '__')}__{commit[:12]}.git"
-    if not (cache_dir / "HEAD").exists():
-        shutil.rmtree(cache_dir, ignore_errors=True)
-        tmp_cache = REPO_CACHE_DIR / f".tmp_{slug.replace('/', '__')}_{commit[:12]}"
-        shutil.rmtree(tmp_cache, ignore_errors=True)
-        url = f"https://github.com/{slug}.git"
-        subprocess.run(["git", "init", "--bare", str(tmp_cache)], check=True, capture_output=True, text=True)
-        fetch = subprocess.run(
-            ["git", "--git-dir", str(tmp_cache), "fetch", "--depth", "1", url, commit],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        if fetch.returncode != 0:
+    cache_key = f"{slug.replace('/', '__')}__{commit[:12]}"
+    cache_dir = REPO_CACHE_DIR / f"{cache_key}.git"
+    with _REPO_CACHE_LOCK:
+        repo_lock = _REPO_LOCKS.setdefault(cache_key, threading.Lock())
+    with repo_lock:
+        if not (cache_dir / "HEAD").exists():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            tmp_cache = REPO_CACHE_DIR / f".tmp_{slug.replace('/', '__')}_{commit[:12]}"
             shutil.rmtree(tmp_cache, ignore_errors=True)
+            url = f"https://github.com/{slug}.git"
+            subprocess.run(["git", "init", "--bare", str(tmp_cache)], check=True, capture_output=True, text=True)
+            fetch = subprocess.run(
+                ["git", "--git-dir", str(tmp_cache), "fetch", "--depth", "1", url, commit],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if fetch.returncode != 0:
+                shutil.rmtree(tmp_cache, ignore_errors=True)
+                subprocess.run(
+                    ["git", "clone", "--filter=blob:none", "--bare", url, str(tmp_cache)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
             subprocess.run(
-                ["git", "clone", "--filter=blob:none", "--bare", url, str(tmp_cache)],
+                ["git", "--git-dir", str(tmp_cache), "update-ref", "refs/heads/bench_base", commit],
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=300,
             )
-        subprocess.run(
-            ["git", "--git-dir", str(tmp_cache), "update-ref", "refs/heads/bench_base", commit],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        tmp_cache.replace(cache_dir)
+            tmp_cache.replace(cache_dir)
     repo_dir = workspace / "repo"
     subprocess.run(
         ["git", "clone", "-c", "core.longpaths=true", "--local", "--no-checkout", str(cache_dir), str(repo_dir)],
@@ -217,6 +248,7 @@ def run_task(
     judge_model: str = DEFAULT_JUDGE_MODEL,
     timeout_s: int = 360,
     omnia_bin: Optional[Path] = None,
+    effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     ws = make_temp_workspace("swe_atlas", "swe_atlas_qna_aa")
     try:
@@ -235,6 +267,7 @@ def run_task(
             repo_dir,
             timeout_s=timeout_s,
             omnia_bin=omnia_bin,
+            effort=effort,
         )
         ans_text = extract_final_answer(run_res.get("final_assistant_text") or "")
         grade = grade_answer(task, ans_text, judge_model=judge_model)

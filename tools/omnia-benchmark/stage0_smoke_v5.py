@@ -7,7 +7,9 @@ and zero non-loopback network egress across all 6 staged competitors + Omnia.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -31,6 +33,12 @@ SMOKE_PROMPT = (
 )
 
 
+def _atomic_write_json(path: Path, obj: Any) -> None:
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8", newline="\n")
+    os.replace(str(tmp), str(path))
+
+
 def run_smoke_cell(
     harness: str,
     model: str,
@@ -39,6 +47,7 @@ def run_smoke_cell(
     omnia_bin: Optional[Path] = None,
     out_dir: Optional[Path] = None,
     log_prefix: str = "",
+    effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     runner_v5.validate_harness_and_model(harness, model)
     assert_clean_ancestors()
@@ -49,11 +58,13 @@ def run_smoke_cell(
     ws_parent.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    rid = f"s0v5-{harness}-{model}"
+    eff_label = (effort or "").strip().lower()
+    eff_tag = f"_{eff_label}" if eff_label else ""
+    rid = f"s0v5-{harness}-{model}" + (f"-{eff_label}" if eff_label else "")
     ws = Path(tempfile.mkdtemp(prefix=f"s0v5_{harness}_", dir=str(ws_parent)))
     (ws / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8", newline="\n")
-    wire_log = log_dir / f"{log_prefix}{harness}_{model}.wire.jsonl"
-    stdout_log = log_dir / f"{log_prefix}{harness}_{model}.stdout.jsonl"
+    wire_log = log_dir / f"{log_prefix}{harness}_{model}{eff_tag}.wire.jsonl"
+    stdout_log = log_dir / f"{log_prefix}{harness}_{model}{eff_tag}.stdout.jsonl"
     wire_log.unlink(missing_ok=True)
 
     api_key = runner_v5.load_htmustc_api_key(model)
@@ -75,7 +86,7 @@ def run_smoke_cell(
     try:
         port = proxy.start()
         launch = prepare_harness_launch(
-            harness, model, SMOKE_PROMPT, ws, port, run_id=rid, timeout_s=timeout_s, omnia_bin=omnia_bin
+            harness, model, SMOKE_PROMPT, ws, port, run_id=rid, timeout_s=timeout_s, omnia_bin=omnia_bin, effort=effort
         )
         wall_start_ns = time.perf_counter_ns()
         t0 = wall_start_ns / 1e9
@@ -157,6 +168,7 @@ def run_smoke_cell(
         return {
             "harness": harness,
             "model": model,
+            "effort": eff_label or "default",
             "wire_protocol": launch.wire_protocol,
             "passed": edit_passed and not timed_out,
             "exit_code": exit_code,
@@ -195,37 +207,53 @@ def main() -> int:
     ap.add_argument("--harnesses", nargs="+", default=["codex", "claude", "opencode", "goose", "omp", "dsh"])
     ap.add_argument("--models", nargs="+", default=list(runner_v5.V5_DEFAULT_MODELS))
     ap.add_argument("--timeout-s", type=int, default=120)
-    ap.add_argument("--cooldown-s", type=float, default=2.0)
+    ap.add_argument("--cooldown-s", type=float, default=None, help="Per-cell sleep (defaults to 0.0 when --workers > 1, else 2.0)")
+    ap.add_argument("--workers", type=int, default=1, help="Parallel worker count (ThreadPoolExecutor)")
+    ap.add_argument("--effort", default=None, help="Reasoning effort: auto|none|minimal|low|medium|high|xhigh|max")
+    ap.add_argument("--efforts", nargs="+", default=None, help="Multiple reasoning effort levels to sweep in parallel")
     ap.add_argument("--omnia-bin", default=None)
     ap.add_argument("--out", default=r"D:\OmniaData\qa\v5-bench\stage0_smoke\matrix.json")
-    ap.add_argument("--overwrite", action="store_true", help="Replace existing out file instead of merging by (harness, model)")
+    ap.add_argument("--overwrite", action="store_true", help="Replace existing out file instead of merging by (harness, model, effort)")
     args = ap.parse_args()
 
     for m in args.models:
         for h in args.harnesses:
             runner_v5.validate_harness_and_model(h, m)
 
+    effort_list: List[Optional[str]] = list(args.efforts) if args.efforts else ([args.effort] if args.effort else [None])
+    workers = max(1, int(args.workers))
+    cooldown_s = (0.0 if workers > 1 else 2.0) if args.cooldown_s is None else float(args.cooldown_s)
+
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     omnia_bin = Path(args.omnia_bin) if args.omnia_bin else None
-    merged_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    merged_map: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     if not args.overwrite and out_path.exists():
         try:
             for c in json.loads(out_path.read_text(encoding="utf-8")).get("cells") or []:
-                merged_map[(str(c.get("harness")), str(c.get("model")))] = c
+                merged_map[(str(c.get("harness")), str(c.get("model")), str(c.get("effort") or "default").lower())] = c
         except Exception:
             merged_map = {}
 
     log_prefix = f"{out_path.stem}__" if out_path.name != "matrix.json" else ""
-    for m in args.models:
-        for h in args.harnesses:
-            print(f"[SMOKE-v5] {h:8s} x {m:18s} ...", end=" ", flush=True)
-            row = run_smoke_cell(
-                h, m, timeout_s=args.timeout_s, omnia_bin=omnia_bin, out_dir=out_path.parent, log_prefix=log_prefix
-            )
-            merged_map[(h, m)] = row
-            status = "PASS" if row["passed"] else "FAIL"
+    jobs = [(h, m, eff) for m in args.models for eff in effort_list for h in args.harnesses]
+    write_lock = threading.Lock()
+    print_lock = threading.Lock()
+
+    def _run_cell(job: Tuple[str, str, Optional[str]]) -> Dict[str, Any]:
+        h, m, eff = job
+        eff_key = (eff or "default").strip().lower()
+        row = run_smoke_cell(
+            h, m, timeout_s=args.timeout_s, omnia_bin=omnia_bin, out_dir=out_path.parent, log_prefix=log_prefix, effort=eff
+        )
+        status = "PASS" if row["passed"] else "FAIL"
+        eff_disp = f" [{eff_key}]" if eff else ""
+        with write_lock:
+            merged_map[(h, m, eff_key)] = row
+            _atomic_write_json(out_path, {"cells": list(merged_map.values())})
+        with print_lock:
             print(
+                f"[SMOKE-v5] {h:8s} x {m:24s}{eff_disp} ... "
                 f"{status} rc={row['exit_code']} wall={row['wall_s']}s reqs={row['wire_requests']} "
                 f"w_err={row['wire_errors']} tok={row['wire_tokens']} tc={row['stream_tool_calls']}/{row['wire_tool_calls']} "
                 f"rss={row['peak_rss_mb']}MB leaks={len(row['non_loopback_sockets'])}",
@@ -233,9 +261,18 @@ def main() -> int:
             )
             if not row["passed"]:
                 print(f"   diag: errs={row['harness_errors'][:2]} stderr={row['stderr_tail'][:200]!r}", flush=True)
-            out_path.write_text(json.dumps({"cells": list(merged_map.values())}, indent=2) + "\n", encoding="utf-8", newline="\n")
-            if args.cooldown_s > 0:
-                time.sleep(args.cooldown_s)
+        if cooldown_s > 0:
+            time.sleep(cooldown_s)
+        return row
+
+    if workers == 1:
+        for job in jobs:
+            _run_cell(job)
+    elif jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as ex:
+            futs = [ex.submit(_run_cell, job) for job in jobs]
+            for fut in concurrent.futures.as_completed(futs):
+                fut.result()
     return 0
 
 

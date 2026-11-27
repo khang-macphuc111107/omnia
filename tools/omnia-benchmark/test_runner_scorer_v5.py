@@ -6,13 +6,50 @@ import scorer_v5
 
 
 class RunnerScorerV5Tests(unittest.TestCase):
-    def test_agy_and_gemini_are_rejected(self):
+    def test_agy_and_empty_model_rejected_while_all_htmustc_families_allowed(self):
         with self.assertRaises(ValueError):
             runner_v5.validate_harness_and_model("agy", "gpt-6.2-sol")
         with self.assertRaises(ValueError):
-            runner_v5.validate_harness_and_model("omnia", "gemini-3.8-flash")
+            runner_v5.validate_harness_and_model("omnia", "")
+        for model in (
+            "gpt-6.2-sol",
+            "claude-sonnet-5-5",
+            "gemini-3.8-flash",
+            "gemini-4-carbon",
+            "deepseek-v4-pro",
+            "glm-5.3",
+            "kimi-k3.1-pro",
+            "qwen3.8-max",
+        ):
+            runner_v5.validate_harness_and_model("omnia", model)
         runner_v5.validate_harness_and_model("dsh", "gpt-6.2-sol")
-        runner_v5.validate_harness_and_model("omnia", "claude-sonnet-5-5")
+
+    def test_cleanroom_effort_and_multifamily_routing(self):
+        import tempfile
+        from pathlib import Path
+        import cleanroom
+
+        with tempfile.TemporaryDirectory() as ws:
+            l_omnia = cleanroom.prepare_harness_launch(
+                "omnia", "gemini-4-carbon", "hi", Path(ws), 45124, run_id="ut-eff-omnia", effort="max"
+            )
+            l_omp = cleanroom.prepare_harness_launch(
+                "omp", "deepseek-v4-pro", "hi", Path(ws), 45125, run_id="ut-eff-omp", effort="xhigh"
+            )
+            l_claude = cleanroom.prepare_harness_launch(
+                "claude", "claude-sonnet-5-5", "hi", Path(ws), 45126, run_id="ut-eff-claude", effort="high"
+            )
+            try:
+                self.assertIn("--effort", l_omnia.cmd)
+                self.assertIn("max", l_omnia.cmd)
+                self.assertEqual(l_omp.wire_protocol, "openai_chat")
+                self.assertIn("--thinking=xhigh", l_omp.cmd)
+                self.assertIn("--effort", l_claude.cmd)
+                self.assertEqual(l_claude.env.get("CLAUDE_CODE_EFFORT_LEVEL"), "high")
+            finally:
+                l_omnia.cleanup()
+                l_omp.cleanup()
+                l_claude.cleanup()
 
     def test_parse_dsh_json_stream_tracks_tools_edits_and_final(self):
         events = [

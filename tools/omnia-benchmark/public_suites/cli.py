@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import inspect
 import json
+import os
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 _BENCH_DIR = str(Path(__file__).resolve().parent.parent)
 if _BENCH_DIR not in sys.path:
@@ -91,7 +95,9 @@ def _load_existing_rows(out_p: Path) -> List[Dict[str, Any]]:
 def _write_rows(suite: str, out_p: Path, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     summary = summarize_suite_results(suite, rows)
     out_p.parent.mkdir(parents=True, exist_ok=True)
-    out_p.write_text(json.dumps({"summary": summary, "rows": rows}, indent=2) + "\n", encoding="utf-8", newline="\n")
+    tmp = out_p.with_suffix(out_p.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps({"summary": summary, "rows": rows}, indent=2) + "\n", encoding="utf-8", newline="\n")
+    os.replace(str(tmp), str(out_p))
     return summary
 
 
@@ -163,26 +169,36 @@ def _select_tasks_for_suite(args: argparse.Namespace) -> List[Tuple[str, Any]]:
     raise ValueError(f"Unknown suite: {args.suite}")
 
 
-def _run_one_item(args: argparse.Namespace, harness: str, model: str, payload: Any, omnia_bin: Path | None) -> Dict[str, Any]:
+def _call_with_optional_effort(fn: Any, *pos: Any, omnia_bin: Path | None = None, effort: Optional[str] = None) -> Dict[str, Any]:
+    sig = inspect.signature(fn)
+    kwargs: Dict[str, Any] = {}
+    if "omnia_bin" in sig.parameters:
+        kwargs["omnia_bin"] = omnia_bin
+    if effort is not None and "effort" in sig.parameters:
+        kwargs["effort"] = effort
+    return fn(*pos, **kwargs)
+
+
+def _run_one_item(args: argparse.Namespace, harness: str, model: str, payload: Any, omnia_bin: Path | None, effort: Optional[str] = None) -> Dict[str, Any]:
     if args.suite == "swe_atlas_qna_aa":
-        return swe_atlas_qna.run_task(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(swe_atlas_qna.run_task, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     if args.suite == "livecodebench":
-        return livecodebench.run_task(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(livecodebench.run_task, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     if args.suite == "bfcl_v4":
-        return bfcl_v4.run_harness_single_turn(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(bfcl_v4.run_harness_single_turn, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     if args.suite == "tau2_bench":
         dom, task = payload
         return tau2_bench.run_task_api(dom, model, task)
     if args.suite == "locomo":
-        return locomo.run_conversation(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(locomo.run_conversation, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     if args.suite == "longmemeval":
-        return longmemeval.run_task(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(longmemeval.run_task, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     if args.suite == "compaction_bench":
-        return compaction_bench.run_case_harness(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(compaction_bench.run_case_harness, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     if args.suite == "aider_polyglot":
-        return aider_polyglot.run_exercise(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(aider_polyglot.run_exercise, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     if args.suite == "aa_lcr":
-        return aa_lcr.run_task(harness, model, payload, omnia_bin=omnia_bin)
+        return _call_with_optional_effort(aa_lcr.run_task, harness, model, payload, omnia_bin=omnia_bin, effort=effort)
     raise ValueError(f"Unknown suite: {args.suite}")
 
 
@@ -201,12 +217,14 @@ def main() -> int:
     run_p.add_argument("--harness", default=None, help="Single harness (legacy alias)")
     run_p.add_argument("--harnesses", nargs="+", default=None, help="One or more clean-room harnesses (no agy)")
     run_p.add_argument("--model", default=None, help="Single model (legacy alias)")
-    run_p.add_argument("--models", nargs="+", default=None, help="GPT/Claude models ONLY (no Gemini)")
+    run_p.add_argument("--models", nargs="+", default=None, help="All HTMUSTC models allowed")
     run_p.add_argument("--limit", type=int, default=5)
     run_p.add_argument("--category", default="simple_python")
     run_p.add_argument("--domain", default="mock")
     run_p.add_argument("--lang", default="python")
-    run_p.add_argument("--cooldown-s", type=float, default=1.5)
+    run_p.add_argument("--cooldown-s", type=float, default=None, help="Per-trial sleep (defaults to 0.0 when --workers > 1, else 1.5)")
+    run_p.add_argument("--workers", type=int, default=1, help="Parallel worker count (ThreadPoolExecutor)")
+    run_p.add_argument("--effort", default=None, help="Reasoning effort: auto|none|minimal|low|medium|high|xhigh|max")
     run_p.add_argument("--stratified", action="store_true", help="Interleave across repos/categories/difficulties before applying --limit")
     run_p.add_argument("--no-resume", action="store_true")
     run_p.add_argument("--omnia-bin", default=None)
@@ -227,37 +245,64 @@ def main() -> int:
         for m in models:
             runner_v5.validate_harness_and_model(h, m)
 
+    workers = max(1, int(args.workers))
+    cooldown_s = (0.0 if workers > 1 else 1.5) if args.cooldown_s is None else float(args.cooldown_s)
+    eff_key = (args.effort or "default").strip().lower()
+
     omnia_bin = Path(args.omnia_bin) if args.omnia_bin else None
     out_p = Path(args.out) if args.out else (DEFAULT_PUBLIC_OUT / args.suite / f"{'_'.join(harnesses)}_{'_'.join(models)}_results.json")
     rows: List[Dict[str, Any]] = [] if args.no_resume else _load_existing_rows(out_p)
-    done_keys = {
-        ("api" if args.suite == "tau2_bench" else str(r.get("harness")), str(r.get("model")), _task_key(args.suite, r))
-        for r in rows
-    }
+
+    def _row_sig(r: Dict[str, Any]) -> Tuple[str, str, str, str]:
+        h_name = "api" if args.suite == "tau2_bench" else str(r.get("harness"))
+        tkey = f"{r.get('domain')}:{r.get('task_id')}" if (args.suite == "tau2_bench" and r.get("domain")) else _task_key(args.suite, r)
+        return (h_name, str(r.get("model")), tkey, str(r.get("effort") or "default").lower())
+
+    done_keys = {_row_sig(r) for r in rows}
 
     work_items = _select_tasks_for_suite(args)
     run_harnesses = ["api"] if args.suite == "tau2_bench" else harnesses
 
-    for m in models:
-        for h in run_harnesses:
-            for tkey, payload in work_items:
-                sig = (h, m, tkey)
-                if sig in done_keys:
-                    continue
-                row = _run_one_item(args, h, m, payload, omnia_bin)
-                rows.append(row)
-                done_keys.add(sig)
-                _write_rows(args.suite, out_p, rows)
-                print(
-                    f"[{args.suite}] {h:8s} {m:18s} {tkey:28s} ... {'PASS' if row.get('passed') else 'FAIL'} "
-                    f"s={row.get('score')} wall={row.get('wall_s')}s leaks={len(row.get('non_loopback_sockets') or [])}",
-                    flush=True,
-                )
-                if args.cooldown_s > 0:
-                    time.sleep(args.cooldown_s)
+    jobs = [
+        (m, h, tkey, payload)
+        for m in models
+        for h in run_harnesses
+        for tkey, payload in work_items
+        if (h, m, tkey, eff_key) not in done_keys
+    ]
+
+    write_lock = threading.Lock()
+    print_lock = threading.Lock()
+
+    def _exec(job: Tuple[str, str, str, Any]) -> Dict[str, Any]:
+        m, h, tkey, payload = job
+        row = _run_one_item(args, h, m, payload, omnia_bin, effort=args.effort)
+        with write_lock:
+            rows.append(row)
+            done_keys.add((h, m, tkey, eff_key))
+            _write_rows(args.suite, out_p, rows)
+        with print_lock:
+            st = "PASS" if row.get("passed") else "FAIL"
+            print(
+                f"[{args.suite}] {h:8s} {m:18s} {tkey:28s} ... {st} s={row.get('score')} "
+                f"wall={row.get('wall_s')}s leaks={len(row.get('non_loopback_sockets') or [])}",
+                flush=True,
+            )
+        if cooldown_s > 0:
+            time.sleep(cooldown_s)
+        return row
+
+    if workers == 1:
+        for job in jobs:
+            _exec(job)
+    elif jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as ex:
+            futs = [ex.submit(_exec, job) for job in jobs]
+            for fut in concurrent.futures.as_completed(futs):
+                fut.result()
 
     summary = _write_rows(args.suite, out_p, rows)
-    print(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2), flush=True)
     return 0
 
 

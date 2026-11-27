@@ -99,6 +99,29 @@ class CleanRoomLaunch:
         shutil.rmtree(self.env_dir, ignore_errors=True)
 
 
+VALID_EFFORT_LEVELS = ("auto", "none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _model_wire_family(model: str) -> str:
+    low = (model or "").strip().lower()
+    if "claude" in low:
+        return "claude"
+    if low.startswith(("gpt", "o1", "o3", "o4", "codex")):
+        return "gpt"
+    return "openai_chat"
+
+
+def _normalize_effort(effort: Optional[str]) -> Optional[str]:
+    if effort is None:
+        return None
+    val = str(effort).strip().lower()
+    if not val:
+        return None
+    if val not in VALID_EFFORT_LEVELS:
+        raise ValueError(f"Unsupported reasoning effort '{effort}'; expected one of {VALID_EFFORT_LEVELS}")
+    return val
+
+
 def prepare_harness_launch(
     harness: str,
     model: str,
@@ -109,9 +132,12 @@ def prepare_harness_launch(
     run_id: Optional[str] = None,
     timeout_s: int = 300,
     omnia_bin: Optional[Path] = None,
+    effort: Optional[str] = None,
 ) -> CleanRoomLaunch:
     """Create ephemeral clean-room env, config files, firewall vars & CLI args for a harness."""
     assert_clean_ancestors()
+    eff = _normalize_effort(effort)
+    fam = _model_wire_family(model)
     rid = run_id or f"{harness}-{uuid.uuid4().hex[:8]}"
     env_dir = ENV_ROOT / harness / rid
     user_dir = env_dir / "user"
@@ -174,9 +200,15 @@ def prepare_harness_launch(
         exe = Path(manifest.get("codex", {}).get("binary") or (HARNESS_ROOT / "codex" / "bin" / "codex.exe"))
         codex_home = env_dir / "codex-home"
         codex_home.mkdir(parents=True, exist_ok=True)
+        wire_api = "responses" if fam == "gpt" else "chat"
+        effort_line = ""
+        if eff and eff != "auto":
+            codex_eff = {"none": "low", "minimal": "low", "max": "xhigh"}.get(eff, eff)
+            effort_line = f'model_reasoning_effort = "{codex_eff}"\n'
         cfg = (
             f'model = "{model}"\n'
             f'model_provider = "htmustc"\n'
+            f'{effort_line}'
             f'approval_policy = "never"\n'
             f'sandbox_mode = "danger-full-access"\n'
             f'check_for_update_on_startup = false\n\n'
@@ -186,7 +218,7 @@ def prepare_harness_launch(
             f'name = "htmustc"\n'
             f'base_url = "{base}/v1"\n'
             f'env_key = "HTMUSTC_API_KEY"\n'
-            f'wire_api = "responses"\n'
+            f'wire_api = "{wire_api}"\n'
         )
         (codex_home / "config.toml").write_text(cfg, encoding="utf-8")
         env["CODEX_HOME"] = str(codex_home)
@@ -203,7 +235,8 @@ def prepare_harness_launch(
         ]
         return CleanRoomLaunch(
             harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
-            stdin_text=prompt, harness_root_exe=exe.name, wire_protocol="openai_responses",
+            stdin_text=prompt, harness_root_exe=exe.name,
+            wire_protocol="openai_responses" if wire_api == "responses" else "openai_chat",
         )
 
     if harness == "claude":
@@ -245,6 +278,10 @@ def prepare_harness_launch(
             "--mcp-config", str(empty_mcp),
             "--disable-slash-commands",
         ]
+        if eff and eff != "auto":
+            claude_eff = {"none": "low", "minimal": "low", "xhigh": "max"}.get(eff, eff)
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = claude_eff
+            cmd.extend(["--effort", claude_eff])
         return CleanRoomLaunch(
             harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
             stdin_text=prompt, harness_root_exe=exe.name, wire_protocol="anthropic_messages",
@@ -253,6 +290,13 @@ def prepare_harness_launch(
     if harness == "opencode":
         exe = Path(manifest.get("opencode", {}).get("binary") or (HARNESS_ROOT / "opencode" / "bin" / "opencode.exe"))
         oc_cfg_path = env_dir / "opencode.json"
+        model_entry: Dict[str, object] = {
+            "name": model,
+            "tool_call": True,
+            "limit": {"context": 200000, "output": 32000},
+        }
+        if eff and eff != "auto":
+            model_entry["options"] = {"reasoningEffort": eff}
         oc_cfg = {
             "model": f"htmustc/{model}",
             "small_model": f"htmustc/{model}",
@@ -268,11 +312,7 @@ def prepare_harness_launch(
                         "apiKey": "{env:HTMUSTC_API_KEY}",
                     },
                     "models": {
-                        model: {
-                            "name": model,
-                            "tool_call": True,
-                            "limit": {"context": 200000, "output": 32000},
-                        }
+                        model: model_entry,
                     },
                 }
             },
@@ -301,7 +341,7 @@ def prepare_harness_launch(
 
     if harness == "goose":
         exe = Path(manifest.get("goose", {}).get("binary") or (HARNESS_ROOT / "goose" / "bin" / "goose.exe"))
-        is_claude = model.lower().startswith("claude")
+        is_claude = fam == "claude"
         goose_cfg = env_dir / "goose-config"
         goose_cfg.mkdir(parents=True, exist_ok=True)
         env["GOOSE_DISABLE_TELEMETRY"] = "1"
@@ -345,9 +385,12 @@ def prepare_harness_launch(
         exe = Path(manifest.get("omp", {}).get("binary") or (HARNESS_ROOT / "omp" / "bin" / "omp.cmd"))
         omp_dir = env_dir / "omp-agent"
         omp_dir.mkdir(parents=True, exist_ok=True)
-        is_claude = model.lower().startswith("claude")
-        api_kind = "anthropic-messages" if is_claude else "openai-responses"
-        base_url = base if is_claude else f"{base}/v1"
+        if fam == "claude":
+            api_kind, base_url, wire_proto = "anthropic-messages", base, "anthropic_messages"
+        elif fam == "gpt":
+            api_kind, base_url, wire_proto = "openai-responses", f"{base}/v1", "openai_responses"
+        else:
+            api_kind, base_url, wire_proto = "openai-completions", f"{base}/v1", "openai_chat"
         models_yml = (
             "providers:\n"
             "  htmustc:\n"
@@ -370,22 +413,27 @@ def prepare_harness_launch(
             "--no-lsp",
             "--no-context-files",
             "--model", f"htmustc/{model}",
-            "-p",
-            "--mode", "json",
         ]
+        if eff:
+            omp_eff = "off" if eff == "none" else eff
+            cmd.append(f"--thinking={omp_eff}")
+        cmd.extend(["-p", "--mode", "json"])
         return CleanRoomLaunch(
             harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
             stdin_text=prompt, harness_root_exe="bun.exe",
-            wire_protocol="anthropic_messages" if is_claude else "openai_responses",
+            wire_protocol=wire_proto,
         )
 
     if harness == "dsh":
         exe = Path(manifest.get("dsh", {}).get("binary") or (HARNESS_ROOT / "dsh" / "node_modules" / ".bin" / "dsh.cmd"))
         dsh_home = env_dir / "dsh-home"
         dsh_home.mkdir(parents=True, exist_ok=True)
-        is_claude = model.lower().startswith("claude")
-        api_kind = "anthropic-messages" if is_claude else "openai-responses"
-        base_url = base if is_claude else f"{base}/v1"
+        if fam == "claude":
+            api_kind, base_url, wire_proto = "anthropic-messages", base, "anthropic_messages"
+        elif fam == "gpt":
+            api_kind, base_url, wire_proto = "openai-responses", f"{base}/v1", "openai_responses"
+        else:
+            api_kind, base_url, wire_proto = "openai-completions", f"{base}/v1", "openai_chat"
         patch_path = env_dir / "dsh-patch.yml"
         patch_yml = (
             "- id: session-telemetry-otel\n"
@@ -428,7 +476,7 @@ def prepare_harness_launch(
         return CleanRoomLaunch(
             harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
             stdin_text=prompt, harness_root_exe="node.exe",
-            wire_protocol="anthropic_messages" if is_claude else "openai_responses",
+            wire_protocol=wire_proto,
         )
 
     if harness == "agy":
@@ -439,8 +487,8 @@ def prepare_harness_launch(
         omnia_home.mkdir(parents=True, exist_ok=True)
         # omnia-cli (D:\Omnia\rust\omnia-cli\src\main.rs) reads the prompt from positional /
         # --prompt / --prompt-file only (no stdin), resolves its AgentStore under OMNIA_HOME,
-        # and in `--wire-api auto` routes claude-* -> /v1/messages, gpt-* -> /v1/chat|responses,
-        # gemini-* -> /v1/chat/completions. All of those terminate on the loopback telemetry proxy.
+        # and in `--wire-api auto` routes claude-* -> /v1/messages, gpt-* -> /v1/responses,
+        # gemini/deepseek/glm/kimi/qwen -> /v1/chat/completions. All terminate on the loopback proxy.
         prompt_file = env_dir / "prompt.md"
         prompt_file.write_text(prompt, encoding="utf-8", newline="\n")
         env.update({
@@ -461,6 +509,8 @@ def prepare_harness_launch(
             "--timeout-secs", str(max(30, timeout_s - 3)),
             "--prompt-file", str(prompt_file),
         ]
+        if eff:
+            cmd.extend(["--effort", eff])
         return CleanRoomLaunch(
             harness=harness, run_id=rid, env_dir=env_dir, cmd=cmd, env=env,
             stdin_text=None, harness_root_exe=exe.name, wire_protocol="omnia_auto",
