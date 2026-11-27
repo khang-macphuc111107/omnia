@@ -215,6 +215,20 @@ fn pick_str<'a>(val: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
+fn pick_i64(val: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|k| {
+        val.get(*k).and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f.round() as i64))
+        })
+    })
+}
+
+fn pick_f64(val: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|k| val.get(*k).and_then(Value::as_f64).filter(|f| f.is_finite()))
+}
+
 fn configured_upstream_targets() -> Vec<EndpointProbeTarget> {
     let mut targets = default_upstream_targets();
     if let Ok(cfg) = read_models_config(None) {
@@ -281,6 +295,14 @@ async fn handle_network_overview(state: &Arc<StudioState>, req: &HttpRequest) ->
                 .lock()
                 .clone()
                 .unwrap_or(dns_passive);
+            let mut dns_val = serde_json::to_value(&last_dns).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = dns_val.as_object_mut() {
+                obj.insert("provenance".to_string(), json!("LIVE"));
+            }
+            let mut proxy_val = serde_json::to_value(&proxy_tls).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = proxy_val.as_object_mut() {
+                obj.insert("provenance".to_string(), json!("LIVE"));
+            }
             let history = state.ops.list_speedtests(10).unwrap_or_default();
             let latest_speedtest = history.first().cloned();
             let active_speedtest = state.observatory.active_run_summary();
@@ -289,9 +311,10 @@ async fn handle_network_overview(state: &Arc<StudioState>, req: &HttpRequest) ->
                 json!({
                     "ok": true,
                     "identity": identity,
-                    "dns": last_dns,
-                    "proxyTls": proxy_tls,
+                    "dns": dns_val,
+                    "proxyTls": proxy_val,
                     "latestSpeedtest": latest_speedtest,
+                    "lastSpeedtest": latest_speedtest,
                     "recentSpeedtests": history,
                     "activeSpeedtest": active_speedtest,
                     "autoSpeedtestDisabled": true,
@@ -723,35 +746,32 @@ fn handle_telemetry_record(state: &Arc<StudioState>, req: &HttpRequest) -> HttpR
             .unwrap_or("max")
             .to_string(),
         status: pick_str(&body, &["status"]).unwrap_or("ok").to_string(),
-        input_tokens: body.get("inputTokens").and_then(Value::as_i64).unwrap_or(0),
-        output_tokens: body.get("outputTokens").and_then(Value::as_i64).unwrap_or(0),
-        reasoning_tokens: body.get("reasoningTokens").and_then(Value::as_i64).unwrap_or(0),
-        cache_read_tokens: body.get("cacheReadTokens").and_then(Value::as_i64).unwrap_or(0),
-        cache_write_tokens: body.get("cacheWriteTokens").and_then(Value::as_i64).unwrap_or(0),
-        cost_usd: body.get("costUsd").and_then(Value::as_f64).unwrap_or(0.0),
-        kv_savings_usd: body.get("kvSavingsUsd").and_then(Value::as_f64),
-        duration_ms: body.get("durationMs").and_then(Value::as_i64).unwrap_or(0),
-        ttft_ms: body.get("ttftMs").and_then(Value::as_i64),
-        tpot_ms: body.get("tpotMs").and_then(Value::as_f64),
-        active_decode_tps: body
-            .get("activeDecodeTps")
-            .or_else(|| body.get("tokensPerSecond"))
-            .and_then(Value::as_f64)
+        input_tokens: pick_i64(&body, &["inputTokens", "input_tokens"]).unwrap_or(0),
+        output_tokens: pick_i64(&body, &["outputTokens", "output_tokens"]).unwrap_or(0),
+        reasoning_tokens: pick_i64(&body, &["reasoningTokens", "reasoning_tokens"]).unwrap_or(0),
+        cache_read_tokens: pick_i64(&body, &["cacheReadTokens", "cache_read_tokens"]).unwrap_or(0),
+        cache_write_tokens: pick_i64(&body, &["cacheWriteTokens", "cache_write_tokens"]).unwrap_or(0),
+        cost_usd: pick_f64(&body, &["costUsd", "cost_usd"]).unwrap_or(0.0),
+        kv_savings_usd: pick_f64(&body, &["kvSavingsUsd", "kv_savings_usd"]),
+        duration_ms: pick_i64(&body, &["durationMs", "duration_ms"]).unwrap_or(0),
+        ttft_ms: pick_i64(&body, &["ttftMs", "ttft_ms"]),
+        tpot_ms: pick_f64(&body, &["tpotMs", "tpot_ms"]),
+        active_decode_tps: pick_f64(&body, &["activeDecodeTps", "active_decode_tps", "tokensPerSecond"])
             .unwrap_or(0.0),
-        e2e_tps: body.get("e2eTps").and_then(Value::as_f64).unwrap_or(0.0),
-        stall_retries: body.get("stallRetries").and_then(Value::as_i64).unwrap_or(0),
-        hedge_wins: body.get("hedgeWins").and_then(Value::as_i64).unwrap_or(0),
+        e2e_tps: pick_f64(&body, &["e2eTps", "e2e_tps"]).unwrap_or(0.0),
+        stall_retries: pick_i64(&body, &["stallRetries", "stall_retries"]).unwrap_or(0),
+        hedge_wins: pick_i64(&body, &["hedgeWins", "hedge_wins"]).unwrap_or(0),
         prefix_hash: pick_str(&body, &["prefixHash", "prefix_hash"])
             .unwrap_or("")
             .to_string(),
         cache_bust_reason: pick_str(&body, &["cacheBustReason", "cache_bust_reason"])
             .map(ToString::to_string),
-        context_window_fill_pct: body.get("contextWindowFillPct").and_then(Value::as_f64),
-        compaction_eta_turns: body.get("compactionEtaTurns").and_then(Value::as_i64),
-        is_error: body.get("isError").and_then(Value::as_bool).unwrap_or(false),
-        error_note: pick_str(&body, &["errorNote", "error"]).map(ToString::to_string),
-        saved_tokens: body.get("savedTokens").and_then(Value::as_i64).unwrap_or(0),
-        recorded_at_ms: body.get("recordedAtMs").and_then(Value::as_i64),
+        context_window_fill_pct: pick_f64(&body, &["contextWindowFillPct", "context_window_fill_pct"]),
+        compaction_eta_turns: pick_i64(&body, &["compactionEtaTurns", "compaction_eta_turns"]),
+        is_error: body.get("isError").or_else(|| body.get("is_error")).and_then(Value::as_bool).unwrap_or(false),
+        error_note: pick_str(&body, &["errorNote", "error_note", "error"]).map(ToString::to_string),
+        saved_tokens: pick_i64(&body, &["savedTokens", "saved_tokens"]).unwrap_or(0),
+        recorded_at_ms: pick_i64(&body, &["recordedAtMs", "recorded_at_ms"]),
     };
     match state.ops.record_rich_trace(&input) {
         Ok(trace_id) => {
@@ -810,8 +830,9 @@ async fn handle_system_snapshot(state: &Arc<StudioState>, req: &HttpRequest) -> 
                         "dataDir": state.config.studio_data_dir().to_string_lossy(),
                         "totalBytes": total_db_bytes,
                         "totalWalBytes": total_wal_bytes,
-                        "files": wal_files,
+                        "files": &wal_files,
                     },
+                    "sqliteWal": wal_files,
                     "observedAtMs": now_epoch_ms(),
                 }),
             )
@@ -1800,8 +1821,8 @@ mod tests {
         assert_eq!(net_json["ok"], true);
         assert_eq!(net_json["identity"]["provenance"], "UNAVAILABLE");
 
-        // 2. Record rich telemetry + verify summary percentiles & filters
-        for (idx, ttft) in [200, 240, 220, 260, 1800].iter().enumerate() {
+        // 2. Record rich telemetry (including JSON floats for ttftMs & durationMs) + verify summary percentiles & filters
+        for (idx, ttft) in [200.5f64, 240.0, 220.4, 260.0, 1800.6].iter().enumerate() {
             let rec_body = json!({
                 "reqId": format!("req_synthetic_{idx}"),
                 "sessionId": if idx < 3 { "sess_a" } else { "sess_b" },
@@ -1814,7 +1835,7 @@ mod tests {
                 "outputTokens": 500,
                 "cacheReadTokens": 1000,
                 "costUsd": 0.015,
-                "durationMs": ttft + 1000,
+                "durationMs": ttft + 1000.0,
                 "ttftMs": ttft,
                 "activeDecodeTps": 75.0,
                 "e2eTps": 58.0,

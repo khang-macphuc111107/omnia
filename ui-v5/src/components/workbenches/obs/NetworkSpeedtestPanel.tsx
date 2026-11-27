@@ -70,8 +70,12 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
       if (d.identity && typeof d.identity === 'object') setIdentity(d.identity as Record<string, unknown>);
       if (d.dns && typeof d.dns === 'object') setDnsReport(d.dns as Record<string, unknown>);
       if (d.proxyTls && typeof d.proxyTls === 'object') setProxyTls(d.proxyTls as Record<string, unknown>);
-      if (d.lastSpeedtest && typeof d.lastSpeedtest === 'object') {
-        setSpeedtestResult(d.lastSpeedtest as Record<string, unknown>);
+      const latest = d.latestSpeedtest ?? d.lastSpeedtest;
+      if (latest && typeof latest === 'object') {
+        setSpeedtestResult(latest as Record<string, unknown>);
+      }
+      if (!histRes.ok && Array.isArray(d.recentSpeedtests)) {
+        setHistory(d.recentSpeedtests as Array<Record<string, unknown>>);
       }
       setNote('');
     } else {
@@ -192,9 +196,14 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
     if (ev.event === 'speedtest_sample' || ev.event === 'speedtest_progress') {
       const phase = String(p.phase ?? 'running');
       setLivePhase(phase);
-      const mbps = Number(p.mbps ?? p.throughputMbps ?? 0);
-      const rttMs = p.rttMs !== undefined ? Number(p.rttMs) : undefined;
-      setWaveform((prev) => [...prev.slice(-79), { tMs: Number(p.tMs ?? Date.now()), phase, mbps, rttMs }]);
+      const sample = (p.sample && typeof p.sample === 'object' ? p.sample : {}) as Record<string, unknown>;
+      const mbps = Number(p.currentMbps ?? sample.mbps ?? p.mbps ?? p.throughputMbps ?? 0);
+      const rttRaw = p.currentRttMs ?? sample.loadedRttMs ?? p.rttMs;
+      const rttMs = rttRaw !== undefined && rttRaw !== null ? Number(rttRaw) : undefined;
+      setWaveform((prev) => [
+        ...prev.slice(-79),
+        { tMs: Number(sample.elapsedMs ?? p.tMs ?? p.timestampMs ?? Date.now()), phase, mbps, rttMs },
+      ]);
     } else if (ev.event === 'speedtest_complete') {
       setRunningSpeedtest(false);
       setLivePhase('complete');
@@ -246,14 +255,36 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
 
   const speedMetrics = createMemo(() => {
     const s = speedtestResult() ?? {};
-    const unloaded = Number(s.unloadedP50Ms ?? s.unloaded_p50_ms ?? (s.unloadedRtt as Record<string, unknown> | undefined)?.p50_ms ?? 0);
-    const dlDelta = Number(s.dlBufferbloatDeltaMs ?? s.dl_bufferbloat_delta_ms ?? 0);
-    const ulDelta = Number(s.ulBufferbloatDeltaMs ?? s.ul_bufferbloat_delta_ms ?? 0);
-    const dlMbps = Number(s.downloadMbps ?? s.download_mbps ?? s.dlMultiMbps ?? 0);
-    const ulMbps = Number(s.uploadMbps ?? s.upload_mbps ?? s.ulMultiMbps ?? 0);
+    const unloadedObj = (s.unloaded ?? s.unloadedRtt ?? {}) as Record<string, unknown>;
+    const unloaded = Number(s.unloadedP50Ms ?? s.unloaded_p50_ms ?? unloadedObj.p50Ms ?? unloadedObj.p50_ms ?? 0);
+    const dlDelta = Number(s.dlBufferbloatDeltaMs ?? s.dl_bufferbloat_delta_ms ?? s.dlBloatMs ?? s.dl_bloat_ms ?? 0);
+    const ulDelta = Number(s.ulBufferbloatDeltaMs ?? s.ul_bufferbloat_delta_ms ?? s.ulBloatMs ?? s.ul_bloat_ms ?? 0);
+    const dlMbps = Number(s.downloadMbps ?? s.download_mbps ?? s.multiDlMbps ?? s.dlMultiMbps ?? 0);
+    const ulMbps = Number(s.uploadMbps ?? s.upload_mbps ?? s.multiUlMbps ?? s.ulMultiMbps ?? 0);
     const grade = String(s.bufferbloatGrade ?? s.bufferbloat_grade ?? '—');
     const readiness = (s.workloadReadiness ?? s.workload_readiness ?? {}) as Record<string, unknown>;
     return { unloaded, dlLoaded: unloaded + dlDelta, ulLoaded: unloaded + ulDelta, dlDelta, ulDelta, dlMbps, ulMbps, grade, readiness };
+  });
+
+  const systemDnsServers = createMemo(() => {
+    const raw = dnsReport()?.systemDnsServers ?? dnsReport()?.system_dns_servers;
+    return Array.isArray(raw) ? (raw as unknown[]).map(String) : [];
+  });
+
+  const dnsProvenance = createMemo(() => {
+    const d = dnsReport();
+    if (!d) return 'UNAVAILABLE';
+    if (d.provenance) return String(d.provenance);
+    if (resolvers().length > 0 || systemDnsServers().length > 0 || d.observedAtMs) return 'LIVE';
+    return 'UNAVAILABLE';
+  });
+
+  const proxyProvenance = createMemo(() => {
+    const p = proxyTls();
+    if (!p) return 'UNAVAILABLE';
+    if (p.provenance) return String(p.provenance);
+    if (endpoints().length > 0 || p.systemProxy || p.observedAtMs) return 'LIVE';
+    return 'UNAVAILABLE';
   });
 
   const histDiff = createMemo(() => {
@@ -490,11 +521,17 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
                 { k: 'webrtc', alt: 'webrtc', label: 'WebRTC / Call' },
                 { k: 'remote_control', alt: 'remoteControl', label: 'Remote Ctrl' },
               ].map((w) => {
-                const val = speedMetrics().readiness[w.k] ?? speedMetrics().readiness[w.alt];
+                const rawVal = speedMetrics().readiness[w.k] ?? speedMetrics().readiness[w.alt];
+                const displayVal =
+                  rawVal && typeof rawVal === 'object'
+                    ? `${String((rawVal as Record<string, unknown>).score ?? '—')} (${String((rawVal as Record<string, unknown>).rating ?? '')})`
+                    : rawVal !== undefined && rawVal !== null
+                      ? String(rawVal)
+                      : '—';
                 return (
-                  <div class="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--border-subtle)] flex items-center justify-between">
+                  <div class="p-1.5 rounded bg-[var(--bg-panel)] border border-[var(--border-subtle)] flex items-center justify-between gap-1">
                     <span class="text-[var(--ink-muted)] truncate">{w.label}</span>
-                    <span class="font-bold text-[var(--status-emerald)]">{val !== undefined ? String(val) : '—'}</span>
+                    <span class="font-bold text-[var(--status-emerald)] shrink-0">{displayVal}</span>
                   </div>
                 );
               })}
@@ -546,7 +583,7 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
             <div class="flex items-center gap-2 font-bold text-[13px]">
               <Server class="w-4 h-4 text-[var(--accent-cyan)]" />
               <span>Multi-Resolver DNS Benchmark & VPN Leak Check</span>
-              <ProvenancePill state={String(dnsReport()?.provenance ?? 'UNAVAILABLE')} />
+              <ProvenancePill state={dnsProvenance()} />
             </div>
             <button type="button" disabled={busyDns()} class="omnia-btn text-[11px]" onClick={() => void handleRunDns()}>
               <Activity class="w-3.5 h-3.5" />
@@ -579,6 +616,20 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
               Egress: {maskSensitiveField(String(dnsReport()?.dnsEgressIp ?? dnsReport()?.dns_egress_ip ?? ''), privacyMask())}
             </span>
           </div>
+
+          <Show when={systemDnsServers().length > 0}>
+            <div class="flex flex-wrap items-center gap-1.5 text-[11px] font-mono-num">
+              <span class="text-[var(--ink-muted)]">System DNS:</span>
+              <For each={systemDnsServers()}>
+                {(srv) => <span class="omnia-badge text-[var(--accent-cyan)]">{maskText(srv, privacyMask())}</span>}
+              </For>
+              <Show when={dnsReport()?.hostsOverrideCount !== undefined}>
+                <span class="text-[var(--ink-muted)]">
+                  · hosts overrides: {String(dnsReport()?.hostsOverrideCount)}
+                </span>
+              </Show>
+            </div>
+          </Show>
 
           <div class="space-y-1.5 text-[11.5px] font-mono-num">
             <Show
@@ -621,7 +672,7 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
             <div class="flex items-center gap-2 font-bold text-[13px]">
               <Lock class="w-4 h-4 text-[var(--status-emerald)]" />
               <span>Proxy / PAC / TLS Chain & Upstream Waterfall</span>
-              <ProvenancePill state={String(proxyTls()?.provenance ?? 'UNAVAILABLE')} />
+              <ProvenancePill state={proxyProvenance()} />
             </div>
             <button type="button" disabled={busyProxy()} class="omnia-btn text-[11px]" onClick={() => void handleRefreshProxyTls()}>
               <RefreshCw class="w-3.5 h-3.5" classList={{ 'animate-spin': busyProxy() }} />
@@ -633,14 +684,17 @@ export function NetworkSpeedtestPanel(props: { refreshSeq: number }) {
             <div class="flex justify-between">
               <span class="text-[var(--ink-muted)]">System Proxy / PAC</span>
               <span class="text-[var(--ink-primary)] truncate max-w-[260px]">
-                {maskText(
-                  String(
-                    (proxyTls()?.systemProxy as Record<string, unknown> | undefined)?.proxyServer ??
-                      (proxyTls()?.system_proxy as Record<string, unknown> | undefined)?.proxy_server ??
-                      'Direct / None',
-                  ),
-                  privacyMask(),
-                )}
+                {(() => {
+                  const sp = ((proxyTls()?.systemProxy ?? proxyTls()?.system_proxy ?? {}) as Record<string, unknown>);
+                  const val =
+                    sp.ieProxyServer ??
+                    sp.winhttpProxy ??
+                    sp.pacUrl ??
+                    sp.proxyServer ??
+                    sp.proxy_server ??
+                    (sp.autoDetect ? 'Auto-Detect (WPAD)' : 'Direct / None');
+                  return maskText(String(val), privacyMask());
+                })()}
               </span>
             </div>
             <div class="flex justify-between">

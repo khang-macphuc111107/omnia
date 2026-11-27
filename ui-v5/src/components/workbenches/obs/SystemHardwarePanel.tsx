@@ -42,6 +42,44 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
     return ((s.host && typeof s.host === 'object' ? s.host : s) as Record<string, unknown>);
   });
 
+  const hardware = createMemo(() => {
+    const h = host();
+    return ((h.hardware && typeof h.hardware === 'object' ? h.hardware : h) as Record<string, unknown>);
+  });
+
+  const ramMetrics = createMemo(() => {
+    const h = host();
+    const hw = hardware();
+    const total = Number(
+      hw.total_ram_bytes ?? hw.totalRamBytes ?? h.totalMemoryBytes ?? h.total_memory_bytes ?? 0,
+    );
+    const avail = Number(
+      hw.available_ram_bytes ?? hw.availableRamBytes ?? h.availableMemoryBytes ?? h.available_memory_bytes ?? NaN,
+    );
+    const explicitUsed = Number(h.usedMemoryBytes ?? h.used_memory_bytes ?? NaN);
+    const used = Number.isFinite(explicitUsed)
+      ? explicitUsed
+      : Number.isFinite(avail) && total > 0
+        ? Math.max(0, total - avail)
+        : 0;
+    const pct = total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
+    return { total, used, avail: Number.isFinite(avail) ? avail : Math.max(0, total - used), pct };
+  });
+
+  const cpuCores = createMemo(() => {
+    const h = host();
+    const hw = hardware();
+    return hw.logical_cpus ?? hw.logicalCpus ?? h.logicalCores ?? h.logical_cores ?? null;
+  });
+
+  const vramMb = createMemo(() => {
+    const h = host();
+    const hw = hardware();
+    const nv = nvidia() ?? {};
+    const raw = hw.total_vram_mb ?? hw.totalVramMb ?? h.vramMb ?? h.vram_mb ?? nv.vramMb ?? nv.totalVramMb;
+    return raw !== undefined && raw !== null ? Number(raw) : null;
+  });
+
   const disks = createMemo(() => {
     const d = host().disks ?? snapshot()?.disks;
     return Array.isArray(d) ? (d as Array<Record<string, unknown>>) : [];
@@ -53,7 +91,9 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
   });
 
   const walFiles = createMemo(() => {
-    const w = snapshot()?.sqliteWal ?? snapshot()?.walFiles ?? snapshot()?.sqlite_wal;
+    const s = snapshot();
+    const sq = s?.sqlite && typeof s.sqlite === 'object' ? (s.sqlite as Record<string, unknown>) : null;
+    const w = sq?.files ?? s?.sqliteWal ?? s?.walFiles ?? s?.sqlite_wal;
     return Array.isArray(w) ? (w as Array<Record<string, unknown>>) : [];
   });
 
@@ -84,34 +124,38 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
       {/* CPU / RAM / GPU Cards */}
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px] font-mono-num">
         <div class="omnia-surface-panel rounded-lg p-3.5 space-y-1.5">
-          <div class="text-[11px] text-[var(--ink-muted)]">CPU & Load</div>
+          <div class="text-[11px] text-[var(--ink-muted)] flex items-center justify-between">
+            <span>CPU & Load</span>
+            <Show when={hardware().tier}>
+              <span class="omnia-badge text-[10px] text-[var(--accent-cyan)]">{String(hardware().tier)}</span>
+            </Show>
+          </div>
           <div class="font-bold text-[13.5px] text-[var(--ink-primary)] truncate">
             {String(host().cpuModel ?? host().cpu_model ?? host().cpuBrand ?? 'Windows x64 Host')}
           </div>
           <div class="text-[11.5px] text-[var(--accent-cyan)]">
-            Cores: {String(host().logicalCores ?? host().logical_cores ?? '—')} · Load:{' '}
-            {host().cpuLoadPct !== undefined || host().cpu_load_pct !== undefined
-              ? `${Number(host().cpuLoadPct ?? host().cpu_load_pct).toFixed(1)}%`
-              : '—'}
+            Cores: {cpuCores() !== null ? String(cpuCores()) : '—'} · Load:{' '}
+            {host().cpuLoadPct !== undefined && host().cpuLoadPct !== null
+              ? `${Number(host().cpuLoadPct).toFixed(1)}%`
+              : host().cpu_load_pct !== undefined && host().cpu_load_pct !== null
+                ? `${Number(host().cpu_load_pct).toFixed(1)}%`
+                : '—'}
           </div>
         </div>
 
         <div class="omnia-surface-panel rounded-lg p-3.5 space-y-1.5">
-          <div class="text-[11px] text-[var(--ink-muted)]">System Memory (RAM)</div>
+          <div class="text-[11px] text-[var(--ink-muted)] flex items-center justify-between">
+            <span>System Memory (RAM)</span>
+            <span>{ramMetrics().pct.toFixed(0)}%</span>
+          </div>
           <div class="font-bold text-[13.5px] text-[var(--ink-primary)]">
-            {formatBytes(Number(host().usedMemoryBytes ?? host().used_memory_bytes ?? 0))} /{' '}
-            {formatBytes(Number(host().totalMemoryBytes ?? host().total_memory_bytes ?? 0))}
+            {formatBytes(ramMetrics().used)} / {formatBytes(ramMetrics().total)}
           </div>
           <div class="w-full h-2 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] overflow-hidden">
             <div
               class="h-full bg-[var(--accent-cyan)]"
               style={{
-                width: `${Math.min(
-                  100,
-                  (Number(host().usedMemoryBytes ?? host().used_memory_bytes ?? 0) /
-                    Math.max(1, Number(host().totalMemoryBytes ?? host().total_memory_bytes ?? 1))) *
-                    100,
-                )}%`,
+                width: `${ramMetrics().pct}%`,
               }}
             />
           </div>
@@ -124,12 +168,16 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
               host().gpuName ??
                 host().gpu_name ??
                 (nvidia()?.gpu as Record<string, unknown> | undefined)?.name ??
+                nvidia()?.gpuName ??
                 nvidia()?.name ??
-                'Integrated / Probed',
+                (vramMb() ? 'Discrete / WDDM GPU' : 'Integrated / Probed'),
             )}
           </div>
           <div class="text-[11.5px] text-[var(--status-emerald)]">
-            VRAM: {String(host().vramMb ?? host().vram_mb ?? nvidia()?.vramMb ?? '—')} MiB
+            VRAM: {vramMb() !== null ? `${vramMb()} MiB` : '—'}
+            <Show when={hardware().usable_aux_vram_mb !== undefined}>
+              {' · '}Aux safe: {String(hardware().usable_aux_vram_mb)} MiB
+            </Show>
           </div>
         </div>
       </div>
@@ -248,11 +296,11 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
                 {(pt) => (
                   <div class="px-2.5 py-1.5 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] flex justify-between gap-2">
                     <span>
-                      {maskText(String(pt.localAddress ?? pt.local_address ?? '127.0.0.1'), privacyMask())}:
+                      {maskText(String(pt.bindAddr ?? pt.bind_addr ?? pt.localAddress ?? pt.local_address ?? '127.0.0.1'), privacyMask())}:
                       <strong class="text-[var(--accent-cyan)]">{String(pt.port ?? pt.localPort ?? '')}</strong>
                     </span>
                     <span class="text-[var(--ink-muted)]">
-                      {String(pt.process ?? pt.processName ?? 'pid')} ({String(pt.pid ?? '—')})
+                      {String(pt.processName ?? pt.process_name ?? pt.process ?? 'pid')} ({String(pt.pid ?? '—')})
                     </span>
                   </div>
                 )}

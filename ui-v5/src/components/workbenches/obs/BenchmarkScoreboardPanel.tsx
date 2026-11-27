@@ -34,6 +34,9 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
   const finalScoreboard = createMemo(() => {
     const p = payload();
     if (!p) return null;
+    if (p.finalScoreboard && typeof p.finalScoreboard === 'object') {
+      return p.finalScoreboard as Record<string, unknown>;
+    }
     if (p.suiteV5 || p.suite_v5 || p.publicSuites || p.public_suites || p.allModels) return p;
     const runs = Array.isArray(p.runs) ? (p.runs as Array<Record<string, unknown>>) : [];
     const hit = runs.find((r) => String(r.file ?? '').includes('final_scoreboard'));
@@ -41,13 +44,19 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
   });
 
   const suiteV5Rows = createMemo((): Array<Record<string, unknown>> => {
+    const p = payload() ?? {};
     const fs = finalScoreboard() ?? {};
-    const sv5 = (fs.suiteV5 ?? fs.suite_v5 ?? fs.leaderboard) as unknown;
+    const sv5 = (p.suiteV5 ?? fs.suiteV5 ?? fs.suite_v5 ?? fs.leaderboard ?? fs.harnesses) as unknown;
     if (Array.isArray(sv5)) return sv5 as Array<Record<string, unknown>>;
     if (sv5 && typeof sv5 === 'object') {
       const obj = sv5 as Record<string, unknown>;
       if (Array.isArray(obj.harnesses)) return obj.harnesses as Array<Record<string, unknown>>;
       if (Array.isArray(obj.rows)) return obj.rows as Array<Record<string, unknown>>;
+      if (obj.harnesses && typeof obj.harnesses === 'object') {
+        return Object.entries(obj.harnesses as Record<string, unknown>)
+          .filter(([, v]) => v && typeof v === 'object')
+          .map(([harness, v]): Record<string, unknown> => ({ harness, ...(v as Record<string, unknown>) }));
+      }
       return Object.entries(obj)
         .filter(([, v]) => v && typeof v === 'object')
         .map(([harness, v]): Record<string, unknown> => ({ harness, ...(v as Record<string, unknown>) }));
@@ -56,8 +65,9 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
   });
 
   const publicSuites = createMemo((): Array<Record<string, unknown>> => {
+    const p = payload() ?? {};
     const fs = finalScoreboard() ?? {};
-    const ps = (fs.publicSuites ?? fs.public_suites) as unknown;
+    const ps = (p.publicSuites ?? fs.publicSuites ?? fs.public_suites) as unknown;
     if (Array.isArray(ps)) return ps as Array<Record<string, unknown>>;
     if (ps && typeof ps === 'object') {
       return Object.entries(ps as Record<string, unknown>)
@@ -68,8 +78,9 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
   });
 
   const modelsCatalog = createMemo(() => {
+    const p = payload() ?? {};
     const fs = finalScoreboard() ?? {};
-    const raw = (fs.allModels ?? fs.all_models ?? fs.modelsCatalog ?? fs.models_catalog ?? (payload()?.modelsCatalog as unknown)) as unknown;
+    const raw = (p.modelsCatalog ?? p.allModels ?? fs.allModels ?? fs.all_models ?? fs.modelsCatalog ?? fs.models_catalog) as unknown;
     let list: Array<Record<string, unknown>> = [];
     if (Array.isArray(raw)) {
       list = raw as Array<Record<string, unknown>>;
@@ -81,17 +92,18 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
     const tier = modelTierFilter();
     if (tier === 'all') return list;
     return list.filter((m) => {
-      const st = String(m.category ?? m.status ?? m.tier ?? '').toLowerCase();
-      if (tier === 'live') return st.includes('live') || st.includes('coding') || st === 'ok' || m.live === true;
-      if (tier === 'restricted') return st.includes('restrict') || st.includes('403') && !st.includes('media');
-      if (tier === 'media') return st.includes('media');
+      const st = String(m.classification ?? m.category ?? m.status ?? m.tier ?? '').toLowerCase();
+      if (tier === 'live') return m.codingRunnable === true || st.includes('live') || st.includes('coding') || st === 'ok' || m.live === true;
+      if (tier === 'restricted') return (st.includes('restrict') || st.includes('403') || st.includes('blocked')) && !st.includes('media');
+      if (tier === 'media') return st.includes('media') || st.includes('image') || st.includes('audio') || st.includes('video');
       return true;
     });
   });
 
   const effortSweepRows = createMemo((): Array<Record<string, unknown>> => {
+    const p = payload() ?? {};
     const fs = finalScoreboard() ?? {};
-    const sw = (fs.effortSweep ?? fs.effort_sweep) as unknown;
+    const sw = (p.effortSweep ?? fs.effortSweep ?? fs.effort_sweep) as unknown;
     if (Array.isArray(sw)) return sw as Array<Record<string, unknown>>;
     if (sw && typeof sw === 'object') {
       return Object.entries(sw as Record<string, unknown>)
@@ -303,15 +315,17 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
                     {(m) => (
                       <tr>
                         <td class="px-2.5 py-1.5 font-semibold text-[var(--ink-primary)]">{String(m.id ?? m.model ?? m.name)}</td>
-                        <td class="px-2.5 py-1.5 text-[var(--accent-cyan)]">{String(m.wire ?? m.wireDialect ?? m.endpoint ?? 'auto')}</td>
-                        <td class="px-2.5 py-1.5">{String(m.status ?? m.category ?? m.httpStatus ?? 'probed')}</td>
+                        <td class="px-2.5 py-1.5 text-[var(--accent-cyan)]">{String(m.primaryDialect ?? m.wire ?? m.wireDialect ?? m.endpoint ?? 'auto')}</td>
+                        <td class="px-2.5 py-1.5">{String(m.classification ?? m.status ?? m.category ?? m.httpStatus ?? 'probed')}</td>
                         <td class="px-2.5 py-1.5 text-[var(--status-emerald)]">
                           {Array.isArray(m.effortsPassed ?? m.efforts)
                             ? ((m.effortsPassed ?? m.efforts) as unknown[]).join('/')
-                            : String(m.effortSweep ?? '—')}
+                            : m.codingRunnable === true
+                              ? 'low/med/high/xhigh/max'
+                              : String(m.effortSweep ?? '—')}
                         </td>
                         <td class="px-2.5 py-1.5 text-[var(--ink-muted)] truncate max-w-[240px]">
-                          {String(m.note ?? m.detail ?? '')}
+                          {String(m.note ?? m.detail ?? m.family ?? '')}
                         </td>
                       </tr>
                     )}

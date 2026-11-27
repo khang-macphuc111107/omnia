@@ -12,8 +12,9 @@ interface ScoreSegments {
   reliability: number;
 }
 
-function extractSegments(c: Record<string, unknown>): ScoreSegments {
-  const b = (c.breakdown ?? c.scoreBreakdown ?? c.score_breakdown ?? {}) as Record<string, unknown>;
+function extractSegments(c: Record<string, unknown>, wf?: Record<string, unknown>): ScoreSegments {
+  const wfSegs = wf?.segments && typeof wf.segments === 'object' ? (wf.segments as Record<string, unknown>) : null;
+  const b = (wfSegs ?? c.segments ?? c.breakdown ?? c.scoreBreakdown ?? c.score_breakdown ?? {}) as Record<string, unknown>;
   const cap = Number(b.capability ?? b.capabilityScore ?? c.capabilityScore ?? 20);
   const priv = Number(b.privacy ?? b.privacyScore ?? c.privacyScore ?? 20);
   const quota = Number(b.quota ?? b.quotaScore ?? c.quotaScore ?? 20);
@@ -119,12 +120,37 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
     return Array.isArray(raw) ? raw : [];
   });
 
+  const waterfallByCandidate = createMemo(() => {
+    const raw = (routeDecision()?.scoreWaterfalls ??
+      routerState()?.scoreWaterfalls ??
+      []) as Array<Record<string, unknown>>;
+    const map = new Map<string, Record<string, unknown>>();
+    if (Array.isArray(raw)) {
+      for (const wf of raw) {
+        const cid = String(wf.candidateId ?? wf.candidate_id ?? '');
+        if (cid) map.set(cid, wf);
+      }
+    }
+    return map;
+  });
+
   const burnRate = createMemo(() => {
     const raw = (routerState()?.burnRate ?? routeDecision()?.burnRate ?? {}) as Record<string, unknown>;
+    const candList = candidates();
+    const totalTokPerHour = candList.reduce(
+      (acc, c) => acc + Number(c.burnRateTokensPerHour ?? c.burn_rate_tokens_per_hour ?? 0),
+      0,
+    );
+    const derivedTokPerMin = totalTokPerHour / 60;
+    const finiteRunways = candList
+      .map((c) => c.runwayHours ?? c.runway_hours)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    const minRunway = finiteRunways.length > 0 ? Math.min(...finiteRunways) : null;
     return {
       usdPerHour: Number(raw.usdPerHour ?? raw.usd_per_hour ?? 0),
-      tokensPerMin: Number(raw.tokensPerMin ?? raw.tokens_per_min ?? 0),
-      runwayHours: raw.runwayHours ?? raw.runway_hours ?? null,
+      tokensPerMin: Number(raw.tokensPerMin ?? raw.tokens_per_min ?? derivedTokPerMin),
+      tokensPerHour: totalTokPerHour,
+      runwayHours: raw.runwayHours ?? raw.runway_hours ?? minRunway,
     };
   });
 
@@ -241,9 +267,12 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
                 const prov = String(c.providerId ?? c.provider ?? cand.provider_id ?? cand.provider ?? 'provider');
                 const model = String(c.modelId ?? c.model ?? cand.model_id ?? cand.model ?? '');
                 const candId = String(c.candidateId ?? c.id ?? cand.candidate_id ?? prov);
+                const wf = waterfallByCandidate().get(candId);
                 const circ = String(c.circuit ?? (c.circuitOpen ? 'Open' : 'Closed'));
-                const totalScore = Number(c.totalScore ?? c.total_score ?? c.score ?? 0);
-                const segs = extractSegments(c);
+                const totalScore = Number(wf?.totalScore ?? c.totalScore ?? c.total_score ?? c.score ?? 0);
+                const segs = extractSegments(c, wf);
+                const candBurnHr = Number(c.burnRateTokensPerHour ?? c.burn_rate_tokens_per_hour ?? 0);
+                const candRunway = c.runwayHours ?? c.runway_hours;
 
                 return (
                   <div class="p-2.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] space-y-2 text-[12px]">
@@ -274,6 +303,12 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
                             Circuit: {circ}
                           </span>
                           <span class="text-[var(--ink-muted)]">p95: {String(c.p95_ms ?? c.p95Ms ?? '—')}ms</span>
+                          <Show when={candBurnHr > 0}>
+                            <span class="text-[var(--accent-amber)]">{candBurnHr.toLocaleString()} tok/hr</span>
+                          </Show>
+                          <Show when={candRunway !== undefined && candRunway !== null}>
+                            <span class="text-[var(--status-emerald)]">runway: {String(candRunway)}h</span>
+                          </Show>
                         </div>
                       </div>
                       <div class="flex gap-1 shrink-0">

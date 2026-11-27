@@ -187,13 +187,24 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
     ]);
 
     if (sumRes.ok) {
-      setSummary(sumRes.data);
+      const inner =
+        sumRes.data.summary && typeof sumRes.data.summary === 'object'
+          ? (sumRes.data.summary as Record<string, unknown>)
+          : sumRes.data;
+      setSummary(inner);
       setLoadNote('');
     } else {
       // Graceful fallback to legacy /api/stats/spotlight
       const fb = await api.getSpotlightStats();
-      if (fb.ok) setSummary(fb.data);
-      else setLoadNote(`Telemetry note (${sumRes.error.code}): ${sumRes.error.message}`);
+      if (fb.ok) {
+        const inner =
+          fb.data.summary && typeof fb.data.summary === 'object'
+            ? (fb.data.summary as Record<string, unknown>)
+            : fb.data;
+        setSummary(inner);
+      } else {
+        setLoadNote(`Telemetry note (${sumRes.error.code}): ${sumRes.error.message}`);
+      }
     }
 
     if (reqRes.ok) {
@@ -287,7 +298,7 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
     const totalReqs = Number(t.totalRequests ?? filteredRows().length);
     const errRate = Number(t.errorRate ?? 0);
     const ctxObj = (s?.contextWindow && typeof s.contextWindow === 'object' ? (s.contextWindow as Record<string, unknown>) : {}) as Record<string, unknown>;
-    const fillPct = Number(ctxObj.fillPct ?? ctxObj.fill_pct ?? 0);
+    const fillPct = Number(ctxObj.latestFillPct ?? ctxObj.peakFillPct ?? ctxObj.fillPct ?? ctxObj.fill_pct ?? 0);
     const etaTurns = ctxObj.compactionEtaTurns ?? ctxObj.compaction_eta_turns;
     return { totalCost, kvSavings, cacheRate, totalReqs, errRate, fillPct, etaTurns };
   });
@@ -295,9 +306,11 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
   const cacheTrendPoints = createMemo(() => {
     const rawTrend = summary()?.cacheTrend;
     if (Array.isArray(rawTrend) && rawTrend.length > 0) {
-      const vals = rawTrend.map((pt) =>
-        typeof pt === 'number' ? pt : Number((pt as Record<string, unknown>).hitRate ?? (pt as Record<string, unknown>).rate ?? 0),
-      );
+      const vals = rawTrend.map((pt) => {
+        if (typeof pt === 'number') return pt;
+        const rec = pt as Record<string, unknown>;
+        return Number(rec.cacheHitPct ?? rec.hitRate ?? rec.rate ?? 0);
+      });
       return sparklinePoints(vals, 260, 48, 4);
     }
     const derived = filteredRows()
