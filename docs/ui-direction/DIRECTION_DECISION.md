@@ -4,9 +4,19 @@
 - **Task / DoD Bindings:** `PRODUCT-WORKSPACE`, `PRODUCT-COMPOSER`, `PRODUCT-ATTACHMENTS`, `PRODUCT-CHAT`, `DOD-12`, `DOD-14`
 - **Related Specifications:** [GOAL.md](../workspace/GOAL.md) · [DOD.md](../workspace/DOD.md) · [COMPOSER_REQUIREMENTS.md](../workspace/COMPOSER_REQUIREMENTS.md) · [DYNAMIC_ROUTING_REQUIREMENTS.md](../workspace/DYNAMIC_ROUTING_REQUIREMENTS.md)
 - **External Preview Root:** `D:\OmniaData\qa\ui-direction-20261112\`
-- **Decision State:** `PROVISIONAL_RECOMMENDATION` (`Candidate A: Precision Studio` with `Candidate C` Win32 resource/UIA invariants; `Candidate B` retained as opt-in Study/Knowledge mode)
-- **User Review Gate:** `PENDING_USER_REVIEW` *(Internal critique is recorded below; internal agent review is NOT user approval.)*
-- **Runtime / QA Gate:** `SEPARATE_OPEN_GATE` *(HTML/CSS/JS slices are interactive design-direction specifications, not proof of native Win32 parity, provider delivery, or packaged runtime performance.)*
+- **Decision State:** `SUPERSEDED_BY_USER_DIRECTED_REBUILD` (2026-11-13, see §0). Sections 1–10 below are kept as history.
+- **User Review Gate:** the 2026-11-12 candidates were never approved; on 2026-11-13 the user asked for a full UI rebuild, redrawn as a design canvas first, with the work split across subagents.
+- **Runtime / QA Gate:** `SEPARATE_OPEN_GATE` *(the design canvas is a direction artifact; runtime proof is the acceptance list in [FLAGSHIP_STUDIO_UI_SPEC.md](./FLAGSHIP_STUDIO_UI_SPEC.md) §8.)*
+
+---
+
+## 0. Update 2026-11-13 — user-directed UI rebuild
+
+- **Why:** an audit of the 2026-11-12 "Obsidian Kinetic Atelier" UI found it was a polished demo rather than a working product: the chat produced canned replies (the server has no chat API), `ui/app/api.js` silently replaced failed calls with fabricated fixture data, loading the Router Lab reserved tokens on the server, filters drifted from the server contract (`Mathematics` vs `Math`), 54–69 % of visible text was monospace and 35–67 % was smaller than 12 px, and the 1024×768 layout hid the primary Dispatch action.
+- **User instructions:** rebuild the UI only (no backend change); redraw it on a design canvas from the existing features; write a spec and hand the implementation to up to three Sonnet subagents in parallel.
+- **Direction chosen:** calm graphite/paper surfaces, one amber accent, system UI type with a 12/13/14/15/18/22/28 scale, monospace only for code/IDs/numbers, dark + light + system themes, compact density, Vietnamese-first copy with English, honest states everywhere. Canvas: "Omnia Studio — UI Rebuild" (7 artboards); production tokens/components in `ui/styles/`.
+- **Information architecture:** Hội thoại (chat + composer + inspector), Tác tử (peer mesh + Graphify), Định tuyến (providers, simulation, receipts), Tri thức (memory, skills, RAG planner), Cài đặt (appearance, language, shortcuts, diagnostics, local data). The static "C++20 architecture" page and demo buttons were dropped.
+- **Contract:** [FLAGSHIP_STUDIO_UI_SPEC.md](./FLAGSHIP_STUDIO_UI_SPEC.md) (`OMNIA-STUDIO-UI-REBUILD-20261113`).
 
 ---
 

@@ -53,7 +53,9 @@ public:
         OwnershipConflict,
         HopBudgetExceeded,
         StaleEpoch,
-        UnknownMessageSeq
+        UnknownMessageSeq,
+        InvalidOwnedPath,
+        UnauthorizedReply
     };
 
     AgentGraphError(Code code, std::string message)
@@ -69,6 +71,9 @@ struct AgentNode {
     std::string agent_id;
     std::string label;
     AgentRole role = AgentRole::Worker;
+    // Logical workspace-relative prefixes, case-insensitive on Windows. Only a
+    // final /* or /** wildcard is supported. Filesystem/reparse checks belong
+    // to the caller performing actual I/O; this graph does not authorize I/O.
     std::vector<std::string> owned_paths;
     std::vector<std::string> excluded_paths;
     std::set<std::string> capabilities;
@@ -169,6 +174,9 @@ public:
     // Duplex Messaging, Auto-Reverse Reply, Broadcast & Cursor Delivery
     PeerEnvelope send_peer(const SendPeerRequest& req);
 
+    // Only original recipients may reply, while the original sender epoch is
+    // current. Any broadcast recipient may reply. Older replies are delivered
+    // without replacing the tracker for a newer message in that conversation.
     PeerEnvelope reply(
         std::string_view from,
         std::uint64_t in_reply_to_seq,
@@ -218,6 +226,7 @@ private:
     std::map<std::string, ConversationTracker, std::less<>> conversations_;
 
     const AgentNode& require_active_agent(std::string_view id) const;
+    void require_disjoint_ownership(const AgentNode& node) const;
     void require_link(std::string_view from, std::string_view to) const;
 };
 

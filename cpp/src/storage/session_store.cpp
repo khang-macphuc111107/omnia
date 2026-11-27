@@ -4,6 +4,7 @@
 
 #include <winsqlite/winsqlite3.h>
 
+#include <limits>
 #include <stdexcept>
 
 namespace omnia::storage {
@@ -58,6 +59,14 @@ bool is_valid_effort(std::string_view effort) noexcept {
     return effort == "none" || effort == "minimal" || effort == "low" ||
            effort == "medium" || effort == "high" || effort == "xhigh" ||
            effort == "max";
+}
+
+bool checked_expiry(std::int64_t now_ms, std::int64_t ttl_ms, std::int64_t& out) noexcept {
+    if (ttl_ms <= 0 || now_ms > std::numeric_limits<std::int64_t>::max() - ttl_ms) {
+        return false;
+    }
+    out = now_ms + ttl_ms;
+    return true;
 }
 
 } // namespace
@@ -177,8 +186,8 @@ std::optional<LeaseRecord> SessionStore::acquire_lease(
     std::int64_t ttl_ms,
     std::int64_t now_ms
 ) {
-    if (owner_id.empty() || ttl_ms <= 0) {
-        throw std::invalid_argument("Invalid lease owner_id or ttl_ms");
+    if (owner_id.empty() || pid <= 0 || ttl_ms <= 0) {
+        throw std::invalid_argument("Invalid lease owner_id, pid, or ttl_ms");
     }
     std::lock_guard<std::mutex> lock(mutex_);
     exec_sql("BEGIN IMMEDIATE;");
@@ -189,7 +198,10 @@ std::optional<LeaseRecord> SessionStore::acquire_lease(
             "FROM store_leases WHERE lock_name = 'primary';"
         );
         const int step_rc = sqlite3_step(sel.get());
-        const std::int64_t new_expires = now_ms + ttl_ms;
+        std::int64_t new_expires = 0;
+        if (!checked_expiry(now_ms, ttl_ms, new_expires)) {
+            throw std::invalid_argument("Lease expiry overflows int64");
+        }
 
         if (step_rc != SQLITE_ROW) {
             auto ins = prepare_stmt(
@@ -212,19 +224,26 @@ std::optional<LeaseRecord> SessionStore::acquire_lease(
         }
 
         const std::string cur_owner = col_text(sel.get(), 0);
+        const std::int64_t cur_pid = sqlite3_column_int64(sel.get(), 1);
         const std::int64_t cur_acquired = sqlite3_column_int64(sel.get(), 2);
         const std::int64_t cur_expires = sqlite3_column_int64(sel.get(), 4);
         const std::int64_t cur_epoch = sqlite3_column_int64(sel.get(), 5);
         sel.reset();
 
-        if (cur_owner != owner_id && cur_expires > now_ms) {
+        const bool same_owner = (cur_owner == owner_id && cur_pid == pid && cur_expires > now_ms);
+        if (!same_owner && cur_expires > now_ms) {
             exec_sql("ROLLBACK;");
             return std::nullopt;
         }
 
-        const bool same_owner = (cur_owner == owner_id && cur_expires > now_ms);
         const std::int64_t next_acquired = same_owner ? cur_acquired : now_ms;
-        const std::int64_t next_epoch = same_owner ? cur_epoch : (cur_epoch + 1);
+        std::int64_t next_epoch = cur_epoch;
+        if (!same_owner) {
+            if (cur_epoch >= std::numeric_limits<std::int64_t>::max()) {
+                throw std::overflow_error("Lease epoch overflow");
+            }
+            next_epoch = cur_epoch + 1;
+        }
 
         auto upd = prepare_stmt(
             db_.get(),
@@ -265,6 +284,10 @@ bool SessionStore::heartbeat(
     if (owner_id.empty() || ttl_ms <= 0) {
         return false;
     }
+    std::int64_t expires_at = 0;
+    if (!checked_expiry(now_ms, ttl_ms, expires_at)) {
+        return false;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     auto stmt = prepare_stmt(
         db_.get(),
@@ -272,8 +295,40 @@ bool SessionStore::heartbeat(
         "WHERE lock_name = 'primary' AND owner_id = ?3 AND expires_at_ms > ?1;"
     );
     sqlite3_bind_int64(stmt.get(), 1, now_ms);
-    sqlite3_bind_int64(stmt.get(), 2, now_ms + ttl_ms);
+    sqlite3_bind_int64(stmt.get(), 2, expires_at);
     bind_text_view(stmt.get(), 3, owner_id);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        return false;
+    }
+    return sqlite3_changes(db_.get()) == 1;
+}
+
+bool SessionStore::heartbeat(
+    std::string_view owner_id,
+    std::int64_t pid,
+    std::int64_t lease_epoch,
+    std::int64_t ttl_ms,
+    std::int64_t now_ms
+) {
+    if (owner_id.empty() || pid <= 0 || lease_epoch <= 0) {
+        return false;
+    }
+    std::int64_t expires_at = 0;
+    if (!checked_expiry(now_ms, ttl_ms, expires_at)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto stmt = prepare_stmt(
+        db_.get(),
+        "UPDATE store_leases SET heartbeat_at_ms = ?1, expires_at_ms = ?2 "
+        "WHERE lock_name = 'primary' AND owner_id = ?3 AND pid = ?4 "
+        "AND lease_epoch = ?5 AND expires_at_ms > ?1;"
+    );
+    sqlite3_bind_int64(stmt.get(), 1, now_ms);
+    sqlite3_bind_int64(stmt.get(), 2, expires_at);
+    bind_text_view(stmt.get(), 3, owner_id);
+    sqlite3_bind_int64(stmt.get(), 4, pid);
+    sqlite3_bind_int64(stmt.get(), 5, lease_epoch);
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return false;
     }
@@ -287,9 +342,34 @@ bool SessionStore::release_lease(std::string_view owner_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto stmt = prepare_stmt(
         db_.get(),
-        "DELETE FROM store_leases WHERE lock_name = 'primary' AND owner_id = ?1;"
+        "UPDATE store_leases SET expires_at_ms = 0 "
+        "WHERE lock_name = 'primary' AND owner_id = ?1;"
     );
     bind_text_view(stmt.get(), 1, owner_id);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        return false;
+    }
+    return sqlite3_changes(db_.get()) == 1;
+}
+
+bool SessionStore::release_lease(
+    std::string_view owner_id,
+    std::int64_t pid,
+    std::int64_t lease_epoch
+) {
+    if (owner_id.empty() || pid <= 0 || lease_epoch <= 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto stmt = prepare_stmt(
+        db_.get(),
+        "UPDATE store_leases SET expires_at_ms = 0 "
+        "WHERE lock_name = 'primary' AND owner_id = ?1 "
+        "AND pid = ?2 AND lease_epoch = ?3;"
+    );
+    bind_text_view(stmt.get(), 1, owner_id);
+    sqlite3_bind_int64(stmt.get(), 2, pid);
+    sqlite3_bind_int64(stmt.get(), 3, lease_epoch);
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return false;
     }
@@ -354,6 +434,62 @@ SessionRecord SessionStore::create_session(
     }
 
     return SessionRecord{id, clean_title, clean_model, clean_effort, now_ms, now_ms, 1};
+}
+
+std::optional<SessionRecord> SessionStore::create_session_if_lease_current(
+    std::string_view title,
+    std::string_view model_id,
+    std::string_view effort,
+    std::int64_t now_ms,
+    std::string_view owner_id,
+    std::int64_t pid,
+    std::int64_t lease_epoch,
+    std::string_view custom_id
+) {
+    const std::string clean_effort = effort.empty() ? "high" : std::string(effort);
+    if (!is_valid_effort(clean_effort) || owner_id.empty() || pid <= 0 || lease_epoch <= 0) {
+        throw std::invalid_argument("Invalid fenced session create arguments");
+    }
+    const std::string clean_title = title.empty() ? "New Studio Session" : std::string(title);
+    const std::string clean_model = model_id.empty() ? "claude-opus-4-6" : std::string(model_id);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    exec_sql("BEGIN IMMEDIATE;");
+    try {
+        auto lease = prepare_stmt(
+            db_.get(),
+            "SELECT owner_id, pid, lease_epoch, expires_at_ms FROM store_leases "
+            "WHERE lock_name = 'primary';"
+        );
+        if (sqlite3_step(lease.get()) != SQLITE_ROW ||
+            col_text(lease.get(), 0) != owner_id ||
+            sqlite3_column_int64(lease.get(), 1) != pid ||
+            sqlite3_column_int64(lease.get(), 2) != lease_epoch ||
+            sqlite3_column_int64(lease.get(), 3) <= now_ms) {
+            exec_sql("ROLLBACK;");
+            return std::nullopt;
+        }
+
+        const std::string id = custom_id.empty() ? next_id("sess", now_ms) : std::string(custom_id);
+        auto stmt = prepare_stmt(
+            db_.get(),
+            "INSERT INTO sessions (id, title, model_id, effort, created_at_ms, updated_at_ms, revision) "
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1);"
+        );
+        bind_text_view(stmt.get(), 1, id);
+        bind_text_view(stmt.get(), 2, clean_title);
+        bind_text_view(stmt.get(), 3, clean_model);
+        bind_text_view(stmt.get(), 4, clean_effort);
+        sqlite3_bind_int64(stmt.get(), 5, now_ms);
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+            throw std::runtime_error("Failed inserting session row");
+        }
+        exec_sql("COMMIT;");
+        return SessionRecord{id, clean_title, clean_model, clean_effort, now_ms, now_ms, 1};
+    } catch (...) {
+        try { exec_sql("ROLLBACK;"); } catch (...) {}
+        throw;
+    }
 }
 
 bool SessionStore::update_session_settings(

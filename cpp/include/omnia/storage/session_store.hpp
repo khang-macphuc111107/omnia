@@ -89,7 +89,19 @@ public:
         std::int64_t now_ms
     );
     bool heartbeat(std::string_view owner_id, std::int64_t ttl_ms, std::int64_t now_ms);
+    bool heartbeat(
+        std::string_view owner_id,
+        std::int64_t pid,
+        std::int64_t lease_epoch,
+        std::int64_t ttl_ms,
+        std::int64_t now_ms
+    );
     bool release_lease(std::string_view owner_id);
+    bool release_lease(
+        std::string_view owner_id,
+        std::int64_t pid,
+        std::int64_t lease_epoch
+    );
     std::optional<LeaseRecord> active_lease(std::int64_t now_ms) const;
 
     // Session CRUD & Keyset Paging
@@ -98,6 +110,20 @@ public:
         std::string_view model_id,
         std::string_view effort,
         std::int64_t now_ms,
+        std::string_view custom_id = ""
+    );
+
+    // Atomically checks the cooperative lease and creates the row in the same
+    // SQLite transaction. A missing or stale lease returns nullopt without
+    // mutating the database.
+    std::optional<SessionRecord> create_session_if_lease_current(
+        std::string_view title,
+        std::string_view model_id,
+        std::string_view effort,
+        std::int64_t now_ms,
+        std::string_view owner_id,
+        std::int64_t pid,
+        std::int64_t lease_epoch,
         std::string_view custom_id = ""
     );
 

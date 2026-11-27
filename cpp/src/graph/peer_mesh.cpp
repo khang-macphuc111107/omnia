@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include "omnia/core/utf8.hpp"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace omnia::graph {
 
@@ -16,36 +20,88 @@ std::string to_lower(std::string_view s) {
 }
 
 std::string normalize_path_pattern(std::string_view raw) {
-    std::string s;
-    s.reserve(raw.size());
-    for (const char ch : raw) {
-        if (ch == '\\') {
-            s.push_back('/');
-        } else {
-            s.push_back(ch);
+    std::string input(raw);
+    for (char& ch : input) {
+        if (ch == '\\') ch = '/';
+    }
+    while (!input.empty() && (input.front() == ' ' || input.front() == '\t')) input.erase(input.begin());
+    while (!input.empty() && (input.back() == ' ' || input.back() == '\t')) input.pop_back();
+    if (input.empty()) return {};
+    if (!core::is_valid_utf8(input) || input.front() == '/' || input.find(':') != std::string::npos) {
+        throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath,
+                               "Owned path must be workspace-relative: " + input);
+    }
+
+    std::vector<std::string> parts;
+    std::size_t pos = 0;
+    while (pos <= input.size()) {
+        const std::size_t slash = input.find('/', pos);
+        const std::string part = input.substr(pos, slash == std::string::npos ? std::string::npos : slash - pos);
+        if (!part.empty() && part != ".") {
+            if (part == "..") {
+                if (parts.empty()) {
+                    throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath,
+                                          "Owned path escapes workspace: " + input);
+                }
+                parts.pop_back();
+            } else {
+                const bool wildcard = part == "*" || part == "**";
+                if (part.find('*') != std::string::npos && !wildcard) {
+                    throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath,
+                                          "Wildcard is only permitted as the final path component: " + input);
+                }
+                if (wildcard) {
+                    if (slash != std::string::npos && input.find_first_not_of('/', slash + 1) != std::string::npos) {
+                        throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath,
+                                              "Wildcard must be the final path component: " + input);
+                    }
+                    if (parts.empty()) return "*";
+                    break;
+                }
+                if (part.back() == '.' || part.back() == ' ' || part.find_first_of("?<>\"|") != std::string::npos) {
+                    throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath,
+                                          "Unsupported Windows path component: " + part);
+                }
+                for (const char ch : part) {
+                    if (static_cast<unsigned char>(ch) < 0x20U) {
+                        throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath,
+                                              "Owned path contains a control character");
+                    }
+                }
+                parts.push_back(part);
+            }
         }
+        if (slash == std::string::npos) break;
+        pos = slash + 1;
     }
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
-        s.erase(s.begin());
+    if (parts.empty()) {
+        throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath,
+                              "Owned path is empty after normalization: " + input);
     }
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) {
-        s.pop_back();
+    std::string normalized = parts.front();
+    for (std::size_t i = 1; i < parts.size(); ++i) normalized += "/" + parts[i];
+#ifdef _WIN32
+    const int wide_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, normalized.data(),
+                                            static_cast<int>(normalized.size()), nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(wide_size), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, normalized.data(),
+                        static_cast<int>(normalized.size()), wide.data(), wide_size);
+    const int folded_size = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE, wide.data(), wide_size,
+                                          nullptr, 0, nullptr, nullptr, 0);
+    std::wstring folded(static_cast<std::size_t>(folded_size), L'\0');
+    if (wide_size == 0 || folded_size == 0 || LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE,
+        wide.data(), wide_size, folded.data(), folded_size, nullptr, nullptr, 0) == 0) {
+        throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath, "Cannot normalize owned path");
     }
-    while (s.size() >= 2 && s[0] == '.' && s[1] == '/') {
-        s.erase(0, 2);
+    const int utf8_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, folded.data(), folded_size,
+                                             nullptr, 0, nullptr, nullptr);
+    normalized.resize(static_cast<std::size_t>(utf8_size));
+    if (utf8_size == 0 || WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, folded.data(), folded_size,
+        normalized.data(), utf8_size, nullptr, nullptr) == 0) {
+        throw AgentGraphError(AgentGraphError::Code::InvalidOwnedPath, "Cannot encode owned path");
     }
-    if (s == "**" || s == "*") {
-        return "*";
-    }
-    if (s.size() >= 3 && s.substr(s.size() - 3) == "/**") {
-        s.erase(s.size() - 3);
-    } else if (s.size() >= 2 && s.substr(s.size() - 2) == "/*") {
-        s.erase(s.size() - 2);
-    }
-    while (s.size() > 1 && s.back() == '/') {
-        s.pop_back();
-    }
-    return s;
+#endif
+    return normalized;
 }
 
 bool prefix_covers(std::string_view parent, std::string_view child) noexcept {
@@ -201,7 +257,16 @@ void PeerMeshGraph::register_agent(AgentNode node) {
         ex = normalize_path_pattern(ex);
     }
 
-    if (node.active) {
+    if (node.active) require_disjoint_ownership(node);
+
+    outgoing_[node.agent_id];
+    incoming_[node.agent_id];
+    duplex_peers_[node.agent_id];
+    const std::string id = node.agent_id;
+    agents_.insert_or_assign(id, std::move(node));
+}
+
+void PeerMeshGraph::require_disjoint_ownership(const AgentNode& node) const {
         for (const auto& [other_id, other] : agents_) {
             if (other_id == node.agent_id || !other.active) {
                 continue;
@@ -214,13 +279,6 @@ void PeerMeshGraph::register_agent(AgentNode node) {
                 );
             }
         }
-    }
-
-    outgoing_[node.agent_id];
-    incoming_[node.agent_id];
-    duplex_peers_[node.agent_id];
-    const std::string id = node.agent_id;
-    agents_.insert_or_assign(id, std::move(node));
 }
 
 const AgentNode* PeerMeshGraph::agent(std::string_view agent_id) const noexcept {
@@ -260,6 +318,9 @@ void PeerMeshGraph::set_agent_active(std::string_view agent_id, bool active) {
             AgentGraphError::Code::UnknownAgent,
             "Unknown agent: " + std::string(agent_id)
         );
+    }
+    if (active && !it->second.active) {
+        require_disjoint_ownership(it->second);
     }
     it->second.active = active;
 }
@@ -519,7 +580,20 @@ PeerEnvelope PeerMeshGraph::reply(
         );
     }
     const PeerEnvelope orig = messages_[static_cast<std::size_t>(in_reply_to_seq - 1)];
-    (void)require_active_agent(orig.from);
+    const AgentNode& original_sender = require_active_agent(orig.from);
+    if (original_sender.epoch != orig.sender_epoch) {
+        throw AgentGraphError(
+            AgentGraphError::Code::StaleEpoch,
+            "Reply targets a message from a prior sender epoch"
+        );
+    }
+    if (orig.recipients.find(std::string(from)) == orig.recipients.end() ||
+        (orig.expect_reply_from.has_value() && *orig.expect_reply_from != from)) {
+        throw AgentGraphError(
+            AgentGraphError::Code::UnauthorizedReply,
+            "Agent '" + std::string(from) + "' is not an authorized responder"
+        );
+    }
     require_link(from, orig.from);
 
     const std::uint32_t next_hop = orig.hop_count + 1;
@@ -549,10 +623,10 @@ PeerEnvelope PeerMeshGraph::reply(
     }
     env.timestamp_ms = now_ms;
 
-    conversations_.insert_or_assign(
-        env.conversation_id,
-        ConversationTracker{seq, env.from, env.expect_reply_from, now_ms}
-    );
+    const auto tracker = conversations_.find(env.conversation_id);
+    if (tracker != conversations_.end() && tracker->second.last_seq == in_reply_to_seq) {
+        tracker->second = ConversationTracker{seq, env.from, env.expect_reply_from, now_ms};
+    }
     messages_.push_back(env);
     return env;
 }

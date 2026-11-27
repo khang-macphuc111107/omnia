@@ -306,9 +306,11 @@ def _first_str(fields: dict[int, list[tuple[int, int | bytes]]], fnum: int) -> s
         return ""
 
 
-def extract_db_bodies_for_fts(db_path: Path) -> tuple[int, list[str], list[str]]:
+def extract_db_bodies_for_fts(db_path: Path, *, strict: bool = False) -> tuple[int, list[str], list[str]]:
     """Read `(step_count, user_texts, agent_texts)` from a trajectory `.db` read-only."""
     if not db_path.exists():
+        if strict:
+            raise FileNotFoundError(db_path)
         return 0, [], []
     conn = open_sqlite_ro(db_path)
     try:
@@ -316,6 +318,8 @@ def extract_db_bodies_for_fts(db_path: Path) -> tuple[int, list[str], list[str]]
             "SELECT idx, step_type, step_payload FROM steps ORDER BY idx ASC;"
         ).fetchall()
     except sqlite3.Error:
+        if strict:
+            raise
         return 0, [], []
     finally:
         conn.close()
@@ -329,6 +333,8 @@ def extract_db_bodies_for_fts(db_path: Path) -> tuple[int, list[str], list[str]]
         try:
             top = _parse_wire(raw)
         except ValueError:
+            if strict:
+                raise
             continue
         if stype == 14:  # USER_INPUT
             ub = _first_bytes(top, 19)
@@ -339,6 +345,8 @@ def extract_db_bodies_for_fts(db_path: Path) -> tuple[int, list[str], list[str]]
                     if txt.strip():
                         user_texts.append(txt.strip())
                 except ValueError:
+                    if strict:
+                        raise
                     pass
         elif stype == 15:  # PLANNER_RESPONSE
             pb = _first_bytes(top, 20)
@@ -349,6 +357,8 @@ def extract_db_bodies_for_fts(db_path: Path) -> tuple[int, list[str], list[str]]
                     if txt.strip():
                         agent_texts.append(txt.strip())
                 except ValueError:
+                    if strict:
+                        raise
                     pass
     return len(rows), user_texts, agent_texts
 
@@ -751,9 +761,26 @@ def _upsert_summaries_and_fts(
     fts_Backfill_ids: set[str],
     update_jetbox_pb: bool = False,
     lock_window_seconds: float = 600.0,
-) -> dict[str, int]:
+    excluded_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    # The exclusion boundary is applied at the final extraction/mutation seam,
+    # not only while planning trajectory copies. Existing rows are preserved;
+    # this prevents a later broad backfill from reading an active conversation.
+    pending_summaries = {row["conversation_id"] for row in rows_to_upsert}
+    fresh_exclusions = compute_excluded_active_ids(
+        [target_root], set(excluded_ids or ()), lock_window_seconds=lock_window_seconds
+    )
+    # A trajectory just copied by this sync is temporarily unindexed until its
+    # queued summary is inserted below. It is not a new external writer.
+    excluded = set(excluded_ids or ()) | {
+        cid for cid, reason in fresh_exclusions.items()
+        if reason != "recent_unindexed_db" or cid not in pending_summaries
+    }
+    rows_to_upsert = [row for row in rows_to_upsert if row["conversation_id"] not in excluded]
+    fts_Backfill_ids = set(fts_Backfill_ids) - excluded
     if not rows_to_upsert and not fts_Backfill_ids:
-        return {"summaries_upserted": 0, "parents_upserted": 0, "fts_conversations_indexed": 0}
+        return {"summaries_upserted": 0, "parents_upserted": 0, "fts_conversations_indexed": 0,
+                "fts_refresh_failures": {}}
 
     sum_db = target_root / "conversation_summaries.db"
     sum_db.parent.mkdir(parents=True, exist_ok=True)
@@ -762,11 +789,14 @@ def _upsert_summaries_and_fts(
     summaries_upserted = 0
     parents_upserted = 0
     fts_indexed = 0
+    fts_failures: dict[str, str] = {}
 
     try:
         if not sum_db.exists() or sum_db.stat().st_size == 0:
             conn.execute("PRAGMA journal_mode = WAL;")
         _ensure_summaries_schema(conn)
+        conn.execute("CREATE TABLE IF NOT EXISTS omnia_fts_revisions ("
+                     "conversation_id TEXT PRIMARY KEY, content_sha256 TEXT NOT NULL);")
 
         cols_sql = ", ".join(f"`{c}`" for c in SUMMARY_COLUMNS)
         placeholders = ", ".join("?" for _ in SUMMARY_COLUMNS)
@@ -793,23 +823,27 @@ def _upsert_summaries_and_fts(
                     parents_upserted += pcur.rowcount
 
             # Populate missing FTS5 entries so built-in surface search works across synced chats
-            existing_fts_cids = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT DISTINCT conversation_id FROM conversations_fts;"
-                ).fetchall()
-            }
             all_meta = {
                 r[0]: (r[1], r[2], r[3], r[4])
                 for r in conn.execute(
                     "SELECT conversation_id, title, workspace_uris, project_id, step_count FROM conversation_summaries;"
                 ).fetchall()
             }
-            for cid in sorted(fts_Backfill_ids - existing_fts_cids):
+            existing_revisions = {
+                r[0]: r[1]
+                for r in conn.execute(
+                    "SELECT conversation_id, content_sha256 FROM omnia_fts_revisions;"
+                ).fetchall()
+            }
+            for cid in sorted(fts_Backfill_ids):
                 db_p = target_root / "conversations" / f"{cid}.db"
                 if not db_p.exists():
                     continue
-                scnt, u_txts, a_txts = extract_db_bodies_for_fts(db_p)
+                try:
+                    scnt, u_txts, a_txts = extract_db_bodies_for_fts(db_p, strict=True)
+                except (OSError, sqlite3.Error, ValueError) as exc:
+                    fts_failures[cid] = type(exc).__name__
+                    continue
                 title, ws_uris, proj_id, meta_scnt = all_meta.get(cid, ("", "[]", "", scnt))
                 ws_short = ws_uris
                 try:
@@ -819,6 +853,18 @@ def _upsert_summaries_and_fts(
                 except json.JSONDecodeError:
                     pass
                 mtime_ns = db_p.stat().st_mtime_ns
+                desired_steps = max(scnt, meta_scnt)
+                digest = hashlib.sha256(json.dumps(
+                    [1, scnt, desired_steps, title, ws_short, proj_id, u_txts, a_txts],
+                    ensure_ascii=False, separators=(",", ":"),
+                ).encode("utf-8")).hexdigest()
+                if existing_revisions.get(cid) == digest and conn.execute(
+                    "SELECT 1 FROM conversations_fts WHERE conversation_id = ? LIMIT 1;", (cid,)
+                ).fetchone():
+                    continue
+                # The encompassing transaction rolls back deletion and revision
+                # together if insertion or integrity verification fails.
+                conn.execute("DELETE FROM conversations_fts WHERE conversation_id = ?;", (cid,))
                 conn.execute(
                     "INSERT INTO conversations_fts ("
                     "conversation_id, chunk_index, chunk_first_step, chunk_last_step, "
@@ -826,7 +872,7 @@ def _upsert_summaries_and_fts(
                     "user_step_byte_offsets, agent_step_byte_offsets, "
                     "title, workspace, project, user_body, agent_body"
                     ") VALUES (?, -1, 0, 0, ?, ?, ?, 0, '', '', ?, ?, ?, '', '');",
-                    (cid, mtime_ns, max(scnt, meta_scnt), mtime_ns, title, ws_short, proj_id),
+                    (cid, mtime_ns, desired_steps, mtime_ns, title, ws_short, proj_id),
                 )
                 if u_txts or a_txts:
                     conn.execute(
@@ -845,6 +891,7 @@ def _upsert_summaries_and_fts(
                             "\n\n".join(a_txts)[:65536],
                         ),
                     )
+                conn.execute("INSERT OR REPLACE INTO omnia_fts_revisions VALUES (?, ?);", (cid, digest))
                 fts_indexed += 1
 
             conn.execute("INSERT INTO conversations_fts(conversations_fts) VALUES('integrity-check');")
@@ -868,6 +915,7 @@ def _upsert_summaries_and_fts(
         "summaries_upserted": summaries_upserted,
         "parents_upserted": parents_upserted,
         "fts_conversations_indexed": fts_indexed,
+        "fts_refresh_failures": fts_failures,
     }
 
 
@@ -1097,13 +1145,15 @@ def plan_and_run_sync(
         cli_fts_backfill | {p.stem for p in (cli / "conversations").glob("*.db")},
         update_jetbox_pb=True,
         lock_window_seconds=lock_window_seconds,
+        excluded_ids=excluded,
     )
     desk_db_stats = _upsert_summaries_and_fts(
         desk,
         c2d_summary_rows,
-        desk_fts_backfill,
+        desk_fts_backfill | {p.stem for p in (desk / "conversations").glob("*.db")},
         update_jetbox_pb=False,
         lock_window_seconds=lock_window_seconds,
+        excluded_ids=excluded,
     )
 
     desk_ok, desk_msg = verify_sqlite_integrity(

@@ -9,6 +9,17 @@
 
 namespace omnia::core {
 
+std::optional<std::int64_t> JsonValue::try_int64() const noexcept {
+    if (const auto* i = std::get_if<std::int64_t>(&storage_)) return *i;
+    if (const auto* d = std::get_if<double>(&storage_)) {
+        // INT64_MAX rounds up to 2^63 as a double: use an exclusive upper bound.
+        if (std::isfinite(*d) && *d >= -0x1p63 && *d < 0x1p63 && std::trunc(*d) == *d) {
+            return static_cast<std::int64_t>(*d);
+        }
+    }
+    return std::nullopt;
+}
+
 namespace {
 
 constexpr std::size_t kMaxJsonDepth = 128;

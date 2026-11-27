@@ -13,10 +13,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace omnia::studio {
@@ -26,6 +28,22 @@ namespace {
 std::int64_t now_unix_ms() noexcept {
     using namespace std::chrono;
     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+std::int64_t current_process_id() noexcept {
+#ifdef _WIN32
+    return static_cast<std::int64_t>(GetCurrentProcessId());
+#else
+    return 1000;
+#endif
+}
+
+std::string make_lease_owner_id() {
+    static std::atomic<std::uint64_t> sequence{0};
+    std::ostringstream out;
+    out << "omnia-studio-" << current_process_id() << "-" << now_unix_ms() << "-"
+        << std::chrono::steady_clock::now().time_since_epoch().count() << "-" << ++sequence;
+    return out.str();
 }
 
 std::string to_lower_ascii(std::string_view sv) {
@@ -102,6 +120,61 @@ std::map<std::string, std::string, std::less<>> parse_query_params(std::string_v
     return params;
 }
 
+std::string hex_encode(std::string_view input) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(input.size() * 2);
+    for (const unsigned char ch : input) {
+        out.push_back(kHex[(ch >> 4U) & 0x0fU]);
+        out.push_back(kHex[ch & 0x0fU]);
+    }
+    return out;
+}
+
+std::optional<std::string> hex_decode(std::string_view input) {
+    if (input.empty() || input.size() % 2 != 0 || input.size() > 512) return std::nullopt;
+    auto nibble = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
+        if (ch >= 'A' && ch <= 'F') return 10 + ch - 'A';
+        return -1;
+    };
+    std::string out;
+    out.reserve(input.size() / 2);
+    for (std::size_t i = 0; i < input.size(); i += 2) {
+        const int hi = nibble(input[i]);
+        const int lo = nibble(input[i + 1]);
+        if (hi < 0 || lo < 0) return std::nullopt;
+        out.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    return out;
+}
+
+std::string encode_session_cursor(const storage::SessionCursor& cursor) {
+    return hex_encode(std::to_string(cursor.updated_at_ms)) + "." + hex_encode(cursor.id);
+}
+
+bool valid_session_id(std::string_view id) {
+    if (id.empty() || id.size() > 128 || !core::is_valid_utf8(id) ||
+        id.find("..") != std::string_view::npos || id.find_first_of("/\\?#") != std::string_view::npos) {
+        return false;
+    }
+    return std::all_of(id.begin(), id.end(), [](unsigned char ch) { return ch >= 0x20U && ch != 0x7fU; });
+}
+
+std::optional<storage::SessionCursor> decode_session_cursor(std::string_view raw) {
+    if (raw.size() > 600) return std::nullopt;
+    const std::size_t dot = raw.find('.');
+    if (dot == std::string_view::npos || raw.find('.', dot + 1) != std::string_view::npos) return std::nullopt;
+    const auto ts_hex = hex_decode(raw.substr(0, dot));
+    const auto id = hex_decode(raw.substr(dot + 1));
+    if (!ts_hex.has_value() || !id.has_value() || !valid_session_id(*id)) return std::nullopt;
+    std::int64_t timestamp = 0;
+    const auto parsed = std::from_chars(ts_hex->data(), ts_hex->data() + ts_hex->size(), timestamp);
+    if (parsed.ec != std::errc{} || parsed.ptr != ts_hex->data() + ts_hex->size()) return std::nullopt;
+    return storage::SessionCursor{timestamp, *id};
+}
+
 bool is_digits_only(std::string_view sv) noexcept {
     if (sv.empty() || sv.size() > 5) return false;
     for (const char c : sv) {
@@ -155,15 +228,6 @@ void ensure_winsock() {
     static WinsockInit s_wsa;
     (void)s_wsa;
 }
-
-struct SocketCloser {
-    SOCKET sock = INVALID_SOCKET;
-    ~SocketCloser() noexcept {
-        if (sock != INVALID_SOCKET) {
-            closesocket(sock);
-        }
-    }
-};
 
 std::wstring utf8_to_utf16(std::string_view utf8) {
     if (utf8.empty()) return {};
@@ -222,6 +286,106 @@ HttpResponse make_json_response(
     r.allow_origin = std::move(allow_origin);
     r.body = payload.dump();
     return r;
+}
+
+constexpr std::size_t kMaxHttpHeaderBytes = 16U * 1024U;
+constexpr std::size_t kMaxHttpBodyBytes = 1024U * 1024U;
+
+HttpResponse http_read_error(int status, std::string message) {
+    core::JsonObject error;
+    error["ok"] = false;
+    error["error"] = std::move(message);
+    const char* reason = status == 413 ? "Payload Too Large" :
+                         status == 414 ? "URI Too Long" :
+                         status == 431 ? "Request Header Fields Too Large" :
+                         status == 408 ? "Request Timeout" : "Bad Request";
+    return make_json_response(status, reason, core::JsonValue(std::move(error)));
+}
+
+bool is_http_token(std::string_view value) {
+    return !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+               (ch >= '0' && ch <= '9') ||
+               std::string_view("!#$%&'*+-.^_|~").find(static_cast<char>(ch)) != std::string_view::npos ||
+               ch == 0x60U;
+    });
+}
+
+struct HttpRequestHead {
+    std::string method;
+    std::string target;
+    std::string host;
+    std::string origin;
+    std::size_t content_length = 0;
+};
+
+std::optional<HttpResponse> parse_http_head(std::string_view bytes, HttpRequestHead& head) {
+    const auto first_line_end = bytes.find("\r\n");
+    const auto line = bytes.substr(0, first_line_end);
+    const auto sp1 = line.find(' ');
+    const auto sp2 = sp1 == std::string_view::npos ? sp1 : line.find(' ', sp1 + 1);
+    if (sp1 == std::string_view::npos || sp2 == std::string_view::npos) {
+        return http_read_error(400, "malformed_request_line");
+    }
+    const auto method = line.substr(0, sp1);
+    const auto target = line.substr(sp1 + 1, sp2 - sp1 - 1);
+    const auto version = line.substr(sp2 + 1);
+    if (!is_http_token(method) || target.empty() || target.front() != '/' ||
+        (version != "HTTP/1.1" && version != "HTTP/1.0") ||
+        !std::all_of(target.begin(), target.end(), [](unsigned char ch) {
+            return ch > 0x20U && ch < 0x7fU;
+        })) {
+        return http_read_error(400, "malformed_request_line");
+    }
+    if (target.size() > 4096) return http_read_error(414, "target_too_long");
+    head.method = method;
+    head.target = target;
+    bool host_seen = false;
+    bool origin_seen = false;
+    bool length_seen = false;
+    std::size_t pos = first_line_end == std::string_view::npos ? bytes.size() : first_line_end + 2;
+    while (pos < bytes.size()) {
+        const auto end = bytes.find("\r\n", pos);
+        const auto field = end == std::string_view::npos ? bytes.substr(pos) : bytes.substr(pos, end - pos);
+        const auto colon = field.find(':');
+        if (colon == std::string_view::npos || !is_http_token(field.substr(0, colon))) {
+            return http_read_error(400, "malformed_headers");
+        }
+        const auto raw_value = field.substr(colon + 1);
+        if (!std::all_of(raw_value.begin(), raw_value.end(), [](unsigned char ch) {
+            return ch == '\t' || (ch >= 0x20U && ch != 0x7fU);
+        })) {
+            return http_read_error(400, "malformed_headers");
+        }
+        const auto name = to_lower_ascii(field.substr(0, colon));
+        const auto value = trim_ascii(raw_value);
+        if (name == "host") {
+            if (host_seen) return http_read_error(400, "duplicate_host");
+            host_seen = true;
+            head.host = value;
+        } else if (name == "origin") {
+            if (origin_seen || value.empty()) return http_read_error(400, "invalid_origin_header");
+            origin_seen = true;
+            head.origin = value;
+        } else if (name == "content-length") {
+            if (length_seen) return http_read_error(400, "duplicate_content_length");
+            length_seen = true;
+            std::uint64_t length = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), length);
+            if (value.empty() || parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
+                return http_read_error(400, "invalid_content_length");
+            }
+            if (length > kMaxHttpBodyBytes) return http_read_error(413, "body_too_large");
+            head.content_length = static_cast<std::size_t>(length);
+        } else if (name == "transfer-encoding") {
+            // This host accepts only Content-Length framing, never chunked or
+            // conflicting Transfer-Encoding / Content-Length interpretations.
+            return http_read_error(400, "unsupported_transfer_encoding");
+        }
+        if (end == std::string_view::npos) break;
+        pos = end + 2;
+    }
+    return std::nullopt;
 }
 
 std::string format_hms_utc(std::uint64_t unix_ms) {
@@ -316,50 +480,24 @@ core::JsonValue serialize_steer_item(const harness::SteerItem& it) {
 
 } // namespace
 
-bool StudioServer::is_allowed_loopback_origin(std::string_view origin) noexcept {
-    if (origin.empty()) {
-        return true; // Non-CORS same-origin GET or local CLI client without Origin header
-    }
-    const std::string low = to_lower_ascii(trim_ascii(origin));
-    if (low == "null") {
-        return false;
-    }
-    constexpr std::string_view kAllowedPrefixes[] = {
-        "http://127.0.0.1",
-        "http://localhost",
-        "http://[::1]"
-    };
-    for (const auto pref : kAllowedPrefixes) {
-        if (low == pref) {
-            return true;
-        }
-        if (low.size() > pref.size() &&
-            low.substr(0, pref.size()) == pref &&
-            low[pref.size()] == ':') {
-            const std::string_view port_sv = std::string_view(low).substr(pref.size() + 1);
-            if (is_digits_only(port_sv)) {
-                return true;
-            }
-        }
-    }
-    return false;
+bool StudioServer::is_allowed_loopback_origin(std::string_view origin, std::uint16_t port) noexcept {
+    if (origin.empty()) return true; // Explicit local CLI policy, not browser authentication.
+    constexpr std::string_view scheme = "http://";
+    return origin.starts_with(scheme) && is_allowed_loopback_host(origin.substr(scheme.size()), port);
 }
 
-bool StudioServer::is_allowed_loopback_host(std::string_view host) noexcept {
-    if (host.empty()) {
-        return true;
+bool StudioServer::is_allowed_loopback_host(std::string_view host, std::uint16_t port) noexcept {
+    if (port == 0) return false;
+    constexpr std::string_view address = "127.0.0.1";
+    if (host == address) return port == 80;
+    if (!host.starts_with(address) || host.size() <= address.size() || host[address.size()] != ':') {
+        return false;
     }
-    const std::string low = to_lower_ascii(trim_ascii(host));
-    constexpr std::string_view kHosts[] = {"127.0.0.1", "localhost", "[::1]"};
-    for (const auto h : kHosts) {
-        if (low == h) return true;
-        if (low.size() > h.size() && low.substr(0, h.size()) == h && low[h.size()] == ':') {
-            if (is_digits_only(std::string_view(low).substr(h.size() + 1))) {
-                return true;
-            }
-        }
-    }
-    return false;
+    const auto digits = host.substr(address.size() + 1);
+    if (!is_digits_only(digits)) return false;
+    unsigned int parsed_port = 0;
+    const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), parsed_port);
+    return parsed.ec == std::errc{} && parsed.ptr == digits.data() + digits.size() && parsed_port == port;
 }
 
 bool StudioServer::launch_edge_app_window(std::uint16_t port) {
@@ -385,7 +523,52 @@ StudioServer::StudioServer(StudioConfig config)
     session_store_ = std::make_unique<storage::SessionStore>(
         config_.db_path.empty() ? ":memory:" : config_.db_path
     );
-    seed_flagship_state();
+    // Load real skills in both normal and demo mode.
+    std::filesystem::path skills_dir = config_.skills_root;
+    if (skills_dir.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(".agents/skills", ec)) {
+            skills_dir = ".agents/skills";
+        } else if (std::filesystem::exists("../.agents/skills", ec)) {
+            skills_dir = "../.agents/skills";
+        }
+    }
+    if (!skills_dir.empty()) {
+        (void)skills_.load_from_directory(skills_dir, ".agents/skills");
+    }
+    if (skills_.size() == 0 && config_.demo_mode) {
+        skills_.register_skill(harness::SkillEntry{
+            "deep-cpp-native",
+            "Architect, build, and verify zero-overhead native Windows 11 C++20 applications with CMake, Ninja, MSVC, winsqlite3, BCrypt, UIA, and Winsock2.",
+            ".agents/skills/deep-cpp-native/SKILL.md",
+            "native-cpp20"
+        });
+        skills_.register_skill(harness::SkillEntry{
+            "additive-steer-queue",
+            "Preserve all unfinished and in-progress tasks as ADDITIVE_INTAKE without artificial token_budget caps.",
+            ".agents/skills/additive-steer-queue/SKILL.md",
+            "continuity-governance"
+        });
+    }
+
+    lease_owner_id_ = make_lease_owner_id();
+    lease_pid_ = current_process_id();
+    const auto lease = session_store_->acquire_lease(
+        lease_owner_id_, lease_pid_, kLeaseTtlMs, now_unix_ms());
+    if (!lease.has_value()) {
+        throw std::runtime_error("Studio database is already owned by another live process");
+    }
+    lease_epoch_ = lease->lease_epoch;
+    lease_held_.store(true);
+    try {
+        start_lease_heartbeat();
+        if (config_.demo_mode) {
+            seed_flagship_state();
+        }
+    } catch (...) {
+        stop_lease_heartbeat();
+        throw;
+    }
 }
 
 StudioServer::~StudioServer() {
@@ -396,28 +579,45 @@ void StudioServer::seed_flagship_state() {
     const std::int64_t now_ms = now_unix_ms();
     const auto now_u64 = static_cast<std::uint64_t>(now_ms);
 
-    // 1. Cooperative Lease + Seeded Sessions
-#ifdef _WIN32
-    const auto pid = static_cast<std::int64_t>(GetCurrentProcessId());
-#else
-    const std::int64_t pid = 1000;
-#endif
-    (void)session_store_->acquire_lease("omnia-studio-host", pid, 3600000, now_ms);
-    session_store_->create_session(
+    const auto ensure_bootstrap_session = [this](
+        std::string_view title,
+        std::string_view model_id,
+        std::string_view effort,
+        std::int64_t updated_at_ms,
+        std::string_view id
+    ) {
+        (void)updated_at_ms;
+        if (!session_store_->get_session(id).has_value()) {
+            const auto created = session_store_->create_session_if_lease_current(
+                title,
+                model_id,
+                effort,
+                now_unix_ms(),
+                lease_owner_id_,
+                lease_pid_,
+                lease_epoch_,
+                id
+            );
+            if (!created.has_value()) {
+                throw std::runtime_error("Studio database lease lost during demo bootstrap");
+            }
+        }
+    };
+    ensure_bootstrap_session(
         "Wave 4 \u2022 Native C++20 Studio & UIA",
         "gemini-3.1-pro",
         "high",
         now_ms - 30000,
         "sess-cpp20-atelier"
     );
-    session_store_->create_session(
+    ensure_bootstrap_session(
         "Dynamic Provider Router & Circuit Breaker Verification",
         "claude-opus-4-6",
         "high",
         now_ms - 90000,
         "sess-router-audit"
     );
-    session_store_->create_session(
+    ensure_bootstrap_session(
         "Win32 Mica + Server-Side COM UIA Shell Parity",
         "gpt-5.4-thinking",
         "xhigh",
@@ -824,34 +1024,6 @@ void StudioServer::seed_flagship_state() {
         now_ms - 15000
     );
 
-    // 6. Load Live SkillRegistry
-    std::filesystem::path skills_dir = config_.skills_root;
-    if (skills_dir.empty()) {
-        std::error_code ec;
-        if (std::filesystem::exists(".agents/skills", ec)) {
-            skills_dir = ".agents/skills";
-        } else if (std::filesystem::exists("../.agents/skills", ec)) {
-            skills_dir = "../.agents/skills";
-        }
-    }
-    if (!skills_dir.empty()) {
-        (void)skills_.load_from_directory(skills_dir, ".agents/skills");
-    }
-    if (skills_.size() == 0) {
-        skills_.register_skill(harness::SkillEntry{
-            "deep-cpp-native",
-            "Architect, build, and verify zero-overhead native Windows 11 C++20 applications with CMake, Ninja, MSVC, winsqlite3, BCrypt, UIA, and Winsock2.",
-            ".agents/skills/deep-cpp-native/SKILL.md",
-            "native-cpp20"
-        });
-        skills_.register_skill(harness::SkillEntry{
-            "additive-steer-queue",
-            "Preserve all unfinished and in-progress tasks as ADDITIVE_INTAKE without artificial token_budget caps.",
-            ".agents/skills/additive-steer-queue/SKILL.md",
-            "continuity-governance"
-        });
-    }
-
     // 7. Seed Additive Steer Queue (token_budget == null invariant)
     steer_queue_.enqueue(
         "Migrate core, storage, routing, graph, and harness to pure MSVC C++20 (/W4 /WX).",
@@ -909,7 +1081,7 @@ void StudioServer::open_listener() {
         throw std::runtime_error("listen() failed on Studio loopback socket");
     }
 
-    listen_sock_ = static_cast<std::uintptr_t>(s);
+    listen_sock_.store(static_cast<std::uintptr_t>(s));
     running_.store(true);
 
     if (config_.open_window) {
@@ -920,39 +1092,275 @@ void StudioServer::open_listener() {
 #endif
 }
 
-void StudioServer::start() {
-    if (running_.load()) {
+void StudioServer::start_client_workers() {
+    std::unique_lock<std::mutex> lock(worker_mutex_);
+    if (!client_workers_.empty()) {
         return;
     }
-    open_listener();
-    accept_thread_ = std::thread([this]() { accept_loop(); });
+    workers_stopping_ = false;
+    try {
+        client_workers_.reserve(kClientWorkerCount);
+        for (std::size_t i = 0; i < kClientWorkerCount; ++i) {
+            client_workers_.emplace_back([this]() { client_worker_loop(); });
+        }
+    } catch (...) {
+        workers_stopping_ = true;
+        worker_cv_.notify_all();
+        lock.unlock();
+        for (auto& worker : client_workers_) {
+            if (worker.joinable()) worker.join();
+        }
+        lock.lock();
+        client_workers_.clear();
+        client_queue_.clear();
+        active_client_sockets_.clear();
+        throw;
+    }
+}
+
+void StudioServer::stop_client_workers() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(worker_mutex_);
+        workers_stopping_ = true;
+#ifdef _WIN32
+        for (const auto client : active_client_sockets_) {
+            // Wake active workers. They retain ownership and perform the
+            // generation-checked close after handle_client returns.
+            (void)shutdown(static_cast<SOCKET>(client.first), SD_BOTH);
+        }
+        for (const auto& client : client_queue_) {
+            (void)shutdown(static_cast<SOCKET>(client.socket), SD_BOTH);
+            closesocket(static_cast<SOCKET>(client.socket));
+        }
+#endif
+        client_queue_.clear();
+    }
+    worker_cv_.notify_all();
+    for (auto& worker : client_workers_) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+    client_workers_.clear();
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    active_client_sockets_.clear();
+}
+
+void StudioServer::client_worker_loop() {
+    while (true) {
+        ClientConnection client{};
+        {
+            std::unique_lock<std::mutex> lock(worker_mutex_);
+            worker_cv_.wait(lock, [this]() {
+                return workers_stopping_ || !client_queue_.empty();
+            });
+            if (workers_stopping_) {
+                return;
+            }
+            client = client_queue_.front();
+            client_queue_.pop_front();
+        }
+
+        try {
+            handle_client(client);
+        } catch (...) {
+            // A malformed request or unexpected route exception must not
+            // terminate the process from an owned worker thread.
+        }
+        close_client_socket(client.socket, client.generation);
+    }
+}
+
+void StudioServer::close_client_socket(
+    std::uintptr_t client_sock,
+    std::uint64_t generation
+) noexcept {
+#ifdef _WIN32
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    const auto it = active_client_sockets_.find(client_sock);
+    if (it == active_client_sockets_.end() || it->second != generation) {
+        return;
+    }
+    active_client_sockets_.erase(it);
+    const SOCKET sock = static_cast<SOCKET>(client_sock);
+    (void)shutdown(sock, SD_BOTH);
+    closesocket(sock);
+#else
+    (void)client_sock;
+    (void)generation;
+#endif
+}
+
+bool StudioServer::lease_is_current() const {
+    if (!lease_held_.load()) return false;
+    const auto lease = session_store_->active_lease(now_unix_ms());
+    return lease.has_value() && lease->owner_id == lease_owner_id_ &&
+        lease->pid == lease_pid_ && lease->lease_epoch == lease_epoch_;
+}
+
+void StudioServer::start_lease_heartbeat() {
+    if (lease_thread_.joinable()) return;
+    lease_thread_ = std::thread([this]() {
+        std::unique_lock<std::mutex> lock(lease_mutex_);
+        while (lease_held_.load()) {
+            if (lease_cv_.wait_for(lock, std::chrono::milliseconds(kLeaseTtlMs / 3),
+                [this]() { return !lease_held_.load(); })) break;
+            lock.unlock();
+            bool ok = false;
+            try {
+                ok = lease_is_current() && session_store_->heartbeat(
+                    lease_owner_id_, lease_pid_, lease_epoch_, kLeaseTtlMs, now_unix_ms());
+            } catch (...) {
+                ok = false;
+            }
+            if (!ok) {
+                lease_held_.store(false);
+                running_.store(false);
+                signal_runtime_shutdown();
+            }
+            lock.lock();
+        }
+    });
+}
+
+void StudioServer::stop_lease_heartbeat() noexcept {
+    lease_held_.store(false);
+    lease_cv_.notify_all();
+    if (lease_thread_.joinable()) lease_thread_.join();
+    try {
+        (void)session_store_->release_lease(lease_owner_id_, lease_pid_, lease_epoch_);
+    } catch (...) {}
+    lease_epoch_ = 0;
+}
+
+void StudioServer::acquire_lease_or_throw() {
+    if (lease_held_.load()) return;
+    const auto lease = session_store_->acquire_lease(
+        lease_owner_id_, lease_pid_, kLeaseTtlMs, now_unix_ms());
+    if (!lease.has_value()) {
+        throw std::runtime_error("Studio database is already owned by another live process");
+    }
+    lease_epoch_ = lease->lease_epoch;
+    lease_held_.store(true);
+    try {
+        start_lease_heartbeat();
+    } catch (...) {
+        lease_held_.store(false);
+        (void)session_store_->release_lease(lease_owner_id_, lease_pid_, lease_epoch_);
+        lease_epoch_ = 0;
+        throw;
+    }
+}
+
+void StudioServer::signal_runtime_shutdown() noexcept {
+    running_.store(false);
+#ifdef _WIN32
+    const auto raw = static_cast<SOCKET>(listen_sock_.exchange(
+        static_cast<std::uintptr_t>(INVALID_SOCKET)));
+    if (raw != INVALID_SOCKET) {
+        closesocket(raw);
+    }
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    for (const auto client : active_client_sockets_) {
+        (void)shutdown(static_cast<SOCKET>(client.first), SD_BOTH);
+    }
+#endif
+    worker_cv_.notify_all();
+}
+
+void StudioServer::start() {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    // A lease heartbeat can stop the accept loop asynchronously.  Reconcile
+    // all joinable runtime threads before creating replacement threads; an
+    // assignment to a joinable std::thread would terminate the process.
+    if (!running_.load() && (accept_thread_.joinable() ||
+        (!lease_held_.load() && lease_thread_.joinable()))) {
+        signal_runtime_shutdown();
+        if (accept_thread_.joinable()) {
+            accept_thread_.join();
+        }
+        stop_client_workers();
+        stop_lease_heartbeat();
+    }
+    if (!running_.load()) {
+        // A failed lease heartbeat leaves the old heartbeat thread joinable;
+        // finish that generation before reacquiring the database lease.
+        acquire_lease_or_throw();
+        try {
+            open_listener();
+            start_client_workers();
+            accept_thread_ = std::thread([this]() { accept_loop(); });
+        } catch (...) {
+            signal_runtime_shutdown();
+            if (accept_thread_.joinable()) accept_thread_.join();
+            stop_client_workers();
+            stop_lease_heartbeat();
+            throw;
+        }
+    }
 }
 
 void StudioServer::run_blocking() {
-    if (!running_.load()) {
-        open_listener();
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+        if (running_.load() || accept_thread_.joinable() || accept_loop_active_.load()) {
+            throw std::logic_error("StudioServer already has an accept loop");
+        }
+        if (!lease_held_.load() && lease_thread_.joinable()) {
+            stop_lease_heartbeat();
+        }
+        acquire_lease_or_throw();
+        if (!running_.load()) {
+            try {
+                open_listener();
+                start_client_workers();
+            } catch (...) {
+                signal_runtime_shutdown();
+                stop_client_workers();
+                stop_lease_heartbeat();
+                throw;
+            }
+        }
     }
-    accept_loop();
+    try {
+        accept_loop();
+    } catch (...) {
+        stop();
+        throw;
+    }
+    // The accept loop may return because the lease heartbeat or another
+    // thread signaled shutdown, so always reconcile runtime state here.
+    stop();
 }
 
 void StudioServer::stop() noexcept {
-    running_.store(false);
-#ifdef _WIN32
-    const auto raw = static_cast<SOCKET>(listen_sock_);
-    if (raw != INVALID_SOCKET) {
-        listen_sock_ = static_cast<std::uintptr_t>(INVALID_SOCKET);
-        closesocket(raw);
-    }
-#endif
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    signal_runtime_shutdown();
     if (accept_thread_.joinable()) {
         accept_thread_.join();
     }
+    while (accept_loop_active_.load()) {
+        accept_loop_active_.wait(true);
+    }
+    stop_client_workers();
+    stop_lease_heartbeat();
 }
 
 void StudioServer::accept_loop() {
 #ifdef _WIN32
+    bool expected = false;
+    if (!accept_loop_active_.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    struct LoopGuard {
+        std::atomic<bool>& active;
+        ~LoopGuard() noexcept {
+            active.store(false);
+            active.notify_all();
+        }
+    } loop_guard{accept_loop_active_};
     while (running_.load()) {
-        const auto ls = static_cast<SOCKET>(listen_sock_);
+        const auto ls = static_cast<SOCKET>(listen_sock_.load());
         if (ls == INVALID_SOCKET) {
             break;
         }
@@ -965,27 +1373,45 @@ void StudioServer::accept_loop() {
             }
             continue;
         }
-        // Handle client synchronously or via short worker so concurrent browser fetches succeed fast
-        std::thread([this, client]() {
-            handle_client(static_cast<std::uintptr_t>(client));
-        }).detach();
+        const auto client_value = static_cast<std::uintptr_t>(client);
+        bool queued = false;
+        ClientConnection connection{};
+        {
+            std::lock_guard<std::mutex> lock(worker_mutex_);
+            if (running_.load() && !workers_stopping_ &&
+                client_queue_.size() < kMaxQueuedClients) {
+                connection = ClientConnection{client_value, ++next_client_generation_};
+                active_client_sockets_.insert_or_assign(client_value, connection.generation);
+                client_queue_.push_back(connection);
+                queued = true;
+            }
+        }
+        if (queued) {
+            worker_cv_.notify_one();
+        } else {
+            shutdown(client, SD_BOTH);
+            closesocket(client);
+        }
     }
 #endif
 }
 
-void StudioServer::handle_client(std::uintptr_t client_sock) {
+void StudioServer::handle_client(ClientConnection client) {
 #ifdef _WIN32
-    SocketCloser guard{static_cast<SOCKET>(client_sock)};
+    // The worker owns this descriptor. It is closed and removed from the
+    // active registry by close_client_socket() after this function returns,
+    // under the same mutex and generation check used by shutdown.
+    const SOCKET client_socket = static_cast<SOCKET>(client.socket);
     DWORD timeout_ms = 5000;
     (void)setsockopt(
-        guard.sock,
+        client_socket,
         SOL_SOCKET,
         SO_RCVTIMEO,
         reinterpret_cast<const char*>(&timeout_ms),
         sizeof(timeout_ms)
     );
     (void)setsockopt(
-        guard.sock,
+        client_socket,
         SOL_SOCKET,
         SO_SNDTIMEO,
         reinterpret_cast<const char*>(&timeout_ms),
@@ -996,107 +1422,67 @@ void StudioServer::handle_client(std::uintptr_t client_sock) {
     raw_req.reserve(4096);
     char buf[4096];
     std::size_t header_end = std::string::npos;
-    std::size_t content_len = 0;
+    HttpRequestHead head;
+    std::optional<HttpResponse> read_error;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 
-    while (raw_req.size() < 1024 * 1024) {
-        const int n = recv(guard.sock, buf, static_cast<int>(sizeof(buf)), 0);
+    while (!read_error.has_value()) {
+        // Limit allocation before accepting more bytes. Length arithmetic is
+        // bounded by parse_http_head, and the deadline spans all recv calls.
+        const auto limit = header_end == std::string::npos ? kMaxHttpHeaderBytes :
+            header_end + 4 + head.content_length;
+        if (raw_req.size() >= limit) {
+            if (header_end == std::string::npos) read_error = http_read_error(431, "headers_too_large");
+            break;
+        }
+        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining_ms <= 0) {
+            read_error = http_read_error(408, "request_timeout");
+            break;
+        }
+        timeout_ms = static_cast<DWORD>(std::min<std::int64_t>(remaining_ms, 100));
+        (void)setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+        const int n = recv(client_socket, buf,
+            static_cast<int>(std::min<std::size_t>(sizeof(buf), limit - raw_req.size())), 0);
+        if (n < 0 && WSAGetLastError() == WSAETIMEDOUT) {
+        if (!running_.load()) return;
+            continue;
+        }
         if (n <= 0) {
+            read_error = http_read_error(400,
+                header_end == std::string::npos ? "incomplete_headers" : "incomplete_body");
             break;
         }
         raw_req.append(buf, static_cast<std::size_t>(n));
         if (header_end == std::string::npos) {
             header_end = raw_req.find("\r\n\r\n");
             if (header_end != std::string::npos) {
-                const std::string_view hdr_block(raw_req.data(), header_end);
-                std::size_t pos = 0;
-                while (pos < hdr_block.size()) {
-                    const std::size_t nl = hdr_block.find("\r\n", pos);
-                    const std::string_view line = (nl == std::string_view::npos)
-                        ? hdr_block.substr(pos)
-                        : hdr_block.substr(pos, nl - pos);
-                    const std::size_t colon = line.find(':');
-                    if (colon != std::string_view::npos) {
-                        const std::string hname = to_lower_ascii(trim_ascii(line.substr(0, colon)));
-                        if (hname == "content-length") {
-                            const std::string hval = trim_ascii(line.substr(colon + 1));
-                            content_len = static_cast<std::size_t>(
-                                std::strtoull(hval.c_str(), nullptr, 10)
-                            );
-                        }
-                    }
-                    if (nl == std::string_view::npos) break;
-                    pos = nl + 2;
-                }
+                read_error = parse_http_head(std::string_view(raw_req.data(), header_end), head);
             }
         }
         if (header_end != std::string::npos &&
-            raw_req.size() >= header_end + 4 + content_len) {
-            break;
-        }
+            raw_req.size() >= header_end + 4 + head.content_length) break;
     }
-
-    if (header_end == std::string::npos) {
-        return;
-    }
-
-    const std::string_view hdr_view(raw_req.data(), header_end);
-    const std::size_t first_line_end = hdr_view.find("\r\n");
-    const std::string_view req_line = (first_line_end == std::string_view::npos)
-        ? hdr_view
-        : hdr_view.substr(0, first_line_end);
-
-    const std::size_t sp1 = req_line.find(' ');
-    if (sp1 == std::string_view::npos) {
-        return;
-    }
-    const std::size_t sp2 = req_line.find(' ', sp1 + 1);
-    if (sp2 == std::string_view::npos) {
-        return;
-    }
-
-    const std::string_view method = req_line.substr(0, sp1);
-    const std::string_view target = req_line.substr(sp1 + 1, sp2 - (sp1 + 1));
-
-    std::string host_hdr;
-    std::string origin_hdr;
-    if (first_line_end != std::string_view::npos) {
-        std::size_t pos = first_line_end + 2;
-        while (pos < hdr_view.size()) {
-            const std::size_t nl = hdr_view.find("\r\n", pos);
-            const std::string_view line = (nl == std::string_view::npos)
-                ? hdr_view.substr(pos)
-                : hdr_view.substr(pos, nl - pos);
-            const std::size_t colon = line.find(':');
-            if (colon != std::string_view::npos) {
-                const std::string hname = to_lower_ascii(trim_ascii(line.substr(0, colon)));
-                const std::string hval = trim_ascii(line.substr(colon + 1));
-                if (hname == "host") host_hdr = hval;
-                else if (hname == "origin") origin_hdr = hval;
-            }
-            if (nl == std::string_view::npos) break;
-            pos = nl + 2;
-        }
-    }
-
-    const std::size_t body_offset = header_end + 4;
-    const std::size_t avail_body = raw_req.size() > body_offset
-        ? (raw_req.size() - body_offset)
-        : 0;
-    const std::string_view body_view(
-        raw_req.data() + body_offset,
-        std::min(content_len, avail_body)
-    );
 
     HttpResponse resp;
-    try {
-        resp = route_http(method, target, host_hdr, origin_hdr, body_view);
-    } catch (const std::exception& ex) {
-        core::JsonObject err;
-        err["ok"] = false;
-        err["error"] = "internal_error";
-        err["message"] = core::SecretRedactor::redact(ex.what());
-        resp = make_json_response(500, "Internal Server Error", core::JsonValue(std::move(err)));
+    if (read_error.has_value()) {
+        resp = std::move(*read_error);
+    } else {
+        const std::string_view body(raw_req.data() + header_end + 4, head.content_length);
+        try {
+            resp = route_http(head.method, head.target, head.host, head.origin, body);
+        } catch (const std::exception& ex) {
+            core::JsonObject err;
+            err["ok"] = false;
+            err["error"] = "internal_error";
+            err["message"] = core::SecretRedactor::redact(ex.what());
+            resp = make_json_response(500, "Internal Server Error", core::JsonValue(std::move(err)));
+        }
     }
+
+    if (!running_.load()) return;
 
     std::string wire;
     wire.reserve(256 + resp.body.size());
@@ -1121,7 +1507,7 @@ void StudioServer::handle_client(std::uintptr_t client_sock) {
     std::size_t sent_total = 0;
     while (sent_total < wire.size()) {
         const int chunk = send(
-            guard.sock,
+            client_socket,
             wire.data() + sent_total,
             static_cast<int>(std::min<std::size_t>(wire.size() - sent_total, 65536)),
             0
@@ -1132,7 +1518,7 @@ void StudioServer::handle_client(std::uintptr_t client_sock) {
         sent_total += static_cast<std::size_t>(chunk);
     }
 #else
-    (void)client_sock;
+    (void)client;
 #endif
 }
 
@@ -1143,29 +1529,28 @@ HttpResponse StudioServer::route_http(
     std::string_view origin_header,
     std::string_view body
 ) {
-    // 1. Host DNS-rebinding guard
-    if (!is_allowed_loopback_host(host_header)) {
+    // 1. Bind Host to the actual listener, including an OS-assigned port.
+    const auto port = bound_port_.load();
+    if (!is_allowed_loopback_host(host_header, port)) {
         core::JsonObject err;
         err["ok"] = false;
         err["error"] = "forbidden_host";
-        err["message"] = "Host header must target local loopback (127.0.0.1 or localhost)";
+        err["message"] = "Host header must match the 127.0.0.1 listener authority";
         return make_json_response(403, "Forbidden", core::JsonValue(std::move(err)));
     }
 
-    // 2. Cross-Origin Guard (`deep-cors-diagnostics`): reject non-loopback Origin on POST/PUT/PATCH/DELETE/OPTIONS
-    const bool is_mutation_or_preflight =
-        (method == "POST" || method == "PUT" || method == "PATCH" ||
-         method == "DELETE" || method == "OPTIONS");
-    if (is_mutation_or_preflight && !is_allowed_loopback_origin(origin_header)) {
+    // 2. Any supplied Origin must be this exact HTTP origin. A missing Origin
+    // remains allowed for local CLI clients. Loopback aliases are distinct origins.
+    if (!is_allowed_loopback_origin(origin_header, port)) {
         core::JsonObject err;
         err["ok"] = false;
         err["error"] = "forbidden_origin";
-        err["message"] = "Cross-origin request rejected by loopback Origin allowlist";
+        err["message"] = "Origin must match the HTTP 127.0.0.1 listener origin";
         return make_json_response(403, "Forbidden", core::JsonValue(std::move(err)));
     }
 
     const std::string allowed_origin_echo =
-        (!origin_header.empty() && is_allowed_loopback_origin(origin_header))
+        (!origin_header.empty() && is_allowed_loopback_origin(origin_header, port))
         ? std::string(origin_header)
         : std::string{};
 
@@ -1176,6 +1561,14 @@ HttpResponse StudioServer::route_http(
         pre.content_type = "text/plain; charset=utf-8";
         pre.allow_origin = allowed_origin_echo;
         return pre;
+    }
+
+    if (method != "GET" && !lease_is_current()) {
+        core::JsonObject err;
+        err["ok"] = false;
+        err["error"] = "studio_lease_lost";
+        err["message"] = "The Studio database lease is no longer held by this process";
+        return make_json_response(503, "Service Unavailable", core::JsonValue(std::move(err)));
     }
 
     const std::size_t qmark = raw_target.find('?');
@@ -1337,8 +1730,33 @@ HttpResponse StudioServer::route_http(
             return make_json_response(400, "Bad Request", core::JsonValue(std::move(err)), allowed_origin_echo);
         }
 
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        // Validate admission before circuit controls, idempotency IDs or reservations.
+        std::int64_t estimated_tokens = 4096;
+        if (const auto* value = parsed->find("estimatedTokens")) {
+            const auto checked = value->try_int64();
+            if (!checked || *checked < 64 || *checked > 1000000) {
+                core::JsonObject err{
+                    {"ok", false}, {"error", "invalid_estimated_tokens"},
+                    {"field", "estimatedTokens"},
+                    {"message", "estimatedTokens must be an integer between 64 and 1000000"}
+                };
+                return make_json_response(400, "Bad Request", core::JsonValue(std::move(err)), allowed_origin_echo);
+            }
+            estimated_tokens = *checked;
+        }
 
+        const auto* simulation = parsed->find("simulate");
+        if (simulation && !simulation->is_bool()) {
+            return make_json_response(400, "Bad Request",
+                core::JsonObject{{"ok", false}, {"error", "invalid_simulate"}}, allowed_origin_echo);
+        }
+        const bool simulate = simulation && simulation->as_bool();
+        if (simulate && (parsed->contains("tripCandidate") || parsed->contains("resetCandidate"))) {
+            return make_json_response(400, "Bad Request",
+                core::JsonObject{{"ok", false}, {"error", "simulation_cannot_change_circuit"}}, allowed_origin_echo);
+        }
+
+        std::lock_guard<std::mutex> lock(state_mutex_);
         const std::string trip_cid = parsed->prop_string("tripCandidate", "");
         if (!trip_cid.empty()) {
             (void)router_.trip_circuit(trip_cid, now_ms);
@@ -1351,17 +1769,16 @@ HttpResponse StudioServer::route_http(
         routing::RouteRequestPolicy pol{};
         std::string idem = parsed->prop_string("idempotencyKey", "");
         if (idem.empty()) {
-            ++auto_idem_seq_;
-            idem = "studio-decide-" + std::to_string(now_ms) + "-" + std::to_string(auto_idem_seq_);
+            idem = simulate ? "studio-preview" :
+                "studio-decide-" + std::to_string(now_ms) + "-" + std::to_string(++auto_idem_seq_);
         }
         pol.idempotency_key = idem;
 
-        const std::uint64_t est_total = static_cast<std::uint64_t>(
-            std::max<std::int64_t>(64, parsed->prop_int64("estimatedTokens", 4096))
-        );
+        const auto est_total = static_cast<std::uint64_t>(estimated_tokens);
         pol.estimated_input_tokens = (est_total * 7ULL) / 10ULL;
         pol.estimated_output_tokens = est_total - pol.estimated_input_tokens;
         pol.required_capabilities.streaming = parsed->prop_bool("requireStreaming", true);
+        pol.simulate = simulate;
         pol.privacy_tier = routing::parse_privacy_tier(
             parsed->prop_string("privacyTier", "zero_data_retention")
         );
@@ -1428,6 +1845,7 @@ HttpResponse StudioServer::route_http(
         rec_obj["selectedRoute"] = dec.receipt.selected_candidate_id.has_value()
             ? core::JsonValue(*dec.receipt.selected_candidate_id)
             : core::JsonValue(nullptr);
+        rec_obj["simulated"] = dec.receipt.simulated;
         rec_obj["reservationId"] = dec.receipt.reservation_id.has_value()
             ? core::JsonValue(*dec.receipt.reservation_id)
             : core::JsonValue(nullptr);
@@ -1444,7 +1862,9 @@ HttpResponse StudioServer::route_http(
         out["selectedCandidateId"] = dec.receipt.selected_candidate_id.has_value()
             ? core::JsonValue(*dec.receipt.selected_candidate_id)
             : core::JsonValue(nullptr);
-        out["status"] = dec.ok ? "ROUTED_DETERMINISTIC" : "FENCED_OPERATOR_RECOVERY_REQUIRED";
+        out["status"] = dec.receipt.simulated
+            ? (dec.ok ? "SIMULATED_DETERMINISTIC" : "FENCED_NO_ELIGIBLE_ROUTE")
+            : (dec.ok ? "ROUTED_DETERMINISTIC" : "FENCED_OPERATOR_RECOVERY_REQUIRED");
         out["receipt"] = std::move(rec_obj);
         out["candidates"] = build_router_candidates_json(now_ms);
         return make_json_response(200, "OK", core::JsonValue(std::move(out)), allowed_origin_echo);
@@ -1654,8 +2074,60 @@ HttpResponse StudioServer::route_http(
     }
 
     if (path_part == "/api/sessions" && method == "GET") {
+        std::size_t limit = 50;
+        if (const auto it = query_params.find("limit"); it != query_params.end()) {
+            if (!is_digits_only(it->second)) {
+                return make_json_response(400, "Bad Request", core::JsonValue(core::JsonObject{
+                    {"ok", false}, {"error", "invalid_session_limit"}
+                }), allowed_origin_echo);
+            }
+            const auto parsed_limit = std::strtoul(it->second.c_str(), nullptr, 10);
+            if (parsed_limit == 0 || parsed_limit > 100) {
+                return make_json_response(400, "Bad Request", core::JsonValue(core::JsonObject{
+                    {"ok", false}, {"error", "invalid_session_limit"}
+                }), allowed_origin_echo);
+            }
+            limit = static_cast<std::size_t>(parsed_limit);
+        }
+        std::optional<storage::SessionCursor> cursor;
+        if (const auto it = query_params.find("cursor"); it != query_params.end()) {
+            cursor = decode_session_cursor(it->second);
+            if (!cursor.has_value()) {
+                return make_json_response(400, "Bad Request", core::JsonValue(core::JsonObject{
+                    {"ok", false}, {"error", "invalid_session_cursor"}
+                }), allowed_origin_echo);
+            }
+        }
         std::lock_guard<std::mutex> lock(state_mutex_);
-        return make_json_response(200, "OK", build_sessions_json(now_ms), allowed_origin_echo);
+        return make_json_response(200, "OK", build_sessions_json(now_ms, limit, cursor), allowed_origin_echo);
+    }
+
+    constexpr std::string_view session_prefix = "/api/sessions/";
+    if (method == "GET" && path_part.starts_with(session_prefix)) {
+        const std::string id = url_decode(path_part.substr(session_prefix.size()));
+        if (!valid_session_id(id)) {
+            return make_json_response(400, "Bad Request", core::JsonValue(core::JsonObject{
+                {"ok", false}, {"error", "invalid_session_id"}
+            }), allowed_origin_echo);
+        }
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        const auto session = session_store_->get_session(id);
+        if (!session.has_value()) {
+            return make_json_response(404, "Not Found", core::JsonValue(core::JsonObject{
+                {"ok", false}, {"error", "session_not_found"}
+            }), allowed_origin_echo);
+        }
+        core::JsonObject so;
+        so["id"] = session->id;
+        so["title"] = session->title;
+        so["modelId"] = session->model_id;
+        so["effort"] = session->effort;
+        so["createdAt"] = session->created_at_ms;
+        so["updatedAt"] = session->updated_at_ms;
+        so["revision"] = session->revision;
+        return make_json_response(200, "OK", core::JsonValue(core::JsonObject{
+            {"ok", true}, {"session", std::move(so)}
+        }), allowed_origin_echo);
     }
 
     if (path_part == "/api/sessions/create" && method == "POST") {
@@ -1670,15 +2142,31 @@ HttpResponse StudioServer::route_http(
 
         std::lock_guard<std::mutex> lock(state_mutex_);
         try {
-            const auto created = session_store_->create_session(title, model_id, effort, now_ms);
+            const auto created = session_store_->create_session_if_lease_current(
+                title,
+                model_id,
+                effort,
+                now_ms,
+                lease_owner_id_,
+                lease_pid_,
+                lease_epoch_
+            );
+            if (!created.has_value()) {
+                core::JsonObject err{
+                    {"ok", false},
+                    {"error", "studio_lease_lost"},
+                    {"message", "The Studio database lease was lost before session creation"}
+                };
+                return make_json_response(503, "Service Unavailable", core::JsonValue(std::move(err)), allowed_origin_echo);
+            }
             auto sessions_val = build_sessions_json(now_ms);
             core::JsonObject cobj;
-            cobj["id"] = created.id;
-            cobj["title"] = created.title;
-            cobj["modelId"] = created.model_id;
-            cobj["effort"] = created.effort;
-            cobj["updatedAt"] = created.updated_at_ms;
-            cobj["revision"] = created.revision;
+            cobj["id"] = created->id;
+            cobj["title"] = created->title;
+            cobj["modelId"] = created->model_id;
+            cobj["effort"] = created->effort;
+            cobj["updatedAt"] = created->updated_at_ms;
+            cobj["revision"] = created->revision;
             sessions_val.as_object()["session"] = std::move(cobj);
             return make_json_response(200, "OK", sessions_val, allowed_origin_echo);
         } catch (const std::exception& ex) {
@@ -1775,6 +2263,7 @@ core::JsonValue StudioServer::build_health_json() const {
 #endif
     obj["skillCount"] = static_cast<std::uint64_t>(skills_.size());
     obj["peerCount"] = static_cast<std::uint64_t>(peer_mesh_.agents().size());
+    obj["demoMode"] = config_.demo_mode;
     return core::JsonValue(std::move(obj));
 }
 
@@ -1916,6 +2405,7 @@ core::JsonValue StudioServer::build_router_candidates_json(std::int64_t now_ms) 
                               : 0ULL)
             : core::JsonValue(nullptr);
         co["reserveTokens"] = s.quota.emergency_reserve_tokens;
+        co["concurrentReservations"] = s.concurrent_reservations;
         co["ewmaMs"] = static_cast<std::int64_t>(std::llround(s.ewma_latency_ms.value_or(0.0)));
         co["p95Ms"] = s.p95_latency_ms().value_or(0ULL);
         co["errorRate"] = err_rate;
@@ -1968,8 +2458,12 @@ core::JsonValue StudioServer::build_memory_json() const {
     return core::JsonValue(std::move(out));
 }
 
-core::JsonValue StudioServer::build_sessions_json(std::int64_t now_ms) const {
-    const auto page = session_store_->list_sessions_page(50);
+core::JsonValue StudioServer::build_sessions_json(
+    std::int64_t now_ms,
+    std::size_t limit,
+    std::optional<storage::SessionCursor> cursor
+) const {
+    const auto page = session_store_->list_sessions_page(limit, std::move(cursor));
     core::JsonArray sarr;
     for (const auto& s : page.items) {
         core::JsonObject so;
@@ -1985,6 +2479,10 @@ core::JsonValue StudioServer::build_sessions_json(std::int64_t now_ms) const {
     core::JsonObject out;
     out["ok"] = true;
     out["sessions"] = std::move(sarr);
+    out["totalCount"] = static_cast<std::uint64_t>(page.total_count);
+    out["nextCursor"] = page.next_cursor.has_value()
+        ? core::JsonValue(encode_session_cursor(*page.next_cursor))
+        : core::JsonValue(nullptr);
     const auto lease = session_store_->active_lease(now_ms);
     if (lease.has_value()) {
         core::JsonObject lo;

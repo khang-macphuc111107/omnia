@@ -8,12 +8,12 @@
 
 namespace {
 
-omnia::studio::StudioServer* g_active_server = nullptr;
+volatile std::sig_atomic_t g_stop_requested = 0;
 
 void handle_signal(int) noexcept {
-    if (g_active_server != nullptr) {
-        g_active_server->stop();
-    }
+    // Signal handlers may only touch lock-free signal state. Lifecycle
+    // teardown (Winsock, threads and SQLite) runs on the main thread below.
+    g_stop_requested = 1;
 }
 
 } // namespace
@@ -32,13 +32,15 @@ int main(int argc, char* argv[]) {
             cfg.db_path = argv[++i];
         } else if (arg == "--skills-root" && i + 1 < argc) {
             cfg.skills_root = std::filesystem::path(argv[++i]);
+        } else if (arg == "--demo") {
+            cfg.demo_mode = true;
         } else if (arg == "--open-window") {
             cfg.open_window = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout
                 << "Omnia Native C++20 Studio Desktop & API Host\n"
                 << "Usage: omnia-studio [--port 8787] [--ui-root <path>] "
-                << "[--db <sqlite-path>] [--skills-root <path>] [--open-window]\n";
+                << "[--db <sqlite-path>] [--skills-root <path>] [--demo] [--open-window]\n";
             return 0;
         }
     }
@@ -58,7 +60,6 @@ int main(int argc, char* argv[]) {
 
     try {
         omnia::studio::StudioServer server(std::move(cfg));
-        g_active_server = &server;
         std::signal(SIGINT, handle_signal);
         std::signal(SIGTERM, handle_signal);
 
@@ -68,10 +69,10 @@ int main(int argc, char* argv[]) {
             << server.bound_port() << "\n"
             << std::flush;
 
-        while (server.is_running()) {
+        while (server.is_running() && g_stop_requested == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        g_active_server = nullptr;
+        server.stop();
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[omnia-studio] Fatal error: " << ex.what() << "\n";

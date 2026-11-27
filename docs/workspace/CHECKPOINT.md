@@ -1,6 +1,58 @@
-# Omnia checkpoint — 2026-11-12, continuation revision 10 (Wave 4 Full Native C++20, Flagship Studio UI & C:/D: Deep Clean)
+# Omnia checkpoint — audit continuation 2026-11-21
+
+## Current continuation — simulation and deadline repair
+
+The current dirty snapshot retains the earlier scoped repairs and now has a
+side-effect-free router simulation path. C++ and HTTP regressions verify the
+`SIMULATED_DETERMINISTIC` response, null reservation, zero reserved tokens,
+sequence `0`, repeated-call state invariance, fallback deadline inheritance and
+dispatch-time expiry fencing. The routing UI recognizes the simulation status,
+uses a no-reservation toast, and its API comments match the server contract.
+Simulation cannot be combined with circuit trip/reset controls; fallback
+region/provider/model intersections reject disjoint scopes.
+
+Fresh external verification: Release MSVC/Ninja build; unified CTest **35/35**;
+UI syntax **48/48**; UI tests **118/118**; history sync **7/7**; `git diff
+--check`; tracked EOL scan `0` CRLF. Evidence is bound to
+`%TEMP%/omnia-audit-current-56cc8c93cf594fe69976a982882e1da1`.
+
+The snapshot remains uncommitted and is not a zero-defect or production-ready
+claim. AUD-01..05, AUD-08, AUD-10..13, AUD-18/19 and AUD-24/25 remain open;
+AUD-09 is `REPAIRED_SCOPED`, while AUD-14..17 require their existing lifecycle
+and provider follow-through. PowerShell 7/native QA and browser/CDP evidence
+are unavailable in this environment.
+
+## Current continuation — AUD-07/AUD-17 scoped repairs
+
+On the current dirty snapshot, AUD-07 and AUD-17 are `REPAIRED_SCOPED`. Studio request handling now uses an owned bounded worker queue; shutdown closes the listener and active client sockets, wakes workers, and joins every worker before returning. HTTP framing now rejects malformed request lines and headers, duplicate or invalid `Content-Length`, unsupported transfer encoding, incomplete requests, oversized headers (16 KiB) and oversized bodies (1 MiB) before routing. The slow-client shutdown regression and framing negatives live in `cpp/tests/test_studio_http.cpp`; the unified Release run passed 35/35 CTest cases. Evidence is `%TEMP%/omnia-server-repair-20261115-w6yua3fq/full-35-green.json` plus the authority/framing receipts in the same directory.
+
+These are scoped repairs on an uncommitted working tree, not independent audit closure. AUD-01..05, AUD-08..16, AUD-18/19 and AUD-24/25 remain unresolved. The next implementation seam is AUD-08 lease identity, heartbeat, release and epoch fencing; native provider/SSE/history/secret delivery and router lifecycle remain release blockers. Preserved dirty and untracked artifacts, six UI CRLF files, browser/CDP limits and PowerShell 7 limits remain unchanged.
 
 ## Resume here
+
+## Codebase audit continuation — 2026-11-15
+
+Current workspace: `G:/AI/omnia`, branch `master`, HEAD `d5536ecd1381e45f16146406d70f13584fdf0d4f`, plus preserved pre-existing UI/governance changes. The user request remains a codebase audit with bugs, fixes and upgrade directions; repeated continuation messages preserve this scope. No product source, tests, Git index, commit or remote was changed by this documentation batch. The owning deliverables are [CODEBASE_AUDIT_20261114.md](CODEBASE_AUDIT_20261114.md) and [CODEBASE_ROADMAP_20261114.md](CODEBASE_ROADMAP_20261114.md).
+
+**Verified:** the final probe baseline's 135 source hashes match the current tree. Retained core/HTTP/history receipts confirm AUD-26..32: path aliases bypass ownership, reactivation skips overlap validation, a nonrecipient can reply, invalid JSON token budgets receive reservations, excluded histories enter CLI FTS, grown trajectories retain stale FTS, and Studio exposes only 50 sessions without detail lookup. The audit owns receipt hashes, symbol/line references, impact and regression criteria. AUD-19 now explicitly recognizes MemoryGraph's mutex; its retention issue is separate from PeerMesh/Graphify's synchronization-contract risk.
+
+**Partial:** prior scoped checks passed unified Release build, 35/35 CTest, 48/48 UI syntax, 99/99 UI tests, 5/5 history-sync tests and 13/13 skill structural checks. The retained five secret-scan receipts cover 180 files with zero pattern findings, correcting an earlier unsupported 217-file total. These are historical checks within this audit, not new test runs or proof that the reported defects are repaired. UI probes cover AUD-20..22; AUD-23 remains a source finding and AUD-24/25 remain product/design gaps.
+
+Fresh documentation checks passed on 2026-11-15: five secret scans (180 files, zero findings), 13/13 skill doctor checks, diff/cached-diff checks and UTF-8/LF/control-character preservation for the three edited documents. Their local links resolve, AUD IDs are sequential 01..32, roadmap phases are 0..7, and the source comparison found no product or preserved-artifact changes. `verification.json` in the documentation receipt directory binds exact hashes; no new build/runtime result is claimed.
+
+**Unresolved:** all applicable AUD-01..32 findings remain open, with shared causes and design gaps distinguished. Regression tests and repairs have not been committed. Six new UI files still have CRLF. `Microsoft/Windows/PowerShell/ModuleAnalysisCache` (8,246 bytes), literal filename ``nul`r`ncl`` (551 bytes) and ignored `router-probe.obj` (279,954 bytes) remain preserved; classify ownership/recovery before cleanup. The broader GOAL/PRODUCT/DOD backlog is unchanged.
+
+**Blocked:** this environment has no usable `pwsh` command for the required PowerShell 7 workflows. Browser/CDP qualification remains unavailable: the final Edge headless probe exited 2147483651 with zero DOM bytes. Exporter fixture runs previously hit sandbox EPERM errors; they do not establish exporter product defects. These environment limits do not block the documentation handoff or focused implementation work.
+
+**Next:** begin the roadmap's implementation batch by turning AUD-29 and AUD-26..28 probes into failing core/graph/HTTP tests, then repair numeric admission and graph authorization. Follow with exclusion-safe FTS refresh and session cursor/detail access (AUD-30..32), retaining AUD-20's stale-response fence. Existing persistence/origin/worker, native provider, router and UI transport release blockers remain required. Serialize external builds; after product changes run focused regressions and the applicable broad suites, then obtain fresh browser/native and independent audit evidence.
+
+**Exact practical limits:** 32 audit IDs are not 32 distinct reproduced bugs. No exhaustive source/history coverage, real-provider success, browser/IME/Narrator pass or zero-defect claim is made. The 2026-11-12 frozen-snapshot audits and `SESSION_ADMISSION.json` READY record below are historical and do not certify this dirty snapshot. The current whole-goal clean-audit streak is not established by this continuation.
+
+External evidence: `%TEMP%/omnia-audit-final-20261115-8IjY2A/` owns final core/history/HTTP/browser probes; `%TEMP%/omnia-audit-20261115-kl34dggm/` owns the earlier skill/secret/UI/history receipts. `%TEMP%/omnia-audit-docs-20261115-qjbf4ffp/` owns documentation before-bytes, source comparisons, commands and final verification. Only the audit, roadmap and this checkpoint are owned outputs of this batch; restore their before-bytes if this documentation update must be rolled back.
+
+## Historical continuation and Wave 4 receipts — 2026-11-12
+
+The following records retain their original snapshot, host and verification boundaries. Use the current resume block above for this audit's next action.
 
 - Goal `OMNIA-ROOT-CLEAN-2026-11-11` remains **ACTIVE**. Read [GOAL.md](GOAL.md)
   for the objective, 16 parent tasks, 12 product leaves and seven chat-admission

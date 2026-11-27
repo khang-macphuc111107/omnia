@@ -1,447 +1,255 @@
-/* ==========================================================================
-   OMNIA STUDIO — PRECISION SPATIAL LAYOUT & ZERO-OVERFLOW GRID
-   Verified invariants:
-   - 0 px horizontal overflow at 1024x768, 1220x820, 1440x900+
-   - 0 px bottom status-bar clipping (strict 3-row 100dvh grid)
-   ========================================================================== */
+/* Omnia Studio UI — layout
+   App frame (sidebar, main, panels) and responsive behaviour.
+   Source of truth: the "Omnia Studio — UI Rebuild" design canvas (omnia-ui.css). Keep both in sync. */
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+/* ---------- 13. App frame ---------- */
+.omnia .app { display: flex; min-width: 0; background: var(--bg); }
+.omnia .sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: var(--sidebar-w);
+  padding: var(--sp-3);
+  background: var(--surface-1);
+  border-right: 1px solid var(--line-1);
+  min-width: 0;
 }
+.omnia .sidebar__footer { margin-top: auto; display: flex; flex-direction: column; gap: var(--sp-2); padding-top: var(--sp-3); border-top: 1px solid var(--line-1); }
+.omnia .brand { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 var(--sp-1); color: var(--text-1); font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: -0.01em; text-decoration: none; }
+.omnia .brand__mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: var(--r-2); background: var(--accent-soft); color: var(--accent-text); }
+.omnia .brand__tag { font-family: var(--font-ui); font-size: var(--fs-xs); font-weight: 500; color: var(--text-3); }
 
-html,
-body {
-  margin: 0;
-  padding: 0;
+.omnia .nav { display: flex; flex-direction: column; gap: 2px; }
+.omnia .nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
   width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background-color: var(--bg-canvas);
-  color: var(--ink-primary);
-  font-family: var(--font-sans);
-  font-size: 16px;
-  line-height: var(--leading-normal);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  height: 34px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  text-align: left;
+  text-decoration: none;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
+.omnia .nav-item:hover { background: var(--surface-3); color: var(--text-1); }
+.omnia .nav-item[aria-current="page"] { background: var(--surface-4); color: var(--text-1); }
+.omnia .nav-item[aria-current="page"] .icon { color: var(--accent-text); }
+.omnia .nav-item .kbd { margin-left: auto; opacity: 0; transition: opacity var(--dur-1) var(--ease-out); }
+.omnia .nav-item:hover .kbd,
+.omnia .nav-item:focus-visible .kbd { opacity: 1; }
 
-.tabular,
-code,
-pre,
-.mono {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-
-/* --- Master 3-Row Non-Clipping Studio Frame --- */
-.studio-shell {
-  display: grid;
-  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--footer-h);
+.omnia .session-list { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; }
+.omnia .session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   width: 100%;
-  max-width: 100vw;
+  padding: 7px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  text-decoration: none;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.omnia .session-item:hover { background: var(--surface-3); color: var(--text-1); }
+.omnia .session-item[aria-current="true"],
+.omnia .session-item[aria-current="page"] { background: var(--surface-4); color: var(--text-1); }
+.omnia .session-item__title { font-size: var(--fs-sm); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.omnia .session-item__meta { font-size: var(--fs-xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.omnia .conn { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--text-2); min-width: 0; }
+.omnia .conn__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.omnia .conn--connecting .conn__dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.omnia .conn--offline .conn__dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+
+.omnia .main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
+.omnia .topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: var(--topbar-h);
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line-1);
+  background: var(--bg);
+  min-width: 0;
+  flex: none;
+}
+.omnia .topbar__title { font-size: var(--fs-md); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.omnia .page { display: flex; flex-direction: column; gap: var(--sp-6); padding: var(--sp-6) var(--sp-8); min-width: 0; }
+.omnia .page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; }
+.omnia .page-title { font-family: var(--font-display); font-size: var(--fs-2xl); font-weight: 600; letter-spacing: -0.01em; line-height: var(--lh-tight); }
+.omnia .page-sub { margin-top: 6px; font-size: var(--fs-sm); color: var(--text-2); }
+
+.omnia .panel { display: flex; flex-direction: column; width: var(--panel-w); background: var(--surface-1); border-left: 1px solid var(--line-1); min-width: 0; min-height: 0; }
+.omnia .panel__header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); height: var(--topbar-h); padding: 0 var(--sp-2) 0 var(--sp-4); border-bottom: 1px solid var(--line-1); flex: none; }
+.omnia .panel__title { font-size: var(--fs-md); font-weight: 600; }
+.omnia .panel__section { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-bottom: 1px solid var(--line-1); }
+
+.omnia .disclosure { border-bottom: 1px solid var(--line-1); }
+.omnia .disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 44px;
+  padding: 0 var(--sp-4);
+  list-style: none;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-1);
+}
+.omnia .disclosure > summary::-webkit-details-marker { display: none; }
+.omnia .disclosure > summary .chev { color: var(--text-3); transition: transform var(--dur-2) var(--ease-out); }
+.omnia .disclosure[open] > summary .chev { transform: rotate(90deg); }
+.omnia .disclosure__body { display: flex; flex-direction: column; gap: var(--sp-3); padding: 0 var(--sp-4) var(--sp-4); }
+
+/* ---------- 16. Layout helpers & responsive ---------- */
+.omnia .fill { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.omnia .scroll { overflow: auto; min-height: 0; }
+.omnia .app-body { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
+.omnia .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+@media (max-width: 1100px) {
+  .omnia .hide-md { display: none !important; }
+}
+
+@media (max-width: 760px) {
+  .omnia .hide-sm { display: none !important; }
+  .omnia .sidebar { width: 100%; border-right: 0; border-bottom: 1px solid var(--line-1); }
+  .omnia .page { padding: var(--sp-4); }
+}
+
+/* ---------- 21. Production shell ----------
+   <div id="omnia-app" class="shell"> holds the sidebar and the routed view.
+   html[data-sidebar] = "expanded" | "rail" | "drawer" is set by app/core/shell.js. */
+.omnia .shell {
+  display: flex;
   height: 100dvh;
-  overflow: hidden;
-  background-color: var(--bg-canvas);
-}
-
-/* --- Row 1: Top Architectural Telemetry Header --- */
-.studio-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 0 var(--space-3);
-  background-color: var(--bg-rail);
-  border-bottom: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-panel);
-  min-width: 0;
-  z-index: 20;
-}
-
-.header-brand-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  flex-shrink: 0;
-}
-
-.header-center-telemetry {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-}
-
-.header-actions-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-shrink: 0;
-}
-
-/* --- Row 2: Rail + Active View Stage --- */
-.studio-body {
-  display: grid;
-  grid-template-columns: var(--rail-w) minmax(0, 1fr);
-  min-width: 0;
   min-height: 0;
-  overflow: hidden;
-  transition: grid-template-columns var(--dur-normal) var(--ease-atelier);
+  background: var(--bg);
 }
 
-.studio-shell.rail-collapsed .studio-body {
-  grid-template-columns: var(--rail-collapsed-w) minmax(0, 1fr);
-}
-
-/* --- Left Navigation & Session Rail --- */
-.studio-rail {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  background-color: var(--bg-rail);
-  border-right: 1px solid var(--border-subtle);
-  min-width: 0;
-  min-height: 0;
-  overflow-y: auto;
+.omnia .shell > .sidebar {
+  flex: none;
+  height: 100%;
   overflow-x: hidden;
-  padding: var(--space-2);
-  gap: var(--space-3);
+  overflow-y: auto;
+  transition: width var(--dur-3) var(--ease-out);
 }
 
-.rail-nav-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+.omnia .shell > .main {
+  height: 100%;
+  overflow: hidden;
+  view-transition-name: omnia-main;
 }
 
-.rail-sessions-section {
+.omnia .shell > .main:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* A routed view fills .main: topbar + body. */
+.omnia .view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  border-top: 1px solid var(--border-subtle);
-  padding-top: var(--space-3);
-  min-height: 0;
   flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
-.studio-shell.rail-collapsed .rail-label-text,
-.studio-shell.rail-collapsed .rail-shortcut,
-.studio-shell.rail-collapsed .rail-sessions-section,
-.studio-shell.rail-collapsed .rail-footer-meta {
+.omnia .view__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Rail: icons only. Elements marked .rail-hide disappear, labels become tooltips. */
+.omnia .sidebar .rail-only {
   display: none;
 }
 
-/* --- Main Stage & View Panels --- */
-.studio-stage {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background-color: var(--bg-canvas);
-}
-
-.studio-view {
-  display: none;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.studio-view.is-active {
-  display: grid;
-}
-
-/* --- View 1: Chat + Composer + Steer Queue Dock --- */
-.view-chat-grid {
-  grid-template-columns: minmax(0, 1fr) 316px;
-  grid-template-rows: minmax(0, 1fr);
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
-.chat-primary-column {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  min-width: 0;
-  min-height: 0;
-  border-right: 1px solid var(--border-subtle);
-}
-
-.chat-stream-scroll {
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-4) var(--space-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-height: 0;
-  min-width: 0;
-}
-
-.chat-composer-dock {
-  background-color: var(--bg-panel);
-  border-top: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-panel);
-  padding: var(--space-2) var(--space-4) var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-  max-height: 48dvh;
-  overflow-y: auto;
-}
-
-.chat-steer-dock {
-  background-color: var(--bg-rail);
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-3);
-  gap: var(--space-3);
-}
-
-/* --- View 2: PeerMeshGraph + Graphify Canvas --- */
-.view-graph-grid {
-  grid-template-columns: minmax(0, 1fr) 356px;
-  grid-template-rows: auto minmax(0, 1fr);
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
-.graph-topbar {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  background-color: var(--bg-panel);
-  border-bottom: 1px solid var(--border-subtle);
-  min-width: 0;
-}
-
-.graph-canvas-stage {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background-color: var(--bg-canvas);
-  border-right: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-}
-
-.graph-inspector-rail {
-  background-color: var(--bg-rail);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-  min-height: 0;
-}
-
-/* --- View 3: Dynamic Provider Router Lab --- */
-.view-router-grid {
-  grid-template-columns: 320px minmax(0, 1fr);
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
-.router-controls-pane {
-  background-color: var(--bg-rail);
-  border-right: 1px solid var(--border-subtle);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-  min-height: 0;
-}
-
-.router-results-pane {
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
-  min-height: 0;
-}
-
-/* --- View 4: Native C++20 Architecture & Proactive RAG --- */
-.view-cpp-rag-grid {
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
-.cpp-arch-pane {
-  border-right: 1px solid var(--border-subtle);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-  min-height: 0;
-}
-
-.rag-studio-pane {
-  background-color: var(--bg-rail);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-  min-height: 0;
-}
-
-/* --- View 5: MemoryGraph & Curated Skill Vault --- */
-.view-memory-grid {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
-.memory-pane {
-  border-right: 1px solid var(--border-subtle);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-  min-height: 0;
-}
-
-.skills-pane {
-  background-color: var(--bg-rail);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-  min-height: 0;
-}
-
-/* --- Row 3: Bottom Unclipped Studio Telemetry & UIA Bar --- */
-.studio-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 0 var(--space-3);
-  background-color: var(--bg-rail);
-  border-top: 1px solid var(--border-subtle);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  color: var(--ink-secondary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  min-width: 0;
-  z-index: 20;
-}
-
-.footer-segment {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-width: 0;
-  overflow: hidden;
-}
-
-.footer-item {
+.omnia[data-sidebar="rail"] .sidebar .rail-only {
   display: inline-flex;
+}
+
+.omnia[data-sidebar="rail"] .shell > .sidebar {
+  width: var(--sidebar-rail-w);
+  padding: var(--sp-3) var(--sp-2);
   align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-/* --- Responsive Breakpoints (1220x820 and 1024x768 Zero-Overflow Guards) --- */
-@media (max-width: 1260px) {
-  :root {
-    --rail-w: 192px;
+.omnia[data-sidebar="rail"] .sidebar .rail-hide {
+  display: none !important;
+}
+
+.omnia[data-sidebar="rail"] .sidebar .nav-item,
+.omnia[data-sidebar="rail"] .sidebar .btn--block {
+  justify-content: center;
+  width: 40px;
+  padding: 0;
+}
+
+.omnia[data-sidebar="rail"] .sidebar .sidebar__footer {
+  align-items: center;
+}
+
+/* Route changes animate only the main column (View Transitions API). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-old(omnia-main) {
+  animation: omnia-vt-out 150ms var(--ease-in-out) both;
+}
+
+::view-transition-new(omnia-main) {
+  animation: omnia-vt-in 340ms var(--ease-out) both;
+}
+
+/* Drawer: below 1100px the expanded sidebar floats over the content. */
+.omnia .drawer-scrim {
+  display: none;
+}
+
+@media (max-width: 1099px) {
+  .omnia[data-sidebar="drawer"] .shell > .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 45;
+    width: min(300px, 86vw);
+    box-shadow: var(--shadow-dialog);
+    animation: omnia-slide-in-left var(--dur-3) var(--ease-out) both;
   }
 
-  .view-chat-grid {
-    grid-template-columns: minmax(0, 1fr) 276px;
-  }
-
-  .view-graph-grid {
-    grid-template-columns: minmax(0, 1fr) 316px;
-  }
-
-  .view-router-grid {
-    grid-template-columns: 284px minmax(0, 1fr);
+  .omnia[data-sidebar="drawer"] .drawer-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 44;
+    background: var(--overlay);
+    animation: omnia-fade-in var(--dur-2) var(--ease-out) both;
   }
 }
 
-@media (max-width: 1120px) {
-  .studio-body {
-    grid-template-columns: var(--rail-collapsed-w) minmax(0, 1fr);
-  }
-
-  .studio-rail .rail-label-text,
-  .studio-rail .rail-shortcut,
-  .studio-rail .rail-sessions-section,
-  .studio-rail .rail-footer-meta {
-    display: none;
-  }
-
-  .view-chat-grid {
-    grid-template-columns: minmax(0, 1fr) 256px;
-  }
-
-  .view-graph-grid {
-    grid-template-columns: minmax(0, 1fr) 292px;
-  }
-
-  .view-router-grid {
-    grid-template-columns: 260px minmax(0, 1fr);
-  }
-
-  .header-telemetry-detail-extra {
-    display: none;
-  }
-}
-
-@media (max-width: 960px) {
-  .view-chat-grid,
-  .view-graph-grid,
-  .view-router-grid,
-  .view-cpp-rag-grid,
-  .view-memory-grid {
-    grid-template-columns: minmax(0, 1fr);
-    overflow-y: auto;
+/* Side panels (inspector) become overlays on narrow windows. */
+@media (max-width: 1279px) {
+  .omnia .panel--overlay {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    max-width: 92vw;
+    box-shadow: var(--shadow-dialog);
+    animation: omnia-slide-in-right var(--dur-3) var(--ease-out) both;
   }
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -235,10 +236,20 @@ struct RouteRequestPolicy {
     std::vector<std::string> preferred_candidate_ids;
     FallbackScope fallback_scope = FallbackScope::SamePrivacyBoundary;
     bool cancelled = false;
+    // A simulation computes the same deterministic scores without consuming
+    // quota, concurrency or circuit probe state.
+    bool simulate = false;
 
-    std::uint64_t estimated_total_tokens() const noexcept {
+    std::optional<std::uint64_t> try_estimated_total_tokens() const noexcept {
+        if (estimated_input_tokens > std::numeric_limits<std::uint64_t>::max() - estimated_output_tokens) {
+            return std::nullopt;
+        }
         const std::uint64_t sum = estimated_input_tokens + estimated_output_tokens;
         return sum == 0 ? 1 : sum;
+    }
+
+    std::uint64_t estimated_total_tokens() const noexcept {
+        return try_estimated_total_tokens().value_or(UINT64_MAX);
     }
 };
 
@@ -282,9 +293,18 @@ struct ReservationGrant {
     std::string pricing_version;
     std::uint64_t candidate_epoch = 1;
     PrivacyTier policy_privacy_tier = PrivacyTier::ZeroDataRetention;
+    std::string policy_auth_boundary = "workspace:default";
+    ModelCapabilities policy_required_capabilities{};
+    std::vector<std::string> policy_allowed_regions;
+    std::vector<std::string> policy_allowed_providers;
+    std::vector<std::string> policy_allowed_models;
+    std::vector<std::string> policy_forbidden_providers;
+    std::vector<std::string> policy_forbidden_models;
+    std::optional<std::uint32_t> policy_max_retention_hours;
     ReservationStatus status = ReservationStatus::ReservedNotDispatched;
     std::optional<std::string> active_attempt_id;
     bool half_open_probe = false;
+    std::optional<std::int64_t> deadline_ms;
     std::int64_t created_at_ms = 0;
     std::int64_t updated_at_ms = 0;
 };
@@ -305,6 +325,7 @@ struct RouteDecisionReceipt {
     std::optional<std::int64_t> deadline_ms;
     std::int64_t decided_at_ms = 0;
     bool is_fallback = false;
+    bool simulated = false;
     std::optional<std::string> parent_reservation_id;
 };
 

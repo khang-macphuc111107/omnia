@@ -79,14 +79,11 @@ public:
         return fallback;
     }
 
+    // Accept only finite, integral values representable in int64_t.
+    std::optional<std::int64_t> try_int64() const noexcept;
+
     std::int64_t as_int64(std::int64_t fallback = 0) const noexcept {
-        if (const auto* p = std::get_if<std::int64_t>(&storage_)) {
-            return *p;
-        }
-        if (const auto* d = std::get_if<double>(&storage_)) {
-            return static_cast<std::int64_t>(*d);
-        }
-        return fallback;
+        return try_int64().value_or(fallback);
     }
 
     double as_double(double fallback = 0.0) const noexcept {

@@ -1,126 +1,221 @@
-/* ==========================================================================
-   OMNIA STUDIO — OBSIDIAN KINETIC ATELIER
-   Design Token Architecture (Primitive -> Semantic -> Component)
-   Zero External Fonts / Zero Gradients / Zero Backdrop-Blur
-   WCAG 2.2 AA/AAA Verified (>= 5.12:1 across all semantic text/accent pairs)
-   ========================================================================== */
+/* Omnia Studio UI — tokens
+   Design tokens: dark (default), light, compact density, reduced motion.
+   Source of truth: the "Omnia Studio — UI Rebuild" design canvas (omnia-ui.css). Keep both in sync. */
 
-:root {
-  /* --- Typography Scale & Stacks (100% Native OS Zero-CDN) --- */
-  --font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SFMono-Regular", ui-monospace, monospace;
-  --font-math: "Cambria Math", "STIX Two Math", Cambria, "Times New Roman", Georgia, serif;
-
-  --text-2xs: 0.6875rem;   /* 11px — telemetry labels, uppercase micro-headers */
-  --text-xs: 0.75rem;      /* 12px — badges, hashes, tabular metrics */
-  --text-sm: 0.8125rem;    /* 13px — compact studio controls & tables */
-  --text-base: 0.875rem;   /* 14px — primary studio interface copy */
-  --text-md: 0.9375rem;    /* 15px — chat & derivation prose */
-  --text-lg: 1.0625rem;    /* 17px — panel titles */
-  --text-xl: 1.25rem;      /* 20px — view headers */
-  --text-2xl: 1.5rem;      /* 24px — key telemetry readouts */
-
-  --leading-tight: 1.25;
-  --leading-snug: 1.4;
-  --leading-normal: 1.55;
-  --leading-relaxed: 1.65;
-
-  /* --- 4px Architectural Spacing Grid --- */
-  --space-0: 0px;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-10: 40px;
-
-  /* --- Precision Chamfers & Radii (Zero Pill Slop) --- */
-  --radius-xs: 2px;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-
-  /* --- Structural Geometry & Hit Targets --- */
-  --header-h: 48px;
-  --footer-h: 28px;
-  --rail-w: 224px;
-  --rail-collapsed-w: 56px;
-  --hit-min: 32px;
-  --focus-width: 2px;
-
-  /* --- Deterministic Studio Motion --- */
-  --ease-atelier: cubic-bezier(0.2, 0, 0, 1);
-  --dur-instant: 70ms;
-  --dur-fast: 120ms;
-  --dur-normal: 180ms;
-
-  /* --- Default Theme: Obsidian Atelier (Dark Flagship) --- */
+/* ---------- 1. Tokens: dark (default) ---------- */
+.omnia {
   color-scheme: dark;
 
-  --bg-canvas: #080A0F;
-  --bg-rail: #0C0F16;
-  --bg-panel: #111621;
-  --bg-elevated: #171E2C;
-  --bg-interactive: #1D2638;
-  --bg-hover: #232E44;
-  --bg-active: #293753;
-  --bg-code: #0A0D14;
-  --bg-scrim: rgba(4, 6, 10, 0.78);
+  --bg: #0E0F11;
+  --surface-1: #131417;
+  --surface-2: #18191D;
+  --surface-3: #1F2025;
+  --surface-4: #26282E;
+  --surface-pop: #1F2025;
+  --code-bg: #0E0F11;
+  --overlay: rgba(6, 7, 9, 0.64);
 
-  --border-subtle: rgba(255, 255, 255, 0.075);
-  --border-strong: rgba(255, 255, 255, 0.145);
-  --border-specular: rgba(255, 255, 255, 0.12);
-  --border-active: rgba(240, 180, 76, 0.55);
+  --line-1: #222328;
+  --line-2: #2B2D33;
+  --line-3: #3A3C44;
 
-  --ink-primary: #F2F5FA;     /* 18.12:1 on canvas, 15.27:1 on elevated (AAA) */
-  --ink-secondary: #C3CDDE;   /* 12.36:1 on canvas, 10.42:1 on elevated (AAA) */
-  --ink-muted: #8E9BB2;       /* 7.05:1 on canvas, 5.94:1 on elevated (AA+) */
-  --ink-on-accent: #080A0F;   /* 10.69:1 on #F0B44C (AAA) */
+  --text-1: #EDEDEF;
+  --text-2: #B6B7BE;
+  --text-3: #8C8E97;
+  --text-4: #6B6D75;
 
-  --accent-amber: #F0B44C;    /* 9.01:1 min across all surfaces */
-  --accent-amber-tint: rgba(240, 180, 76, 0.12);
-  --accent-amber-border: rgba(240, 180, 76, 0.36);
+  --accent: #F2A93B;
+  --accent-hover: #F7B858;
+  --accent-press: #E2982A;
+  --accent-text: #F2A93B;
+  --on-accent: #1B1203;
+  --accent-soft: rgba(242, 169, 59, 0.13);
+  --accent-line: rgba(242, 169, 59, 0.42);
 
-  --accent-cyan: #38BDF8;     /* 7.79:1 min across all surfaces */
-  --accent-cyan-tint: rgba(56, 189, 248, 0.12);
-  --accent-cyan-border: rgba(56, 189, 248, 0.36);
+  --ok: #45C08A;
+  --ok-soft: rgba(69, 192, 138, 0.12);
+  --ok-line: rgba(69, 192, 138, 0.36);
+  --warn: #D8B649;
+  --warn-soft: rgba(216, 182, 73, 0.12);
+  --warn-line: rgba(216, 182, 73, 0.36);
+  --danger: #EF6F6F;
+  --danger-soft: rgba(239, 111, 111, 0.12);
+  --danger-line: rgba(239, 111, 111, 0.38);
+  --on-danger: #1A0606;
+  --info: #78A9F0;
+  --info-soft: rgba(120, 169, 240, 0.12);
+  --info-line: rgba(120, 169, 240, 0.36);
 
-  --status-emerald: #34D399;  /* 8.68:1 min across all surfaces */
-  --status-emerald-tint: rgba(52, 211, 153, 0.12);
-  --status-emerald-border: rgba(52, 211, 153, 0.36);
+  --focus: #F2A93B;
 
-  --status-coral: #FB7185;    /* 6.20:1 min across all surfaces */
-  --status-coral-tint: rgba(251, 113, 133, 0.12);
-  --status-coral-border: rgba(251, 113, 133, 0.38);
+  /* Data series: a warm ramp plus neutrals — restrained, never a rainbow. */
+  --viz-1: #F8D99E;
+  --viz-2: #F2A93B;
+  --viz-3: #D7862C;
+  --viz-4: #B6B7BE;
+  --viz-5: #7E818B;
 
-  --focus-ring: #38BDF8;
-  --shadow-panel: 0 1px 0 var(--border-specular) inset;
-  --shadow-modal: 0 18px 42px rgba(0, 0, 0, 0.62), 0 1px 0 var(--border-specular) inset;
+  --syn-kw: #F2A93B;
+  --syn-type: #6CB4FF;
+  --syn-str: #3FCF8E;
+  --syn-num: #FF8F8F;
+  --syn-cmt: #8C8E97;
+  --syn-fn: #E8C547;
+  --syn-pre: #B6B7BE;
 
-  /* --- Syntax Highlighting Tokens (Zero-CDN C++20 Tokenizer) --- */
-  --syn-kw: #F0B44C;
-  --syn-type: #38BDF8;
-  --syn-str: #34D399;
-  --syn-num: #FB7185;
-  --syn-cmt: #8E9BB2;
-  --syn-fn: #E2E8F0;
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.48), 0 0 0 1px var(--line-2);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.56), 0 0 0 1px var(--line-2);
 
-  /* --- Canvas Graph Palette --- */
-  --graph-grid: rgba(255, 255, 255, 0.035);
-  --graph-arc: rgba(195, 205, 222, 0.24);
-  --graph-arc-active: #38BDF8;
-  --graph-particle: #F0B44C;
-  --graph-node-fill: #111621;
-  --graph-node-stroke: rgba(255, 255, 255, 0.22);
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  --font-math: "Cambria Math", "STIX Two Math", "Latin Modern Math", Cambria, "Times New Roman", serif;
+
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --fs-3xl: 28px;
+  --lh-tight: 1.25;
+  --lh-ui: 1.45;
+  --lh-prose: 1.65;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  --r-1: 4px;
+  --r-2: 6px;
+  --r-3: 10px;
+  --r-4: 14px;
+
+  --h-sm: 28px;
+  --h-md: 32px;
+  --h-lg: 40px;
+
+  --sidebar-w: 256px;
+  --sidebar-rail-w: 60px;
+  --panel-w: 340px;
+  --topbar-h: 52px;
+  --content-max: 780px;
+
+  /* Motion: long, soft deceleration for entrances; a small spring for toggles. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-1: 140ms;
+  --dur-2: 220ms;
+  --dur-3: 340ms;
+  --dur-4: 460ms;
+
+  /* Light and depth */
+  --highlight: rgba(255, 255, 255, 0.045);
+  --shimmer: rgba(255, 255, 255, 0.06);
+  --sheen: rgba(255, 255, 255, 0.3);
+  --accent-glow: rgba(242, 169, 59, 0.34);
+  --shadow-lift: 0 12px 28px -14px rgba(0, 0, 0, 0.72);
+}
+
+/* ---------- 2. Tokens: light ---------- */
+.omnia[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #F6F5F2;
+  --surface-1: #EFEEEA;
+  --surface-2: #FFFFFF;
+  --surface-3: #F4F3EF;
+  --surface-4: #E8E6E0;
+  --surface-pop: #FFFFFF;
+  --code-bg: #FAF9F6;
+  --overlay: rgba(23, 23, 26, 0.32);
+
+  --line-1: #E6E4DE;
+  --line-2: #DAD7CF;
+  --line-3: #C5C1B7;
+
+  --text-1: #17171A;
+  --text-2: #45464D;
+  --text-3: #5F6068;
+  --text-4: #8A8B92;
+
+  --accent: #8F5000;
+  --accent-hover: #7A4400;
+  --accent-press: #693A00;
+  --accent-text: #8F5000;
+  --on-accent: #FFFFFF;
+  --accent-soft: rgba(143, 80, 0, 0.09);
+  --accent-line: rgba(143, 80, 0, 0.34);
+
+  --ok: #0E7A4F;
+  --ok-soft: rgba(14, 122, 79, 0.09);
+  --ok-line: rgba(14, 122, 79, 0.32);
+  --warn: #8A6500;
+  --warn-soft: rgba(138, 101, 0, 0.10);
+  --warn-line: rgba(138, 101, 0, 0.34);
+  --danger: #C2303A;
+  --danger-soft: rgba(194, 48, 58, 0.08);
+  --danger-line: rgba(194, 48, 58, 0.32);
+  --on-danger: #FFFFFF;
+  --info: #1F62C7;
+  --info-soft: rgba(31, 98, 199, 0.08);
+  --info-line: rgba(31, 98, 199, 0.30);
+
+  --focus: #8F5000;
+
+  --viz-1: #6E3E00;
+  --viz-2: #8F5000;
+  --viz-3: #B06A10;
+  --viz-4: #45464D;
+  --viz-5: #6A6B73;
+
+  --syn-kw: #8F5000;
+  --syn-type: #1F62C7;
+  --syn-str: #0E7A4F;
+  --syn-num: #C2303A;
+  --syn-cmt: #6A6B73;
+  --syn-fn: #7A5A00;
+  --syn-pre: #45464D;
+
+  --shadow-pop: 0 12px 32px rgba(23, 23, 26, 0.12), 0 0 0 1px var(--line-2);
+  --shadow-dialog: 0 24px 64px rgba(23, 23, 26, 0.18), 0 0 0 1px var(--line-2);
+
+  --highlight: rgba(255, 255, 255, 0.8);
+  --shimmer: rgba(255, 255, 255, 0.75);
+  --sheen: rgba(255, 255, 255, 0.34);
+  --accent-glow: rgba(143, 80, 0, 0.22);
+  --shadow-lift: 0 12px 28px -14px rgba(23, 23, 26, 0.24);
+}
+
+.omnia[data-density="compact"] {
+  --h-sm: 24px;
+  --h-md: 28px;
+  --h-lg: 34px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --topbar-h: 46px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root {
-    --dur-instant: 0ms;
-    --dur-fast: 0ms;
-    --dur-normal: 0ms;
+  .omnia {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+    --dur-4: 0ms;
   }
+}
+
+/* User preference (Settings → reduce motion) overrides the OS setting. */
+.omnia[data-motion="reduce"] {
+  --dur-1: 0ms;
+  --dur-2: 0ms;
+  --dur-3: 0ms;
+  --dur-4: 0ms;
 }

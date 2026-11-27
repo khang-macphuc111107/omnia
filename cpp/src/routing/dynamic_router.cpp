@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <stdexcept>
 
 namespace omnia::routing {
@@ -11,6 +12,37 @@ namespace omnia::routing {
 namespace {
 
 constexpr std::size_t kMaxLatencySamples = 256;
+
+bool checked_add_u64(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t& out) noexcept {
+    if (lhs > std::numeric_limits<std::uint64_t>::max() - rhs) return false;
+    out = lhs + rhs;
+    return true;
+}
+
+bool checked_mul_u64(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t& out) noexcept {
+    if (lhs != 0 && rhs > std::numeric_limits<std::uint64_t>::max() / lhs) return false;
+    out = lhs * rhs;
+    return true;
+}
+
+std::optional<std::uint64_t> checked_ceil_cost(std::uint64_t tokens, std::uint64_t rate) noexcept {
+    constexpr std::uint64_t scale = 1000000;
+    // Split both operands: the fractional product is always less than scale squared.
+    std::uint64_t whole = 0;
+    std::uint64_t remainder_whole = 0;
+    const auto tail = (tokens % scale) * (rate % scale);
+    if (!checked_mul_u64(tokens / scale, rate, whole) ||
+        !checked_mul_u64(tokens % scale, rate / scale, remainder_whole) ||
+        !checked_add_u64(whole, remainder_whole, whole) ||
+        !checked_add_u64(whole, tail / scale + (tail % scale != 0), whole)) return std::nullopt;
+    return whole;
+}
+
+ModelCapabilities merge_required_capabilities(const ModelCapabilities& a, const ModelCapabilities& b) {
+    return {a.text || b.text, a.vision || b.vision, a.audio || b.audio, a.tool_use || b.tool_use,
+            a.structured_output || b.structured_output, a.streaming || b.streaming,
+            std::max(a.max_attachments, b.max_attachments)};
+}
 
 std::string to_lower_ascii(std::string_view s) {
     std::string out(s);
@@ -37,6 +69,59 @@ bool contains_icase(const std::vector<std::string>& vec, std::string_view target
         }
     }
     return false;
+}
+
+// An empty allowlist means "unrestricted" in a request policy.  Combining
+// two policies must therefore preserve the non-empty side, or retain only
+// values present in both sides when both policies are constrained.  Keep the
+// caller's order while removing duplicates so policy hashes and receipts stay
+// deterministic.
+std::vector<std::string> intersect_allowlist(
+    const std::vector<std::string>& original,
+    const std::vector<std::string>& fallback
+) {
+    const std::vector<std::string>* source = nullptr;
+    if (original.empty()) {
+        source = &fallback;
+    } else if (fallback.empty()) {
+        source = &original;
+    }
+    if (source != nullptr) {
+        std::vector<std::string> result;
+        result.reserve(source->size());
+        for (const auto& value : *source) {
+            if (std::find(result.begin(), result.end(), value) == result.end()) {
+                result.push_back(value);
+            }
+        }
+        return result;
+    }
+
+    std::vector<std::string> result;
+    result.reserve(std::min(original.size(), fallback.size()));
+    for (const auto& value : fallback) {
+        if (std::find(original.begin(), original.end(), value) != original.end() &&
+            std::find(result.begin(), result.end(), value) == result.end()) {
+            result.push_back(value);
+        }
+    }
+    return result;
+}
+
+std::vector<std::string> union_denylist(
+    const std::vector<std::string>& original,
+    const std::vector<std::string>& fallback
+) {
+    std::vector<std::string> result;
+    result.reserve(original.size() + fallback.size());
+    for (const auto* source : {&original, &fallback}) {
+        for (const auto& value : *source) {
+            if (std::find(result.begin(), result.end(), value) == result.end()) {
+                result.push_back(value);
+            }
+        }
+    }
+    return result;
 }
 
 std::string compute_policy_hash(const RouteRequestPolicy& p) {
@@ -132,9 +217,12 @@ std::optional<std::uint64_t> RouteCandidate::estimate_cost_microunits(
     }
     const std::uint64_t in_rate = *input_cost_per_million_microunits;
     const std::uint64_t out_rate = *output_cost_per_million_microunits;
-    const std::uint64_t in_cost = (in_tokens * in_rate + 999999ULL) / 1000000ULL;
-    const std::uint64_t out_cost = (out_tokens * out_rate + 999999ULL) / 1000000ULL;
-    return in_cost + out_cost;
+    const auto in_cost = checked_ceil_cost(in_tokens, in_rate);
+    const auto out_cost = checked_ceil_cost(out_tokens, out_rate);
+    if (!in_cost.has_value() || !out_cost.has_value()) return std::nullopt;
+    std::uint64_t total = 0;
+    if (!checked_add_u64(*in_cost, *out_cost, total)) return std::nullopt;
+    return total;
 }
 
 std::optional<std::uint64_t> CandidateResourceState::percentile_latency_ms(
@@ -333,12 +421,49 @@ DecisionResult DynamicProviderRouter::decide_fallback(
 
     RouteRequestPolicy fb_policy = policy;
     fb_policy.idempotency_key = policy.idempotency_key + ":fallback:" + prev.reservation_id;
-    // Never downgrade privacy tier on fallback
+    // A fallback may narrow the original admission, but never widen it.
     if (static_cast<std::uint8_t>(prev.policy_privacy_tier) >
         static_cast<std::uint8_t>(fb_policy.privacy_tier)) {
         fb_policy.privacy_tier = prev.policy_privacy_tier;
     }
-
+    if (fb_policy.required_auth_boundary != prev.policy_auth_boundary) {
+        fb_policy.required_auth_boundary = prev.policy_auth_boundary;
+    }
+    fb_policy.required_capabilities = merge_required_capabilities(
+        prev.policy_required_capabilities, fb_policy.required_capabilities);
+    const bool parent_regions_constrained = !prev.policy_allowed_regions.empty();
+    const bool fallback_regions_constrained = !fb_policy.allowed_regions.empty();
+    fb_policy.allowed_regions = intersect_allowlist(prev.policy_allowed_regions, fb_policy.allowed_regions);
+    if (parent_regions_constrained && fallback_regions_constrained && fb_policy.allowed_regions.empty()) {
+        throw std::invalid_argument("fallback_region_scope_empty");
+    }
+    const bool parent_providers_constrained = !prev.policy_allowed_providers.empty();
+    const bool fallback_providers_constrained = !fb_policy.allowed_providers.empty();
+    fb_policy.allowed_providers = intersect_allowlist(prev.policy_allowed_providers, fb_policy.allowed_providers);
+    if (parent_providers_constrained && fallback_providers_constrained && fb_policy.allowed_providers.empty()) {
+        throw std::invalid_argument("fallback_provider_scope_empty");
+    }
+    const bool parent_models_constrained = !prev.policy_allowed_models.empty();
+    const bool fallback_models_constrained = !fb_policy.allowed_models.empty();
+    fb_policy.allowed_models = intersect_allowlist(prev.policy_allowed_models, fb_policy.allowed_models);
+    if (parent_models_constrained && fallback_models_constrained && fb_policy.allowed_models.empty()) {
+        throw std::invalid_argument("fallback_model_scope_empty");
+    }
+    fb_policy.forbidden_providers = union_denylist(
+        prev.policy_forbidden_providers, fb_policy.forbidden_providers);
+    fb_policy.forbidden_models = union_denylist(
+        prev.policy_forbidden_models, fb_policy.forbidden_models);
+    if (prev.policy_max_retention_hours.has_value() &&
+        (!fb_policy.max_retention_hours.has_value() ||
+         *fb_policy.max_retention_hours > *prev.policy_max_retention_hours)) {
+        fb_policy.max_retention_hours = prev.policy_max_retention_hours;
+    }
+    if (prev.deadline_ms.has_value() &&
+        (!fb_policy.deadline_ms.has_value() || *fb_policy.deadline_ms > *prev.deadline_ms)) {
+        // A fallback is a continuation of the original admission.  It may
+        // narrow policy, but it cannot extend the parent's time fence.
+        fb_policy.deadline_ms = prev.deadline_ms;
+    }
     return decide_internal(
         fb_policy,
         now_ms,
@@ -360,12 +485,22 @@ DecisionResult DynamicProviderRouter::decide_internal(
     if (policy.idempotency_key.empty()) {
         throw std::invalid_argument("RouteRequestPolicy requires non-empty idempotency_key");
     }
-    const auto cached_it = idempotency_cache_.find(policy.idempotency_key);
-    if (cached_it != idempotency_cache_.end()) {
-        return cached_it->second;
+    if (!policy.simulate) {
+        const auto cached_it = idempotency_cache_.find(policy.idempotency_key);
+        if (cached_it != idempotency_cache_.end()) {
+            return cached_it->second;
+        }
     }
 
-    const std::uint64_t needed_tokens = policy.estimated_total_tokens();
+    const auto needed_tokens_opt = policy.try_estimated_total_tokens();
+    if (!needed_tokens_opt.has_value()) {
+        throw std::invalid_argument("estimated_token_overflow");
+    }
+    if (policy.deadline_ms.has_value() &&
+        (*policy.deadline_ms <= 0 || now_ms >= *policy.deadline_ms)) {
+        throw std::invalid_argument("deadline_expired");
+    }
+    const std::uint64_t needed_tokens = *needed_tokens_opt;
     std::vector<CandidateScoreBreakdown> all_scores;
     all_scores.reserve(candidates_.size());
 
@@ -377,9 +512,15 @@ DecisionResult DynamicProviderRouter::decide_internal(
     std::vector<EligiblePick> eligible;
 
     for (auto& [cid, snap] : candidates_) {
-        snap.state.advance_time(now_ms);
+        CandidateResourceState simulated_state;
+        if (policy.simulate) {
+            simulated_state = snap.state;
+            simulated_state.advance_time(now_ms);
+        } else {
+            snap.state.advance_time(now_ms);
+        }
         const auto& cand = snap.candidate;
-        const auto& st = snap.state;
+        const auto& st = policy.simulate ? simulated_state : snap.state;
 
         CandidateScoreBreakdown bd{};
         bd.candidate_id = cid;
@@ -597,8 +738,18 @@ DecisionResult DynamicProviderRouter::decide_internal(
     );
 
     RouteDecisionReceipt receipt{};
-    receipt.sequence_id = ++seq_counter_;
-    receipt.receipt_id = "rdec-" + std::to_string(receipt.sequence_id);
+    if (policy.simulate) {
+        // Simulation returns a complete receipt to the caller without
+        // consuming the append-only decision sequence.  This keeps repeated
+        // UI previews from changing audit state or receipt IDs for real work.
+        receipt.sequence_id = 0;
+        receipt.receipt_id = "rsim-" + core::sha256_hex(
+            policy.idempotency_key + ":" + std::to_string(now_ms)
+        ).substr(0, 16);
+    } else {
+        receipt.sequence_id = ++seq_counter_;
+        receipt.receipt_id = "rdec-" + std::to_string(receipt.sequence_id);
+    }
     receipt.idempotency_key_hash = core::sha256_hex(policy.idempotency_key);
     receipt.policy_class = make_policy_class(policy.task_risk, policy.privacy_tier);
     receipt.policy_hash = compute_policy_hash(policy);
@@ -606,14 +757,19 @@ DecisionResult DynamicProviderRouter::decide_internal(
     receipt.deadline_ms = policy.deadline_ms;
     receipt.decided_at_ms = now_ms;
     receipt.is_fallback = is_fallback;
+    receipt.simulated = policy.simulate;
     receipt.parent_reservation_id = std::move(parent_reservation_id);
 
     DecisionResult result{};
     if (eligible.empty()) {
         result.ok = false;
         result.receipt = receipt;
-        decision_receipts_.push_back(receipt);
-        idempotency_cache_.insert_or_assign(policy.idempotency_key, result);
+        if (!policy.simulate) {
+            decision_receipts_.push_back(receipt);
+        }
+        if (!policy.simulate) {
+            idempotency_cache_.insert_or_assign(policy.idempotency_key, result);
+        }
         return result;
     }
 
@@ -622,8 +778,29 @@ DecisionResult DynamicProviderRouter::decide_internal(
     const std::uint64_t est_cost_val = winner.est_cost.value_or(0);
     const bool is_probe = (win_snap.state.circuit_state.kind == CircuitState::Kind::HalfOpen);
 
-    win_snap.state.reserved_tokens += needed_tokens;
-    win_snap.state.reserved_cost_microunits += est_cost_val;
+    if (policy.simulate) {
+        receipt.selected_candidate_id = winner.candidate_id;
+        // This is an estimate, not an accounting hold. Keep the public
+        // reserved value at zero so callers cannot mistake a preview for a
+        // live reservation.
+        receipt.reserved_tokens = 0;
+        receipt.estimated_cost_microunits = winner.est_cost;
+        // The response still carries scores and the selected candidate, but
+        // simulation must not append a durable decision receipt.
+        result.ok = true;
+        result.receipt = std::move(receipt);
+        return result;
+    }
+
+    std::uint64_t next_reserved_tokens = 0;
+    std::uint64_t next_reserved_cost = 0;
+    if (!checked_add_u64(win_snap.state.reserved_tokens, needed_tokens, next_reserved_tokens) ||
+        !checked_add_u64(win_snap.state.reserved_cost_microunits, est_cost_val, next_reserved_cost) ||
+        win_snap.state.concurrent_reservations == std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("reservation_accounting_overflow");
+    }
+    win_snap.state.reserved_tokens = next_reserved_tokens;
+    win_snap.state.reserved_cost_microunits = next_reserved_cost;
     ++win_snap.state.concurrent_reservations;
     if (is_probe) {
         win_snap.state.circuit_state.probe_in_flight = true;
@@ -640,6 +817,15 @@ DecisionResult DynamicProviderRouter::decide_internal(
     grant.pricing_version = win_snap.candidate.pricing_version;
     grant.candidate_epoch = win_snap.state.epoch;
     grant.policy_privacy_tier = policy.privacy_tier;
+    grant.policy_auth_boundary = policy.required_auth_boundary;
+    grant.policy_required_capabilities = policy.required_capabilities;
+    grant.policy_allowed_regions = policy.allowed_regions;
+    grant.policy_allowed_providers = policy.allowed_providers;
+    grant.policy_allowed_models = policy.allowed_models;
+    grant.policy_forbidden_providers = policy.forbidden_providers;
+    grant.policy_forbidden_models = policy.forbidden_models;
+    grant.policy_max_retention_hours = policy.max_retention_hours;
+    grant.deadline_ms = policy.deadline_ms;
     grant.status = ReservationStatus::ReservedNotDispatched;
     grant.half_open_probe = is_probe;
     grant.created_at_ms = now_ms;
@@ -675,6 +861,27 @@ bool DynamicProviderRouter::mark_dispatched(
     auto& grant = res_it->second;
     if (grant.status != ReservationStatus::ReservedNotDispatched) {
         if (out_error != nullptr) *out_error = "invalid_reservation_state_for_dispatch";
+        return false;
+    }
+    if (attempt_id.empty()) {
+        if (out_error != nullptr) *out_error = "empty_attempt_id";
+        return false;
+    }
+    if (grant.deadline_ms.has_value() && now_ms >= *grant.deadline_ms) {
+        auto cand_it = candidates_.find(grant.candidate_id);
+        if (cand_it != candidates_.end()) {
+            auto& state = cand_it->second.state;
+            state.reserved_tokens = state.reserved_tokens > grant.reserved_tokens
+                ? state.reserved_tokens - grant.reserved_tokens : 0;
+            state.reserved_cost_microunits =
+                state.reserved_cost_microunits > grant.reserved_cost_microunits
+                ? state.reserved_cost_microunits - grant.reserved_cost_microunits : 0;
+            if (state.concurrent_reservations > 0) --state.concurrent_reservations;
+            if (grant.half_open_probe) state.circuit_state.probe_in_flight = false;
+        }
+        grant.status = ReservationStatus::ReconciledReleased;
+        grant.updated_at_ms = now_ms;
+        if (out_error != nullptr) *out_error = "reservation_deadline_expired";
         return false;
     }
     auto cand_it = candidates_.find(grant.candidate_id);
@@ -733,19 +940,21 @@ RouteOutcomeReceipt DynamicProviderRouter::reconcile_outcome(const OutcomeReport
     auto& grant = res_it->second;
     out.candidate_id = grant.candidate_id;
 
-    // Fence already reconciled or mismatched attempt IDs
+    // Only a dispatched reservation with a concrete, matching attempt may be
+    // reconciled.  In particular, a caller cannot charge a reservation that
+    // was merely reserved, or use an empty attempt ID as a wildcard.
     const bool terminal =
         grant.status == ReservationStatus::ReconciledCharged ||
         grant.status == ReservationStatus::ReconciledReleased ||
         grant.status == ReservationStatus::ReconciledUnknownUsage ||
         grant.status == ReservationStatus::OrphanedOnRestart;
 
+    const bool invalid_dispatch_state = grant.status != ReservationStatus::InFlight;
     const bool attempt_mismatch =
-        grant.active_attempt_id.has_value() &&
-        !report.attempt_id.empty() &&
+        !grant.active_attempt_id.has_value() || report.attempt_id.empty() ||
         (*grant.active_attempt_id != report.attempt_id);
 
-    if (terminal || attempt_mismatch) {
+    if (terminal || invalid_dispatch_state || attempt_mismatch) {
         out.resulting_status = grant.status;
         out.fenced_late_outcome = true;
         outcome_receipts_.push_back(out);
@@ -760,6 +969,56 @@ RouteOutcomeReceipt DynamicProviderRouter::reconcile_outcome(const OutcomeReport
     }
     auto& snap = cand_it->second;
     auto& st = snap.state;
+
+    if (grant.deadline_ms.has_value() && report.now_ms >= *grant.deadline_ms) {
+        if (st.concurrent_reservations > 0) --st.concurrent_reservations;
+        if (grant.half_open_probe) {
+            st.circuit_state = CircuitState::open(report.now_ms, st.circuit_cooldown_ms);
+            ++st.circuit_transitions;
+        }
+        grant.status = ReservationStatus::OperatorRecoveryRequired;
+        grant.updated_at_ms = report.now_ms;
+        out.resulting_status = grant.status;
+        out.fenced_late_outcome = true;
+        outcome_receipts_.push_back(out);
+        return out;
+    }
+
+    std::uint64_t observed_tokens = 0;
+    if (report.usage.known &&
+        !checked_add_u64(report.usage.input_tokens, report.usage.output_tokens, observed_tokens)) {
+        if (st.concurrent_reservations > 0) --st.concurrent_reservations;
+        grant.status = ReservationStatus::OperatorRecoveryRequired;
+        grant.updated_at_ms = report.now_ms;
+        out.resulting_status = grant.status;
+        out.redacted_note = "usage_overflow";
+        outcome_receipts_.push_back(out);
+        return out;
+    }
+
+    std::optional<std::uint64_t> reconciled_cost_total;
+    if (report.succeeded && report.acceptance == AcceptanceState::Accepted && report.usage.known) {
+        std::optional<std::uint64_t> observed_cost = report.actual_cost_microunits;
+        if (!observed_cost.has_value()) {
+            observed_cost = snap.candidate.estimate_cost_microunits(
+                report.usage.input_tokens,
+                report.usage.output_tokens
+            );
+        }
+        if (observed_cost.has_value()) {
+            std::uint64_t total = 0;
+            if (!checked_add_u64(st.reconciled_cost_microunits, *observed_cost, total)) {
+                if (st.concurrent_reservations > 0) --st.concurrent_reservations;
+                grant.status = ReservationStatus::OperatorRecoveryRequired;
+                grant.updated_at_ms = report.now_ms;
+                out.resulting_status = grant.status;
+                out.redacted_note = "cost_overflow";
+                outcome_receipts_.push_back(out);
+                return out;
+            }
+            reconciled_cost_total = total;
+        }
+    }
 
     if (report.latency_ms > 0) {
         st.record_latency(report.latency_ms);
@@ -811,7 +1070,7 @@ RouteOutcomeReceipt DynamicProviderRouter::reconcile_outcome(const OutcomeReport
         if (report.acceptance == AcceptanceState::NotSent) {
             grant.status = ReservationStatus::ReconciledReleased;
         } else if (report.usage.known) {
-            const std::uint64_t used = report.usage.input_tokens + report.usage.output_tokens;
+            const std::uint64_t used = observed_tokens;
             if (st.quota.kind == QuotaState::Kind::Known) {
                 st.quota.remaining_tokens = st.quota.remaining_tokens > used
                     ? (st.quota.remaining_tokens - used)
@@ -838,7 +1097,7 @@ RouteOutcomeReceipt DynamicProviderRouter::reconcile_outcome(const OutcomeReport
     }
 
     if (report.usage.known) {
-        const std::uint64_t used = report.usage.input_tokens + report.usage.output_tokens;
+        const std::uint64_t used = observed_tokens;
         if (st.quota.kind == QuotaState::Kind::Known) {
             st.quota.remaining_tokens = st.quota.remaining_tokens > used
                 ? (st.quota.remaining_tokens - used)
@@ -850,14 +1109,14 @@ RouteOutcomeReceipt DynamicProviderRouter::reconcile_outcome(const OutcomeReport
         if (report.actual_cost_microunits.has_value()) {
             out.cost_known = true;
             out.charged_cost_microunits = *report.actual_cost_microunits;
-            st.reconciled_cost_microunits += *report.actual_cost_microunits;
+            st.reconciled_cost_microunits = *reconciled_cost_total;
         } else if (const auto est = snap.candidate.estimate_cost_microunits(
                        report.usage.input_tokens,
                        report.usage.output_tokens
                    ); est.has_value()) {
             out.cost_known = true;
             out.charged_cost_microunits = *est;
-            st.reconciled_cost_microunits += *est;
+            st.reconciled_cost_microunits = *reconciled_cost_total;
         }
         grant.status = ReservationStatus::ReconciledCharged;
     } else {

@@ -1,0 +1,74 @@
+/* Omnia Studio UI — Routing view (#/routing). View-specific rules only. */
+
+.omnia .routing-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.omnia .routing-meta { white-space: nowrap; }
+.omnia .routing-body { min-width: 0; min-height: 0; }
+.omnia .routing-main { min-height: 0; }
+.omnia .routing-content { display: flex; flex-direction: column; gap: var(--sp-5); padding: var(--sp-5) var(--sp-6) var(--sp-8); min-width: 0; }
+.omnia .routing-sim { flex: none; width: 360px; max-width: 100%; }
+.omnia .routing-danger { color: var(--danger); }
+.omnia .routing-reject { color: var(--danger); }
+
+/* Summary tiles */
+.omnia .routing-tiles { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.omnia .routing-tiles > * { flex: 1 1 150px; }
+.omnia .routing-tile { gap: 2px; }
+.omnia .routing-tile__value { font-size: var(--fs-2xl); font-weight: 600; gap: var(--sp-2); }
+
+/* Providers table */
+.omnia .routing-table td { vertical-align: top; }
+.omnia .routing-table td.num,
+.omnia .routing-table th.num { white-space: nowrap; }
+.omnia .routing-id { gap: 2px; min-width: 164px; }
+.omnia .routing-quota-cell { min-width: 170px; }
+.omnia .routing-quota { gap: 4px; }
+.omnia .routing-actions { text-align: right; white-space: nowrap; }
+.omnia .routing-rowbtn {
+  max-width: 100%;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 0;
+  border-radius: var(--r-1);
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  white-space: nowrap;
+}
+.omnia .routing-rowbtn:hover { background: var(--surface-4); }
+.omnia .routing-rowbtn[aria-pressed="true"] { color: var(--accent-text); }
+.omnia .routing-detail { display: flex; flex-direction: column; gap: var(--sp-3); border-top: 1px solid var(--line-1); }
+.omnia .routing-detail__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-5); }
+.omnia .routing-detail__side { gap: var(--sp-3); }
+.omnia .routing-fieldset { gap: 6px; }
+.omnia .routing-flag--off { color: var(--text-3); }
+
+/* Scores */
+.omnia .routing-scores { gap: var(--sp-4); }
+.omnia .routing-score { gap: 6px; }
+
+/* Receipts */
+.omnia .routing-hash { gap: 2px; flex-wrap: nowrap; }
+
+/* Simulation panel */
+.omnia .routing-tokens { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: var(--sp-3); }
+.omnia .routing-privseg { flex-wrap: wrap; }
+.omnia .routing-result .kv { grid-template-columns: max-content minmax(0, 1fr); }
+.omnia .routing-route { gap: 2px; }
+.omnia .routing-json { border: 1px solid var(--line-1); border-radius: var(--r-3); }
+.omnia .routing-json__pre { margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
+
+/* Loading skeletons */
+.omnia .routing-loading { display: flex; flex-direction: column; gap: var(--sp-5); }
+.omnia .routing-loading__card { gap: var(--sp-4); }
+.omnia .routing-skel--sm { height: 10px; width: 40%; }
+.omnia .routing-skel--lg { height: 22px; width: 30%; }
+.omnia .routing-skel--xl { height: 14px; width: 74%; }
+.omnia .routing-skel--md { height: 10px; width: 46%; }
+
+/* Narrow windows: the simulation panel stacks below the tables and the body scrolls. */
+@media (max-width: 1279px) {
+  .omnia .routing-body { flex-direction: column; overflow-y: auto; }
+  .omnia .routing-main { flex: none; overflow: visible; }
+  .omnia .routing-sim { width: 100%; border-left: 0; border-top: 1px solid var(--line-1); overflow: visible; }
+  .omnia .routing-detail__grid { grid-template-columns: minmax(0, 1fr); }
+}

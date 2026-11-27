@@ -1,0 +1,48 @@
+/* Omnia Studio UI — chat view styles (owned by the chat view). Use tokens and shared components first. */
+
+.omnia .chat-slot { display: contents; }
+
+.omnia .chat-scroll { padding: var(--sp-5) var(--sp-8) var(--sp-6); }
+.omnia .chat-composer-slot { flex: none; padding: 0 var(--sp-8) var(--sp-5); }
+@media (max-width: 760px) {
+  .omnia .chat-scroll { padding: var(--sp-4) var(--sp-4) var(--sp-5); }
+  .omnia .chat-composer-slot { padding: 0 var(--sp-4) var(--sp-4); }
+}
+
+.omnia .chat-composer { position: relative; width: 100%; max-width: var(--content-max); margin: 0 auto; }
+.omnia .chat-composer[data-drop="true"] { border: 1.5px dashed var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+
+.omnia .chat-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  border-radius: inherit;
+  background: var(--surface-2);
+  color: var(--accent-text);
+  text-align: center;
+  pointer-events: none;
+}
+
+.omnia .chat-popover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+}
+.omnia .chat-popover .tpl-card { min-width: 0; }
+.omnia .chat-popover .tpl-card__math { max-width: 100%; overflow: hidden; text-overflow: clip; }
+.omnia .chat-popover .seg { flex: 0 1 auto; }
+
+.omnia .chat-scroll .thread > .event .btn { margin-left: auto; }
+.omnia .chat-scroll .thread > .event .btn + .event__note { margin-left: 0; }
+.omnia .chat-scroll .prose .tray { margin-top: var(--sp-2); }
+.omnia .chat-scroll .prose .code-block pre { white-space: pre; }
+.omnia .chat-scroll .prose .table-wrap { max-width: 100%; }
+.omnia .chat-scroll .prose input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+.omnia .chat-scroll .prose .math-display { font-size: 1.12em; }

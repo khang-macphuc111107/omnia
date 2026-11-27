@@ -6,6 +6,8 @@
 #include "omnia/core/utf8.hpp"
 
 #include <iostream>
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -98,6 +100,27 @@ void test_utf8_truncation() {
     }
 }
 
+void test_checked_json_integers() {
+    using omnia::core::JsonValue;
+    constexpr std::int64_t fallback = 123;
+    for (const auto raw : {"1e100", "-1e100", "9223372036854775808", "64.9", "-0.5",
+                           "true", "null", "\"64\"", "[]", "{}"}) {
+        OMNIA_CHECK(JsonValue::parse(raw).as_int64(fallback) == fallback);
+    }
+    for (const double value : {std::numeric_limits<double>::infinity(),
+                               -std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN(),
+                               std::nextafter(-0x1p63, -std::numeric_limits<double>::infinity())}) {
+        OMNIA_CHECK(JsonValue(value).as_int64(fallback) == fallback);
+    }
+    OMNIA_CHECK(JsonValue::parse("9223372036854775807").as_int64() == INT64_MAX);
+    OMNIA_CHECK(JsonValue::parse("-9223372036854775808").as_int64() == INT64_MIN);
+    OMNIA_CHECK(JsonValue(-0x1p63).as_int64() == INT64_MIN);
+    OMNIA_CHECK(JsonValue(std::nextafter(0x1p63, 0.0)).as_int64() == INT64_MAX - 1023);
+    OMNIA_CHECK(JsonValue::parse("6.4e1").as_int64() == 64);
+    OMNIA_CHECK(JsonValue::parse("-0.0").as_int64(fallback) == 0);
+}
+
 void test_secret_redactor() {
     using omnia::core::SecretRedactor;
 
@@ -135,6 +158,7 @@ void test_secret_redactor() {
 int main() {
     test_sha256_vectors();
     test_rfc8259_json();
+    test_checked_json_integers();
     test_utf8_truncation();
     test_secret_redactor();
     std::cout << "[PASS] test_omnia_core (SHA-256, RFC-8259 JSON, UTF-8, SecretRedactor)\n";

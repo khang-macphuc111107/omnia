@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -34,6 +35,7 @@ int main() {
     {
         omnia::storage::SessionStore store(db_file);
         OMNIA_CHECK(store.journal_mode() == "wal");
+        OMNIA_CHECK_THROWS(store.acquire_lease("invalid-pid", 0, 1000, 1));
 
         // 1. Cooperative Process Ownership Lease
         const auto l1 = store.acquire_lease("owner-alpha", 4100, 10000, 1000);
@@ -47,6 +49,9 @@ int main() {
         // Heartbeat extends owner-alpha
         OMNIA_CHECK(store.heartbeat("owner-alpha", 10000, 8000));
         OMNIA_CHECK(!store.heartbeat("owner-beta", 10000, 8000));
+        // Reusing an owner token from a different process must not refresh or
+        // silently replace the live lease without a new fencing epoch.
+        OMNIA_CHECK(!store.acquire_lease("owner-alpha", 4101, 10000, 9000).has_value());
 
         // Still active at t=15000 because heartbeat extended to 18000
         OMNIA_CHECK(!store.acquire_lease("owner-beta", 4200, 10000, 15000).has_value());
@@ -59,6 +64,34 @@ int main() {
 
         OMNIA_CHECK(store.release_lease("owner-beta"));
         OMNIA_CHECK(!store.active_lease(19500).has_value());
+
+        // Fenced lease operations must reject stale process identity and epoch
+        // without touching a successor lease or inserting a session.
+        const auto fenced = store.acquire_lease("owner-fenced", 4300, 10000, 20000);
+        OMNIA_CHECK(fenced.has_value());
+        OMNIA_CHECK(fenced->lease_epoch == 3);
+        OMNIA_CHECK(store.heartbeat("owner-fenced", 4300, fenced->lease_epoch, 10000, 21000));
+        OMNIA_CHECK(!store.heartbeat("owner-fenced", 4301, fenced->lease_epoch, 10000, 21500));
+        OMNIA_CHECK(!store.heartbeat("owner-fenced", 4300, fenced->lease_epoch - 1, 10000, 21500));
+        OMNIA_CHECK(!store.release_lease("owner-fenced", 4301, fenced->lease_epoch));
+        const auto fenced_session = store.create_session_if_lease_current(
+            "Fenced", "test-model", "high", 22000,
+            "owner-fenced", 4300, fenced->lease_epoch, "fenced-session"
+        );
+        OMNIA_CHECK(fenced_session.has_value());
+        OMNIA_CHECK(!store.create_session_if_lease_current(
+            "Stale", "test-model", "high", 22001,
+            "owner-fenced", 4300, fenced->lease_epoch - 1, "stale-session"
+        ).has_value());
+        OMNIA_CHECK(!store.get_session("stale-session").has_value());
+        OMNIA_CHECK(store.release_lease("owner-fenced", 4300, fenced->lease_epoch));
+        const auto successor = store.acquire_lease("owner-successor", 4400, 10000, 23000);
+        OMNIA_CHECK(successor.has_value() && successor->lease_epoch == 4);
+        OMNIA_CHECK(!store.release_lease("owner-fenced", 4300, fenced->lease_epoch));
+        OMNIA_CHECK(!store.heartbeat(
+            "owner-successor", 100, std::numeric_limits<std::int64_t>::max() - 10
+        ));
+        OMNIA_CHECK(store.release_lease("owner-successor", 4400, successor->lease_epoch));
 
         // 2. Session Settings & Keyset Paging
         for (int i = 0; i < 13; ++i) {
@@ -75,7 +108,7 @@ int main() {
         std::size_t pages = 0;
         while (true) {
             const auto page = store.list_sessions_page(5, cur);
-            OMNIA_CHECK(page.total_count == 13);
+            OMNIA_CHECK(page.total_count == 14);
             for (const auto& s : page.items) {
                 OMNIA_CHECK(seen_ids.insert(s.id).second);
             }
@@ -86,7 +119,7 @@ int main() {
             cur = page.next_cursor;
         }
         OMNIA_CHECK(pages == 3);
-        OMNIA_CHECK(seen_ids.size() == 13);
+        OMNIA_CHECK(seen_ids.size() == 14);
 
         const auto created = store.create_session("Editable", "gemini-3-1-pro", "medium", 50000);
         OMNIA_CHECK(store.update_session_settings(

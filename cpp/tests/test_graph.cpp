@@ -9,6 +9,64 @@ namespace {
 
 using namespace omnia::graph;
 
+AgentNode writer(std::string id, std::string path, bool active = true) {
+    AgentNode node;
+    node.agent_id = std::move(id);
+    node.owned_paths = {std::move(path)};
+    node.active = active;
+    return node;
+}
+
+void test_ownership_aliases_and_reactivation() {
+    PeerMeshGraph mesh;
+    mesh.register_agent(writer("owner", "cpp/**"));
+    for (const auto alias : {"CPP/src/**", "ui/../cpp/src/**", "./cpp//src/./**", "cpp\\src\\*"}) {
+        OMNIA_CHECK_THROWS(mesh.register_agent(writer("alias", alias)));
+        OMNIA_CHECK(mesh.agent("alias") == nullptr);
+    }
+    for (const auto invalid : {"../outside/**", "C:/cpp/**", "/cpp/**", "cpp/**/src", "cpp./src", "cpp/src:stream"}) {
+        OMNIA_CHECK_THROWS(mesh.register_agent(writer("invalid", invalid)));
+        OMNIA_CHECK(mesh.agent("invalid") == nullptr);
+    }
+    auto parent = writer("parent", "ui/**");
+    parent.excluded_paths = {"UI/temp/../PLUGIN/**"};
+    mesh.register_agent(parent);
+    mesh.register_agent(writer("plugin", "ui/plugin/**"));
+    mesh.register_agent(writer("sibling", "cpp-other/**"));
+    mesh.register_agent(writer("paused", "CPP/src/**", false));
+    OMNIA_CHECK_THROWS(mesh.set_agent_active("paused", true));
+    OMNIA_CHECK(!mesh.agent("paused")->active);
+    mesh.set_agent_active("owner", false);
+    mesh.set_agent_active("paused", true);
+    OMNIA_CHECK(mesh.agent("paused")->active);
+    OMNIA_CHECK_THROWS(mesh.set_agent_active("owner", true));
+    OMNIA_CHECK(!mesh.agent("owner")->active);
+}
+
+void test_reply_authorization_and_epochs() {
+    PeerMeshGraph mesh;
+    for (const auto id : {"a", "b", "c"}) mesh.register_agent(writer(id, id));
+    mesh.connect_all_to_all();
+    const auto original = mesh.send_peer(SendPeerRequest{
+        "a", "b", "authorization", "question", GraphifyProvenance::Extracted,
+        0, 8, std::nullopt, true, 100
+    });
+    OMNIA_CHECK_THROWS(mesh.reply("c", original.seq, "intruder"));
+    OMNIA_CHECK(mesh.all_messages().size() == 1);
+    const auto stalled = mesh.detect_stalled_conversations(1000, 100);
+    OMNIA_CHECK(stalled.size() == 1 && stalled[0].waiting_on_peer == "b");
+    const auto valid = mesh.reply("b", original.seq, "answer");
+    OMNIA_CHECK(valid.primary_to == "a");
+    OMNIA_CHECK(mesh.detect_stalled_conversations(2000, 100).empty());
+    const auto broadcast = mesh.broadcast("a", "broadcast", "everyone");
+    mesh.reply("b", broadcast.seq, "first");
+    mesh.reply("c", broadcast.seq, "second");
+    mesh.bump_agent_epoch("a");
+    const auto count = mesh.all_messages().size();
+    OMNIA_CHECK_THROWS(mesh.reply("b", broadcast.seq, "old epoch"));
+    OMNIA_CHECK(mesh.all_messages().size() == count);
+}
+
 void test_peer_mesh_duplex_and_guards() {
     PeerMeshGraph mesh(4); // default max_hops = 4
 
@@ -106,6 +164,8 @@ void test_graphify_bidirectional_traversal() {
 } // namespace
 
 int main() {
+    test_ownership_aliases_and_reactivation();
+    test_reply_authorization_and_epochs();
     test_peer_mesh_duplex_and_guards();
     test_graphify_bidirectional_traversal();
     std::cout << "[PASS] test_omnia_graph (2-Way Duplex PeerMeshGraph & Bidirectional GraphifyIndex)\n";
