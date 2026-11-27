@@ -16,6 +16,7 @@ pub use graphify_index::{
     GraphifyTraversalResult, TraversalDirection, WorkspaceIndexReport,
 };
 pub use peer_mesh::{
-    normalize_repo_path, prefix_covers, valid_agent_id, AgentGraphError, AgentNode, AgentRole,
-    ConvergenceReport, PeerLinkEdge, PeerMeshGraph, PeerMessage, StalledPeerAlert,
+    normalize_repo_path, prefix_covers, valid_agent_id, validate_and_normalize_repo_path,
+    AgentGraphError, AgentNode, AgentRole, ConvergenceReport, PeerLinkEdge, PeerMeshGraph,
+    PeerMessage, StalledPeerAlert, DEFAULT_MAX_RETAINED_MESSAGES,
 };

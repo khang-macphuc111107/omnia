@@ -570,6 +570,119 @@ impl DownloadScheduler {
     }
 }
 
+/// Non-credential per-host connection cap and pacing rule (`*.example.com` wildcard supported).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteRule {
+    pub host_pattern: String,
+    pub max_connections_per_host: usize,
+    #[serde(default)]
+    pub default_pacing: Option<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Thread-safe policy registry enforcing per-host connection caps without storing plaintext credentials.
+#[derive(Debug, Default, Clone)]
+pub struct SitePolicyRegistry {
+    rules: Vec<SiteRule>,
+}
+
+impl SitePolicyRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn upsert_rule(&mut self, mut rule: SiteRule) -> Result<SiteRule, DownloaderError> {
+        let pat = rule.host_pattern.trim().to_ascii_lowercase();
+        if pat.is_empty() || pat.len() > 253 || pat.chars().any(char::is_control) {
+            return Err(DownloaderError::InvalidInput(
+                "invalid site rule host_pattern".into(),
+            ));
+        }
+        rule.host_pattern = pat.clone();
+        rule.max_connections_per_host = rule.max_connections_per_host.clamp(1, 128);
+        if let Some(existing) = self.rules.iter_mut().find(|r| r.host_pattern == pat) {
+            *existing = rule.clone();
+        } else {
+            self.rules.push(rule.clone());
+        }
+        Ok(rule)
+    }
+
+    #[must_use]
+    pub fn list_rules(&self) -> &[SiteRule] {
+        &self.rules
+    }
+
+    #[must_use]
+    pub fn resolve_for_host(&self, host: &str) -> Option<&SiteRule> {
+        let h = host.trim().to_ascii_lowercase();
+        if h.is_empty() {
+            return None;
+        }
+        // Exact match first, then longest suffix wildcard (`*.example.com`).
+        if let Some(exact) = self.rules.iter().find(|r| r.host_pattern == h) {
+            return Some(exact);
+        }
+        self.rules
+            .iter()
+            .filter(|r| {
+                if let Some(suffix) = r.host_pattern.strip_prefix("*.") {
+                    h == suffix || h.ends_with(&format!(".{suffix}"))
+                } else {
+                    false
+                }
+            })
+            .max_by_key(|r| r.host_pattern.len())
+    }
+}
+
+/// Path-safe `auto_group_series` resolver: extracts a sanitized series subfolder name
+/// from episode filenames (e.g. `"Show Name Season 2 - Ep 06.mp4"` -> `"Show Name Season 2"`).
+/// Strictly strips traversal, control characters, and Win32 reserved device names.
+#[must_use]
+pub fn resolve_series_subfolder(filename: &str) -> Option<String> {
+    let stem = Path::new(filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename)
+        .trim();
+    if stem.is_empty() {
+        return None;
+    }
+    let lower = stem.to_ascii_lowercase();
+    let markers = [
+        " - ep ", " - ep.", " ep ", " episode ", " - tap ", " tap ", " - tập ", " tập ",
+        " s01e", " s02e", " s03e", " s04e", " s05e", " s06e", " s07e", " s08e", " s09e",
+        " s10e", ".s01e", ".s02e", ".s03e", "_s01e", "_s02e",
+    ];
+    let mut cut_idx: Option<usize> = None;
+    for marker in markers {
+        if let Some(pos) = lower.find(marker) {
+            if pos >= 2 {
+                cut_idx = Some(match cut_idx {
+                    Some(prev) => prev.min(pos),
+                    None => pos,
+                });
+            }
+        }
+    }
+    let raw_prefix = match cut_idx {
+        Some(idx) if stem.is_char_boundary(idx) => &stem[..idx],
+        _ => return None,
+    };
+    let cleaned = safe_output_filename(raw_prefix.trim_matches(|c: char| {
+        matches!(c, ' ' | '-' | '_' | '.' | '[' | ']' | '(' | ')')
+    }))
+    .ok()?;
+    let trimmed = cleaned.trim().to_string();
+    if trimmed.len() < 2 || trimmed == "download" {
+        return None;
+    }
+    Some(trimmed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,5 +775,30 @@ filename: archive.zip
         assert!(sched.next_dispatch_at(night).is_none());
         sched.mark_finished();
         assert!(sched.next_dispatch_at(night).is_some());
+    }
+
+    #[test]
+    fn site_policy_registry_and_auto_group_series_enforce_safety() {
+        let mut reg = SitePolicyRegistry::new();
+        reg.upsert_rule(SiteRule {
+            host_pattern: "*.example.org".into(),
+            max_connections_per_host: 8,
+            default_pacing: Some("adaptive".into()),
+            note: "cdn rule".into(),
+        })
+        .unwrap();
+        let resolved = reg.resolve_for_host("media.cdn.example.org").unwrap();
+        assert_eq!(resolved.max_connections_per_host, 8);
+
+        assert_eq!(
+            resolve_series_subfolder("Black Clover Season 2 - Ep 06.mp4").as_deref(),
+            Some("Black Clover Season 2")
+        );
+        assert_eq!(
+            resolve_series_subfolder("Course_Lecture_S01E04.mkv").as_deref(),
+            Some("Course_Lecture")
+        );
+        assert!(resolve_series_subfolder("../../CON - Ep 01.mp4")
+            .is_none_or(|s| !s.contains("..")));
     }
 }

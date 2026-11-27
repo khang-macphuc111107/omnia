@@ -2,7 +2,9 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
-use omnia_core::{compact_json, sha256_hex, try_parse_json, uuid_v4, SecretRedactor};
+use omnia_core::{
+    compact_json, hex_decode, hex_encode, sha256_hex, try_parse_json, uuid_v4, SecretRedactor,
+};
 use omnia_winsqlite::{Connection, StepStatus};
 
 use crate::error::StoreError;
@@ -13,7 +15,9 @@ CREATE TABLE IF NOT EXISTS store_leases (
     owner_id TEXT NOT NULL,
     pid INTEGER NOT NULL,
     acquired_at_ms INTEGER NOT NULL,
-    expires_at_ms INTEGER NOT NULL
+    heartbeat_at_ms INTEGER NOT NULL DEFAULT 0,
+    expires_at_ms INTEGER NOT NULL,
+    lease_epoch INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -86,7 +90,9 @@ pub struct LeaseRecord {
     pub owner_id: String,
     pub pid: i64,
     pub acquired_at_ms: i64,
+    pub heartbeat_at_ms: i64,
     pub expires_at_ms: i64,
+    pub lease_epoch: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,11 +123,69 @@ pub struct SessionCursor {
     pub id: String,
 }
 
+/// Validate a Studio session identifier (`AUD-32`): 1..=128 UTF-8 bytes, no `..`,
+/// no URI/path delimiters (`/`, `\`, `?`, `#`), and no ASCII control bytes (`< 0x20` or `0x7f`).
+#[must_use]
+pub fn is_valid_studio_session_id(id: &str) -> bool {
+    if id.is_empty() || id.len() > 128 || id.contains("..") {
+        return false;
+    }
+    !id.bytes()
+        .any(|b| matches!(b, b'/' | b'\\' | b'?' | b'#') || b < 0x20 || b == 0x7f)
+}
+
+impl SessionCursor {
+    /// Encode cursor into PR #1 opaque hex token format `<hex(updated_at_ms)>.<hex(id)>`.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        let ts = self.updated_at_ms.to_string();
+        format!(
+            "{}.{}",
+            hex_encode(ts.as_bytes()),
+            hex_encode(self.id.as_bytes())
+        )
+    }
+
+    /// Decode and strictly validate an opaque hex cursor token (`AUD-32`).
+    pub fn decode(raw: &str) -> Result<Self, StoreError> {
+        if raw.is_empty() || raw.len() > 600 {
+            return Err(StoreError::invalid_input("Invalid session cursor length."));
+        }
+        let Some((ts_part, id_part)) = raw.split_once('.') else {
+            return Err(StoreError::invalid_input(
+                "Invalid session cursor separator.",
+            ));
+        };
+        if id_part.contains('.') || ts_part.is_empty() || id_part.is_empty() {
+            return Err(StoreError::invalid_input("Malformed session cursor format."));
+        }
+        let ts_bytes = hex_decode(ts_part)
+            .map_err(|_| StoreError::invalid_input("Malformed session cursor timestamp hex."))?;
+        let id_bytes = hex_decode(id_part)
+            .map_err(|_| StoreError::invalid_input("Malformed session cursor id hex."))?;
+        let ts_str = std::str::from_utf8(&ts_bytes)
+            .map_err(|_| StoreError::invalid_input("Invalid UTF-8 in session cursor timestamp."))?;
+        let id = String::from_utf8(id_bytes)
+            .map_err(|_| StoreError::invalid_input("Invalid UTF-8 in session cursor id."))?;
+        if !is_strict_signed_decimal(ts_str) {
+            return Err(StoreError::invalid_input("Invalid session cursor timestamp."));
+        }
+        let updated_at_ms = ts_str
+            .parse::<i64>()
+            .map_err(|_| StoreError::invalid_input("Out-of-range session cursor timestamp."))?;
+        if !is_valid_studio_session_id(&id) {
+            return Err(StoreError::invalid_input("Invalid session cursor id."));
+        }
+        Ok(Self { updated_at_ms, id })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPage {
     pub items: Vec<SessionRecord>,
     pub has_more: bool,
     pub next_cursor: Option<SessionCursor>,
+    pub total_count: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +265,7 @@ impl SessionStore {
         }
         let conn = Connection::open_read_write(path)?;
         conn.exec_batch(SESSION_STORE_SCHEMA_SQL)?;
+        ensure_lease_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -210,6 +275,7 @@ impl SessionStore {
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
         conn.exec_batch(SESSION_STORE_SCHEMA_SQL)?;
+        ensure_lease_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -224,8 +290,117 @@ impl SessionStore {
             .to_ascii_lowercase())
     }
 
+    /// Run `PRAGMA quick_check(1)` to verify SQLite database integrity.
+    pub fn integrity_check(&self) -> Result<bool, StoreError> {
+        let conn = self.lock_conn()?;
+        Ok(conn.integrity_check()?)
+    }
+
+    /// Attempt to acquire the cooperative primary lease and return the granted [`LeaseRecord`]
+    /// including its monotonic `lease_epoch` (`AUD-08`).
+    ///
+    /// - Rejects empty `owner_id`, non-positive `pid`, non-positive `ttl_ms`, or `now_ms + ttl_ms`
+    ///   `i64` overflow.
+    /// - Re-entrant acquisition requires BOTH `owner_id` AND `pid` to match an unexpired lease;
+    ///   reusing an owner string from a different PID while unexpired is rejected (`Ok(None)`).
+    /// - Acquiring an expired/released lease increments `lease_epoch` monotonically (overflow fails
+    ///   closed with `lease_epoch_overflow`).
+    pub fn acquire_lease_record(
+        &self,
+        owner_id: &str,
+        pid: i64,
+        ttl_ms: i64,
+        now_ms: i64,
+    ) -> Result<Option<LeaseRecord>, StoreError> {
+        if owner_id.trim().is_empty() || pid <= 0 || ttl_ms <= 0 {
+            return Err(StoreError::invalid_input(
+                "Invalid lease owner_id, pid, or ttl_ms.",
+            ));
+        }
+        let Some(new_expires) = checked_expiry(now_ms, ttl_ms) else {
+            return Err(StoreError::invalid_input("Lease expiry overflows i64."));
+        };
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+
+        let current = read_lease_locked(&tx)?;
+        let Some(existing) = current else {
+            let mut ins = tx.prepare(
+                "INSERT INTO store_leases\n\
+                 (lease_name, owner_id, pid, acquired_at_ms, heartbeat_at_ms, expires_at_ms, lease_epoch)\n\
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, 1);",
+            )?;
+            ins.bind_text(1, PRIMARY_LEASE_NAME)?;
+            ins.bind_text(2, owner_id)?;
+            ins.bind_int64(3, pid)?;
+            ins.bind_int64(4, now_ms)?;
+            ins.bind_int64(5, new_expires)?;
+            ins.step()?;
+            drop(ins);
+            tx.commit()?;
+            return Ok(Some(LeaseRecord {
+                lease_name: PRIMARY_LEASE_NAME.to_owned(),
+                owner_id: owner_id.to_owned(),
+                pid,
+                acquired_at_ms: now_ms,
+                heartbeat_at_ms: now_ms,
+                expires_at_ms: new_expires,
+                lease_epoch: 1,
+            }));
+        };
+
+        let same_owner =
+            existing.owner_id == owner_id && existing.pid == pid && existing.expires_at_ms > now_ms;
+        if !same_owner && existing.expires_at_ms > now_ms {
+            tx.rollback()?;
+            return Ok(None);
+        }
+
+        let next_acquired = if same_owner {
+            existing.acquired_at_ms
+        } else {
+            now_ms
+        };
+        let next_epoch = if same_owner {
+            existing.lease_epoch
+        } else {
+            existing.lease_epoch.checked_add(1).ok_or_else(|| {
+                StoreError::conflict("lease_epoch_overflow", "Lease epoch overflow.")
+            })?
+        };
+
+        let mut upd = tx.prepare(
+            "UPDATE store_leases\n\
+             SET owner_id = ?1, pid = ?2, acquired_at_ms = ?3, heartbeat_at_ms = ?4,\n\
+                 expires_at_ms = ?5, lease_epoch = ?6\n\
+             WHERE lease_name = ?7;",
+        )?;
+        upd.bind_text(1, owner_id)?;
+        upd.bind_int64(2, pid)?;
+        upd.bind_int64(3, next_acquired)?;
+        upd.bind_int64(4, now_ms)?;
+        upd.bind_int64(5, new_expires)?;
+        upd.bind_int64(6, next_epoch)?;
+        upd.bind_text(7, PRIMARY_LEASE_NAME)?;
+        upd.step()?;
+        drop(upd);
+
+        tx.commit()?;
+        Ok(Some(LeaseRecord {
+            lease_name: PRIMARY_LEASE_NAME.to_owned(),
+            owner_id: owner_id.to_owned(),
+            pid,
+            acquired_at_ms: next_acquired,
+            heartbeat_at_ms: now_ms,
+            expires_at_ms: new_expires,
+            lease_epoch: next_epoch,
+        }))
+    }
+
     /// Attempt to acquire the cooperative primary lease; returns `Ok(true)` if granted
-    /// (including re-entrant or expired lease takeover) or `Ok(false)` if actively held by another owner.
+    /// (including matching `(owner_id, pid)` re-entrant refresh or expired lease takeover)
+    /// or `Ok(false)` if actively held by another owner or PID.
     pub fn acquire_lease(
         &self,
         owner_id: &str,
@@ -233,65 +408,32 @@ impl SessionStore {
         ttl_ms: i64,
         now_ms: i64,
     ) -> Result<bool, StoreError> {
-        if owner_id.trim().is_empty() {
-            return Err(StoreError::invalid_input("Lease owner_id cannot be empty."));
-        }
-        if ttl_ms <= 0 {
-            return Err(StoreError::invalid_input("Lease ttl_ms must be positive."));
-        }
-        let mut conn = self.lock_conn()?;
-        let tx = conn.begin_immediate()?;
-
-        let current = read_lease_locked(&tx)?;
-        if let Some(existing) = current {
-            if existing.owner_id != owner_id && existing.expires_at_ms > now_ms {
-                tx.commit()?;
-                return Ok(false);
-            }
-        }
-
-        let expires_at = now_ms.saturating_add(ttl_ms);
-        let mut stmt = tx.prepare(
-            "INSERT INTO store_leases (lease_name, owner_id, pid, acquired_at_ms, expires_at_ms)\n\
-             VALUES (?1, ?2, ?3, ?4, ?5)\n\
-             ON CONFLICT(lease_name) DO UPDATE SET\n\
-                 owner_id = excluded.owner_id,\n\
-                 pid = excluded.pid,\n\
-                 acquired_at_ms = CASE WHEN store_leases.owner_id = excluded.owner_id\n\
-                                       THEN store_leases.acquired_at_ms\n\
-                                       ELSE excluded.acquired_at_ms END,\n\
-                 expires_at_ms = excluded.expires_at_ms;",
-        )?;
-        stmt.bind_text(1, PRIMARY_LEASE_NAME)?;
-        stmt.bind_text(2, owner_id)?;
-        stmt.bind_int64(3, pid)?;
-        stmt.bind_int64(4, now_ms)?;
-        stmt.bind_int64(5, expires_at)?;
-        stmt.step()?;
-        drop(stmt);
-
-        tx.commit()?;
-        Ok(true)
+        self.acquire_lease_record(owner_id, pid, ttl_ms, now_ms)
+            .map(|opt| opt.is_some())
     }
 
-    /// Extend the active lease TTL if `owner_id` currently owns an unexpired (or matching) lease.
+    /// Extend the active lease TTL if `owner_id` currently owns an unexpired lease.
+    /// Returns `Ok(false)` on `now_ms + ttl_ms` overflow without mutating the database.
     pub fn heartbeat(&self, owner_id: &str, ttl_ms: i64, now_ms: i64) -> Result<bool, StoreError> {
         if owner_id.trim().is_empty() || ttl_ms <= 0 {
             return Err(StoreError::invalid_input(
                 "Lease owner_id must be non-empty and ttl_ms positive.",
             ));
         }
+        let Some(expires_at) = checked_expiry(now_ms, ttl_ms) else {
+            return Ok(false);
+        };
         let mut conn = self.lock_conn()?;
         let tx = conn.begin_immediate()?;
         let mut stmt = tx.prepare(
             "UPDATE store_leases\n\
-             SET expires_at_ms = ?1\n\
-             WHERE lease_name = ?2 AND owner_id = ?3 AND expires_at_ms >= ?4;",
+             SET heartbeat_at_ms = ?1, expires_at_ms = ?2\n\
+             WHERE lease_name = ?3 AND owner_id = ?4 AND expires_at_ms > ?1;",
         )?;
-        stmt.bind_int64(1, now_ms.saturating_add(ttl_ms))?;
-        stmt.bind_text(2, PRIMARY_LEASE_NAME)?;
-        stmt.bind_text(3, owner_id)?;
-        stmt.bind_int64(4, now_ms)?;
+        stmt.bind_int64(1, now_ms)?;
+        stmt.bind_int64(2, expires_at)?;
+        stmt.bind_text(3, PRIMARY_LEASE_NAME)?;
+        stmt.bind_text(4, owner_id)?;
         stmt.step()?;
         drop(stmt);
         let updated = tx.changes() > 0;
@@ -299,12 +441,56 @@ impl SessionStore {
         Ok(updated)
     }
 
-    /// Release the primary lease if owned by `owner_id`.
-    pub fn release_lease(&self, owner_id: &str) -> Result<bool, StoreError> {
+    /// Fenced heartbeat (`AUD-08`): extends the lease only if `(owner_id, pid, lease_epoch)`
+    /// matches the currently unexpired primary lease. Rejects stale PIDs, stale epochs, and
+    /// `i64` expiry overflow cleanly with `Ok(false)`.
+    pub fn heartbeat_fenced(
+        &self,
+        owner_id: &str,
+        pid: i64,
+        lease_epoch: i64,
+        ttl_ms: i64,
+        now_ms: i64,
+    ) -> Result<bool, StoreError> {
+        if owner_id.trim().is_empty() || pid <= 0 || lease_epoch <= 0 {
+            return Ok(false);
+        }
+        let Some(expires_at) = checked_expiry(now_ms, ttl_ms) else {
+            return Ok(false);
+        };
         let mut conn = self.lock_conn()?;
         let tx = conn.begin_immediate()?;
-        let mut stmt =
-            tx.prepare("DELETE FROM store_leases WHERE lease_name = ?1 AND owner_id = ?2;")?;
+        let mut stmt = tx.prepare(
+            "UPDATE store_leases\n\
+             SET heartbeat_at_ms = ?1, expires_at_ms = ?2\n\
+             WHERE lease_name = ?3 AND owner_id = ?4 AND pid = ?5\n\
+               AND lease_epoch = ?6 AND expires_at_ms > ?1;",
+        )?;
+        stmt.bind_int64(1, now_ms)?;
+        stmt.bind_int64(2, expires_at)?;
+        stmt.bind_text(3, PRIMARY_LEASE_NAME)?;
+        stmt.bind_text(4, owner_id)?;
+        stmt.bind_int64(5, pid)?;
+        stmt.bind_int64(6, lease_epoch)?;
+        stmt.step()?;
+        drop(stmt);
+        let updated = tx.changes() > 0;
+        tx.commit()?;
+        Ok(updated)
+    }
+
+    /// Release the primary lease if owned by `owner_id`, expiring `expires_at_ms = 0` in place
+    /// so monotonic `lease_epoch` history is preserved for future fencing.
+    pub fn release_lease(&self, owner_id: &str) -> Result<bool, StoreError> {
+        if owner_id.trim().is_empty() {
+            return Ok(false);
+        }
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+        let mut stmt = tx.prepare(
+            "UPDATE store_leases SET expires_at_ms = 0\n\
+             WHERE lease_name = ?1 AND owner_id = ?2 AND expires_at_ms > 0;",
+        )?;
         stmt.bind_text(1, PRIMARY_LEASE_NAME)?;
         stmt.bind_text(2, owner_id)?;
         stmt.step()?;
@@ -312,6 +498,55 @@ impl SessionStore {
         let released = tx.changes() > 0;
         tx.commit()?;
         Ok(released)
+    }
+
+    /// Fenced lease release (`AUD-08`): releases the primary lease only when `(owner_id, pid, lease_epoch)`
+    /// matches, preventing a stale process from releasing a successor's lease.
+    pub fn release_lease_fenced(
+        &self,
+        owner_id: &str,
+        pid: i64,
+        lease_epoch: i64,
+    ) -> Result<bool, StoreError> {
+        if owner_id.trim().is_empty() || pid <= 0 || lease_epoch <= 0 {
+            return Ok(false);
+        }
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+        let mut stmt = tx.prepare(
+            "UPDATE store_leases SET expires_at_ms = 0\n\
+             WHERE lease_name = ?1 AND owner_id = ?2 AND pid = ?3\n\
+               AND lease_epoch = ?4 AND expires_at_ms > 0;",
+        )?;
+        stmt.bind_text(1, PRIMARY_LEASE_NAME)?;
+        stmt.bind_text(2, owner_id)?;
+        stmt.bind_int64(3, pid)?;
+        stmt.bind_int64(4, lease_epoch)?;
+        stmt.step()?;
+        drop(stmt);
+        let released = tx.changes() > 0;
+        tx.commit()?;
+        Ok(released)
+    }
+
+    /// Return `true` iff `(owner_id, pid, lease_epoch)` currently holds the unexpired primary lease.
+    pub fn is_lease_current(
+        &self,
+        owner_id: &str,
+        pid: i64,
+        lease_epoch: i64,
+        now_ms: i64,
+    ) -> Result<bool, StoreError> {
+        if owner_id.trim().is_empty() || pid <= 0 || lease_epoch <= 0 {
+            return Ok(false);
+        }
+        let conn = self.lock_conn()?;
+        Ok(read_lease_locked(&conn)?.is_some_and(|rec| {
+            rec.owner_id == owner_id
+                && rec.pid == pid
+                && rec.lease_epoch == lease_epoch
+                && rec.expires_at_ms > now_ms
+        }))
     }
 
     /// Return the currently unexpired lease if one exists at `now_ms`.
@@ -380,6 +615,180 @@ impl SessionStore {
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         })
+    }
+
+    /// Atomically verify that `(owner_id, pid, lease_epoch)` holds the current unexpired lease
+    /// and insert the session row inside the same `BEGIN IMMEDIATE` SQLite transaction (`AUD-08`).
+    ///
+    /// A missing, expired, or stale lease rolls back and returns `Ok(None)` without mutating `sessions`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_session_if_lease_current(
+        &self,
+        title: &str,
+        model_id: &str,
+        effort: &str,
+        now_ms: i64,
+        owner_id: &str,
+        pid: i64,
+        lease_epoch: i64,
+        custom_id: Option<&str>,
+    ) -> Result<Option<SessionRecord>, StoreError> {
+        let clean_effort = if effort.trim().is_empty() {
+            "high"
+        } else {
+            effort.trim()
+        };
+        if !is_valid_effort(clean_effort)
+            || owner_id.trim().is_empty()
+            || pid <= 0
+            || lease_epoch <= 0
+        {
+            return Err(StoreError::invalid_input(
+                "Invalid fenced session create arguments.",
+            ));
+        }
+        let clean_title = if title.trim().is_empty() {
+            "New Studio Session".to_owned()
+        } else {
+            title.trim().to_owned()
+        };
+        let clean_model = if model_id.trim().is_empty() {
+            "claude-opus-4-6".to_owned()
+        } else {
+            model_id.trim().to_owned()
+        };
+        let id = match custom_id {
+            Some(s) if !s.trim().is_empty() => {
+                let trimmed = s.trim();
+                if !is_valid_studio_session_id(trimmed) {
+                    return Err(StoreError::invalid_input("Invalid custom session id."));
+                }
+                trimmed.to_owned()
+            }
+            _ => uuid_v4(),
+        };
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+        let lease_ok = read_lease_locked(&tx)?.is_some_and(|rec| {
+            rec.owner_id == owner_id
+                && rec.pid == pid
+                && rec.lease_epoch == lease_epoch
+                && rec.expires_at_ms > now_ms
+        });
+        if !lease_ok {
+            tx.rollback()?;
+            return Ok(None);
+        }
+
+        let mut stmt = tx.prepare(
+            "INSERT INTO sessions (id, title, model_id, effort, revision, created_at_ms, updated_at_ms)\n\
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6);",
+        )?;
+        stmt.bind_text(1, &id)?;
+        stmt.bind_text(2, &clean_title)?;
+        stmt.bind_text(3, &clean_model)?;
+        stmt.bind_text(4, clean_effort)?;
+        stmt.bind_int64(5, now_ms)?;
+        stmt.bind_int64(6, now_ms)?;
+        stmt.step()?;
+        drop(stmt);
+        tx.commit()?;
+
+        Ok(Some(SessionRecord {
+            id,
+            title: clean_title,
+            model_id: clean_model,
+            effort: clean_effort.to_owned(),
+            revision: 1,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        }))
+    }
+
+    /// Idempotent, lease-fenced session bootstrap (`AUD-01` + `AUD-08`): verifies the lease is
+    /// current inside `BEGIN IMMEDIATE`; if `id` already exists returns the existing row without
+    /// duplicating or failing on restart, otherwise inserts the row atomically.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ensure_session_if_lease_current(
+        &self,
+        id: &str,
+        title: &str,
+        model_id: &str,
+        effort: &str,
+        now_ms: i64,
+        owner_id: &str,
+        pid: i64,
+        lease_epoch: i64,
+    ) -> Result<Option<SessionRecord>, StoreError> {
+        let trimmed_id = id.trim();
+        let clean_effort = if effort.trim().is_empty() {
+            "high"
+        } else {
+            effort.trim()
+        };
+        if !is_valid_studio_session_id(trimmed_id)
+            || !is_valid_effort(clean_effort)
+            || owner_id.trim().is_empty()
+            || pid <= 0
+            || lease_epoch <= 0
+        {
+            return Err(StoreError::invalid_input(
+                "Invalid fenced bootstrap session arguments.",
+            ));
+        }
+        let clean_title = if title.trim().is_empty() {
+            "New Studio Session".to_owned()
+        } else {
+            title.trim().to_owned()
+        };
+        let clean_model = if model_id.trim().is_empty() {
+            "claude-opus-4-6".to_owned()
+        } else {
+            model_id.trim().to_owned()
+        };
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+        let lease_ok = read_lease_locked(&tx)?.is_some_and(|rec| {
+            rec.owner_id == owner_id
+                && rec.pid == pid
+                && rec.lease_epoch == lease_epoch
+                && rec.expires_at_ms > now_ms
+        });
+        if !lease_ok {
+            tx.rollback()?;
+            return Ok(None);
+        }
+
+        if let Some(existing) = read_session_locked(&tx, trimmed_id)? {
+            tx.commit()?;
+            return Ok(Some(existing));
+        }
+
+        let mut stmt = tx.prepare(
+            "INSERT INTO sessions (id, title, model_id, effort, revision, created_at_ms, updated_at_ms)\n\
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6);",
+        )?;
+        stmt.bind_text(1, trimmed_id)?;
+        stmt.bind_text(2, &clean_title)?;
+        stmt.bind_text(3, &clean_model)?;
+        stmt.bind_text(4, clean_effort)?;
+        stmt.bind_int64(5, now_ms)?;
+        stmt.bind_int64(6, now_ms)?;
+        stmt.step()?;
+        drop(stmt);
+        tx.commit()?;
+
+        Ok(Some(SessionRecord {
+            id: trimmed_id.to_owned(),
+            title: clean_title,
+            model_id: clean_model,
+            effort: clean_effort.to_owned(),
+            revision: 1,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        }))
     }
 
     /// Upsert a Studio session cleanly while preserving or bumping its revision.
@@ -484,6 +893,12 @@ impl SessionStore {
                 ));
             }
         }
+        if existing.revision == i64::MAX {
+            return Err(StoreError::conflict(
+                "session_revision_exhausted",
+                format!("Session revision exhausted for {session_id}."),
+            ));
+        }
 
         let effective_updated = now_ms.max(existing.updated_at_ms);
         let mut stmt = tx.prepare(
@@ -532,8 +947,14 @@ impl SessionStore {
         Ok(deleted)
     }
 
+    /// Return total persisted session count.
+    pub fn count_sessions(&self) -> Result<i64, StoreError> {
+        let conn = self.lock_conn()?;
+        count_sessions_locked(&conn)
+    }
+
     /// Keyset-paginated listing ordered by `(updated_at_ms DESC, id DESC)`.
-    /// Limit is clamped into `1..=250`.
+    /// Limit is clamped into `1..=250`. Includes exact `total_count` (`AUD-32`).
     pub fn list_sessions_page(
         &self,
         limit: usize,
@@ -542,6 +963,7 @@ impl SessionStore {
         let bounded = limit.clamp(1, 250);
         let probe = i64::try_from(bounded + 1).unwrap_or(251);
         let conn = self.lock_conn()?;
+        let total_count = count_sessions_locked(&conn)?;
 
         let mut stmt = if cursor.is_some() {
             conn.prepare(
@@ -600,6 +1022,7 @@ impl SessionStore {
             items,
             has_more,
             next_cursor,
+            total_count,
         })
     }
 
@@ -897,6 +1320,60 @@ impl SessionStore {
     }
 }
 
+fn checked_expiry(now_ms: i64, ttl_ms: i64) -> Option<i64> {
+    if ttl_ms <= 0 {
+        return None;
+    }
+    now_ms.checked_add(ttl_ms)
+}
+
+fn is_valid_effort(effort: &str) -> bool {
+    matches!(
+        effort,
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "auto"
+    )
+}
+
+fn is_strict_signed_decimal(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn ensure_lease_columns(conn: &Connection) -> Result<(), StoreError> {
+    let mut has_heartbeat = false;
+    let mut has_epoch = false;
+    let mut stmt = conn.prepare("PRAGMA table_info(store_leases);")?;
+    while stmt.step()? == StepStatus::Row {
+        let name = stmt.column_text(1)?;
+        if name == "heartbeat_at_ms" {
+            has_heartbeat = true;
+        } else if name == "lease_epoch" {
+            has_epoch = true;
+        }
+    }
+    drop(stmt);
+
+    if !has_heartbeat {
+        conn.exec_batch(
+            "ALTER TABLE store_leases ADD COLUMN heartbeat_at_ms INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !has_epoch {
+        conn.exec_batch(
+            "ALTER TABLE store_leases ADD COLUMN lease_epoch INTEGER NOT NULL DEFAULT 1;",
+        )?;
+    }
+    Ok(())
+}
+
+fn count_sessions_locked(conn: &Connection) -> Result<i64, StoreError> {
+    let mut stmt = conn.prepare("SELECT COUNT(*) FROM sessions;")?;
+    match stmt.step()? {
+        StepStatus::Row => Ok(stmt.column_int64(0)?),
+        StepStatus::Done => Ok(0),
+    }
+}
+
 fn redact_json_or_text(raw: &str) -> String {
     if let Some(val) = try_parse_json(raw) {
         let redacted = SecretRedactor::redact_json(&val);
@@ -909,7 +1386,7 @@ fn redact_json_or_text(raw: &str) -> String {
 
 fn read_lease_locked(conn: &Connection) -> Result<Option<LeaseRecord>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT lease_name, owner_id, pid, acquired_at_ms, expires_at_ms\n\
+        "SELECT lease_name, owner_id, pid, acquired_at_ms, heartbeat_at_ms, expires_at_ms, lease_epoch\n\
          FROM store_leases WHERE lease_name = ?1;",
     )?;
     stmt.bind_text(1, PRIMARY_LEASE_NAME)?;
@@ -919,7 +1396,9 @@ fn read_lease_locked(conn: &Connection) -> Result<Option<LeaseRecord>, StoreErro
             owner_id: stmt.column_text(1)?,
             pid: stmt.column_int64(2)?,
             acquired_at_ms: stmt.column_int64(3)?,
-            expires_at_ms: stmt.column_int64(4)?,
+            heartbeat_at_ms: stmt.column_int64(4)?,
+            expires_at_ms: stmt.column_int64(5)?,
+            lease_epoch: stmt.column_int64(6)?,
         })),
         StepStatus::Done => Ok(None),
     }
@@ -945,5 +1424,264 @@ fn read_session_locked(
             updated_at_ms: stmt.column_int64(6)?,
         })),
         StepStatus::Done => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDirGuard(PathBuf);
+
+    impl TempDirGuard {
+        fn new(tag: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!(
+                "omnia-pr1-session-{tag}-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pr1_fenced_leases_monotonic_epochs_overflow_and_atomic_session_create() {
+        let store = SessionStore::open_in_memory().expect("open store");
+        assert!(store.integrity_check().expect("integrity check"));
+
+        // Invalid PID and expiry overflow must fail closed.
+        assert!(store.acquire_lease_record("invalid-pid", 0, 1_000, 1).is_err());
+        assert!(store.acquire_lease_record("invalid-pid", -5, 1_000, 1).is_err());
+        assert!(store
+            .acquire_lease_record("overflow-owner", 100, 100, i64::MAX - 10)
+            .is_err());
+
+        // 1. Initial lease gets epoch 1.
+        let l1 = store
+            .acquire_lease_record("owner-alpha", 4100, 10_000, 1_000)
+            .expect("acquire alpha")
+            .expect("granted");
+        assert_eq!(l1.lease_epoch, 1);
+        assert_eq!(l1.heartbeat_at_ms, 1_000);
+        assert_eq!(l1.expires_at_ms, 11_000);
+
+        // Heartbeat extends owner-alpha; competing owner-beta rejected.
+        assert!(store.heartbeat("owner-alpha", 10_000, 8_000).expect("hb alpha"));
+        assert!(!store.heartbeat("owner-beta", 10_000, 8_000).expect("hb beta"));
+
+        // Reusing same owner string from a different PID must NOT steal/refresh live lease (AUD-08).
+        assert!(store
+            .acquire_lease_record("owner-alpha", 4101, 10_000, 9_000)
+            .expect("diff pid check")
+            .is_none());
+
+        // Matching (owner_id, pid) re-entrant refresh preserves acquired_at_ms & lease_epoch.
+        let l1_refresh = store
+            .acquire_lease_record("owner-alpha", 4100, 10_000, 9_000)
+            .expect("same pid refresh")
+            .expect("refreshed");
+        assert_eq!(l1_refresh.lease_epoch, 1);
+        assert_eq!(l1_refresh.acquired_at_ms, 1_000);
+        assert_eq!(l1_refresh.expires_at_ms, 19_000);
+
+        // Still active at t=15000.
+        assert!(store
+            .acquire_lease_record("owner-beta", 4200, 10_000, 15_000)
+            .expect("blocked beta")
+            .is_none());
+
+        // Expired takeover bumps lease_epoch 1 -> 2.
+        let l2 = store
+            .acquire_lease_record("owner-beta", 4200, 10_000, 19_001)
+            .expect("takeover beta")
+            .expect("granted beta");
+        assert_eq!(l2.lease_epoch, 2);
+
+        // Release sets expires_at_ms=0 in place without resetting lease_epoch.
+        assert!(store.release_lease("owner-beta").expect("release beta"));
+        assert!(store.active_lease(19_500).expect("no active").is_none());
+
+        // Fenced lease acquires monotonic epoch 3 (never reset to 1!).
+        let fenced = store
+            .acquire_lease_record("owner-fenced", 4300, 10_000, 20_000)
+            .expect("acquire fenced")
+            .expect("granted fenced");
+        assert_eq!(fenced.lease_epoch, 3);
+        assert!(store
+            .heartbeat_fenced("owner-fenced", 4300, fenced.lease_epoch, 10_000, 21_000)
+            .expect("fenced hb"));
+        assert!(!store
+            .heartbeat_fenced("owner-fenced", 4301, fenced.lease_epoch, 10_000, 21_500)
+            .expect("wrong pid hb"));
+        assert!(!store
+            .heartbeat_fenced("owner-fenced", 4300, fenced.lease_epoch - 1, 10_000, 21_500)
+            .expect("stale epoch hb"));
+        assert!(!store
+            .release_lease_fenced("owner-fenced", 4301, fenced.lease_epoch)
+            .expect("wrong pid release"));
+
+        // Atomic fenced session create succeeds with current lease and fails cleanly on stale epoch.
+        let fenced_session = store
+            .create_session_if_lease_current(
+                "Fenced",
+                "test-model",
+                "high",
+                22_000,
+                "owner-fenced",
+                4300,
+                fenced.lease_epoch,
+                Some("fenced-session"),
+            )
+            .expect("fenced create")
+            .expect("session created");
+        assert_eq!(fenced_session.id, "fenced-session");
+
+        let stale_create = store
+            .create_session_if_lease_current(
+                "Stale",
+                "test-model",
+                "high",
+                22_001,
+                "owner-fenced",
+                4300,
+                fenced.lease_epoch - 1,
+                Some("stale-session"),
+            )
+            .expect("stale create returns None");
+        assert!(stale_create.is_none());
+        assert!(store.get_session("stale-session").expect("lookup").is_none());
+
+        // Idempotent restart-safe bootstrap (AUD-01) reopens existing row without duplicate error.
+        let ensured1 = store
+            .ensure_session_if_lease_current(
+                "fenced-session",
+                "Fenced",
+                "test-model",
+                "high",
+                22_002,
+                "owner-fenced",
+                4300,
+                fenced.lease_epoch,
+            )
+            .expect("ensure existing")
+            .expect("existing row");
+        assert_eq!(ensured1.id, "fenced-session");
+        assert_eq!(store.count_sessions().expect("count"), 1);
+
+        // Release fenced and verify successor gets epoch 4; stale release cannot touch successor.
+        assert!(store
+            .release_lease_fenced("owner-fenced", 4300, fenced.lease_epoch)
+            .expect("release fenced"));
+        let successor = store
+            .acquire_lease_record("owner-successor", 4400, 10_000, 23_000)
+            .expect("acquire successor")
+            .expect("granted successor");
+        assert_eq!(successor.lease_epoch, 4);
+        assert!(!store
+            .release_lease_fenced("owner-fenced", 4300, fenced.lease_epoch)
+            .expect("stale release blocked"));
+        assert!(!store
+            .heartbeat("owner-successor", 100, i64::MAX - 10)
+            .expect("overflow hb returns false"));
+        assert!(store
+            .release_lease_fenced("owner-successor", 4400, successor.lease_epoch)
+            .expect("release successor"));
+    }
+
+    #[test]
+    fn legacy_5_column_store_leases_table_migrates_cleanly_on_reopen() {
+        let temp = TempDirGuard::new("legacy-migrate");
+        let db_path = temp.0.join("studio_legacy.db");
+
+        {
+            let conn = Connection::open_read_write(&db_path).expect("seed legacy db");
+            conn.exec_batch(
+                "CREATE TABLE store_leases (\n\
+                    lease_name TEXT PRIMARY KEY,\n\
+                    owner_id TEXT NOT NULL,\n\
+                    pid INTEGER NOT NULL,\n\
+                    acquired_at_ms INTEGER NOT NULL,\n\
+                    expires_at_ms INTEGER NOT NULL\n\
+                );\n\
+                INSERT INTO store_leases (lease_name, owner_id, pid, acquired_at_ms, expires_at_ms)\n\
+                VALUES ('studio_primary', 'legacy-owner', 777, 1000, 2000);",
+            )
+            .expect("seed legacy row");
+        }
+
+        let store = SessionStore::open(&db_path).expect("open migrates legacy table");
+        let taken = store
+            .acquire_lease_record("modern-owner", 888, 5_000, 3_000)
+            .expect("takeover expired legacy lease")
+            .expect("granted");
+        assert_eq!(taken.lease_epoch, 2);
+        assert_eq!(taken.heartbeat_at_ms, 3_000);
+    }
+
+    #[test]
+    fn opaque_session_cursor_and_56_session_timestamp_tie_paging_enumerates_every_id_once() {
+        let store = SessionStore::open_in_memory().expect("open store");
+        for i in 0..56 {
+            let ts = 10_000 + (i / 4) * 100; // Deliberate 4-way timestamp ties!
+            store
+                .create_session(
+                    &format!("Session {i:02}"),
+                    "gpt-5.4",
+                    "high",
+                    ts,
+                    Some(&format!("sess-{i:02}")),
+                )
+                .expect("create session");
+        }
+
+        let mut seen = HashSet::new();
+        let mut cursor_token: Option<String> = None;
+        let mut pages = 0usize;
+        loop {
+            let decoded = cursor_token
+                .as_deref()
+                .map(SessionCursor::decode)
+                .transpose()
+                .expect("valid cursor token");
+            let page = store
+                .list_sessions_page(15, decoded.as_ref())
+                .expect("list page");
+            assert_eq!(page.total_count, 56);
+            for rec in &page.items {
+                assert!(seen.insert(rec.id.clone()), "duplicate session {}", rec.id);
+            }
+            pages += 1;
+            if !page.has_more {
+                assert!(page.next_cursor.is_none());
+                break;
+            }
+            cursor_token = page.next_cursor.map(|c| c.encode());
+        }
+        assert_eq!(pages, 4);
+        assert_eq!(seen.len(), 56);
+
+        // Negative cursor & session-ID checks (AUD-32).
+        for bad in ["", "nothex.1234", "3132.2e2e", "3132.612f62", "a.b.c"] {
+            assert!(SessionCursor::decode(bad).is_err(), "must reject {bad}");
+        }
+        assert!(!is_valid_studio_session_id(""));
+        assert!(!is_valid_studio_session_id("../escape"));
+        assert!(!is_valid_studio_session_id("bad/slash"));
+        assert!(!is_valid_studio_session_id("bad?query"));
+        assert!(!is_valid_studio_session_id("bad\x07ctrl"));
+        assert!(is_valid_studio_session_id("sess-valid_01"));
     }
 }

@@ -244,6 +244,13 @@ impl Connection {
         }
     }
 
+    /// Run `PRAGMA quick_check(1)` to detect SQLite B-tree corruption cleanly.
+    pub fn integrity_check(&self) -> Result<bool, WinSqliteError> {
+        Ok(self
+            .query_scalar_text("PRAGMA quick_check(1);")?
+            .is_some_and(|s| s.eq_ignore_ascii_case("ok")))
+    }
+
     /// Return the rowid of the most recent successful `INSERT` on this connection.
     #[must_use]
     pub fn last_insert_rowid(&self) -> i64 {
@@ -328,9 +335,21 @@ pub type SqliteTransaction<'conn> = Transaction<'conn>;
 
 impl<'conn> Transaction<'conn> {
     /// Commit the transaction and consume the guard.
+    ///
+    /// If `COMMIT;` fails while SQLite leaves the transaction active (for example on a deferred
+    /// foreign-key constraint violation or lock error), automatically rolls back before returning
+    /// the error so the connection is never left stuck in an open transaction.
     pub fn commit(mut self) -> Result<(), WinSqliteError> {
-        self.finished = true;
-        self.conn.exec_batch("COMMIT;")
+        let res = self.conn.exec_batch("COMMIT;");
+        if res.is_ok() {
+            self.finished = true;
+        } else if !self.conn.is_autocommit() {
+            let _ = self.conn.exec_batch("ROLLBACK;");
+            self.finished = true;
+        } else {
+            self.finished = true;
+        }
+        res
     }
 
     /// Explicitly roll back the transaction and consume the guard.
@@ -674,4 +693,50 @@ unsafe fn read_db_errmsg(db: *mut ffi::sqlite3) -> String {
     unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integrity_check_passes_on_healthy_db() {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.exec_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);")
+            .expect("create table");
+        assert!(conn.integrity_check().expect("integrity check"));
+    }
+
+    #[test]
+    fn failed_commit_rolls_back_and_restores_autocommit() {
+        let mut conn = Connection::open_in_memory().expect("open memory db");
+        conn.exec_batch(
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY);\n\
+             CREATE TABLE child (\n\
+                 id INTEGER PRIMARY KEY,\n\
+                 parent_id INTEGER NOT NULL REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED\n\
+             );",
+        )
+        .expect("create schema");
+
+        let tx = conn.begin_immediate().expect("begin tx");
+        tx.exec_batch("INSERT INTO child (id, parent_id) VALUES (1, 999);")
+            .expect("deferred FK allows insert until commit");
+        assert!(
+            tx.commit().is_err(),
+            "deferred FK violation must fail commit"
+        );
+        assert!(
+            conn.is_autocommit(),
+            "failed commit must roll back so connection returns to autocommit"
+        );
+
+        // Subsequent transaction must succeed without 'cannot start a transaction within a transaction'.
+        let tx2 = conn
+            .begin_immediate()
+            .expect("subsequent begin_immediate must succeed");
+        tx2.exec_batch("INSERT INTO parent (id) VALUES (999);")
+            .expect("insert parent");
+        tx2.commit().expect("commit parent");
+    }
 }

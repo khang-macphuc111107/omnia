@@ -627,12 +627,31 @@ async fn handle_agent_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
         }
     }
 
+    // Honor Composer default-ON Deep Research / Deep Think / RAG scope controls without mutating Prefix-0.
+    let research_mode = non_empty_str(&body, &["researchMode", "research_mode"])
+        .unwrap_or("auto")
+        .to_ascii_lowercase();
+    let think_mode = non_empty_str(&body, &["thinkMode", "think_mode"])
+        .unwrap_or("auto")
+        .to_ascii_lowercase();
+    let rag_scope = non_empty_str(&body, &["ragScope", "rag_scope"])
+        .unwrap_or("local_global")
+        .to_ascii_lowercase();
+    if research_mode != "auto" || think_mode != "auto" || rag_scope != "local_global" {
+        prompt_with_attachments.push_str(&format!(
+            "\n\n<omnia_turn_directives research=\"{research_mode}\" think=\"{think_mode}\" rag_scope=\"{rag_scope}\" />\n"
+        ));
+    }
+
     let _ = state.sessions.append_message(
         &session_id,
         "user",
         &effective_prompt,
         &json!({
             "mode": mode,
+            "researchMode": research_mode,
+            "thinkMode": think_mode,
+            "ragScope": rag_scope,
             "attachments": attached_refs,
         })
         .to_string(),
@@ -645,6 +664,9 @@ async fn handle_agent_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
         json!({
             "sessionId": session_id,
             "mode": mode,
+            "researchMode": research_mode,
+            "thinkMode": think_mode,
+            "ragScope": rag_scope,
             "content": effective_prompt,
             "attachments": attached_refs,
         }),

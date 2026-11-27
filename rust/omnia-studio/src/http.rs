@@ -20,10 +20,14 @@ use url::{form_urlencoded, Host, Url};
 
 /// Maximum accepted HTTP request head size (128 KiB handles large AdGuard cookie injections cleanly).
 pub const MAX_HEADER_BYTES: usize = 128 * 1024;
+/// Maximum accepted HTTP request target (URI path + query) size (`414 URI Too Long`).
+pub const MAX_TARGET_BYTES: usize = 4096;
 /// Maximum accepted HTTP request body size (4 MiB).
 pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-/// Idle read timeout per client socket.
+/// Cumulative read timeout for HTTP request headers (prevents slowloris per-chunk reset).
 const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Cumulative read timeout for full HTTP request body transfer.
+const CLIENT_BODY_TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Maximum static file size served from `ui_root`.
 const MAX_STATIC_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -293,8 +297,15 @@ impl StudioServer {
                             Ok((stream, _peer)) => {
                                 let conn_state = Arc::clone(&state);
                                 let conn_dispatch = dispatcher.clone();
+                                let conn_shutdown = shutdown_rx.clone();
                                 tokio::spawn(async move {
-                                    let _ = serve_connection(stream, conn_state, conn_dispatch).await;
+                                    let _ = serve_connection(
+                                        stream,
+                                        conn_state,
+                                        conn_dispatch,
+                                        conn_shutdown,
+                                    )
+                                    .await;
                                 });
                             }
                             Err(_) => {
@@ -399,7 +410,11 @@ pub fn is_allowed_loopback_origin(raw: &str) -> bool {
     let Ok(parsed) = Url::parse(trimmed) else {
         return false;
     };
-    if parsed.scheme() != "http" || !parsed.username().is_empty() || parsed.password().is_some() {
+    if parsed.scheme() != "http"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port() == Some(0)
+    {
         return false;
     }
     if parsed.path() != "/" {
@@ -444,7 +459,8 @@ pub fn serve_static_asset(ui_root: &Path, request_path: &str) -> HttpResponse {
             if !(trimmed.starts_with("styles/")
                 || trimmed.starts_with("app/")
                 || trimmed.starts_with("assets/")
-                || trimmed == "favicon.ico")
+                || trimmed == "favicon.ico"
+                || trimmed == "favicon.svg")
             {
                 return HttpResponse::error(404, "not_found", "Static asset route not found.");
             }
@@ -586,7 +602,14 @@ pub fn parse_http_head_and_remainder(
             "HTTP method token is invalid.",
         ));
     }
-    if !target.starts_with('/') || target.bytes().any(|b| b < 0x20 || b == 0x7f) {
+    if target.len() > MAX_TARGET_BYTES {
+        return Err(HttpResponse::error(
+            414,
+            "target_too_long",
+            "HTTP request target exceeds 4096 byte limit.",
+        ));
+    }
+    if !target.starts_with('/') || target.bytes().any(|b| b <= 0x20 || b >= 0x7f) {
         return Err(HttpResponse::error(
             400,
             "invalid_target",
@@ -597,7 +620,10 @@ pub fn parse_http_head_and_remainder(
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let mut headers: BTreeMap<String, String> = BTreeMap::new();
     let mut content_length: Option<usize> = None;
+    let mut has_transfer_encoding = false;
     let mut is_chunked = false;
+    let mut host_seen = false;
+    let mut origin_seen = false;
     let mut cookie_header_count = 0usize;
 
     for line in lines {
@@ -611,14 +637,19 @@ pub fn parse_http_head_and_remainder(
                 "HTTP header line lacks colon separator.",
             ));
         };
-        let name = raw_name.trim().to_ascii_lowercase();
-        if name.is_empty() || !name.bytes().all(is_valid_header_name_byte) {
+        // RFC 9110 §5.1 / smuggling guard: forbid leading or trailing whitespace in header field-name
+        // (rejects `"Content-Length : 0"` and `" Host: ignored"`).
+        if raw_name.is_empty()
+            || raw_name.bytes().any(|b| b.is_ascii_whitespace())
+            || !raw_name.bytes().all(is_valid_header_name_byte)
+        {
             return Err(HttpResponse::error(
                 400,
                 "invalid_header_name",
-                "HTTP header name contains invalid characters.",
+                "HTTP header name contains invalid characters or whitespace.",
             ));
         }
+        let name = raw_name.to_ascii_lowercase();
         let val = raw_val.trim();
         if val.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f) {
             return Err(HttpResponse::error(
@@ -629,6 +660,20 @@ pub fn parse_http_head_and_remainder(
         }
 
         if name == "content-length" {
+            if content_length.is_some() {
+                return Err(HttpResponse::error(
+                    400,
+                    "duplicate_content_length",
+                    "Duplicate Content-Length headers are forbidden.",
+                ));
+            }
+            if val.is_empty() || !val.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(HttpResponse::error(
+                    400,
+                    "invalid_content_length",
+                    "Invalid Content-Length header.",
+                ));
+            }
             let parsed = val.parse::<usize>().map_err(|_| {
                 HttpResponse::error(
                     400,
@@ -636,19 +681,30 @@ pub fn parse_http_head_and_remainder(
                     "Invalid Content-Length header.",
                 )
             })?;
-            if let Some(prev) = content_length {
-                if prev != parsed {
-                    return Err(HttpResponse::error(
-                        400,
-                        "conflicting_content_length",
-                        "Conflicting Content-Length headers are forbidden.",
-                    ));
-                }
-            } else {
-                content_length = Some(parsed);
+            content_length = Some(parsed);
+        } else if name == "transfer-encoding" {
+            has_transfer_encoding = true;
+            if val.to_ascii_lowercase().contains("chunked") {
+                is_chunked = true;
             }
-        } else if name == "transfer-encoding" && val.to_ascii_lowercase().contains("chunked") {
-            is_chunked = true;
+        } else if name == "host" {
+            if host_seen {
+                return Err(HttpResponse::error(
+                    400,
+                    "duplicate_host",
+                    "Duplicate Host headers are forbidden.",
+                ));
+            }
+            host_seen = true;
+        } else if name == "origin" {
+            if origin_seen || val.is_empty() {
+                return Err(HttpResponse::error(
+                    400,
+                    "invalid_origin_header",
+                    "Duplicate or empty Origin header is forbidden.",
+                ));
+            }
+            origin_seen = true;
         }
 
         if name == "cookie" {
@@ -675,11 +731,18 @@ pub fn parse_http_head_and_remainder(
         }
     }
 
-    if is_chunked && content_length.is_some() {
+    if has_transfer_encoding && content_length.is_some() {
         return Err(HttpResponse::error(
             400,
             "ambiguous_framing",
-            "Content-Length combined with Transfer-Encoding: chunked is forbidden.",
+            "Content-Length combined with Transfer-Encoding is forbidden.",
+        ));
+    }
+    if has_transfer_encoding && !is_chunked {
+        return Err(HttpResponse::error(
+            400,
+            "unsupported_transfer_encoding",
+            "Only chunked Transfer-Encoding is supported.",
         ));
     }
     if let Some(len) = content_length {
@@ -738,12 +801,16 @@ pub fn parse_http_head_and_remainder(
     Ok((req, content_length, is_chunked, remainder))
 }
 
-async fn read_http_request<R>(stream: &mut R) -> Result<HttpRequest, HttpResponse>
+async fn read_http_request<R>(
+    stream: &mut R,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<HttpRequest, HttpResponse>
 where
     R: AsyncRead + Unpin,
 {
     let mut buffer = Vec::with_capacity(8192);
     let mut chunk = [0_u8; 4096];
+    let head_deadline = time::Instant::now() + CLIENT_READ_TIMEOUT;
 
     loop {
         if let Some(_pos) = find_header_end(&buffer) {
@@ -756,21 +823,35 @@ where
                 "HTTP header block exceeds maximum byte budget.",
             ));
         }
-        let read = match time::timeout(CLIENT_READ_TIMEOUT, stream.read(&mut chunk)).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(_)) => {
-                return Err(HttpResponse::error(
-                    400,
-                    "connection_read_failed",
-                    "Failed reading HTTP request from client socket.",
-                ))
+        let read = tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return Err(HttpResponse::error(
+                        503,
+                        "server_shutting_down",
+                        "Studio server is shutting down.",
+                    ));
+                }
+                continue;
             }
-            Err(_) => {
-                return Err(HttpResponse::error(
-                    408,
-                    "request_timeout",
-                    "Timed out waiting for complete HTTP request headers.",
-                ))
+            res = time::timeout_at(head_deadline, stream.read(&mut chunk)) => {
+                match res {
+                    Ok(Ok(n)) => n,
+                    Ok(Err(_)) => {
+                        return Err(HttpResponse::error(
+                            400,
+                            "connection_read_failed",
+                            "Failed reading HTTP request from client socket.",
+                        ))
+                    }
+                    Err(_) => {
+                        return Err(HttpResponse::error(
+                            408,
+                            "request_timeout",
+                            "Timed out waiting for complete HTTP request headers.",
+                        ))
+                    }
+                }
             }
         };
         if read == 0 {
@@ -785,22 +866,43 @@ where
 
     let (mut req, content_length, is_chunked, mut remainder) =
         parse_http_head_and_remainder(&buffer)?;
+    let body_deadline = time::Instant::now() + CLIENT_BODY_TOTAL_TIMEOUT;
 
     if is_chunked {
-        req.body = read_chunked_body(stream, remainder).await?;
+        req.body = read_chunked_body(stream, remainder, body_deadline, shutdown_rx).await?;
     } else if let Some(expected_len) = content_length {
         while remainder.len() < expected_len {
             let remaining = expected_len - remainder.len();
             let mut body_chunk = vec![0_u8; remaining.min(16 * 1024)];
-            let read = match time::timeout(CLIENT_READ_TIMEOUT, stream.read(&mut body_chunk)).await
-            {
-                Ok(Ok(n)) => n,
-                Ok(Err(_)) | Err(_) => {
-                    return Err(HttpResponse::error(
-                        400,
-                        "incomplete_body",
-                        "Failed reading full HTTP request body.",
-                    ))
+            let read = tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return Err(HttpResponse::error(
+                            503,
+                            "server_shutting_down",
+                            "Studio server is shutting down.",
+                        ));
+                    }
+                    continue;
+                }
+                res = time::timeout_at(body_deadline, stream.read(&mut body_chunk)) => {
+                    match res {
+                        Ok(Ok(n)) => n,
+                        Ok(Err(_)) => {
+                            return Err(HttpResponse::error(
+                                400,
+                                "incomplete_body",
+                                "Failed reading full HTTP request body.",
+                            ))
+                        }
+                        Err(_) => {
+                            return Err(HttpResponse::error(
+                                408,
+                                "request_timeout",
+                                "Timed out waiting for complete HTTP request body.",
+                            ))
+                        }
+                    }
                 }
             };
             if read == 0 {
@@ -819,7 +921,12 @@ where
     Ok(req)
 }
 
-async fn read_chunked_body<R>(stream: &mut R, mut buf: Vec<u8>) -> Result<Vec<u8>, HttpResponse>
+async fn read_chunked_body<R>(
+    stream: &mut R,
+    mut buf: Vec<u8>,
+    deadline: time::Instant,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<Vec<u8>, HttpResponse>
 where
     R: AsyncRead + Unpin,
 {
@@ -839,10 +946,19 @@ where
                     "Chunked body exceeded size limit.",
                 ));
             }
-            let n = time::timeout(CLIENT_READ_TIMEOUT, stream.read(&mut tmp))
-                .await
-                .map_err(|_| HttpResponse::error(408, "request_timeout", "Chunk read timeout."))?
-                .map_err(|_| HttpResponse::error(400, "incomplete_body", "Chunk read failed."))?;
+            let n = tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return Err(HttpResponse::error(503, "server_shutting_down", "Studio server is shutting down."));
+                    }
+                    continue;
+                }
+                res = time::timeout_at(deadline, stream.read(&mut tmp)) => {
+                    res
+                        .map_err(|_| HttpResponse::error(408, "request_timeout", "Chunk read timeout."))?
+                        .map_err(|_| HttpResponse::error(400, "incomplete_body", "Chunk read failed."))?
+                }
+            };
             if n == 0 {
                 return Err(HttpResponse::error(
                     400,
@@ -872,10 +988,19 @@ where
         }
 
         while buf.len() < cursor + chunk_len + 2 {
-            let n = time::timeout(CLIENT_READ_TIMEOUT, stream.read(&mut tmp))
-                .await
-                .map_err(|_| HttpResponse::error(408, "request_timeout", "Chunk data timeout."))?
-                .map_err(|_| HttpResponse::error(400, "incomplete_body", "Chunk data failed."))?;
+            let n = tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return Err(HttpResponse::error(503, "server_shutting_down", "Studio server is shutting down."));
+                    }
+                    continue;
+                }
+                res = time::timeout_at(deadline, stream.read(&mut tmp)) => {
+                    res
+                        .map_err(|_| HttpResponse::error(408, "request_timeout", "Chunk data timeout."))?
+                        .map_err(|_| HttpResponse::error(400, "incomplete_body", "Chunk data failed."))?
+                }
+            };
             if n == 0 {
                 return Err(HttpResponse::error(
                     400,
@@ -901,13 +1026,14 @@ async fn serve_connection<S, F, Fut>(
     mut stream: TcpStream,
     state: Arc<S>,
     dispatcher: F,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> io::Result<()>
 where
     S: Send + Sync + 'static,
     F: Fn(Arc<S>, HttpRequest) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = HttpResponse> + Send + 'static,
 {
-    let req_result = read_http_request(&mut stream).await;
+    let req_result = read_http_request(&mut stream, &mut shutdown_rx).await;
     let (mut response, req_origin) = match req_result {
         Ok(req) => {
             let origin = req.header("origin").map(ToOwned::to_owned);
@@ -1129,7 +1255,24 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 }
 
 fn is_valid_header_name_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
 
 fn has_control_or_space(s: &str) -> bool {
@@ -1137,7 +1280,9 @@ fn has_control_or_space(s: &str) -> bool {
 }
 
 fn is_valid_port_str(port: &str) -> bool {
-    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok()
+    !port.is_empty()
+        && port.bytes().all(|b| b.is_ascii_digit())
+        && matches!(port.parse::<u16>(), Ok(p) if p > 0)
 }
 
 fn mime_type_for_path(path: &Path) -> &'static str {
@@ -1171,11 +1316,94 @@ const fn status_reason(status: u16) -> &'static str {
         408 => "Request Timeout",
         409 => "Conflict",
         413 => "Payload Too Large",
+        414 => "URI Too Long",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         504 => "Gateway Timeout",
         _ => "OK",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pr1_http_smuggling_and_framing_guards_reject_malformed_requests_while_preserving_adguard() {
+        // 1. AdGuard multi-space request line + 18 repeated Cookie headers still pass!
+        let mut adguard = String::from("GET  /api/health  HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n");
+        for i in 0..18 {
+            adguard.push_str(&format!("Cookie: c{i}=dummy-{i}\r\n"));
+        }
+        adguard.push_str("\r\n");
+        let (req, _, _, _) = parse_http_head_and_remainder(adguard.as_bytes())
+            .expect("AdGuard multi-space + 18 Cookie headers must remain accepted");
+        assert_eq!(req.cookie_header_count, 18);
+        assert!(req.header("cookie").unwrap().contains("c0=dummy-0; c1=dummy-1"));
+
+        // 2. Space before colon in header name (smuggling vector) rejected with 400.
+        let err = parse_http_head_and_remainder(
+            b"POST /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length : 0\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+
+        // 3. Leading space before header name rejected with 400.
+        let err = parse_http_head_and_remainder(
+            b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n X-Folded: bad\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+
+        // 4. Signed "+0" and duplicate Content-Length rejected with 400.
+        let err = parse_http_head_and_remainder(
+            b"POST /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: +0\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+        let err = parse_http_head_and_remainder(
+            b"POST /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\ncontent-length: 0\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+
+        // 5. Transfer-Encoding: identity + Content-Length rejected with 400.
+        let err = parse_http_head_and_remainder(
+            b"POST /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nTransfer-Encoding: identity\r\nContent-Length: 0\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+
+        // 6. Duplicate Host, duplicate Origin, empty Origin rejected with 400.
+        let err = parse_http_head_and_remainder(
+            b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nHost: localhost:8787\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+        let err = parse_http_head_and_remainder(
+            b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: \r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+        let err = parse_http_head_and_remainder(
+            b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://localhost:3000\r\nOrigin: http://127.0.0.1:8787\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 400);
+
+        // 7. Target > 4096 bytes rejected with 414 URI Too Long.
+        let long_uri = format!("/api/health?q={}", "a".repeat(4100));
+        let raw_long = format!("GET {long_uri} HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n\r\n");
+        let err = parse_http_head_and_remainder(raw_long.as_bytes()).unwrap_err();
+        assert_eq!(err.status, 414);
+
+        // 8. Port 0 rejected in Host & Origin.
+        assert!(!is_allowed_loopback_host("127.0.0.1:0"));
+        assert!(!is_allowed_loopback_origin("http://127.0.0.1:0"));
+        assert!(is_allowed_loopback_origin("http://localhost:3000"));
     }
 }

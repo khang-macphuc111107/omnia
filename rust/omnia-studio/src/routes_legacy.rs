@@ -18,23 +18,30 @@ use omnia_agent::{read_models_config, AgentStore, DapManager, SuperHarnessManage
 use crate::routes_capabilities::{
     dispatch_capability_route, ConnectorConfigRecord, RemoteControlState,
 };
-use crate::routes_downloads::dispatch_download_route;
+use crate::routes_downloads::{dispatch_download_route, is_known_download_route};
 use crate::routes_notebooks::dispatch_notebook_route;
+use crate::routes_research_lifecycle_v5;
 use crate::runtime_proxy::RuntimeProxy;
 use crate::telemetry::{
     count_rust_files, discover_crate_count, is_reparse_or_symlink, query_current_binary_bytes,
     detect_rustc_version, query_working_set_bytes,
 };
 use omnia_core::{now_epoch_ms, SecretRedactor};
-use omnia_downloader::{validate_safe_local_path, DownloadConfig, DownloadManager};
+use omnia_downloader::{
+    validate_safe_local_path, CaptureBundle, DownloadConfig, DownloadManager, SchedulerConfig,
+    SitePolicyRegistry,
+};
 use omnia_graph::{
     AgentGraphError, GraphifyEdge, GraphifyEntity, GraphifyIndex, PeerMeshGraph,
     TraversalDirection,
 };
 use omnia_harness::{
+    artifact_os::ArtifactOs,
     composer_model::ComposerModel,
+    deep_think::DeepThinkEngine,
     memory_graph::{MemoryEntry, MemoryError, MemoryGraph, MemoryTier},
     proactive_rag::ProactiveRag,
+    research_vault::ResearchVault,
     rich_composer::{symbol_palette, DocumentAnchor, RichComposer, TextStyle},
     skill_registry::SkillRegistry,
     steer_queue::{SteerMode, SteerQueue},
@@ -45,10 +52,13 @@ use omnia_routing::{
     DynamicProviderRouter, ModelCapabilities, PrivacyTier, QuotaState,
     RouteCandidate, RouteDecisionReceipt, RouteRequestPolicy, TaskRisk,
 };
-use omnia_storage::{SessionCursor, SessionMessageRecord, SessionStore};
+use omnia_storage::{
+    is_valid_studio_session_id, SessionCursor, SessionMessageRecord, SessionStore,
+};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_SKILL_CONTENT_CHARS: usize = 1024;
@@ -71,7 +81,13 @@ pub struct StudioState {
     pub remote: Mutex<RemoteControlState>,
     pub downloads: Arc<DownloadManager>,
     pub downloads_staging_dir: PathBuf,
+    pub download_scheduler_config: Mutex<SchedulerConfig>,
+    pub download_site_policies: Mutex<SitePolicyRegistry>,
+    pub captured_bundles: Mutex<Vec<CaptureBundle>>,
     pub notebooks: Arc<NotebookEngine>,
+    pub research_vault: Arc<ResearchVault>,
+    pub deep_think: Arc<DeepThinkEngine>,
+    pub artifact_os: Arc<ArtifactOs>,
     pub event_feed: Arc<EventFeed>,
     pub ops: Arc<OpsStore>,
     pub terminals: Arc<TerminalHub>,
@@ -83,10 +99,25 @@ pub struct StudioState {
     pub cordis_plugins: Arc<CordisPluginManager>,
     pub dap: Arc<DapManager>,
     pub observatory: Arc<ObservatoryState>,
+    pub lease_owner_id: String,
+    pub lease_epoch: AtomicI64,
     pub rust_files: usize,
     pub crate_count: usize,
     pub binary_bytes: u64,
     pub pid: u32,
+}
+
+impl Drop for StudioState {
+    fn drop(&mut self) {
+        let epoch = self.lease_epoch.load(Ordering::Relaxed);
+        if epoch > 0 {
+            let _ = self
+                .sessions
+                .release_lease_fenced(&self.lease_owner_id, i64::from(self.pid), epoch);
+        } else {
+            let _ = self.sessions.release_lease(&self.lease_owner_id);
+        }
+    }
 }
 
 impl StudioState {
@@ -135,8 +166,59 @@ impl StudioState {
 
         let pid = std::process::id();
         let now = now_epoch_ms();
-        let owner_id = format!("studio-server-{pid}");
-        let _ = sessions.acquire_lease(&owner_id, i64::from(pid), 60_000, now);
+        let lease_owner_id = format!("studio-server-{pid}-{}", &omnia_core::uuid_v4()[..8]);
+        let lease_epoch = sessions
+            .acquire_lease_record(&lease_owner_id, i64::from(pid), 60_000, now)
+            .ok()
+            .flatten()
+            .map_or(0, |rec| rec.lease_epoch);
+
+        let is_default_external =
+            config.rollback_root == Path::new(crate::config::DEFAULT_ROLLBACK_ROOT);
+        let research_vault = Arc::new(match config.db_path.as_ref() {
+            Some(db_path) => {
+                if is_default_external {
+                    ResearchVault::open(&config.workspace_root, None)
+                } else {
+                    let vault_dir = db_path.with_file_name("research-vault");
+                    ResearchVault::open(&config.workspace_root, Some(&vault_dir))
+                }
+                .map_err(|e| format!("Failed opening ResearchVault: {e}"))?
+            }
+            None => ResearchVault::open_in_memory()
+                .map_err(|e| format!("Failed opening in-memory ResearchVault: {e}"))?,
+        });
+        let deep_think = Arc::new(match config.db_path.as_ref() {
+            Some(db_path) => {
+                let dt_path = if is_default_external {
+                    PathBuf::from(r"D:\OmniaData\memory\omnia_deep_think.db")
+                } else {
+                    db_path.with_file_name("omnia_deep_think.db")
+                };
+                DeepThinkEngine::open(&dt_path)
+                    .map_err(|e| format!("Failed opening DeepThinkEngine: {e}"))?
+            }
+            None => DeepThinkEngine::open_in_memory()
+                .map_err(|e| format!("Failed opening in-memory DeepThinkEngine: {e}"))?,
+        });
+        let artifact_os = Arc::new(match config.db_path.as_ref() {
+            Some(db_path) => {
+                if is_default_external {
+                    ArtifactOs::open(
+                        &config.workspace_root,
+                        Path::new(r"D:\OmniaData\memory\omnia_artifact_os.db"),
+                        None,
+                    )
+                } else {
+                    let ao_path = db_path.with_file_name("omnia_artifact_os.db");
+                    let mem_dir = db_path.with_file_name("memory");
+                    ArtifactOs::open(&config.workspace_root, &ao_path, Some(&mem_dir))
+                }
+                .map_err(|e| format!("Failed opening ArtifactOs: {e}"))?
+            }
+            None => ArtifactOs::open_in_memory(&config.workspace_root)
+                .map_err(|e| format!("Failed opening in-memory ArtifactOs: {e}"))?,
+        });
 
         let router = match config.db_path.as_ref() {
             Some(db_path) => DynamicProviderRouter::open_sqlite(
@@ -158,6 +240,7 @@ impl StudioState {
         let _ = graphify.index_workspace(&config.workspace_root);
 
         let memory = MemoryGraph::new();
+        let _ = artifact_os.hydrate_memory_graph_from_db(&memory);
 
         let rag = ProactiveRag::from_workspace(&config.workspace_root);
         rag.index_memory_graph(&memory);
@@ -283,7 +366,13 @@ impl StudioState {
             remote,
             downloads,
             downloads_staging_dir,
+            download_scheduler_config: Mutex::new(SchedulerConfig::default()),
+            download_site_policies: Mutex::new(SitePolicyRegistry::new()),
+            captured_bundles: Mutex::new(Vec::new()),
             notebooks,
+            research_vault,
+            deep_think,
+            artifact_os,
             event_feed,
             ops,
             terminals,
@@ -295,6 +384,8 @@ impl StudioState {
             cordis_plugins,
             dap,
             observatory,
+            lease_owner_id,
+            lease_epoch: AtomicI64::new(lease_epoch),
             rust_files,
             crate_count,
             binary_bytes,
@@ -363,6 +454,9 @@ fn register_configured_router_candidates(router: &DynamicProviderRouter) {
 pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> HttpResponse {
     if let Some(v5_resp) = crate::routes_studio_v5::dispatch_v5_route(&state, &req).await {
         return v5_resp;
+    }
+    if let Some(rl_resp) = routes_research_lifecycle_v5::dispatch(&state, &req).await {
+        return rl_resp;
     }
     if let Some(dl_resp) = dispatch_download_route(&state, &req).await {
         return dl_resp;
@@ -440,6 +534,15 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
         ("POST", "/api/sessions/create") => handle_sessions_create(&state, &req),
         ("GET", "/api/sessions/messages") => handle_sessions_messages_get(&state, &req),
         ("POST", "/api/sessions/messages") => handle_sessions_messages_post(&state, &req),
+        ("GET", path)
+            if path.starts_with("/api/sessions/")
+                && !matches!(
+                    path,
+                    "/api/sessions/create" | "/api/sessions/messages"
+                ) =>
+        {
+            handle_session_detail(&state, path)
+        }
 
         ("GET", "/api/history") => handle_history(&state.config, &req),
         ("GET", "/api/history/messages") => handle_history_messages(&state.config, &req),
@@ -458,6 +561,8 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
             if crate::routes_studio_v5::is_known_v5_route(path)
                 || crate::routes_observatory_v5::is_known_route(path)
                 || crate::routes_atelier_drive_v5::is_known_route(path)
+                || routes_research_lifecycle_v5::is_known_route(path)
+                || is_known_download_route(path)
                 || matches!(
                 path,
                 "/api/health"
@@ -524,6 +629,7 @@ async fn handle_health(state: &StudioState) -> HttpResponse {
     HttpResponse::ok(json!({
         "ok": true,
         "state": "online",
+        "demoMode": false,
         "workspaceRoot": workspace_root,
         "engine": "Omnia Full Native Rust",
         "compiler": detect_rustc_version(),
@@ -1034,15 +1140,75 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
 
     let now = now_epoch_ms();
 
-    if let Some(trip_id) = body
+    // 1. Validate `simulate` BEFORE any circuit or router mutation (`AUD-09`).
+    let simulate = match body.get("simulate") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            return HttpResponse::error(
+                400,
+                "invalid_simulate",
+                "Field 'simulate' must be a boolean.",
+            );
+        }
+    };
+
+    let trip_id = body
         .get("tripCandidate")
         .or_else(|| body.get("trip_candidate"))
         .or_else(|| body.get("trip_provider"))
         .or_else(|| body.get("tripProvider"))
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+        .filter(|s| !s.is_empty());
+
+    let reset_id = body
+        .get("resetCandidate")
+        .or_else(|| body.get("reset_candidate"))
+        .or_else(|| body.get("reset_provider"))
+        .or_else(|| body.get("resetProvider"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if simulate && (trip_id.is_some() || reset_id.is_some()) {
+        return HttpResponse::error(
+            400,
+            "simulation_cannot_change_circuit",
+            "Side-effect-free simulation cannot trip or reset provider circuits.",
+        );
+    }
+
+    // 2. Validate `estimatedTokens` (`64..=1_000_000` integer) BEFORE any circuit mutation.
+    let raw_est_val = body
+        .get("estimatedTokens")
+        .or_else(|| body.get("estimatedInputTokens"))
+        .or_else(|| body.get("token_estimate"))
+        .or_else(|| body.get("tokenEstimate"));
+    let validated_estimated_tokens = if let Some(val) = raw_est_val {
+        match val.as_i64() {
+            Some(n) if (64..=1_000_000).contains(&n) => Some(n as u64),
+            _ => {
+                return HttpResponse::json(
+                    400,
+                    json!({
+                        "ok": false,
+                        "state": "error",
+                        "code": "invalid_estimated_tokens",
+                        "error": "invalid_estimated_tokens",
+                        "field": "estimatedTokens",
+                        "detail": "Field 'estimatedTokens' must be an integer between 64 and 1000000.",
+                        "message": "Field 'estimatedTokens' must be an integer between 64 and 1000000.",
+                    }),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    // 3. Apply explicit circuit mutations only after input validation passes and `!simulate`.
+    if let Some(trip_id) = trip_id {
         if let Err(err) = state.router.trip_circuit(trip_id, now, Some(60_000)) {
             return HttpResponse::error(404, "unknown_candidate", &err.to_string());
         }
@@ -1062,15 +1228,7 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
         );
     }
 
-    if let Some(reset_id) = body
-        .get("resetCandidate")
-        .or_else(|| body.get("reset_candidate"))
-        .or_else(|| body.get("reset_provider"))
-        .or_else(|| body.get("resetProvider"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(reset_id) = reset_id {
         if let Err(err) = state.router.reset_circuit(reset_id) {
             return HttpResponse::error(404, "unknown_candidate", &err.to_string());
         }
@@ -1126,18 +1284,18 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
         .get("taskRisk")
         .or_else(|| body.get("task_risk"))
         .or_else(|| body.get("task_class"))
+        .or_else(|| body.get("taskClass"))
         .and_then(Value::as_str)
     {
         policy.task_risk = parse_task_risk(risk_raw);
     }
-    if let Some(est_tok) = body
-        .get("estimatedTokens")
-        .or_else(|| body.get("estimatedInputTokens"))
-        .or_else(|| body.get("token_estimate"))
-        .or_else(|| body.get("tokenEstimate"))
-        .and_then(Value::as_u64)
-    {
+    if let Some(est_tok) = validated_estimated_tokens {
         policy.estimated_input_tokens = est_tok;
+        policy.estimated_output_tokens = body
+            .get("estimatedOutputTokens")
+            .or_else(|| body.get("estimated_output_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
     }
     if body
         .get("requireStreaming")
@@ -1153,6 +1311,7 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
         .and_then(Value::as_bool)
         == Some(true)
         || body.get("task_class").and_then(Value::as_str) == Some("vision")
+        || body.get("taskClass").and_then(Value::as_str) == Some("vision")
     {
         policy.required_capabilities.supports_vision = true;
     }
@@ -1162,6 +1321,49 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect();
+    }
+
+    if simulate {
+        return match state.router.simulate_route(&policy) {
+            Ok(decision) => {
+                let candidates: Vec<Value> = state
+                    .router
+                    .snapshots(now)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(format_router_candidate_for_ui)
+                    .collect();
+                let mut ui_receipt = format_router_receipt_for_ui(&decision.receipt);
+                if let Value::Object(ref mut map) = ui_receipt {
+                    map.insert("simulated".to_string(), json!(true));
+                    map.insert("sequenceId".to_string(), json!(0));
+                    map.insert("reservationId".to_string(), Value::Null);
+                    map.insert("reservedTokens".to_string(), json!(0));
+                }
+                let decision_status = if decision.allowed {
+                    "SIMULATED_DETERMINISTIC"
+                } else {
+                    "FENCED_NO_ELIGIBLE_ROUTE"
+                };
+
+                HttpResponse::ok(json!({
+                    "ok": true,
+                    "state": "online",
+                    "mode": "SIMULATED_DETERMINISTIC",
+                    "simulated": true,
+                    "allowed": decision.allowed,
+                    "status": "SIMULATED_DETERMINISTIC",
+                    "decisionStatus": decision_status,
+                    "tokenBudget": Value::Null,
+                    "selectedCandidateId": decision.receipt.selected_candidate_id,
+                    "reservation": Value::Null,
+                    "receipt": ui_receipt,
+                    "rawDecision": decision.to_json(),
+                    "candidates": candidates,
+                }))
+            }
+            Err(err) => HttpResponse::error(400, "router_simulation_failed", &err.to_string()),
+        };
     }
 
     match state.router.decide_and_reserve(&policy) {
@@ -1179,6 +1381,7 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
             HttpResponse::ok(json!({
                 "ok": true,
                 "state": "online",
+                "simulated": false,
                 "allowed": decision.allowed,
                 "status": status_label,
                 "tokenBudget": Value::Null,
@@ -1270,6 +1473,7 @@ fn handle_memory_upsert(state: &StudioState, req: &HttpRequest) -> HttpResponse 
     {
         Ok(entry) => {
             state.rag.index_memory_graph(&state.memory);
+            let _ = state.artifact_os.sync_memory_graph_to_db(&state.memory);
             HttpResponse::ok(json!({
                 "ok": true,
                 "state": "online",
@@ -1327,6 +1531,7 @@ fn handle_memory_erase(state: &StudioState, req: &HttpRequest) -> HttpResponse {
     match state.memory.erase(&ns, &key, Some(now_epoch_ms())) {
         Ok(receipt) => {
             state.rag.index_memory_graph(&state.memory);
+            let _ = state.artifact_os.sync_memory_graph_to_db(&state.memory);
             HttpResponse::ok(json!({
                 "ok": true,
                 "state": "online",
@@ -1644,25 +1849,190 @@ fn handle_steer_enqueue(state: &StudioState, req: &HttpRequest) -> HttpResponse 
     }))
 }
 
+fn percent_decode_segment(raw: &str) -> Result<String, &'static str> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err("Truncated percent-encoding in session ID.");
+            }
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .map_err(|_| "Invalid percent-encoding.")?;
+            let val = u8::from_str_radix(hex, 16)
+                .map_err(|_| "Invalid hex digits in percent-encoding.")?;
+            out.push(val);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| "Decoded session ID is not valid UTF-8.")
+}
+
+fn ensure_studio_lease_current(state: &StudioState, now: i64) -> Result<i64, HttpResponse> {
+    let current_epoch = state.lease_epoch.load(Ordering::Acquire);
+    if state.config.db_path.is_none() {
+        return Ok(current_epoch.max(1));
+    }
+    let pid_i64 = i64::from(state.pid);
+    if current_epoch > 0 {
+        match state
+            .sessions
+            .heartbeat_fenced(&state.lease_owner_id, pid_i64, current_epoch, 60_000, now)
+        {
+            Ok(true) => return Ok(current_epoch),
+            Ok(false) => {}
+            Err(err) => {
+                return Err(HttpResponse::error(
+                    500,
+                    "session_lease_error",
+                    &err.to_string(),
+                ));
+            }
+        }
+    }
+    match state
+        .sessions
+        .acquire_lease_record(&state.lease_owner_id, pid_i64, 60_000, now)
+    {
+        Ok(Some(rec)) => {
+            state.lease_epoch.store(rec.lease_epoch, Ordering::Release);
+            Ok(rec.lease_epoch)
+        }
+        Ok(None) => Err(HttpResponse::error(
+            503,
+            "studio_lease_lost",
+            "Cooperative SQLite session lease is held by another active Studio owner.",
+        )),
+        Err(err) => Err(HttpResponse::error(
+            500,
+            "session_lease_error",
+            &err.to_string(),
+        )),
+    }
+}
+
+fn handle_session_detail(state: &StudioState, path: &str) -> HttpResponse {
+    let raw_seg = path.strip_prefix("/api/sessions/").unwrap_or("");
+    if raw_seg.is_empty() || raw_seg.contains('/') {
+        return HttpResponse::error(
+            400,
+            "invalid_session_id",
+            "Session ID path segment is invalid.",
+        );
+    }
+    let decoded = match percent_decode_segment(raw_seg) {
+        Ok(s) => s,
+        Err(msg) => return HttpResponse::error(400, "invalid_session_id", msg),
+    };
+    if !is_valid_studio_session_id(&decoded) {
+        return HttpResponse::error(
+            400,
+            "invalid_session_id",
+            "Session ID must be 1..=128 safe UTF-8 bytes without traversal or separator characters.",
+        );
+    }
+    match state.sessions.get_session(&decoded) {
+        Ok(Some(s)) => HttpResponse::ok(json!({
+            "ok": true,
+            "state": "online",
+            "session": {
+                "id": s.id,
+                "title": s.title,
+                "modelId": s.model_id,
+                "model_id": s.model_id,
+                "effort": s.effort,
+                "revision": s.revision,
+                "createdAtMs": s.created_at_ms,
+                "updatedAtMs": s.updated_at_ms,
+            },
+        })),
+        Ok(None) => HttpResponse::error(404, "session_not_found", "Session not found."),
+        Err(err) => HttpResponse::error(500, "session_store_error", &err.to_string()),
+    }
+}
+
 fn handle_sessions_list(state: &StudioState, req: &HttpRequest) -> HttpResponse {
-    let limit = req
-        .query_param("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(50)
-        .clamp(1, 250);
-    let cursor = match (
-        req.query_param("cursorUpdatedAtMs")
-            .or_else(|| req.query_param("cursor_updated_at_ms"))
-            .and_then(|v| v.parse::<i64>().ok()),
-        req.query_param("cursorId")
-            .or_else(|| req.query_param("cursor_id"))
-            .filter(|s| !s.trim().is_empty()),
-    ) {
-        (Some(ts), Some(id)) => Some(SessionCursor {
-            updated_at_ms: ts,
-            id,
-        }),
-        _ => None,
+    let limit = match req.query_param("limit") {
+        None => 50usize,
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+                return HttpResponse::error(
+                    400,
+                    "invalid_session_limit",
+                    "Query parameter 'limit' must be an integer between 1 and 250.",
+                );
+            }
+            match trimmed.parse::<usize>() {
+                Ok(n) if (1..=250).contains(&n) => n,
+                _ => {
+                    return HttpResponse::error(
+                        400,
+                        "invalid_session_limit",
+                        "Query parameter 'limit' must be between 1 and 250.",
+                    );
+                }
+            }
+        }
+    };
+
+    let cursor = if let Some(raw_cursor) = req.query_param("cursor") {
+        let trimmed = raw_cursor.trim();
+        if trimmed.is_empty() {
+            return HttpResponse::error(
+                400,
+                "invalid_session_cursor",
+                "Query parameter 'cursor' cannot be empty.",
+            );
+        }
+        match SessionCursor::decode(trimmed) {
+            Ok(c) => Some(c),
+            Err(err) => {
+                return HttpResponse::error(400, "invalid_session_cursor", &err.to_string());
+            }
+        }
+    } else {
+        let raw_ts = req
+            .query_param("cursorUpdatedAtMs")
+            .or_else(|| req.query_param("cursor_updated_at_ms"));
+        let raw_id = req
+            .query_param("cursorId")
+            .or_else(|| req.query_param("cursor_id"));
+        match (raw_ts, raw_id) {
+            (None, None) => None,
+            (Some(ts_s), Some(id_s)) => {
+                let Ok(ts) = ts_s.trim().parse::<i64>() else {
+                    return HttpResponse::error(
+                        400,
+                        "invalid_session_cursor",
+                        "Query parameter 'cursorUpdatedAtMs' must be a valid integer.",
+                    );
+                };
+                let id_clean = id_s.trim().to_string();
+                if !is_valid_studio_session_id(&id_clean) {
+                    return HttpResponse::error(
+                        400,
+                        "invalid_session_cursor",
+                        "Query parameter 'cursorId' is invalid.",
+                    );
+                }
+                Some(SessionCursor {
+                    updated_at_ms: ts,
+                    id: id_clean,
+                })
+            }
+            _ => {
+                return HttpResponse::error(
+                    400,
+                    "invalid_session_cursor",
+                    "Both 'cursorUpdatedAtMs' and 'cursorId' must be supplied together.",
+                );
+            }
+        }
     };
 
     let page = match state.sessions.list_sessions_page(limit, cursor.as_ref()) {
@@ -1680,7 +2050,9 @@ fn handle_sessions_list(state: &StudioState, req: &HttpRequest) -> HttpResponse 
                 "ownerId": l.owner_id,
                 "pid": l.pid,
                 "acquiredAtMs": l.acquired_at_ms,
+                "heartbeatAtMs": l.heartbeat_at_ms,
                 "expiresAtMs": l.expires_at_ms,
+                "leaseEpoch": l.lease_epoch,
             })
         });
 
@@ -1701,12 +2073,19 @@ fn handle_sessions_list(state: &StudioState, req: &HttpRequest) -> HttpResponse 
         })
         .collect();
 
+    let next_cursor_token = page.next_cursor.as_ref().map(SessionCursor::encode);
+    let next_cursor_obj = page
+        .next_cursor
+        .map(|c| json!({ "updatedAtMs": c.updated_at_ms, "id": c.id }));
+
     HttpResponse::ok(json!({
         "ok": true,
         "state": "online",
         "sessions": sessions,
+        "totalCount": page.total_count,
         "hasMore": page.has_more,
-        "nextCursor": page.next_cursor.map(|c| json!({ "updatedAtMs": c.updated_at_ms, "id": c.id })),
+        "nextCursor": next_cursor_obj,
+        "nextCursorToken": next_cursor_token,
         "activeLease": lease,
     }))
 }
@@ -1716,11 +2095,19 @@ fn handle_sessions_create(state: &StudioState, req: &HttpRequest) -> HttpRespons
         Ok(b) => b,
         Err(resp) => return resp,
     };
+    let now = now_epoch_ms();
+    let epoch = match ensure_studio_lease_current(state, now) {
+        Ok(ep) => ep,
+        Err(resp) => return resp,
+    };
     let title = body
         .get("title")
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
+    if title.is_empty() {
+        return HttpResponse::error(400, "session_create_failed", "Session title cannot be empty.");
+    }
     let model_id = body
         .get("modelId")
         .or_else(|| body.get("model_id"))
@@ -1740,13 +2127,39 @@ fn handle_sessions_create(state: &StudioState, req: &HttpRequest) -> HttpRespons
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let now = now_epoch_ms();
-    let created = match state
-        .sessions
-        .create_session(title, model_id, effort, now, custom_id)
-    {
-        Ok(rec) => rec,
-        Err(err) => return HttpResponse::error(400, "session_create_failed", &err.to_string()),
+    let created = if state.config.db_path.is_some() {
+        match state.sessions.create_session_if_lease_current(
+            title,
+            model_id,
+            effort,
+            now,
+            &state.lease_owner_id,
+            i64::from(state.pid),
+            epoch,
+            custom_id,
+        ) {
+            Ok(Some(rec)) => rec,
+            Ok(None) => {
+                return HttpResponse::error(
+                    503,
+                    "studio_lease_lost",
+                    "Cooperative SQLite session lease was lost before session creation committed.",
+                );
+            }
+            Err(err) => {
+                return HttpResponse::error(400, "session_create_failed", &err.to_string());
+            }
+        }
+    } else {
+        match state
+            .sessions
+            .create_session(title, model_id, effort, now, custom_id)
+        {
+            Ok(rec) => rec,
+            Err(err) => {
+                return HttpResponse::error(400, "session_create_failed", &err.to_string());
+            }
+        }
     };
 
     let sessions: Vec<Value> = state
@@ -1853,13 +2266,17 @@ fn handle_sessions_messages_post(state: &StudioState, req: &HttpRequest) -> Http
         );
     }
 
+    let now = now_epoch_ms();
+    if let Err(resp) = ensure_studio_lease_current(state, now) {
+        return resp;
+    }
     let redacted_content = SecretRedactor::redact(content);
     match state.sessions.append_message(
         session_id,
         role,
         &redacted_content,
         &meta_str,
-        now_epoch_ms(),
+        now,
     ) {
         Ok(msg) => {
             let messages = state
@@ -1968,6 +2385,7 @@ fn format_router_candidate_for_ui(snap: &CandidateSnapshot) -> Value {
         "quotaState": quota_str,
         "remainingTokens": remaining_tokens,
         "reserveTokens": snap.state.reserved_tokens,
+        "concurrentReservations": snap.state.reserved_requests,
         "ewmaMs": ewma,
         "p95Ms": snap.state.latency_percentile(95).map(|v| v.round() as u64),
         "errorRate": err_rate,
@@ -2176,5 +2594,235 @@ fn load_flagship_skills(config: &StudioConfig) -> SkillRegistry {
     if loaded == 0 && config.skills_root.is_dir() {
         let _ = registry.load_from_directory(&config.skills_root);
     }
+    let _ = registry.load_default_cold_vault();
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn make_test_state() -> Arc<StudioState> {
+        let mut cfg = StudioConfig::default();
+        let tmp = std::env::temp_dir().join(format!(
+            "omnia-studio-legacy-test-{}",
+            omnia_core::uuid_v4_simple()
+        ));
+        let ws = tmp.join("ws");
+        let rb = tmp.join("rb");
+        let _ = fs::create_dir_all(&ws);
+        let _ = fs::create_dir_all(&rb);
+        cfg.workspace_root = ws;
+        cfg.rollback_root = rb;
+        cfg.db_path = None;
+        cfg.runtime_url = None;
+        let state = StudioState::new(cfg).expect("StudioState::new");
+        let cand = RouteCandidate {
+            candidate_id: "fixture:model-alpha".to_string(),
+            provider_id: "fixture".to_string(),
+            model_id: "model-alpha".to_string(),
+            auth_boundary: "default".to_string(),
+            region: "local".to_string(),
+            privacy_tier: PrivacyTier::Public,
+            capabilities: ModelCapabilities::standard_candidate(),
+            context_limit_tokens: 128_000,
+            max_output_tokens: 8_192,
+            quality_tier: 3,
+            pricing_version: "fixture".to_string(),
+            input_cost_per_million_microunits: Some(1_000),
+            output_cost_per_million_microunits: Some(2_000),
+            credential_present: true,
+            enabled: true,
+            route_priority: 10,
+            supported_roles: Vec::new(),
+        };
+        let st = CandidateResourceState {
+            quota: QuotaState::Known {
+                remaining_tokens: 500_000,
+                remaining_requests: 100,
+                window_capacity_tokens: 500_000,
+                window_duration_ms: 60_000,
+                window_reset_at_ms: Some(now_epoch_ms() + 60_000),
+                freshness_timestamp_ms: Some(now_epoch_ms()),
+                max_staleness_ms: 600_000,
+            },
+            ..CandidateResourceState::default()
+        };
+        let _ = state.router.upsert_candidate(cand, st);
+        Arc::new(state)
+    }
+
+    fn make_req(method: &str, path: &str, query: &str, body: Value) -> HttpRequest {
+        HttpRequest {
+            method: method.to_string(),
+            target: if query.is_empty() {
+                path.to_string()
+            } else {
+                format!("{path}?{query}")
+            },
+            path: path.to_string(),
+            query: query.to_string(),
+            headers: BTreeMap::new(),
+            cookie_header_count: 0,
+            body: if method == "GET" {
+                Vec::new()
+            } else {
+                serde_json::to_vec(&body).unwrap_or_default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn aud09_router_simulate_is_side_effect_free_and_validates_before_mutation() {
+        let state = make_test_state();
+
+        // 1. Invalid estimatedTokens rejected BEFORE tripCandidate mutates circuit!
+        let bad_tok = handle_router_decide(
+            &state,
+            &make_req(
+                "POST",
+                "/api/router/decide",
+                "",
+                json!({
+                    "tripCandidate": "fixture:model-alpha",
+                    "estimatedTokens": 10
+                }),
+            ),
+        );
+        assert_eq!(bad_tok.status, 400);
+        let bad_json: Value = serde_json::from_slice(&bad_tok.body).unwrap();
+        assert_eq!(bad_json["code"], "invalid_estimated_tokens");
+        assert_eq!(bad_json["field"], "estimatedTokens");
+        // Verify candidate circuit remained Closed (no mutation occurred before validation!).
+        let snaps = state.router.snapshots(now_epoch_ms()).unwrap();
+        let alpha = snaps
+            .iter()
+            .find(|s| s.candidate.candidate_id == "fixture:model-alpha")
+            .unwrap();
+        assert!(matches!(alpha.state.circuit, CircuitState::Closed));
+
+        // 2. simulate + tripCandidate rejected with 400 simulation_cannot_change_circuit.
+        let sim_trip = handle_router_decide(
+            &state,
+            &make_req(
+                "POST",
+                "/api/router/decide",
+                "",
+                json!({
+                    "simulate": true,
+                    "tripCandidate": "fixture:model-alpha",
+                    "estimatedTokens": 1024
+                }),
+            ),
+        );
+        assert_eq!(sim_trip.status, 400);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&sim_trip.body).unwrap()["code"],
+            "simulation_cannot_change_circuit"
+        );
+
+        // 3. Repeated simulate: true calls consume zero quota/concurrency & zero receipts.
+        let before_receipts = state.router.decision_receipts().unwrap().len();
+        for _ in 0..3 {
+            let sim = handle_router_decide(
+                &state,
+                &make_req(
+                    "POST",
+                    "/api/router/decide",
+                    "",
+                    json!({
+                        "simulate": true,
+                        "estimatedTokens": 2048,
+                        "privacyTier": "public"
+                    }),
+                ),
+            );
+            assert_eq!(sim.status, 200);
+            let sj: Value = serde_json::from_slice(&sim.body).unwrap();
+            assert_eq!(sj["status"], "SIMULATED_DETERMINISTIC");
+            assert_eq!(sj["simulated"], true);
+            assert!(sj["reservation"].is_null());
+            assert_eq!(sj["receipt"]["simulated"], true);
+            assert_eq!(sj["receipt"]["reservedTokens"], 0);
+        }
+        let after_receipts = state.router.decision_receipts().unwrap().len();
+        assert_eq!(before_receipts, after_receipts);
+        let after_alpha = state
+            .router
+            .snapshots(now_epoch_ms())
+            .unwrap()
+            .into_iter()
+            .find(|s| s.candidate.candidate_id == "fixture:model-alpha")
+            .unwrap();
+        assert_eq!(after_alpha.state.reserved_tokens, 0);
+        assert_eq!(after_alpha.state.reserved_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn pr1_session_pagination_cursor_detail_and_health_demo_mode_false() {
+        let state = make_test_state();
+
+        let health = handle_health(&state).await;
+        assert_eq!(health.status, 200);
+        let hj: Value = serde_json::from_slice(&health.body).unwrap();
+        assert_eq!(hj["demoMode"], false);
+
+        // Invalid limit and cursor rejected with 400.
+        assert_eq!(
+            handle_sessions_list(&state, &make_req("GET", "/api/sessions", "limit=0", Value::Null))
+                .status,
+            400
+        );
+        assert_eq!(
+            handle_sessions_list(&state, &make_req("GET", "/api/sessions", "limit=abc", Value::Null))
+                .status,
+            400
+        );
+        assert_eq!(
+            handle_sessions_list(
+                &state,
+                &make_req("GET", "/api/sessions", "cursor=bad-cursor", Value::Null)
+            )
+            .status,
+            400
+        );
+
+        // Create 3 sessions and page using hex cursor + inspect detail route.
+        for idx in 1..=3 {
+            let _ = state.sessions.create_session(
+                &format!("Session {idx}"),
+                "gpt-5.4-codex",
+                "high",
+                1_700_000_000_000 + idx * 1000,
+                Some(&format!("sess-{idx}")),
+            );
+        }
+        let p1 = handle_sessions_list(
+            &state,
+            &make_req("GET", "/api/sessions", "limit=2", Value::Null),
+        );
+        assert_eq!(p1.status, 200);
+        let p1j: Value = serde_json::from_slice(&p1.body).unwrap();
+        assert_eq!(p1j["totalCount"], 3);
+        assert_eq!(p1j["hasMore"], true);
+        let tok = p1j["nextCursorToken"].as_str().unwrap();
+
+        let p2 = handle_sessions_list(
+            &state,
+            &make_req("GET", "/api/sessions", &format!("limit=2&cursor={tok}"), Value::Null),
+        );
+        assert_eq!(p2.status, 200);
+        let p2j: Value = serde_json::from_slice(&p2.body).unwrap();
+        assert_eq!(p2j["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(p2j["hasMore"], false);
+
+        // Detail endpoint: valid, 404, and invalid traversal rejected with 400.
+        assert_eq!(handle_session_detail(&state, "/api/sessions/sess-1").status, 200);
+        assert_eq!(handle_session_detail(&state, "/api/sessions/missing-id").status, 404);
+        assert_eq!(
+            handle_session_detail(&state, "/api/sessions/..%2Fetc").status,
+            400
+        );
+    }
 }

@@ -365,16 +365,174 @@ pub fn provider_selection_on(
     Ok(ProviderSelection { profile, api_key })
 }
 
+/// Validate a configured provider `base_url` (`AUD-12`):
+/// - Requires strict `http://` or `https://` scheme with non-empty host and optional valid port (`1..=65535`).
+/// - Rejects ASCII control characters, whitespace, embedded userinfo (`user:pass@`), query strings (`?`), and fragments (`#`).
+/// - Cleartext `http://` is strictly restricted to canonical loopback hosts (`127.0.0.1`, `localhost`, `[::1]`).
+/// - `https://` allows configured remote hosts and loopback while rejecting unspecified/link-local metadata targets (`0.0.0.0`, `[::]`, `169.254.*`, `fe80:*`).
+pub fn validate_provider_base_url(raw: &str) -> Result<String, StoreError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed
+            .bytes()
+            .any(|b| b <= 0x20 || b == 0x7f)
+    {
+        return Err(StoreError::invalid_input(
+            "Provider base_url must be non-empty without whitespace or control characters.",
+        ));
+    }
+    let (is_https, rest) = if let Some(r) = trimmed.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = trimmed.strip_prefix("http://") {
+        (false, r)
+    } else {
+        return Err(StoreError::invalid_input(
+            "Provider base_url must start with http:// or https://.",
+        ));
+    };
+    if rest.contains('?') || rest.contains('#') {
+        return Err(StoreError::invalid_input(
+            "Provider base_url must not include query or fragment.",
+        ));
+    }
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return Err(StoreError::invalid_input(
+            "Provider base_url authority is missing or contains disallowed userinfo.",
+        ));
+    }
+
+    let (host, port_opt) = parse_authority_host_port(authority)?;
+    if let Some(port_str) = port_opt {
+        parse_valid_port(port_str)?;
+    }
+
+    if !is_https {
+        if !is_strict_loopback_host(host) {
+            return Err(StoreError::invalid_input(
+                "Cleartext http:// provider base_url must target loopback (127.0.0.1, localhost, or [::1]).",
+            ));
+        }
+    } else if is_forbidden_metadata_or_unspecified_host(host) {
+        return Err(StoreError::invalid_input(
+            "Provider base_url cannot target unspecified or link-local metadata addresses.",
+        ));
+    }
+
+    Ok(trimmed.to_owned())
+}
+
+/// Strictly parse and validate a loopback-only HTTP URL (`http://127.0.0.1[:port][/path]`,
+/// `http://localhost[:port][/path]`, or `http://[::1][:port][/path]`) returning `(host, port, path)`.
+pub fn validate_loopback_http_url(raw: &str) -> Result<(String, u16, String), StoreError> {
+    let validated = validate_provider_base_url(raw)?;
+    let Some(rest) = validated.strip_prefix("http://") else {
+        return Err(StoreError::invalid_input(
+            "Loopback HTTP URL must use the http:// scheme.",
+        ));
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/"),
+    };
+    let (host, port_opt) = parse_authority_host_port(authority)?;
+    let port = match port_opt {
+        Some(p) => parse_valid_port(p)?,
+        None => 80,
+    };
+    Ok((host.to_ascii_lowercase(), port, path.to_owned()))
+}
+
+fn parse_authority_host_port(authority: &str) -> Result<(&str, Option<&str>), StoreError> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return Err(StoreError::invalid_input(
+                "Malformed bracketed IPv6 authority in provider base_url.",
+            ));
+        };
+        let host = &rest[..end];
+        if host.is_empty()
+            || !host
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
+            return Err(StoreError::invalid_input(
+                "Invalid IPv6 host in provider base_url.",
+            ));
+        }
+        let tail = &rest[end + 1..];
+        if tail.is_empty() {
+            return Ok((host, None));
+        }
+        if let Some(port_str) = tail.strip_prefix(':') {
+            return Ok((host, Some(port_str)));
+        }
+        return Err(StoreError::invalid_input(
+            "Malformed port suffix after bracketed IPv6 host.",
+        ));
+    }
+
+    let (host, port_opt) = match authority.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (authority, None),
+    };
+    if host.is_empty()
+        || host.starts_with('.')
+        || host.ends_with('.')
+        || host.contains("..")
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
+        return Err(StoreError::invalid_input(
+            "Invalid host in provider base_url.",
+        ));
+    }
+    Ok((host, port_opt))
+}
+
+fn parse_valid_port(raw: &str) -> Result<u16, StoreError> {
+    if raw.is_empty()
+        || raw.len() > 5
+        || raw.starts_with('0')
+        || !raw.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(StoreError::invalid_input(
+            "Invalid port in provider base_url.",
+        ));
+    }
+    let port = raw
+        .parse::<u16>()
+        .map_err(|_| StoreError::invalid_input("Port out of range in provider base_url."))?;
+    if port == 0 {
+        return Err(StoreError::invalid_input(
+            "Port 0 is not allowed in provider base_url.",
+        ));
+    }
+    Ok(port)
+}
+
+fn is_strict_loopback_host(host: &str) -> bool {
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
+}
+
+fn is_forbidden_metadata_or_unspecified_host(host: &str) -> bool {
+    let lower = host.to_ascii_lowercase();
+    lower == "0.0.0.0"
+        || lower == "::"
+        || lower.starts_with("169.254.")
+        || lower.starts_with("fe80:")
+}
+
 /// Validate a selected provider profile and construct a runtime [`ConfiguredProvider`].
 pub fn build_provider(selection: ProviderSelection) -> Result<ConfiguredProvider, StoreError> {
     let p = selection.profile;
-    let url = p.base_url.trim();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(StoreError::invalid_input(format!(
-            "Provider '{}' base_url must start with http:// or https://.",
-            p.id
-        )));
-    }
+    let url = validate_provider_base_url(&p.base_url).map_err(|err| {
+        StoreError::invalid_input(format!("Provider '{}' {}: {}", p.id, "base_url invalid", err.message))
+    })?;
     if p.model.trim().is_empty() {
         return Err(StoreError::invalid_input(format!(
             "Provider '{}' model cannot be empty.",
@@ -393,7 +551,7 @@ pub fn build_provider(selection: ProviderSelection) -> Result<ConfiguredProvider
         profile_id: p.id,
         name: p.name,
         kind: p.kind,
-        base_url: url.to_owned(),
+        base_url: url,
         model: p.model,
         api_key: selection.api_key,
         extra_json: p.extra_json,
@@ -1294,5 +1452,72 @@ fn execute_session_command(
                 error: Some(err),
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_url_validation_enforces_aud12_loopback_and_authority_safety() {
+        // Valid loopback HTTP and remote/loopback HTTPS URLs.
+        assert_eq!(
+            validate_provider_base_url("http://127.0.0.1:8790/v1").unwrap(),
+            "http://127.0.0.1:8790/v1"
+        );
+        assert_eq!(
+            validate_provider_base_url("http://localhost:11434").unwrap(),
+            "http://localhost:11434"
+        );
+        assert_eq!(
+            validate_provider_base_url("http://[::1]:8790/v1").unwrap(),
+            "http://[::1]:8790/v1"
+        );
+        assert_eq!(
+            validate_provider_base_url("https://api.example.com/v1").unwrap(),
+            "https://api.example.com/v1"
+        );
+
+        let (host, port, path) =
+            validate_loopback_http_url("http://[::1]:8790/v1/chat").expect("valid loopback");
+        assert_eq!(host, "::1");
+        assert_eq!(port, 8790);
+        assert_eq!(path, "/v1/chat");
+
+        // Negative cases: LAN, metadata, public cleartext HTTP, userinfo, query/fragment, bad ports.
+        for bad in [
+            "",
+            "ftp://127.0.0.1:8790",
+            "http://169.254.169.254/latest/meta-data",
+            "http://192.168.1.50:8080/v1",
+            "http://10.0.0.1:8000/v1",
+            "http://api.example.com/v1",
+            "http://127.0.0.2:8790/v1",
+            "http://0.0.0.0:8790/v1",
+            "http://user:dummy@127.0.0.1:8790/v1",
+            "https://user@api.example.com/v1",
+            "https://169.254.169.254/v1",
+            "https://0.0.0.0/v1",
+            "https://[::]/v1",
+            "https://[fe80::1]/v1",
+            "https://api.example.com/v1?key=dummy",
+            "https://api.example.com/v1#frag",
+            "http://127.0.0.1:0/v1",
+            "http://127.0.0.1:08790/v1",
+            "http://127.0.0.1:70000/v1",
+            "http://127.0.0.1:/v1",
+            "http://[::1/v1",
+            "https:///v1",
+            "http://127.0.0.1:8790/v1\r\nHost: evil.example",
+        ] {
+            assert!(
+                validate_provider_base_url(bad).is_err(),
+                "must reject invalid/unsafe provider base_url: {bad:?}"
+            );
+        }
+
+        // Loopback HTTP parser also rejects HTTPS so transport matches admission.
+        assert!(validate_loopback_http_url("https://127.0.0.1:8790/v1").is_err());
     }
 }

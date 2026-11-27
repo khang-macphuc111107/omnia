@@ -15,6 +15,7 @@ pub mod routes_downloads;
 pub mod routes_legacy;
 pub mod routes_notebooks;
 pub mod routes_observatory_v5;
+pub mod routes_research_lifecycle_v5;
 pub mod routes_studio_v5;
 pub mod runtime_proxy;
 pub mod telemetry;

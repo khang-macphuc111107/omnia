@@ -38,9 +38,9 @@ pub const CRATE_NAME: &str = "omnia-downloader";
 // Clean public re-exports ready for Wave 3 `omnia-studio` (`/api/downloads/*`, `/api/omni-drive/*`)
 // and `omnia-cli` integration.
 pub use batch::{
-    expand_batch_pattern, parse_ef2, serialize_ef2, BatchItem, BatchPlan, BatchPlanner,
-    DownloadCategory, DownloadScheduler, Ef2Entry, ScheduleWindow, SchedulerConfig,
-    MAX_BATCH_EXPANSION,
+    expand_batch_pattern, parse_ef2, resolve_series_subfolder, serialize_ef2, BatchItem, BatchPlan,
+    BatchPlanner, DownloadCategory, DownloadScheduler, Ef2Entry, ScheduleWindow, SchedulerConfig,
+    SitePolicyRegistry, SiteRule, MAX_BATCH_EXPANSION,
 };
 pub use capture_bundle::{
     open_wire_value, seal_wire_value, CaptureBundle, CaptureBundleEntry, CasBlobMeta,
@@ -82,7 +82,8 @@ pub use media_box::{
 };
 pub use media_ops::{
     build_ffmpeg_mux_args, convert_or_clip_media, find_media_binary, parse_ffprobe_json,
-    run_ffprobe, FfprobeReport, FfprobeStreamSummary, MediaMuxOutcome, MediaMuxRequest,
+    run_ffprobe, slice_segments_for_clip_range, FfprobeReport, FfprobeStreamSummary,
+    MediaMuxOutcome, MediaMuxRequest,
 };
 pub use pacing::{
     parse_retry_after, parse_retry_after_now, AimdBdpController, CongestionMetrics, PacingMode,

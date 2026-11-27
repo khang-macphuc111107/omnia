@@ -47,7 +47,9 @@ pub fn is_known_route(path: &str) -> bool {
             | "/api/downloads/crawl/youtube"
             | "/api/downloads/capture-bundles"
             | "/api/downloads/capture-bundles/verify"
+            | "/api/downloads/bundles/capture"
             | "/api/downloads/schema-drift"
+            | "/api/downloads/drift/compare"
             | "/api/omni-drive/stream"
             | "/api/omni-drive/media/mux"
             | "/api/omni-drive/media/ffprobe"
@@ -56,7 +58,10 @@ pub fn is_known_route(path: &str) -> bool {
             | "/api/omni-drive/crawl/youtube"
             | "/api/omni-drive/capture-bundles"
             | "/api/omni-drive/capture-bundles/verify"
+            | "/api/omni-drive/bundles"
+            | "/api/omni-drive/bundles/capture"
             | "/api/omni-drive/schema-drift"
+            | "/api/omni-drive/drift/compare"
     )
 }
 
@@ -128,12 +133,18 @@ async fn dispatch_omnidrive(state: &Arc<StudioState>, req: &HttpRequest) -> Opti
             Some(handle_crawl_youtube(state, req).await)
         }
         ("POST", "/api/downloads/capture-bundles")
-        | ("POST", "/api/omni-drive/capture-bundles") => Some(handle_capture_bundle_seal(state, req)),
+        | ("POST", "/api/omni-drive/capture-bundles")
+        | ("POST", "/api/downloads/bundles/capture")
+        | ("POST", "/api/omni-drive/bundles")
+        | ("POST", "/api/omni-drive/bundles/capture") => Some(handle_capture_bundle_seal(state, req)),
         ("POST", "/api/downloads/capture-bundles/verify")
         | ("POST", "/api/omni-drive/capture-bundles/verify") => {
             Some(handle_capture_bundle_verify(state, req))
         }
-        ("POST", "/api/downloads/schema-drift") | ("POST", "/api/omni-drive/schema-drift") => {
+        ("POST", "/api/downloads/schema-drift")
+        | ("POST", "/api/omni-drive/schema-drift")
+        | ("POST", "/api/downloads/drift/compare")
+        | ("POST", "/api/omni-drive/drift/compare") => {
             Some(handle_schema_drift(state, req))
         }
         _ if req.path == "/api/omnidrive" || req.path.starts_with("/api/omnidrive/") => {
@@ -479,11 +490,11 @@ async fn handle_media_mux(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
         Ok(m) => m,
         Err(resp) => return resp,
     };
-    let video_input = match req_str(&obj, &["videoInput", "video_input"], "videoInput") {
+    let video_input = match req_str(&obj, &["videoInput", "video_input", "video"], "videoInput") {
         Ok(v) => PathBuf::from(v),
         Err(resp) => return resp,
     };
-    let output_path = match req_str(&obj, &["outputPath", "output_path"], "outputPath") {
+    let output_path = match req_str(&obj, &["outputPath", "output_path", "output"], "outputPath") {
         Ok(v) => PathBuf::from(v),
         Err(resp) => return resp,
     };
@@ -492,12 +503,18 @@ async fn handle_media_mux(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
         audio_input: obj
             .get("audioInput")
             .or_else(|| obj.get("audio_input"))
+            .or_else(|| obj.get("audio"))
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(PathBuf::from),
         subtitle_input: obj
             .get("subtitleInput")
             .or_else(|| obj.get("subtitle_input"))
+            .or_else(|| obj.get("subtitle"))
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(PathBuf::from),
         subtitle_lang: obj
             .get("subtitleLang")
@@ -508,10 +525,14 @@ async fn handle_media_mux(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
         clip_in_secs: obj
             .get("clipInSecs")
             .or_else(|| obj.get("clip_in_secs"))
+            .or_else(|| obj.get("clipStartSec"))
+            .or_else(|| obj.get("clip_start_sec"))
             .and_then(Value::as_f64),
         clip_out_secs: obj
             .get("clipOutSecs")
             .or_else(|| obj.get("clip_out_secs"))
+            .or_else(|| obj.get("clipEndSec"))
+            .or_else(|| obj.get("clip_end_sec"))
             .and_then(Value::as_f64),
         workspace_root: Some(state.config.workspace_root.clone()),
         verify_with_ffprobe: obj
@@ -531,7 +552,7 @@ async fn handle_media_ffprobe(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
         Ok(m) => m,
         Err(resp) => return resp,
     };
-    let path = match req_str(&obj, &["path", "mediaPath"], "path") {
+    let path = match req_str(&obj, &["path", "mediaPath", "target", "url"], "path") {
         Ok(v) => PathBuf::from(v),
         Err(resp) => return resp,
     };
@@ -654,7 +675,16 @@ fn handle_capture_bundle_seal(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
         .downloads
         .seal_capture_bundle(bundle_id, &source_url, &refs, meta)
     {
-        Ok(bundle) => HttpResponse::ok(json!({ "ok": true, "bundle": bundle })),
+        Ok(bundle) => {
+            if let Ok(mut bundles) = state.captured_bundles.lock() {
+                bundles.push(bundle.clone());
+                if bundles.len() > 64 {
+                    let drop_n = bundles.len() - 64;
+                    bundles.drain(0..drop_n);
+                }
+            }
+            HttpResponse::ok(json!({ "ok": true, "bundle": bundle }))
+        }
         Err(err) => map_downloader_error(err),
     }
 }

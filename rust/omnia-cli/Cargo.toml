@@ -15,6 +15,7 @@ crossterm.workspace = true
 mimalloc.workspace = true
 omnia-agent = { path = "../omnia-agent", default-features = false }
 omnia-core.workspace = true
+omnia-harness.workspace = true
 omnia-routing.workspace = true
 omnia-workspace-ops.workspace = true
 ratatui.workspace = true

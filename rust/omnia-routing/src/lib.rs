@@ -31,6 +31,9 @@ pub use wire_adapter::{
 };
 
 const MAX_LATENCY_SAMPLES: usize = 256;
+const MAX_RECEIPT_HISTORY: usize = 2_048;
+const MAX_IDEMPOTENCY_ENTRIES: usize = 2_048;
+const MAX_TERMINAL_RESERVATIONS: usize = 4_096;
 const DEFAULT_CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_MS: i64 = 30_000;
 
@@ -55,6 +58,12 @@ pub enum RoutingError {
     InvalidReservationTransition {
         reservation_id: String,
         state: &'static str,
+    },
+    #[error("reservation `{reservation_id}` missed deadline {deadline_ms} at {now_ms}")]
+    ReservationDeadlineExpired {
+        reservation_id: String,
+        deadline_ms: i64,
+        now_ms: i64,
     },
     #[error("invalid routing policy: {0}")]
     InvalidPolicy(String),
@@ -817,6 +826,27 @@ pub struct RouteRequestPolicy {
     pub model_role: Option<ModelRole>,
     #[serde(default)]
     pub session_affinity_key: Option<String>,
+    /// Optional absolute admission deadline (`epoch_ms`) enforced prior to dispatch (`AUD-14`).
+    #[serde(default)]
+    pub deadline_ms: Option<i64>,
+    /// Optional monotonic region allowlist (empty = unrestricted; fallback intersects).
+    #[serde(default)]
+    pub allowed_regions: Vec<String>,
+    /// Optional monotonic provider allowlist (empty = unrestricted; fallback intersects).
+    #[serde(default)]
+    pub allowed_providers: Vec<String>,
+    /// Optional monotonic model allowlist (empty = unrestricted; fallback intersects).
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+    /// Monotonic provider denylist (fallback unions).
+    #[serde(default)]
+    pub forbidden_providers: Vec<String>,
+    /// Monotonic model denylist (fallback unions).
+    #[serde(default)]
+    pub forbidden_models: Vec<String>,
+    /// Optional maximum data retention window in hours (`Some(0)` enforces zero-retention tiers; fallback takes `min`).
+    #[serde(default)]
+    pub max_retention_hours: Option<u32>,
 }
 
 impl Default for RouteRequestPolicy {
@@ -842,23 +872,36 @@ impl Default for RouteRequestPolicy {
             now_epoch_ms: None,
             model_role: None,
             session_affinity_key: None,
+            deadline_ms: None,
+            allowed_regions: Vec::new(),
+            allowed_providers: Vec::new(),
+            allowed_models: Vec::new(),
+            forbidden_providers: Vec::new(),
+            forbidden_models: Vec::new(),
+            max_retention_hours: None,
         }
     }
 }
 
 impl RouteRequestPolicy {
+    /// Checked total token estimate returning `None` on `u64` overflow (`AUD-14`).
+    #[must_use]
+    pub fn estimated_total_tokens_checked(&self) -> Option<u64> {
+        self.estimated_input_tokens
+            .checked_add(self.estimated_output_tokens)
+            .map(|v| v.max(1))
+    }
+
     #[must_use]
     pub fn estimated_total_tokens(&self) -> u64 {
-        self.estimated_input_tokens
-            .saturating_add(self.estimated_output_tokens)
-            .max(1)
+        self.estimated_total_tokens_checked().unwrap_or(u64::MAX)
     }
 
     /// Deterministic SHA-256 hash of the canonical routing constraint set.
     #[must_use]
     pub fn policy_hash(&self) -> String {
         let caps = self.required_capabilities;
-        let canonical = format!(
+        let mut canonical = format!(
             "auth={}|priv={}|risk={}|in={}|out={}|budget={}|caps={}{}{}{}{}{}",
             self.required_auth_boundary,
             self.minimum_privacy_tier.as_str(),
@@ -874,6 +917,27 @@ impl RouteRequestPolicy {
             u8::from(caps.supports_reasoning),
             u8::from(caps.supports_json_mode),
         );
+        if let Some(dl) = self.deadline_ms {
+            canonical.push_str(&format!("|dl={dl}"));
+        }
+        if let Some(ret) = self.max_retention_hours {
+            canonical.push_str(&format!("|ret={ret}"));
+        }
+        if !self.allowed_regions.is_empty() {
+            canonical.push_str(&format!("|reg={}", self.allowed_regions.join(",")));
+        }
+        if !self.allowed_providers.is_empty() {
+            canonical.push_str(&format!("|aprov={}", self.allowed_providers.join(",")));
+        }
+        if !self.allowed_models.is_empty() {
+            canonical.push_str(&format!("|amod={}", self.allowed_models.join(",")));
+        }
+        if !self.forbidden_providers.is_empty() {
+            canonical.push_str(&format!("|fprov={}", self.forbidden_providers.join(",")));
+        }
+        if !self.forbidden_models.is_empty() {
+            canonical.push_str(&format!("|fmod={}", self.forbidden_models.join(",")));
+        }
         sha256_hex(canonical.as_bytes())
     }
 
@@ -897,6 +961,13 @@ impl RouteRequestPolicy {
             "allow_unknown_quota_without_emergency": self.allow_unknown_quota_without_emergency,
             "emergency_policy": self.emergency_policy.to_json(),
             "reservation_ttl_ms": self.reservation_ttl_ms,
+            "deadline_ms": self.deadline_ms,
+            "allowed_regions": self.allowed_regions,
+            "allowed_providers": self.allowed_providers,
+            "allowed_models": self.allowed_models,
+            "forbidden_providers": self.forbidden_providers,
+            "forbidden_models": self.forbidden_models,
+            "max_retention_hours": self.max_retention_hours,
             "policy_hash": self.policy_hash(),
         })
     }
@@ -1076,6 +1147,9 @@ pub struct ReservationGrant {
     pub estimated_cost_microunits: Option<i64>,
     pub created_at_ms: i64,
     pub expires_at_ms: i64,
+    pub deadline_ms: Option<i64>,
+    pub attempt_id: Option<String>,
+    pub explicit_attempt_required: bool,
     pub status: ReservationStatus,
 }
 
@@ -1095,6 +1169,8 @@ impl ReservationGrant {
             "estimated_cost_microunits": self.estimated_cost_microunits,
             "created_at_ms": self.created_at_ms,
             "expires_at_ms": self.expires_at_ms,
+            "deadline_ms": self.deadline_ms,
+            "attempt_id": self.attempt_id,
             "status": self.status.as_str(),
         })
     }
@@ -1108,6 +1184,7 @@ pub struct RouteDecisionReceipt {
     pub policy_hash: String,
     pub decided_at_ms: i64,
     pub allowed: bool,
+    pub simulated: bool,
     pub selected_candidate_id: Option<String>,
     pub reservation_id: Option<String>,
     pub fencing_token: Option<u64>,
@@ -1130,6 +1207,7 @@ impl RouteDecisionReceipt {
             "policy_hash": self.policy_hash,
             "decided_at_ms": self.decided_at_ms,
             "allowed": self.allowed,
+            "simulated": self.simulated,
             "selected_candidate_id": self.selected_candidate_id,
             "reservation_id": self.reservation_id,
             "fencing_token": self.fencing_token,
@@ -1151,6 +1229,7 @@ impl Serialize for RouteDecisionReceipt {
 pub struct OutcomeReport {
     pub reservation_id: String,
     pub fencing_token: u64,
+    pub attempt_id: Option<String>,
     pub success: bool,
     pub acceptance: AcceptanceState,
     pub actual_input_tokens: Option<u64>,
@@ -1174,6 +1253,7 @@ impl Default for OutcomeReport {
         Self {
             reservation_id: String::new(),
             fencing_token: 0,
+            attempt_id: None,
             success: false,
             acceptance: AcceptanceState::NotSent,
             actual_input_tokens: None,
@@ -1276,10 +1356,160 @@ impl Serialize for CandidateSnapshot {
     }
 }
 
+/// Granular model-scoped cooldown error class (`T2.3`).
+/// Scoped to `(candidate_id, model_id, error_class)` so HTTP 403 `model_not_allowed`
+/// never trips the provider-wide circuit breaker for other permitted models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCooldownClass {
+    ModelNotAllowed403,
+    RateLimited429,
+    QuotaBucketExhausted,
+    TransientTransport,
+    ServerFault5xx,
+}
+
+impl ModelCooldownClass {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ModelNotAllowed403 => "model_not_allowed_403",
+            Self::RateLimited429 => "rate_limited_429",
+            Self::QuotaBucketExhausted => "quota_bucket_exhausted",
+            Self::TransientTransport => "transient_transport",
+            Self::ServerFault5xx => "server_fault_5xx",
+        }
+    }
+}
+
+/// Active model-scoped cooldown entry tracked without tripping unrelated provider models.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCooldownEntry {
+    pub candidate_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub error_class: ModelCooldownClass,
+    pub until_ms: i64,
+    pub reason: String,
+}
+
+/// Capability-aware routing profile for Reasoning Sandwich & Dual-Pool execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityProfile {
+    DeepResearch,
+    DeepThinkPrimary,
+    DeepThinkVerifier,
+    FastTool,
+    CodingExecution,
+}
+
+impl CapabilityProfile {
+    #[must_use]
+    pub const fn mapped_role(self) -> ModelRole {
+        match self {
+            Self::DeepResearch => ModelRole::Architect,
+            Self::DeepThinkPrimary => ModelRole::Architect,
+            Self::DeepThinkVerifier => ModelRole::Verifier,
+            Self::FastTool => ModelRole::Fast,
+            Self::CodingExecution => ModelRole::Main,
+        }
+    }
+
+    /// Reasoning Sandwich effort triple `(plan_effort, execute_effort, verify_effort)`.
+    #[must_use]
+    pub const fn reasoning_sandwich_efforts(self) -> (EffortLevel, EffortLevel, EffortLevel) {
+        match self {
+            Self::DeepResearch => (EffortLevel::High, EffortLevel::Medium, EffortLevel::High),
+            Self::DeepThinkPrimary => (EffortLevel::Max, EffortLevel::High, EffortLevel::Max),
+            Self::DeepThinkVerifier => (EffortLevel::Max, EffortLevel::Max, EffortLevel::Max),
+            Self::FastTool => (EffortLevel::Low, EffortLevel::Low, EffortLevel::Medium),
+            Self::CodingExecution => (EffortLevel::High, EffortLevel::Medium, EffortLevel::High),
+        }
+    }
+}
+
+/// Dual-pool Deep Think pair enforcing distinct model families for independent verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeepThinkModelPair {
+    pub primary_candidate_id: String,
+    pub primary_model_id: String,
+    pub primary_family: String,
+    pub verifier_candidate_id: Option<String>,
+    pub verifier_model_id: Option<String>,
+    pub verifier_family: Option<String>,
+    pub distinct_family_verified: bool,
+    pub reasoning_sandwich_efforts: (EffortLevel, EffortLevel, EffortLevel),
+}
+
+/// Coarse model family classifier (`claude`, `openai`, `gemini`, `deepseek`, `grok`, `qwen`, etc.)
+/// used to enforce cross-family adversarial verification in Deep Think & TEX.
+#[must_use]
+pub fn model_vendor_family(model_id: &str) -> String {
+    let key = normalize_model_family_key(model_id);
+    if key.starts_with("claude") {
+        "anthropic".to_owned()
+    } else if key.starts_with("gpt")
+        || key.starts_with("o1")
+        || key.starts_with("o3")
+        || key.starts_with("o4")
+        || key.starts_with("codex")
+    {
+        "openai".to_owned()
+    } else if key.starts_with("gemini") || key.starts_with("gemma") {
+        "google".to_owned()
+    } else if key.starts_with("deepseek") {
+        "deepseek".to_owned()
+    } else if key.starts_with("grok") {
+        "xai".to_owned()
+    } else if key.starts_with("qwen") {
+        "qwen".to_owned()
+    } else if key.starts_with("glm") {
+        "zhipu".to_owned()
+    } else if key.starts_with("kimi") {
+        "moonshot".to_owned()
+    } else {
+        key.split('-').next().unwrap_or("other").to_owned()
+    }
+}
+
 #[derive(Debug)]
 struct RegisteredCandidate {
     candidate: RouteCandidate,
     state: CandidateResourceState,
+}
+
+#[derive(Debug, Clone)]
+struct ParentPolicyBounds {
+    required_auth_boundary: String,
+    minimum_privacy_tier: PrivacyTier,
+    required_capabilities: ModelCapabilities,
+    allowed_regions: Vec<String>,
+    allowed_providers: Vec<String>,
+    allowed_models: Vec<String>,
+    forbidden_providers: Vec<String>,
+    forbidden_models: Vec<String>,
+    excluded_candidate_ids: Vec<String>,
+    max_retention_hours: Option<u32>,
+    deadline_ms: Option<i64>,
+}
+
+impl ParentPolicyBounds {
+    fn from_policy(policy: &RouteRequestPolicy) -> Self {
+        Self {
+            required_auth_boundary: policy.required_auth_boundary.clone(),
+            minimum_privacy_tier: policy.minimum_privacy_tier,
+            required_capabilities: policy.required_capabilities,
+            allowed_regions: policy.allowed_regions.clone(),
+            allowed_providers: policy.allowed_providers.clone(),
+            allowed_models: policy.allowed_models.clone(),
+            forbidden_providers: policy.forbidden_providers.clone(),
+            forbidden_models: policy.forbidden_models.clone(),
+            excluded_candidate_ids: policy.excluded_candidate_ids.clone(),
+            max_retention_hours: policy.max_retention_hours,
+            deadline_ms: policy.deadline_ms,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1290,18 +1520,70 @@ struct RouterInner {
     default_cooldown_ms: i64,
     candidates: BTreeMap<String, RegisteredCandidate>,
     reservations: HashMap<String, ReservationGrant>,
+    parent_policy_bounds: HashMap<String, ParentPolicyBounds>,
+    terminal_reservation_order: VecDeque<String>,
     idempotency_index: HashMap<String, DecisionResult>,
-    decision_receipts: Vec<RouteDecisionReceipt>,
-    outcome_receipts: Vec<RouteOutcomeReceipt>,
+    idempotency_order: VecDeque<String>,
+    decision_receipts: VecDeque<RouteDecisionReceipt>,
+    outcome_receipts: VecDeque<RouteOutcomeReceipt>,
+    total_reconciled_cost_microunits: BTreeMap<String, i64>,
     sqlite_store: Option<Arc<RouterSqliteStore>>,
     role_bindings: BTreeMap<ModelRole, (String, String)>,
     probe_counters: BTreeMap<String, u64>,
     session_affinity: BTreeMap<String, String>,
     token_burn_samples: BTreeMap<String, VecDeque<(i64, u64)>>,
     failover_events: VecDeque<FailoverEvent>,
+    model_cooldowns: BTreeMap<(String, String, ModelCooldownClass), ModelCooldownEntry>,
 }
 
 impl RouterInner {
+    fn push_decision_receipt(&mut self, receipt: RouteDecisionReceipt) {
+        if self.decision_receipts.len() >= MAX_RECEIPT_HISTORY {
+            self.decision_receipts.pop_front();
+        }
+        self.decision_receipts.push_back(receipt);
+    }
+
+    fn push_outcome_receipt(&mut self, receipt: RouteOutcomeReceipt) {
+        if self.outcome_receipts.len() >= MAX_RECEIPT_HISTORY {
+            self.outcome_receipts.pop_front();
+        }
+        self.outcome_receipts.push_back(receipt);
+    }
+
+    fn record_idempotency(&mut self, key: String, result: DecisionResult) {
+        if let Some(slot) = self.idempotency_index.get_mut(&key) {
+            *slot = result;
+            return;
+        }
+        while self.idempotency_index.len() >= MAX_IDEMPOTENCY_ENTRIES {
+            let Some(oldest) = self.idempotency_order.pop_front() else {
+                break;
+            };
+            self.idempotency_index.remove(&oldest);
+        }
+        self.idempotency_order.push_back(key.clone());
+        self.idempotency_index.insert(key, result);
+    }
+
+    fn note_terminal_reservation(&mut self, reservation_id: &str) {
+        self.terminal_reservation_order
+            .push_back(reservation_id.to_owned());
+        while self.terminal_reservation_order.len() > MAX_TERMINAL_RESERVATIONS {
+            let Some(oldest) = self.terminal_reservation_order.pop_front() else {
+                break;
+            };
+            if self
+                .reservations
+                .get(&oldest)
+                .is_some_and(|g| g.status.is_terminal())
+            {
+                self.reservations.remove(&oldest);
+                self.parent_policy_bounds.remove(&oldest);
+            }
+        }
+    }
+
     fn push_failover_event(&mut self, mut ev: FailoverEvent) {
         ev.reason = SecretRedactor::redact(&ev.reason);
         if self.failover_events.len() >= MAX_LATENCY_SAMPLES {
@@ -1357,15 +1639,20 @@ impl DynamicProviderRouter {
                 default_cooldown_ms: default_cooldown_ms.max(1),
                 candidates: BTreeMap::new(),
                 reservations: HashMap::new(),
+                parent_policy_bounds: HashMap::new(),
+                terminal_reservation_order: VecDeque::new(),
                 idempotency_index: HashMap::new(),
-                decision_receipts: Vec::new(),
-                outcome_receipts: Vec::new(),
+                idempotency_order: VecDeque::new(),
+                decision_receipts: VecDeque::new(),
+                outcome_receipts: VecDeque::new(),
+                total_reconciled_cost_microunits: BTreeMap::new(),
                 sqlite_store: None,
                 role_bindings: BTreeMap::new(),
                 probe_counters: BTreeMap::new(),
                 session_affinity: BTreeMap::new(),
                 token_burn_samples: BTreeMap::new(),
                 failover_events: VecDeque::new(),
+                model_cooldowns: BTreeMap::new(),
             }),
         }
     }
@@ -1685,6 +1972,243 @@ impl DynamicProviderRouter {
         decide_and_reserve_locked(&mut guard, policy)
     }
 
+    /// Side-effect-free deterministic routing preview (`SIMULATED_DETERMINISTIC`, `AUD-09`).
+    /// Never reserves tokens/requests, never mutates circuit half-open probes, probe counters,
+    /// idempotency cache, session affinity, or persisted decision receipts.
+    pub fn simulate_route(
+        &self,
+        policy: &RouteRequestPolicy,
+    ) -> Result<DecisionResult, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(simulate_route_locked(&guard, policy))
+    }
+
+    /// JSON envelope for side-effect-free Router Lab previews (`mode: "SIMULATED_DETERMINISTIC"`).
+    pub fn simulate_route_json(
+        &self,
+        policy: &RouteRequestPolicy,
+    ) -> Result<Value, RoutingError> {
+        let res = self.simulate_route(policy)?;
+        Ok(SecretRedactor::redact_json(&json!({
+            "mode": "SIMULATED_DETERMINISTIC",
+            "simulated": true,
+            "allowed": res.allowed,
+            "reservation": Value::Null,
+            "receipt": res.receipt.to_json(),
+        })))
+    }
+
+    /// Record a model-scoped cooldown `(candidate_id, model_id, error_class)` (`T2.3`).
+    /// Prevents HTTP 403 `model_not_allowed` or per-model rate limits from tripping
+    /// the entire provider circuit for unrelated permitted models.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_model_cooldown(
+        &self,
+        candidate_id: &str,
+        model_id: &str,
+        error_class: ModelCooldownClass,
+        cooldown_ms: i64,
+        now_ms: i64,
+        reason: &str,
+    ) -> Result<ModelCooldownEntry, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let store_opt = guard.sqlite_store.clone();
+        let effective_ms = cooldown_ms.max(1);
+        let until_ms = now_ms.saturating_add(effective_ms);
+        let provider_id = {
+            let entry = guard
+                .candidates
+                .get_mut(candidate_id)
+                .ok_or_else(|| RoutingError::UnknownCandidate(candidate_id.to_owned()))?;
+            let target_model = if model_id.trim().is_empty() {
+                entry.candidate.model_id.clone()
+            } else {
+                model_id.trim().to_owned()
+            };
+            if error_class == ModelCooldownClass::ModelNotAllowed403 {
+                entry.state.model_proven.remove(&target_model);
+            }
+            let prev = entry
+                .state
+                .model_locks_until_ms
+                .get(&target_model)
+                .copied()
+                .unwrap_or(0);
+            entry
+                .state
+                .model_locks_until_ms
+                .insert(target_model.clone(), prev.max(until_ms));
+            if let Some(ref store) = store_opt {
+                store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
+            }
+            (entry.candidate.provider_id.clone(), target_model)
+        };
+        let record = ModelCooldownEntry {
+            candidate_id: candidate_id.to_owned(),
+            provider_id: provider_id.0,
+            model_id: provider_id.1.clone(),
+            error_class,
+            until_ms,
+            reason: SecretRedactor::redact(reason),
+        };
+        guard.model_cooldowns.insert(
+            (candidate_id.to_owned(), provider_id.1, error_class),
+            record.clone(),
+        );
+        guard.push_failover_event(FailoverEvent {
+            timestamp_ms: now_ms,
+            kind: "model_cooldown".to_owned(),
+            from_candidate_id: Some(candidate_id.to_owned()),
+            to_candidate_id: None,
+            reason: format!("{}: {}", error_class.as_str(), reason),
+            reservation_id: None,
+        });
+        Ok(record)
+    }
+
+    /// Return all active (unexpired) model-scoped cooldowns at `now_ms`.
+    pub fn active_model_cooldowns(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<ModelCooldownEntry>, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        guard.model_cooldowns.retain(|_, rec| rec.until_ms > now_ms);
+        Ok(guard.model_cooldowns.values().cloned().collect())
+    }
+
+    /// Capability-aware routing helper for Reasoning Sandwich & Dual-Pool workflows.
+    pub fn select_for_capability(
+        &self,
+        profile: CapabilityProfile,
+        mut policy: RouteRequestPolicy,
+        simulate: bool,
+    ) -> Result<DecisionResult, RoutingError> {
+        policy.model_role = Some(profile.mapped_role());
+        if matches!(
+            profile,
+            CapabilityProfile::DeepResearch
+                | CapabilityProfile::DeepThinkPrimary
+                | CapabilityProfile::DeepThinkVerifier
+        ) {
+            policy.required_capabilities.supports_reasoning = true;
+        }
+        {
+            let guard = self
+                .inner
+                .lock()
+                .map_err(|_| RoutingError::InternalLockPoisoned)?;
+            if let Some((bound_cid, _)) = guard.role_bindings.get(&profile.mapped_role()) {
+                if !policy.preferred_candidate_ids.iter().any(|c| c == bound_cid) {
+                    policy.preferred_candidate_ids.insert(0, bound_cid.clone());
+                }
+            }
+        }
+        if simulate {
+            self.simulate_route(&policy)
+        } else {
+            self.decide_and_reserve(&policy)
+        }
+    }
+
+    /// Select a Dual-Pool Deep Think pair `(primary, distinct_family_verifier)` without reserving
+    /// quota, enforcing `model_vendor_family(verifier) != model_vendor_family(primary)` whenever
+    /// an eligible cross-family verifier exists.
+    pub fn select_deep_think_pair(
+        &self,
+        base_policy: &RouteRequestPolicy,
+    ) -> Result<DeepThinkModelPair, RoutingError> {
+        let mut primary_policy = base_policy.clone();
+        primary_policy.model_role = Some(ModelRole::Architect);
+        primary_policy.required_capabilities.supports_reasoning = true;
+        let primary_res = self.simulate_route(&primary_policy)?;
+        let primary_cid = primary_res
+            .receipt
+            .selected_candidate_id
+            .clone()
+            .ok_or_else(|| {
+                RoutingError::InvalidState(
+                    primary_res
+                        .receipt
+                        .deny_reason
+                        .unwrap_or_else(|| "no_eligible_primary_for_deep_think".to_owned()),
+                )
+            })?;
+
+        let (primary_model_id, same_family_cids) = {
+            let guard = self
+                .inner
+                .lock()
+                .map_err(|_| RoutingError::InternalLockPoisoned)?;
+            let primary_model = guard
+                .candidates
+                .get(&primary_cid)
+                .map(|r| r.candidate.model_id.clone())
+                .ok_or_else(|| RoutingError::UnknownCandidate(primary_cid.clone()))?;
+            let primary_fam = model_vendor_family(&primary_model);
+            let same_fam: Vec<String> = guard
+                .candidates
+                .iter()
+                .filter(|(_, reg)| model_vendor_family(&reg.candidate.model_id) == primary_fam)
+                .map(|(cid, _)| cid.clone())
+                .collect();
+            (primary_model, same_fam)
+        };
+        let primary_family = model_vendor_family(&primary_model_id);
+
+        let mut verifier_policy = base_policy.clone();
+        verifier_policy.model_role = Some(ModelRole::Verifier);
+        verifier_policy.required_capabilities.supports_reasoning = true;
+        for cid in same_family_cids {
+            if !verifier_policy
+                .excluded_candidate_ids
+                .iter()
+                .any(|x| x == &cid)
+            {
+                verifier_policy.excluded_candidate_ids.push(cid);
+            }
+        }
+        let verifier_res = self.simulate_route(&verifier_policy)?;
+        let (verifier_cid, verifier_model, verifier_family, distinct_family_verified) =
+            if let Some(vcid) = verifier_res.receipt.selected_candidate_id {
+                let guard = self
+                    .inner
+                    .lock()
+                    .map_err(|_| RoutingError::InternalLockPoisoned)?;
+                let vmodel = guard
+                    .candidates
+                    .get(&vcid)
+                    .map(|r| r.candidate.model_id.clone());
+                let vfam = vmodel.as_deref().map(model_vendor_family);
+                let distinct = vfam
+                    .as_deref()
+                    .is_some_and(|f| !f.eq_ignore_ascii_case(&primary_family));
+                (Some(vcid), vmodel, vfam, distinct)
+            } else {
+                (None, None, None, false)
+            };
+
+        Ok(DeepThinkModelPair {
+            primary_candidate_id: primary_cid,
+            primary_model_id,
+            primary_family,
+            verifier_candidate_id: verifier_cid,
+            verifier_model_id: verifier_model,
+            verifier_family,
+            distinct_family_verified,
+            reasoning_sandwich_efforts: CapabilityProfile::DeepThinkPrimary
+                .reasoning_sandwich_efforts(),
+        })
+    }
+
     pub fn decide_fallback(
         &self,
         previous_reservation_id: &str,
@@ -1699,6 +2223,10 @@ impl DynamicProviderRouter {
             .get(previous_reservation_id)
             .cloned()
             .ok_or_else(|| RoutingError::UnknownReservation(previous_reservation_id.to_owned()))?;
+        let parent_bounds = guard
+            .parent_policy_bounds
+            .get(previous_reservation_id)
+            .cloned();
 
         let now_ms = original_policy.now_epoch_ms.unwrap_or_else(now_epoch_ms);
         if matches!(
@@ -1711,6 +2239,7 @@ impl DynamicProviderRouter {
                 policy_hash: original_policy.policy_hash(),
                 decided_at_ms: now_ms,
                 allowed: false,
+                simulated: false,
                 selected_candidate_id: None,
                 reservation_id: None,
                 fencing_token: None,
@@ -1720,7 +2249,7 @@ impl DynamicProviderRouter {
                 token_budget: original_policy.token_budget,
                 candidate_scores: Vec::new(),
             };
-            guard.decision_receipts.push(receipt.clone());
+            guard.push_decision_receipt(receipt.clone());
             return Ok(DecisionResult {
                 allowed: false,
                 reservation: None,
@@ -1735,6 +2264,7 @@ impl DynamicProviderRouter {
                 policy_hash: original_policy.policy_hash(),
                 decided_at_ms: now_ms,
                 allowed: false,
+                simulated: false,
                 selected_candidate_id: None,
                 reservation_id: None,
                 fencing_token: None,
@@ -1742,7 +2272,7 @@ impl DynamicProviderRouter {
                 token_budget: original_policy.token_budget,
                 candidate_scores: Vec::new(),
             };
-            guard.decision_receipts.push(receipt.clone());
+            guard.push_decision_receipt(receipt.clone());
             return Ok(DecisionResult {
                 allowed: false,
                 reservation: None,
@@ -1759,6 +2289,87 @@ impl DynamicProviderRouter {
 
         let mut fb_policy = original_policy.clone();
         fb_policy.minimum_privacy_tier = fb_policy.minimum_privacy_tier.max(prev_privacy);
+        // Monotonic fallback narrowing (`AUD-14` / `AUD-16`): never widen parent auth boundary,
+        // privacy tier, capabilities, retention cap, allowlists, denylists, or deadline.
+        if let Some(ref parent) = parent_bounds {
+            if original_policy.required_auth_boundary != parent.required_auth_boundary {
+                let receipt = RouteDecisionReceipt {
+                    decision_id: uuid_v4(),
+                    request_id: original_policy.request_id.clone(),
+                    policy_hash: original_policy.policy_hash(),
+                    decided_at_ms: now_ms,
+                    allowed: false,
+                    simulated: false,
+                    selected_candidate_id: None,
+                    reservation_id: None,
+                    fencing_token: None,
+                    deny_reason: Some("fallback_auth_boundary_widening_blocked".to_owned()),
+                    token_budget: original_policy.token_budget,
+                    candidate_scores: Vec::new(),
+                };
+                guard.push_decision_receipt(receipt.clone());
+                return Ok(DecisionResult {
+                    allowed: false,
+                    reservation: None,
+                    receipt,
+                });
+            }
+            fb_policy.minimum_privacy_tier = fb_policy
+                .minimum_privacy_tier
+                .max(parent.minimum_privacy_tier);
+            fb_policy.required_capabilities = merge_capabilities_monotonic(
+                parent.required_capabilities,
+                fb_policy.required_capabilities,
+            );
+            let Ok(regions) =
+                intersect_allowlist(&parent.allowed_regions, &fb_policy.allowed_regions)
+            else {
+                return Ok(record_fallback_denial(
+                    &mut guard,
+                    original_policy,
+                    now_ms,
+                    "fallback_allowlist_intersection_empty",
+                ));
+            };
+            let Ok(providers) =
+                intersect_allowlist(&parent.allowed_providers, &fb_policy.allowed_providers)
+            else {
+                return Ok(record_fallback_denial(
+                    &mut guard,
+                    original_policy,
+                    now_ms,
+                    "fallback_allowlist_intersection_empty",
+                ));
+            };
+            let Ok(models) =
+                intersect_allowlist(&parent.allowed_models, &fb_policy.allowed_models)
+            else {
+                return Ok(record_fallback_denial(
+                    &mut guard,
+                    original_policy,
+                    now_ms,
+                    "fallback_allowlist_intersection_empty",
+                ));
+            };
+            fb_policy.allowed_regions = regions;
+            fb_policy.allowed_providers = providers;
+            fb_policy.allowed_models = models;
+            fb_policy.forbidden_providers =
+                union_string_lists(&parent.forbidden_providers, &fb_policy.forbidden_providers);
+            fb_policy.forbidden_models =
+                union_string_lists(&parent.forbidden_models, &fb_policy.forbidden_models);
+            fb_policy.excluded_candidate_ids = union_string_lists(
+                &parent.excluded_candidate_ids,
+                &fb_policy.excluded_candidate_ids,
+            );
+            fb_policy.max_retention_hours =
+                min_optional_u32(parent.max_retention_hours, fb_policy.max_retention_hours);
+            let parent_dl = min_optional_i64(parent.deadline_ms, prev.deadline_ms);
+            fb_policy.deadline_ms = min_optional_i64(parent_dl, fb_policy.deadline_ms);
+        } else {
+            fb_policy.deadline_ms = min_optional_i64(prev.deadline_ms, fb_policy.deadline_ms);
+        }
+
         fb_policy.idempotency_key = format!(
             "{}:fallback:{}",
             original_policy.idempotency_key, prev.reservation_id
@@ -1809,34 +2420,192 @@ impl DynamicProviderRouter {
         reservation_id: &str,
         fencing_token: u64,
     ) -> Result<(), RoutingError> {
+        self.mark_dispatched_at(reservation_id, fencing_token, now_epoch_ms())
+    }
+
+    /// Transition a `ReservedNotDispatched` grant to `InFlight` at `now_ms`, enforcing
+    /// `deadline_ms` before dispatch (`AUD-14`). Expired grants are released immediately.
+    pub fn mark_dispatched_at(
+        &self,
+        reservation_id: &str,
+        fencing_token: u64,
+        now_ms: i64,
+    ) -> Result<(), RoutingError> {
+        let auto_attempt = format!("att-{fencing_token}");
+        self.mark_dispatched_internal(reservation_id, fencing_token, &auto_attempt, false, now_ms)
+    }
+
+    /// Transition a `ReservedNotDispatched` grant to `InFlight` bound to a caller-supplied
+    /// non-empty `attempt_id` (`AUD-14` / `AUD-15`), rejecting expired deadlines or empty IDs.
+    pub fn mark_dispatched_with_attempt(
+        &self,
+        reservation_id: &str,
+        fencing_token: u64,
+        attempt_id: &str,
+        now_ms: i64,
+    ) -> Result<(), RoutingError> {
+        let trimmed = attempt_id.trim();
+        if trimmed.is_empty() {
+            return Err(RoutingError::InvalidPolicy(
+                "attempt_id must not be empty".to_owned(),
+            ));
+        }
+        self.mark_dispatched_internal(reservation_id, fencing_token, trimmed, true, now_ms)
+    }
+
+    fn mark_dispatched_internal(
+        &self,
+        reservation_id: &str,
+        fencing_token: u64,
+        attempt_id: &str,
+        explicit_attempt_required: bool,
+        now_ms: i64,
+    ) -> Result<(), RoutingError> {
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
-        let grant = guard
-            .reservations
-            .get_mut(reservation_id)
-            .ok_or_else(|| RoutingError::UnknownReservation(reservation_id.to_owned()))?;
-        if grant.fencing_token != fencing_token {
-            return Err(RoutingError::StaleFencingToken {
+        let store_opt = guard.sqlite_store.clone();
+        let (expired_deadline, candidate_id, reserved_tokens) = {
+            let grant = guard
+                .reservations
+                .get_mut(reservation_id)
+                .ok_or_else(|| RoutingError::UnknownReservation(reservation_id.to_owned()))?;
+            if grant.fencing_token != fencing_token {
+                return Err(RoutingError::StaleFencingToken {
+                    reservation_id: reservation_id.to_owned(),
+                    expected: grant.fencing_token,
+                    provided: fencing_token,
+                });
+            }
+            if grant.status != ReservationStatus::ReservedNotDispatched {
+                return Err(RoutingError::InvalidReservationTransition {
+                    reservation_id: reservation_id.to_owned(),
+                    state: grant.status.as_str(),
+                });
+            }
+            if let Some(dl) = grant.deadline_ms {
+                if now_ms >= dl {
+                    grant.status = ReservationStatus::ReconciledReleased;
+                    (Some(dl), grant.candidate_id.clone(), grant.reserved_tokens)
+                } else {
+                    grant.attempt_id = Some(attempt_id.to_owned());
+                    grant.explicit_attempt_required = explicit_attempt_required;
+                    grant.status = ReservationStatus::InFlight;
+                    return Ok(());
+                }
+            } else {
+                grant.attempt_id = Some(attempt_id.to_owned());
+                grant.explicit_attempt_required = explicit_attempt_required;
+                grant.status = ReservationStatus::InFlight;
+                return Ok(());
+            }
+        };
+
+        if let Some(deadline_ms) = expired_deadline {
+            release_candidate_reservation(&mut guard, &candidate_id, reserved_tokens, &store_opt, now_ms)?;
+            guard.note_terminal_reservation(reservation_id);
+            guard.push_failover_event(FailoverEvent {
+                timestamp_ms: now_ms,
+                kind: "reservation_deadline_expired".to_owned(),
+                from_candidate_id: Some(candidate_id),
+                to_candidate_id: None,
+                reason: format!("deadline_ms={deadline_ms} expired at now_ms={now_ms}"),
+                reservation_id: Some(reservation_id.to_owned()),
+            });
+            return Err(RoutingError::ReservationDeadlineExpired {
                 reservation_id: reservation_id.to_owned(),
-                expected: grant.fencing_token,
-                provided: fencing_token,
+                deadline_ms,
+                now_ms,
             });
         }
-        if grant.status != ReservationStatus::ReservedNotDispatched {
-            return Err(RoutingError::InvalidReservationTransition {
-                reservation_id: reservation_id.to_owned(),
-                state: grant.status.as_str(),
-            });
-        }
-        grant.status = ReservationStatus::InFlight;
         Ok(())
+    }
+
+    /// Explicitly cancel and release a `ReservedNotDispatched` grant without charging (`AUD-15`).
+    pub fn cancel_reservation(
+        &self,
+        reservation_id: &str,
+        fencing_token: u64,
+        note: &str,
+        now_ms: i64,
+    ) -> Result<RouteOutcomeReceipt, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let store_opt = guard.sqlite_store.clone();
+        let (candidate_id, reserved_tokens) = {
+            let grant = guard
+                .reservations
+                .get_mut(reservation_id)
+                .ok_or_else(|| RoutingError::UnknownReservation(reservation_id.to_owned()))?;
+            if grant.fencing_token != fencing_token {
+                return Err(RoutingError::StaleFencingToken {
+                    reservation_id: reservation_id.to_owned(),
+                    expected: grant.fencing_token,
+                    provided: fencing_token,
+                });
+            }
+            if grant.status != ReservationStatus::ReservedNotDispatched {
+                return Err(RoutingError::InvalidReservationTransition {
+                    reservation_id: reservation_id.to_owned(),
+                    state: grant.status.as_str(),
+                });
+            }
+            grant.status = ReservationStatus::ReconciledReleased;
+            (grant.candidate_id.clone(), grant.reserved_tokens)
+        };
+        release_candidate_reservation(&mut guard, &candidate_id, reserved_tokens, &store_opt, now_ms)?;
+        guard.note_terminal_reservation(reservation_id);
+        let receipt = RouteOutcomeReceipt {
+            reservation_id: reservation_id.to_owned(),
+            candidate_id,
+            fencing_token,
+            status: ReservationStatus::ReconciledReleased,
+            reconciled_at_ms: now_ms,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
+            actual_cost_microunits: None,
+            diagnostic_note: SecretRedactor::redact(note),
+        };
+        guard.push_outcome_receipt(receipt.clone());
+        Ok(receipt)
     }
 
     pub fn reconcile_outcome(
         &self,
         report: OutcomeReport,
+    ) -> Result<RouteOutcomeReceipt, RoutingError> {
+        self.reconcile_outcome_internal(report, false)
+    }
+
+    /// Strict `AUD-15` outcome reconciliation requiring `ReservationStatus::InFlight`
+    /// and a non-empty matching `attempt_id` (rejects `ReservedNotDispatched` without charging).
+    pub fn reconcile_in_flight_outcome(
+        &self,
+        report: OutcomeReport,
+    ) -> Result<RouteOutcomeReceipt, RoutingError> {
+        self.reconcile_outcome_internal(report, true)
+    }
+
+    /// Inspect accumulated reconciled cost microunits for a candidate.
+    pub fn total_reconciled_cost_microunits(&self, candidate_id: &str) -> Result<i64, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard
+            .total_reconciled_cost_microunits
+            .get(candidate_id)
+            .copied()
+            .unwrap_or(0))
+    }
+
+    fn reconcile_outcome_internal(
+        &self,
+        report: OutcomeReport,
+        require_in_flight: bool,
     ) -> Result<RouteOutcomeReceipt, RoutingError> {
         let mut guard = self
             .inner
@@ -1847,7 +2616,7 @@ impl DynamicProviderRouter {
         let default_cooldown = guard.default_cooldown_ms;
         let store_opt = guard.sqlite_store.clone();
 
-        let (candidate_id, model_id, reserved_tokens) = {
+        let (candidate_id, model_id, reserved_tokens, deadline_ms) = {
             let grant = guard
                 .reservations
                 .get(&report.reservation_id)
@@ -1864,12 +2633,118 @@ impl DynamicProviderRouter {
                     report.reservation_id.clone(),
                 ));
             }
+            if require_in_flight && grant.status != ReservationStatus::InFlight {
+                return Err(RoutingError::InvalidReservationTransition {
+                    reservation_id: report.reservation_id.clone(),
+                    state: grant.status.as_str(),
+                });
+            }
+            let enforce_attempt =
+                require_in_flight || grant.explicit_attempt_required || report.attempt_id.is_some();
+            if enforce_attempt {
+                let provided_att = report.attempt_id.as_deref().map(str::trim).unwrap_or("");
+                if provided_att.is_empty() {
+                    return Err(RoutingError::InvalidPolicy(
+                        "attempt_id must not be empty for dispatched outcome reconciliation"
+                            .to_owned(),
+                    ));
+                }
+                if grant.status != ReservationStatus::InFlight {
+                    return Err(RoutingError::InvalidReservationTransition {
+                        reservation_id: report.reservation_id.clone(),
+                        state: grant.status.as_str(),
+                    });
+                }
+                if grant.attempt_id.as_deref() != Some(provided_att) {
+                    return Err(RoutingError::InvalidPolicy(format!(
+                        "mismatched attempt_id for reservation `{}`",
+                        report.reservation_id
+                    )));
+                }
+            }
             (
                 grant.candidate_id.clone(),
                 grant.model_id.clone(),
                 grant.reserved_tokens,
+                grant.deadline_ms,
             )
         };
+
+        // Fence post-deadline reconciliation and usage/cost integer overflow into
+        // `OperatorRecoveryRequired` without charging corrupted totals (`AUD-14` / PR #1).
+        let deadline_exceeded = deadline_ms.is_some_and(|dl| now_ms >= dl);
+        let usage_overflow = report
+            .actual_input_tokens
+            .unwrap_or(0)
+            .checked_add(report.actual_output_tokens.unwrap_or(0))
+            .is_none();
+        let prev_cost = guard
+            .total_reconciled_cost_microunits
+            .get(&candidate_id)
+            .copied()
+            .unwrap_or(0);
+        let cost_overflow = report
+            .actual_cost_microunits
+            .is_some_and(|c| c < 0 || prev_cost.checked_add(c).is_none());
+
+        if deadline_exceeded || usage_overflow || cost_overflow {
+            let anomaly = if deadline_exceeded {
+                "reconciliation_after_deadline"
+            } else if usage_overflow {
+                "usage_overflow"
+            } else {
+                "cost_overflow"
+            };
+            if let Some(grant) = guard.reservations.get_mut(&report.reservation_id) {
+                grant.status = ReservationStatus::OperatorRecoveryRequired;
+            }
+            release_candidate_reservation(
+                &mut guard,
+                &candidate_id,
+                reserved_tokens,
+                &store_opt,
+                now_ms,
+            )?;
+            guard.note_terminal_reservation(&report.reservation_id);
+            guard.push_failover_event(FailoverEvent {
+                timestamp_ms: now_ms,
+                kind: "operator_recovery_required".to_owned(),
+                from_candidate_id: Some(candidate_id.clone()),
+                to_candidate_id: None,
+                reason: anomaly.to_owned(),
+                reservation_id: Some(report.reservation_id.clone()),
+            });
+            let merged_note = if report.diagnostic_note.trim().is_empty() {
+                anomaly.to_owned()
+            } else {
+                format!("{anomaly}: {}", report.diagnostic_note)
+            };
+            let receipt = RouteOutcomeReceipt {
+                reservation_id: report.reservation_id,
+                candidate_id,
+                fencing_token: report.fencing_token,
+                status: ReservationStatus::OperatorRecoveryRequired,
+                reconciled_at_ms: now_ms,
+                actual_input_tokens: if usage_overflow {
+                    None
+                } else {
+                    report.actual_input_tokens
+                },
+                actual_output_tokens: if usage_overflow {
+                    None
+                } else {
+                    report.actual_output_tokens
+                },
+                actual_cost_microunits: if cost_overflow {
+                    None
+                } else {
+                    report.actual_cost_microunits
+                },
+                diagnostic_note: SecretRedactor::redact(&merged_note),
+            };
+            guard.push_outcome_receipt(receipt.clone());
+            return Ok(receipt);
+        }
 
         let next_status = if report.success {
             ReservationStatus::ReconciledCharged
@@ -1884,8 +2759,25 @@ impl DynamicProviderRouter {
         if let Some(grant) = guard.reservations.get_mut(&report.reservation_id) {
             grant.status = next_status;
         }
+        if next_status == ReservationStatus::ReconciledCharged {
+            if let Some(obs_cost) = report.actual_cost_microunits {
+                if let Some(new_total) = prev_cost.checked_add(obs_cost) {
+                    guard
+                        .total_reconciled_cost_microunits
+                        .insert(candidate_id.clone(), new_total);
+                }
+            }
+        }
+        guard.note_terminal_reservation(&report.reservation_id);
 
         let mut auto_opened_circuit = false;
+        let mut model_entitlement_locked: Option<(String, String)> = None;
+        let diag_lower = report.diagnostic_note.to_ascii_lowercase();
+        let inferred_model_not_allowed = !report.success
+            && (report.model_entitlement_error
+                || diag_lower.contains("model_not_allowed")
+                || diag_lower.contains("does not have access to the requested model")
+                || (diag_lower.contains("403") && diag_lower.contains("model")));
         if let Some(entry) = guard.candidates.get_mut(&candidate_id) {
             let was_open = matches!(entry.state.circuit, CircuitState::Open { .. });
             entry.state.reserved_tokens = entry
@@ -1925,13 +2817,15 @@ impl DynamicProviderRouter {
                         probe_in_flight: false,
                     };
                 }
-            } else if report.model_entitlement_error {
-                // Model entitlement lock drops positive proof for this model without killing unrelated models.
+            } else if inferred_model_not_allowed {
+                // Model entitlement lock (`T2.3`): drops positive proof & cools ONLY this model
+                // without tripping the provider circuit for unrelated permitted models.
                 entry.state.model_proven.remove(&model_id);
                 entry
                     .state
                     .model_locks_until_ms
                     .insert(model_id.clone(), now_ms.saturating_add(300_000));
+                model_entitlement_locked = Some((entry.candidate.provider_id.clone(), model_id.clone()));
                 if let CircuitState::HalfOpen {
                     probe_in_flight: true,
                 } = entry.state.circuit
@@ -1957,6 +2851,32 @@ impl DynamicProviderRouter {
             if let Some(ref store) = store_opt {
                 store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
             }
+        }
+        if let Some((provider_id, locked_model)) = model_entitlement_locked {
+            let until_ms = now_ms.saturating_add(300_000);
+            guard.model_cooldowns.insert(
+                (
+                    candidate_id.clone(),
+                    locked_model.clone(),
+                    ModelCooldownClass::ModelNotAllowed403,
+                ),
+                ModelCooldownEntry {
+                    candidate_id: candidate_id.clone(),
+                    provider_id,
+                    model_id: locked_model,
+                    error_class: ModelCooldownClass::ModelNotAllowed403,
+                    until_ms,
+                    reason: SecretRedactor::redact(&report.diagnostic_note),
+                },
+            );
+            guard.push_failover_event(FailoverEvent {
+                timestamp_ms: now_ms,
+                kind: "model_cooldown".to_owned(),
+                from_candidate_id: Some(candidate_id.clone()),
+                to_candidate_id: None,
+                reason: "model_not_allowed_403".to_owned(),
+                reservation_id: Some(report.reservation_id.clone()),
+            });
         }
         let burned_tokens = report
             .actual_input_tokens
@@ -1991,7 +2911,7 @@ impl DynamicProviderRouter {
             actual_cost_microunits: report.actual_cost_microunits,
             diagnostic_note: SecretRedactor::redact(&report.diagnostic_note),
         };
-        guard.outcome_receipts.push(receipt.clone());
+        guard.push_outcome_receipt(receipt.clone());
         Ok(receipt)
     }
 
@@ -2044,7 +2964,7 @@ impl DynamicProviderRouter {
             actual_cost_microunits,
             diagnostic_note: SecretRedactor::redact(note),
         };
-        guard.outcome_receipts.push(receipt.clone());
+        guard.push_outcome_receipt(receipt.clone());
         Ok(receipt)
     }
 
@@ -2136,7 +3056,7 @@ impl DynamicProviderRouter {
             .inner
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
-        Ok(guard.decision_receipts.clone())
+        Ok(guard.decision_receipts.iter().cloned().collect())
     }
 
     pub fn outcome_receipts(&self) -> Result<Vec<RouteOutcomeReceipt>, RoutingError> {
@@ -2144,7 +3064,7 @@ impl DynamicProviderRouter {
             .inner
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
-        Ok(guard.outcome_receipts.clone())
+        Ok(guard.outcome_receipts.iter().cloned().collect())
     }
 
     /// Look up one secret-redacted decision receipt by `decision_id`.
@@ -2170,7 +3090,7 @@ impl DynamicProviderRouter {
             .inner
             .lock()
             .map_err(|_| RoutingError::InternalLockPoisoned)?;
-        Ok(guard.decision_receipts.last().cloned())
+        Ok(guard.decision_receipts.back().cloned())
     }
 
     /// Return recent failover / circuit / quota lifecycle events (newest first, bounded by `limit`).
@@ -2327,6 +3247,300 @@ fn compute_quota_runway(
     }
 }
 
+fn merge_capabilities_monotonic(
+    parent: ModelCapabilities,
+    child: ModelCapabilities,
+) -> ModelCapabilities {
+    ModelCapabilities {
+        supports_tools: parent.supports_tools || child.supports_tools,
+        supports_structured_output: parent.supports_structured_output
+            || child.supports_structured_output,
+        supports_vision: parent.supports_vision || child.supports_vision,
+        supports_streaming: parent.supports_streaming || child.supports_streaming,
+        supports_reasoning: parent.supports_reasoning || child.supports_reasoning,
+        supports_json_mode: parent.supports_json_mode || child.supports_json_mode,
+    }
+}
+
+fn intersect_allowlist(parent: &[String], child: &[String]) -> Result<Vec<String>, ()> {
+    if parent.is_empty() && child.is_empty() {
+        return Ok(Vec::new());
+    }
+    if parent.is_empty() {
+        return Ok(child.to_vec());
+    }
+    if child.is_empty() {
+        return Ok(parent.to_vec());
+    }
+    let child_set: HashSet<&str> = child.iter().map(String::as_str).collect();
+    let mut out = Vec::new();
+    for item in parent {
+        if child_set.contains(item.as_str()) && !out.iter().any(|x| x == item) {
+            out.push(item.clone());
+        }
+    }
+    if out.is_empty() {
+        Err(())
+    } else {
+        Ok(out)
+    }
+}
+
+fn union_string_lists(parent: &[String], child: &[String]) -> Vec<String> {
+    let mut out = parent.to_vec();
+    for item in child {
+        if !out.iter().any(|x| x == item) {
+            out.push(item.clone());
+        }
+    }
+    out
+}
+
+fn min_optional_u32(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (Some(x), None) => Some(x),
+        (None, y) => y,
+    }
+}
+
+fn min_optional_i64(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (Some(x), None) => Some(x),
+        (None, y) => y,
+    }
+}
+
+fn validate_deadline(deadline_ms: Option<i64>, now_ms: i64) -> Option<&'static str> {
+    let dl = deadline_ms?;
+    if dl <= 0 {
+        Some("invalid_deadline")
+    } else if now_ms >= dl {
+        Some("request_deadline_expired")
+    } else {
+        None
+    }
+}
+
+fn record_fallback_denial(
+    guard: &mut RouterInner,
+    policy: &RouteRequestPolicy,
+    now_ms: i64,
+    reason: &str,
+) -> DecisionResult {
+    let receipt = RouteDecisionReceipt {
+        decision_id: uuid_v4(),
+        request_id: policy.request_id.clone(),
+        policy_hash: policy.policy_hash(),
+        decided_at_ms: now_ms,
+        allowed: false,
+        simulated: false,
+        selected_candidate_id: None,
+        reservation_id: None,
+        fencing_token: None,
+        deny_reason: Some(reason.to_owned()),
+        token_budget: policy.token_budget,
+        candidate_scores: Vec::new(),
+    };
+    guard.push_decision_receipt(receipt.clone());
+    DecisionResult {
+        allowed: false,
+        reservation: None,
+        receipt,
+    }
+}
+
+fn release_candidate_reservation(
+    guard: &mut RouterInner,
+    candidate_id: &str,
+    reserved_tokens: i64,
+    store_opt: &Option<Arc<RouterSqliteStore>>,
+    now_ms: i64,
+) -> Result<(), RoutingError> {
+    if let Some(entry) = guard.candidates.get_mut(candidate_id) {
+        entry.state.reserved_tokens = entry
+            .state
+            .reserved_tokens
+            .saturating_sub(reserved_tokens)
+            .max(0);
+        entry.state.reserved_requests = entry.state.reserved_requests.saturating_sub(1).max(0);
+        if let CircuitState::HalfOpen {
+            probe_in_flight: true,
+        } = entry.state.circuit
+        {
+            entry.state.circuit = CircuitState::HalfOpen {
+                probe_in_flight: false,
+            };
+        }
+        if let Some(ref store) = store_opt {
+            store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
+        }
+    }
+    Ok(())
+}
+
+fn summarize_deny_reason(scores: &[CandidateScoreBreakdown]) -> String {
+    if scores.is_empty() {
+        return "no_candidates_registered".to_owned();
+    }
+    if let Some(reason) = scores.iter().find_map(|s| {
+        s.rejection_reason
+            .as_deref()
+            .filter(|r| *r != "candidate_excluded_by_policy")
+            .map(str::to_owned)
+    }) {
+        return reason;
+    }
+    scores
+        .iter()
+        .find_map(|s| s.rejection_reason.clone())
+        .unwrap_or_else(|| "all_candidates_rejected".to_owned())
+}
+
+fn simulate_route_locked(
+    guard: &RouterInner,
+    policy: &RouteRequestPolicy,
+) -> DecisionResult {
+    let now_ms = policy.now_epoch_ms.unwrap_or_else(now_epoch_ms);
+    let policy_hash = policy.policy_hash();
+    if let Some(reason) = validate_deadline(policy.deadline_ms, now_ms) {
+        return DecisionResult {
+            allowed: false,
+            reservation: None,
+            receipt: RouteDecisionReceipt {
+                decision_id: format!("rsim-{}", uuid_v4()),
+                request_id: policy.request_id.clone(),
+                policy_hash,
+                decided_at_ms: now_ms,
+                allowed: false,
+                simulated: true,
+                selected_candidate_id: None,
+                reservation_id: None,
+                fencing_token: None,
+                deny_reason: Some(reason.to_owned()),
+                token_budget: policy.token_budget,
+                candidate_scores: Vec::new(),
+            },
+        };
+    }
+    let Some(needed_tokens) = policy
+        .estimated_total_tokens_checked()
+        .and_then(|v| i64::try_from(v).ok())
+    else {
+        return DecisionResult {
+            allowed: false,
+            reservation: None,
+            receipt: RouteDecisionReceipt {
+                decision_id: format!("rsim-{}", uuid_v4()),
+                request_id: policy.request_id.clone(),
+                policy_hash,
+                decided_at_ms: now_ms,
+                allowed: false,
+                simulated: true,
+                selected_candidate_id: None,
+                reservation_id: None,
+                fencing_token: None,
+                deny_reason: Some("estimated_tokens_overflow".to_owned()),
+                token_budget: policy.token_budget,
+                candidate_scores: Vec::new(),
+            },
+        };
+    };
+    let excluded: HashSet<&str> = policy
+        .excluded_candidate_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let sticky_candidate = policy
+        .session_affinity_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|k| guard.session_affinity.get(k).cloned());
+
+    let mut scores = Vec::with_capacity(guard.candidates.len());
+    let mut best_idx: Option<usize> = None;
+
+    for reg in guard.candidates.values() {
+        let mut cloned_state = reg.state.clone();
+        cloned_state.advance_time(now_ms);
+        if cloned_state
+            .quota_exhausted_until_ms
+            .is_some_and(|until| now_ms >= until)
+        {
+            cloned_state.quota_exhausted_until_ms = None;
+        }
+        let score = evaluate_candidate(
+            &reg.candidate,
+            &cloned_state,
+            policy,
+            &excluded,
+            sticky_candidate.as_deref(),
+            now_ms,
+            needed_tokens,
+        );
+        let idx = scores.len();
+        if score.eligible {
+            let is_better = match best_idx {
+                None => true,
+                Some(cur_best_idx) => {
+                    let cur_best: &CandidateScoreBreakdown = &scores[cur_best_idx];
+                    score.total_score_bps > cur_best.total_score_bps
+                        || (score.total_score_bps == cur_best.total_score_bps
+                            && score.candidate_id < cur_best.candidate_id)
+                }
+            };
+            if is_better {
+                best_idx = Some(idx);
+            }
+        }
+        scores.push(score);
+    }
+
+    if let Some(idx) = best_idx {
+        let winner_id = scores[idx].candidate_id.clone();
+        DecisionResult {
+            allowed: true,
+            reservation: None,
+            receipt: RouteDecisionReceipt {
+                decision_id: format!("rsim-{}", uuid_v4()),
+                request_id: policy.request_id.clone(),
+                policy_hash,
+                decided_at_ms: now_ms,
+                allowed: true,
+                simulated: true,
+                selected_candidate_id: Some(winner_id),
+                reservation_id: None,
+                fencing_token: None,
+                deny_reason: None,
+                token_budget: policy.token_budget,
+                candidate_scores: scores,
+            },
+        }
+    } else {
+        let deny_reason = summarize_deny_reason(&scores);
+        DecisionResult {
+            allowed: false,
+            reservation: None,
+            receipt: RouteDecisionReceipt {
+                decision_id: format!("rsim-{}", uuid_v4()),
+                request_id: policy.request_id.clone(),
+                policy_hash,
+                decided_at_ms: now_ms,
+                allowed: false,
+                simulated: true,
+                selected_candidate_id: None,
+                reservation_id: None,
+                fencing_token: None,
+                deny_reason: Some(deny_reason),
+                token_budget: policy.token_budget,
+                candidate_scores: scores,
+            },
+        }
+    }
+}
+
 fn decide_and_reserve_locked(
     guard: &mut RouterInner,
     policy: &RouteRequestPolicy,
@@ -2338,8 +3552,53 @@ fn decide_and_reserve_locked(
     }
 
     let now_ms = policy.now_epoch_ms.unwrap_or_else(now_epoch_ms);
-    let needed_tokens_u64 = policy.estimated_total_tokens();
-    let needed_tokens = i64::try_from(needed_tokens_u64).unwrap_or(i64::MAX);
+    if let Some(reason) = validate_deadline(policy.deadline_ms, now_ms) {
+        let receipt = RouteDecisionReceipt {
+            decision_id: uuid_v4(),
+            request_id: policy.request_id.clone(),
+            policy_hash: policy.policy_hash(),
+            decided_at_ms: now_ms,
+            allowed: false,
+            simulated: false,
+            selected_candidate_id: None,
+            reservation_id: None,
+            fencing_token: None,
+            deny_reason: Some(reason.to_owned()),
+            token_budget: policy.token_budget,
+            candidate_scores: Vec::new(),
+        };
+        guard.push_decision_receipt(receipt.clone());
+        return Ok(DecisionResult {
+            allowed: false,
+            reservation: None,
+            receipt,
+        });
+    }
+    let Some(needed_tokens) = policy
+        .estimated_total_tokens_checked()
+        .and_then(|v| i64::try_from(v).ok())
+    else {
+        let receipt = RouteDecisionReceipt {
+            decision_id: uuid_v4(),
+            request_id: policy.request_id.clone(),
+            policy_hash: policy.policy_hash(),
+            decided_at_ms: now_ms,
+            allowed: false,
+            simulated: false,
+            selected_candidate_id: None,
+            reservation_id: None,
+            fencing_token: None,
+            deny_reason: Some("estimated_tokens_overflow".to_owned()),
+            token_budget: policy.token_budget,
+            candidate_scores: Vec::new(),
+        };
+        guard.push_decision_receipt(receipt.clone());
+        return Ok(DecisionResult {
+            allowed: false,
+            reservation: None,
+            receipt,
+        });
+    };
     let excluded: HashSet<&str> = policy
         .excluded_candidate_ids
         .iter()
@@ -2433,105 +3692,133 @@ fn decide_and_reserve_locked(
     let policy_hash = policy.policy_hash();
     let result = if let Some(idx) = best_idx {
         let winner_id = scores[idx].candidate_id.clone();
-        if let Some(aff_key) = policy
-            .session_affinity_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            guard
-                .session_affinity
-                .insert(aff_key.to_owned(), winner_id.clone());
-        }
-        let fencing_token = guard.next_fencing_token;
-        guard.next_fencing_token = guard.next_fencing_token.saturating_add(1);
-        let reservation_id = format!("res-{}-{}", guard.epoch, fencing_token);
-
-        let (provider_id, model_id, pricing_version, estimated_cost_microunits) = {
-            let reg = guard
-                .candidates
-                .get_mut(&winner_id)
-                .ok_or_else(|| RoutingError::UnknownCandidate(winner_id.clone()))?;
-            reg.state.reserved_tokens = reg.state.reserved_tokens.saturating_add(needed_tokens);
-            reg.state.reserved_requests = reg.state.reserved_requests.saturating_add(1);
-            if matches!(
-                reg.state.circuit,
-                CircuitState::HalfOpen {
-                    probe_in_flight: false
-                }
-            ) {
-                reg.state.circuit = CircuitState::HalfOpen {
-                    probe_in_flight: true,
-                };
+        // Checked reservation counter guard BEFORE mutating any fencing/affinity/probe state (`AUD-14`).
+        let overflow_detected = guard
+            .candidates
+            .get(&winner_id)
+            .is_some_and(|reg| {
+                reg.state.reserved_tokens.checked_add(needed_tokens).is_none()
+                    || reg.state.reserved_requests.checked_add(1).is_none()
+            });
+        if overflow_detected {
+            let receipt = RouteDecisionReceipt {
+                decision_id: uuid_v4(),
+                request_id: policy.request_id.clone(),
+                policy_hash,
+                decided_at_ms: now_ms,
+                allowed: false,
+                simulated: false,
+                selected_candidate_id: None,
+                reservation_id: None,
+                fencing_token: None,
+                deny_reason: Some("reservation_counter_overflow".to_owned()),
+                token_budget: policy.token_budget,
+                candidate_scores: scores,
+            };
+            guard.push_decision_receipt(receipt.clone());
+            DecisionResult {
+                allowed: false,
+                reservation: None,
+                receipt,
             }
-            (
-                reg.candidate.provider_id.clone(),
-                reg.candidate.model_id.clone(),
-                reg.candidate.pricing_version.clone(),
-                reg.candidate.estimate_cost_microunits(
-                    policy.estimated_input_tokens,
-                    policy.estimated_output_tokens,
-                ),
-            )
-        };
+        } else {
+            if let Some(aff_key) = policy
+                .session_affinity_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                guard
+                    .session_affinity
+                    .insert(aff_key.to_owned(), winner_id.clone());
+            }
+            let fencing_token = guard.next_fencing_token;
+            guard.next_fencing_token = guard.next_fencing_token.saturating_add(1);
+            let reservation_id = format!("res-{}-{}", guard.epoch, fencing_token);
 
-        let grant = ReservationGrant {
-            reservation_id: reservation_id.clone(),
-            candidate_id: winner_id.clone(),
-            provider_id,
-            model_id,
-            idempotency_key: policy.idempotency_key.clone(),
-            fencing_token,
-            epoch: guard.epoch,
-            reserved_tokens: needed_tokens,
-            pricing_version,
-            estimated_cost_microunits,
-            created_at_ms: now_ms,
-            expires_at_ms: now_ms.saturating_add(policy.reservation_ttl_ms.max(1)),
-            status: ReservationStatus::ReservedNotDispatched,
-        };
-        guard
-            .reservations
-            .insert(reservation_id.clone(), grant.clone());
+            let (provider_id, model_id, pricing_version, estimated_cost_microunits) = {
+                let reg = guard
+                    .candidates
+                    .get_mut(&winner_id)
+                    .ok_or_else(|| RoutingError::UnknownCandidate(winner_id.clone()))?;
+                reg.state.reserved_tokens = reg.state.reserved_tokens.saturating_add(needed_tokens);
+                reg.state.reserved_requests = reg.state.reserved_requests.saturating_add(1);
+                if matches!(
+                    reg.state.circuit,
+                    CircuitState::HalfOpen {
+                        probe_in_flight: false
+                    }
+                ) {
+                    reg.state.circuit = CircuitState::HalfOpen {
+                        probe_in_flight: true,
+                    };
+                }
+                (
+                    reg.candidate.provider_id.clone(),
+                    reg.candidate.model_id.clone(),
+                    reg.candidate.pricing_version.clone(),
+                    reg.candidate.estimate_cost_microunits(
+                        policy.estimated_input_tokens,
+                        policy.estimated_output_tokens,
+                    ),
+                )
+            };
 
-        let receipt = RouteDecisionReceipt {
-            decision_id: uuid_v4(),
-            request_id: policy.request_id.clone(),
-            policy_hash,
-            decided_at_ms: now_ms,
-            allowed: true,
-            selected_candidate_id: Some(winner_id),
-            reservation_id: Some(reservation_id),
-            fencing_token: Some(fencing_token),
-            deny_reason: None,
-            token_budget: policy.token_budget,
-            candidate_scores: scores,
-        };
-        guard.decision_receipts.push(receipt.clone());
-        DecisionResult {
-            allowed: true,
-            reservation: Some(grant),
-            receipt,
+            let grant = ReservationGrant {
+                reservation_id: reservation_id.clone(),
+                candidate_id: winner_id.clone(),
+                provider_id,
+                model_id,
+                idempotency_key: policy.idempotency_key.clone(),
+                fencing_token,
+                epoch: guard.epoch,
+                reserved_tokens: needed_tokens,
+                pricing_version,
+                estimated_cost_microunits,
+                created_at_ms: now_ms,
+                expires_at_ms: now_ms.saturating_add(policy.reservation_ttl_ms.max(1)),
+                deadline_ms: policy.deadline_ms,
+                attempt_id: None,
+                explicit_attempt_required: false,
+                status: ReservationStatus::ReservedNotDispatched,
+            };
+            guard
+                .reservations
+                .insert(reservation_id.clone(), grant.clone());
+            guard
+                .parent_policy_bounds
+                .insert(reservation_id.clone(), ParentPolicyBounds::from_policy(policy));
+
+            let receipt = RouteDecisionReceipt {
+                decision_id: uuid_v4(),
+                request_id: policy.request_id.clone(),
+                policy_hash,
+                decided_at_ms: now_ms,
+                allowed: true,
+                simulated: false,
+                selected_candidate_id: Some(winner_id),
+                reservation_id: Some(reservation_id),
+                fencing_token: Some(fencing_token),
+                deny_reason: None,
+                token_budget: policy.token_budget,
+                candidate_scores: scores,
+            };
+            guard.push_decision_receipt(receipt.clone());
+            DecisionResult {
+                allowed: true,
+                reservation: Some(grant),
+                receipt,
+            }
         }
     } else {
-        let deny_reason = if scores.is_empty() {
-            "no_candidates_registered".to_owned()
-        } else {
-            let mut first_reason = "all_candidates_rejected".to_owned();
-            for s in &scores {
-                if let Some(r) = &s.rejection_reason {
-                    first_reason = r.clone();
-                    break;
-                }
-            }
-            first_reason
-        };
+        let deny_reason = summarize_deny_reason(&scores);
         let receipt = RouteDecisionReceipt {
             decision_id: uuid_v4(),
             request_id: policy.request_id.clone(),
             policy_hash,
             decided_at_ms: now_ms,
             allowed: false,
+            simulated: false,
             selected_candidate_id: None,
             reservation_id: None,
             fencing_token: None,
@@ -2539,7 +3826,7 @@ fn decide_and_reserve_locked(
             token_budget: policy.token_budget,
             candidate_scores: scores,
         };
-        guard.decision_receipts.push(receipt.clone());
+        guard.push_decision_receipt(receipt.clone());
         DecisionResult {
             allowed: false,
             reservation: None,
@@ -2548,9 +3835,7 @@ fn decide_and_reserve_locked(
     };
 
     if !policy.idempotency_key.is_empty() {
-        guard
-            .idempotency_index
-            .insert(policy.idempotency_key.clone(), result.clone());
+        guard.record_idempotency(policy.idempotency_key.clone(), result.clone());
     }
     Ok(result)
 }
@@ -2593,16 +3878,76 @@ fn evaluate_candidate(
     if candidate.privacy_tier < policy.minimum_privacy_tier {
         return reject("privacy_tier_insufficient".to_owned());
     }
+    if !policy.allowed_regions.is_empty()
+        && !policy
+            .allowed_regions
+            .iter()
+            .any(|r| r == &candidate.region)
+    {
+        return reject("region_not_allowed".to_owned());
+    }
+    if !policy.allowed_providers.is_empty()
+        && !policy
+            .allowed_providers
+            .iter()
+            .any(|p| p == &candidate.provider_id)
+    {
+        return reject("provider_not_allowed".to_owned());
+    }
+    if !policy.allowed_models.is_empty()
+        && !policy
+            .allowed_models
+            .iter()
+            .any(|m| m == &candidate.model_id)
+    {
+        return reject("model_not_allowed_by_policy".to_owned());
+    }
+    if policy
+        .forbidden_providers
+        .iter()
+        .any(|p| p == &candidate.provider_id)
+    {
+        return reject("provider_forbidden_by_policy".to_owned());
+    }
+    if policy
+        .forbidden_models
+        .iter()
+        .any(|m| m == &candidate.model_id)
+    {
+        return reject("model_forbidden_by_policy".to_owned());
+    }
+    if policy.max_retention_hours == Some(0) && candidate.privacy_tier == PrivacyTier::Public {
+        return reject("retention_policy_exceeded".to_owned());
+    }
     if let Some(missing_cap) =
         missing_capability(candidate.capabilities, policy.required_capabilities)
     {
         return reject(format!("capability_mismatch:{missing_cap}"));
     }
-    let total_req_u64 = policy
+    let Some(total_req_u64) = policy
         .estimated_input_tokens
-        .saturating_add(policy.estimated_output_tokens);
+        .checked_add(policy.estimated_output_tokens)
+    else {
+        return reject("estimated_tokens_overflow".to_owned());
+    };
     if total_req_u64 > candidate.context_limit_tokens {
         return reject("context_limit_exceeded".to_owned());
+    }
+    if let Some(reason) = validate_deadline(policy.deadline_ms, now_ms) {
+        return reject(reason.to_owned());
+    }
+    if let Some(deadline) = policy.deadline_ms {
+        let remaining_ms = deadline.saturating_sub(now_ms);
+        if let Some(ewma) = state.ewma_latency_ms {
+            if ewma > remaining_ms as f64 {
+                return reject("deadline_latency_exceeded".to_owned());
+            }
+        }
+    }
+    if state.reserved_tokens.checked_add(needed_tokens).is_none()
+        || state.reserved_requests.checked_add(1).is_none()
+    {
+        return reject("reservation_counter_overflow".to_owned());
     }
     if policy.estimated_output_tokens > candidate.max_output_tokens {
         return reject("max_output_tokens_exceeded".to_owned());
@@ -2945,5 +4290,537 @@ mod router_analytics_tests {
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(tmp.with_extension("db-wal"));
         let _ = std::fs::remove_file(tmp.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn simulate_route_is_side_effect_free_and_model_cooldown_isolates_403_and_deep_think_pair_enforces_distinct_families() {
+        let router = DynamicProviderRouter::new();
+        let now_ms = 1_750_000_000_000i64;
+        let claude = RouteCandidate {
+            candidate_id: "ht::claude-sonnet-5-5".into(),
+            provider_id: "htmustc".into(),
+            model_id: "claude-sonnet-5-5".into(),
+            quality_tier: 5,
+            ..Default::default()
+        };
+        let gpt = RouteCandidate {
+            candidate_id: "ht::gpt-6.2-sol".into(),
+            provider_id: "htmustc".into(),
+            model_id: "gpt-6.2-sol".into(),
+            quality_tier: 5,
+            ..Default::default()
+        };
+        let mut s_claude = CandidateResourceState {
+            quota: QuotaState::known(100_000, 100),
+            ..Default::default()
+        };
+        s_claude.record_latency(180.0);
+        let mut s_gpt = CandidateResourceState {
+            quota: QuotaState::known(100_000, 100),
+            ..Default::default()
+        };
+        s_gpt.record_latency(210.0);
+        router.upsert_candidate(claude, s_claude).unwrap();
+        router.upsert_candidate(gpt, s_gpt).unwrap();
+
+        let policy = RouteRequestPolicy {
+            request_id: "req-sim-1".into(),
+            idempotency_key: "idem-sim-1".into(),
+            estimated_input_tokens: 4_000,
+            estimated_output_tokens: 1_000,
+            now_epoch_ms: Some(now_ms),
+            ..Default::default()
+        };
+        // 1. Repeated simulate_route calls MUST NOT consume quota or store receipts (`AUD-09`).
+        for _ in 0..5 {
+            let sim = router.simulate_route(&policy).unwrap();
+            assert!(sim.allowed);
+            assert!(sim.reservation.is_none());
+            assert!(sim.receipt.simulated);
+            assert!(sim.receipt.decision_id.starts_with("rsim-"));
+        }
+        let snaps = router.snapshots(now_ms).unwrap();
+        assert!(snaps.iter().all(|s| s.state.reserved_tokens == 0 && s.state.reserved_requests == 0));
+        assert!(router.decision_receipts().unwrap().is_empty());
+
+        // 2. Checked u64 overflow + deadline_ms admission rejection (`AUD-14`).
+        let expired_policy = RouteRequestPolicy {
+            deadline_ms: Some(now_ms - 1),
+            ..policy.clone()
+        };
+        let exp = router.simulate_route(&expired_policy).unwrap();
+        assert!(!exp.allowed);
+        assert!(exp.receipt.simulated);
+        assert_eq!(exp.receipt.deny_reason.as_deref(), Some("request_deadline_expired"));
+
+        let tight_deadline = RouteRequestPolicy {
+            deadline_ms: Some(now_ms + 100),
+            ..policy.clone()
+        };
+        let tight = router.simulate_route(&tight_deadline).unwrap();
+        assert!(!tight.allowed);
+        assert_eq!(tight.receipt.deny_reason.as_deref(), Some("deadline_latency_exceeded"));
+
+        let overflow_policy = RouteRequestPolicy {
+            estimated_input_tokens: u64::MAX,
+            estimated_output_tokens: 10,
+            ..policy.clone()
+        };
+        let ovf = router.simulate_route(&overflow_policy).unwrap();
+        assert!(!ovf.allowed);
+        assert_eq!(ovf.receipt.deny_reason.as_deref(), Some("estimated_tokens_overflow"));
+
+        // 3. Dual-Pool Deep Think pair enforces distinct vendor families (`anthropic` vs `openai`).
+        let pair = router.select_deep_think_pair(&policy).unwrap();
+        assert!(pair.distinct_family_verified);
+        assert_ne!(
+            Some(pair.primary_family.as_str()),
+            pair.verifier_family.as_deref()
+        );
+        assert_eq!(
+            pair.reasoning_sandwich_efforts,
+            (EffortLevel::Max, EffortLevel::High, EffortLevel::Max)
+        );
+
+        // 4. Model-scoped 403 cooldown (`T2.3`) isolates ONLY that model without tripping circuit.
+        router
+            .record_model_cooldown(
+                "ht::claude-sonnet-5-5",
+                "claude-sonnet-5-5",
+                ModelCooldownClass::ModelNotAllowed403,
+                300_000,
+                now_ms,
+                "HTTP 403 model_not_allowed",
+            )
+            .unwrap();
+        let after_cool = router.snapshots(now_ms + 1_000).unwrap();
+        let c_snap = after_cool
+            .iter()
+            .find(|s| s.candidate.candidate_id == "ht::claude-sonnet-5-5")
+            .unwrap();
+        assert_eq!(c_snap.state.circuit.kind_str(), "Closed");
+        assert_eq!(router.active_model_cooldowns(now_ms + 1_000).unwrap().len(), 1);
+        let rerouted = router.simulate_route(&policy).unwrap();
+        assert!(rerouted.allowed);
+        assert_eq!(
+            rerouted.receipt.selected_candidate_id.as_deref(),
+            Some("ht::gpt-6.2-sol")
+        );
+    }
+
+    #[test]
+    fn test_simulation_and_deadline_fences() {
+        let router = DynamicProviderRouter::with_circuit_config(2, 5_000);
+        let now_ms = 1_760_000_000_000i64;
+        let cand = RouteCandidate {
+            candidate_id: "p1::claude-sonnet-5-5".into(),
+            provider_id: "p1".into(),
+            model_id: "claude-sonnet-5-5".into(),
+            quality_tier: 5,
+            ..Default::default()
+        };
+        let state = CandidateResourceState {
+            quota: QuotaState::known(100_000, 100),
+            circuit: CircuitState::HalfOpen {
+                probe_in_flight: false,
+            },
+            ..Default::default()
+        };
+        router.upsert_candidate(cand, state).unwrap();
+
+        // 1. Non-positive deadline_ms rejected in both simulate_route & decide_and_reserve.
+        for bad_dl in [0i64, -500] {
+            let p_bad = RouteRequestPolicy {
+                request_id: format!("req-bad-{bad_dl}"),
+                idempotency_key: format!("idem-bad-{bad_dl}"),
+                deadline_ms: Some(bad_dl),
+                now_epoch_ms: Some(now_ms),
+                ..Default::default()
+            };
+            let s = router.simulate_route(&p_bad).unwrap();
+            assert!(!s.allowed);
+            assert!(s.receipt.simulated);
+            assert!(s.receipt.decision_id.starts_with("rsim-"));
+            assert_eq!(s.receipt.deny_reason.as_deref(), Some("invalid_deadline"));
+
+            let d = router.decide_and_reserve(&p_bad).unwrap();
+            assert!(!d.allowed);
+            assert!(!d.receipt.simulated);
+            assert_eq!(d.receipt.deny_reason.as_deref(), Some("invalid_deadline"));
+        }
+
+        // 2. Simulation on HalfOpen candidate MUST NOT flip probe_in_flight or reserve quota.
+        let valid_policy = RouteRequestPolicy {
+            request_id: "req-halfopen-dl".into(),
+            idempotency_key: "idem-halfopen-dl".into(),
+            deadline_ms: Some(now_ms + 5_000),
+            now_epoch_ms: Some(now_ms),
+            ..Default::default()
+        };
+        let sim = router.simulate_route(&valid_policy).unwrap();
+        assert!(sim.allowed);
+        assert!(sim.receipt.simulated);
+        assert!(sim.receipt.decision_id.starts_with("rsim-"));
+        let snap_pre = router.snapshots(now_ms).unwrap();
+        assert_eq!(
+            snap_pre[0].state.circuit,
+            CircuitState::HalfOpen {
+                probe_in_flight: false
+            }
+        );
+        assert_eq!(snap_pre[0].state.reserved_tokens, 0);
+
+        // 3. Reserve acquires HalfOpen probe + deadline_ms; expired mark_dispatched_at releases both!
+        let dec = router.decide_and_reserve(&valid_policy).unwrap();
+        assert!(dec.allowed);
+        assert!(!dec.receipt.simulated);
+        let grant = dec.reservation.unwrap();
+        assert_eq!(grant.deadline_ms, Some(now_ms + 5_000));
+        assert_eq!(
+            router.snapshots(now_ms).unwrap()[0].state.circuit,
+            CircuitState::HalfOpen {
+                probe_in_flight: true
+            }
+        );
+        let err = router
+            .mark_dispatched_at(&grant.reservation_id, grant.fencing_token, now_ms + 5_000)
+            .unwrap_err();
+        assert!(matches!(err, RoutingError::ReservationDeadlineExpired { .. }));
+        assert_eq!(
+            router.reservation(&grant.reservation_id).unwrap().unwrap().status,
+            ReservationStatus::ReconciledReleased
+        );
+        let snap_after = router.snapshots(now_ms + 5_000).unwrap();
+        assert_eq!(snap_after[0].state.reserved_tokens, 0);
+        assert_eq!(snap_after[0].state.reserved_requests, 0);
+        assert_eq!(
+            snap_after[0].state.circuit,
+            CircuitState::HalfOpen {
+                probe_in_flight: false
+            }
+        );
+
+        // 4. Checked reservation counter overflow is denied without mutating counters.
+        router
+            .upsert_candidate(
+                RouteCandidate {
+                    candidate_id: "p1::overflow".into(),
+                    provider_id: "p1".into(),
+                    model_id: "overflow-m".into(),
+                    ..Default::default()
+                },
+                CandidateResourceState {
+                    quota: QuotaState::unknown("test"),
+                    reserved_tokens: i64::MAX - 50,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let ovf_res = router
+            .decide_and_reserve(&RouteRequestPolicy {
+                request_id: "req-res-ovf".into(),
+                idempotency_key: "idem-res-ovf".into(),
+                excluded_candidate_ids: vec!["p1::claude-sonnet-5-5".into()],
+                allow_unknown_quota_without_emergency: true,
+                estimated_input_tokens: 100,
+                estimated_output_tokens: 10,
+                now_epoch_ms: Some(now_ms),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!ovf_res.allowed);
+        assert_eq!(
+            ovf_res.receipt.deny_reason.as_deref(),
+            Some("reservation_counter_overflow")
+        );
+    }
+
+    #[test]
+    fn test_policy_boundaries_and_reconciliation_overflow() {
+        let router = DynamicProviderRouter::new();
+        let now_ms = 1_760_000_000_000i64;
+        let c_us = RouteCandidate {
+            candidate_id: "prov-a::m1".into(),
+            provider_id: "prov-a".into(),
+            model_id: "m1".into(),
+            region: "us".into(),
+            auth_boundary: "tenant:alpha".into(),
+            privacy_tier: PrivacyTier::ZeroDataRetention,
+            quality_tier: 5,
+            ..Default::default()
+        };
+        let c_eu = RouteCandidate {
+            candidate_id: "prov-b::m2".into(),
+            provider_id: "prov-b".into(),
+            model_id: "m2".into(),
+            region: "eu".into(),
+            auth_boundary: "tenant:alpha".into(),
+            privacy_tier: PrivacyTier::ZeroDataRetention,
+            quality_tier: 4,
+            ..Default::default()
+        };
+        router
+            .upsert_candidate(
+                c_us,
+                CandidateResourceState {
+                    quota: QuotaState::known(500_000, 100),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        router
+            .upsert_candidate(
+                c_eu,
+                CandidateResourceState {
+                    quota: QuotaState::known(500_000, 100),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let parent_policy = RouteRequestPolicy {
+            request_id: "req-bound-1".into(),
+            idempotency_key: "idem-bound-1".into(),
+            required_auth_boundary: "tenant:alpha".into(),
+            allowed_regions: vec!["us".into(), "eu".into()],
+            allowed_providers: vec!["prov-a".into(), "prov-b".into()],
+            deadline_ms: Some(now_ms + 10_000),
+            max_retention_hours: Some(0),
+            now_epoch_ms: Some(now_ms),
+            ..Default::default()
+        };
+        let d1 = router.decide_and_reserve(&parent_policy).unwrap();
+        assert!(d1.allowed);
+        let g1 = d1.reservation.unwrap();
+        assert_eq!(g1.candidate_id, "prov-a::m1");
+
+        // 1. Strict `reconcile_in_flight_outcome` MUST reject ReservedNotDispatched & empty attempt_id (`AUD-15`).
+        let pre_err = router
+            .reconcile_in_flight_outcome(OutcomeReport {
+                reservation_id: g1.reservation_id.clone(),
+                fencing_token: g1.fencing_token,
+                attempt_id: Some("att-1".into()),
+                success: true,
+                acceptance: AcceptanceState::Accepted,
+                now_epoch_ms: Some(now_ms + 100),
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(matches!(
+            pre_err,
+            RoutingError::InvalidReservationTransition { .. }
+        ));
+
+        let empty_att = router
+            .mark_dispatched_with_attempt(&g1.reservation_id, g1.fencing_token, "   ", now_ms + 50)
+            .unwrap_err();
+        assert!(matches!(empty_att, RoutingError::InvalidPolicy(_)));
+
+        router
+            .mark_dispatched_with_attempt(&g1.reservation_id, g1.fencing_token, "att-real-1", now_ms + 50)
+            .unwrap();
+        let wrong_att = router
+            .reconcile_in_flight_outcome(OutcomeReport {
+                reservation_id: g1.reservation_id.clone(),
+                fencing_token: g1.fencing_token,
+                attempt_id: Some("att-wrong".into()),
+                success: true,
+                acceptance: AcceptanceState::Accepted,
+                now_epoch_ms: Some(now_ms + 100),
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(matches!(wrong_att, RoutingError::InvalidPolicy(_)));
+
+        // Succeed with matching attempt_id & huge cost near i64::MAX to test subsequent overflow fence.
+        let ok_rec = router
+            .reconcile_in_flight_outcome(OutcomeReport {
+                reservation_id: g1.reservation_id.clone(),
+                fencing_token: g1.fencing_token,
+                attempt_id: Some("att-real-1".into()),
+                success: true,
+                acceptance: AcceptanceState::Accepted,
+                actual_input_tokens: Some(1_000),
+                actual_output_tokens: Some(500),
+                actual_cost_microunits: Some(i64::MAX - 5),
+                now_epoch_ms: Some(now_ms + 200),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(ok_rec.status, ReservationStatus::ReconciledCharged);
+        assert_eq!(
+            router.total_reconciled_cost_microunits("prov-a::m1").unwrap(),
+            i64::MAX - 5
+        );
+
+        // 2. Monotonic fallback narrowing (`AUD-16`): auth widening & empty allowlist intersection rejected.
+        let widened_auth = RouteRequestPolicy {
+            required_auth_boundary: "tenant:beta".into(),
+            ..parent_policy.clone()
+        };
+        let fb_auth = router.decide_fallback(&g1.reservation_id, &widened_auth).unwrap();
+        assert!(!fb_auth.allowed);
+        assert_eq!(
+            fb_auth.receipt.deny_reason.as_deref(),
+            Some("fallback_auth_boundary_widening_blocked")
+        );
+
+        let disjoint_region = RouteRequestPolicy {
+            allowed_regions: vec!["ap-south".into()],
+            ..parent_policy.clone()
+        };
+        let fb_empty = router
+            .decide_fallback(&g1.reservation_id, &disjoint_region)
+            .unwrap();
+        assert!(!fb_empty.allowed);
+        assert_eq!(
+            fb_empty.receipt.deny_reason.as_deref(),
+            Some("fallback_allowlist_intersection_empty")
+        );
+
+        // Attempting to extend parent deadline in fallback is clamped to parent deadline.
+        let extended_dl = RouteRequestPolicy {
+            deadline_ms: Some(now_ms + 999_999),
+            now_epoch_ms: Some(now_ms + 300),
+            ..parent_policy.clone()
+        };
+        let fb_ok = router.decide_fallback(&g1.reservation_id, &extended_dl).unwrap();
+        assert!(fb_ok.allowed);
+        let g_fb = fb_ok.reservation.unwrap();
+        assert_eq!(g_fb.candidate_id, "prov-b::m2");
+        assert_eq!(g_fb.deadline_ms, Some(now_ms + 10_000));
+
+        // Cancel ReservedNotDispatched cleanly via cancel_reservation (`AUD-15`).
+        let canceled = router
+            .cancel_reservation(&g_fb.reservation_id, g_fb.fencing_token, "aborted_pre_dispatch", now_ms + 350)
+            .unwrap();
+        assert_eq!(canceled.status, ReservationStatus::ReconciledReleased);
+
+        // 3. Cost overflow & usage overflow & post-deadline reconciliation fence into OperatorRecoveryRequired.
+        let d2 = router
+            .decide_and_reserve(&RouteRequestPolicy {
+                request_id: "req-cost-ovf".into(),
+                idempotency_key: "idem-cost-ovf".into(),
+                required_auth_boundary: "tenant:alpha".into(),
+                allowed_providers: vec!["prov-a".into()],
+                deadline_ms: Some(now_ms + 50_000),
+                now_epoch_ms: Some(now_ms + 400),
+                ..Default::default()
+            })
+            .unwrap();
+        let g2 = d2.reservation.unwrap();
+        router
+            .mark_dispatched_at(&g2.reservation_id, g2.fencing_token, now_ms + 410)
+            .unwrap();
+        let ovf_cost = router
+            .reconcile_outcome(OutcomeReport {
+                reservation_id: g2.reservation_id.clone(),
+                fencing_token: g2.fencing_token,
+                success: true,
+                acceptance: AcceptanceState::Accepted,
+                actual_cost_microunits: Some(10),
+                now_epoch_ms: Some(now_ms + 450),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(ovf_cost.status, ReservationStatus::OperatorRecoveryRequired);
+        assert!(ovf_cost.diagnostic_note.contains("cost_overflow"));
+        assert_eq!(
+            router.total_reconciled_cost_microunits("prov-a::m1").unwrap(),
+            i64::MAX - 5
+        );
+
+        let d3 = router
+            .decide_and_reserve(&RouteRequestPolicy {
+                request_id: "req-usage-ovf".into(),
+                idempotency_key: "idem-usage-ovf".into(),
+                required_auth_boundary: "tenant:alpha".into(),
+                allowed_providers: vec!["prov-b".into()],
+                deadline_ms: Some(now_ms + 50_000),
+                now_epoch_ms: Some(now_ms + 500),
+                ..Default::default()
+            })
+            .unwrap();
+        let g3 = d3.reservation.unwrap();
+        let ovf_usage = router
+            .reconcile_outcome(OutcomeReport {
+                reservation_id: g3.reservation_id.clone(),
+                fencing_token: g3.fencing_token,
+                success: true,
+                acceptance: AcceptanceState::Accepted,
+                actual_input_tokens: Some(u64::MAX),
+                actual_output_tokens: Some(1),
+                now_epoch_ms: Some(now_ms + 550),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(ovf_usage.status, ReservationStatus::OperatorRecoveryRequired);
+        assert!(ovf_usage.diagnostic_note.contains("usage_overflow"));
+
+        let d4 = router
+            .decide_and_reserve(&RouteRequestPolicy {
+                request_id: "req-post-dl".into(),
+                idempotency_key: "idem-post-dl".into(),
+                required_auth_boundary: "tenant:alpha".into(),
+                allowed_providers: vec!["prov-b".into()],
+                deadline_ms: Some(now_ms + 1_000),
+                now_epoch_ms: Some(now_ms + 600),
+                ..Default::default()
+            })
+            .unwrap();
+        let g4 = d4.reservation.unwrap();
+        let late_rec = router
+            .reconcile_outcome(OutcomeReport {
+                reservation_id: g4.reservation_id.clone(),
+                fencing_token: g4.fencing_token,
+                success: true,
+                acceptance: AcceptanceState::Accepted,
+                actual_cost_microunits: Some(500),
+                now_epoch_ms: Some(now_ms + 1_500),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(late_rec.status, ReservationStatus::OperatorRecoveryRequired);
+        assert!(late_rec.diagnostic_note.contains("reconciliation_after_deadline"));
+        assert_eq!(router.total_reconciled_cost_microunits("prov-b::m2").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_bounded_retention_caps() {
+        let router = DynamicProviderRouter::new();
+        let now_ms = 1_760_000_000_000i64;
+        router
+            .upsert_candidate(
+                RouteCandidate {
+                    candidate_id: "cap::m1".into(),
+                    provider_id: "cap".into(),
+                    model_id: "m1".into(),
+                    ..Default::default()
+                },
+                CandidateResourceState {
+                    quota: QuotaState::known(i64::MAX / 2, i64::MAX / 2),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let total = MAX_RECEIPT_HISTORY + 32;
+        for i in 0..total {
+            let d = router
+                .decide_and_reserve(&RouteRequestPolicy {
+                    request_id: format!("req-cap-{i}"),
+                    idempotency_key: format!("idem-cap-{i}"),
+                    estimated_input_tokens: 10,
+                    estimated_output_tokens: 10,
+                    now_epoch_ms: Some(now_ms + i as i64),
+                    ..Default::default()
+                })
+                .unwrap();
+            let g = d.reservation.unwrap();
+            router
+                .cancel_reservation(&g.reservation_id, g.fencing_token, "release", now_ms + i as i64)
+                .unwrap();
+        }
+        assert_eq!(router.decision_receipts().unwrap().len(), MAX_RECEIPT_HISTORY);
+        assert_eq!(router.outcome_receipts().unwrap().len(), MAX_RECEIPT_HISTORY);
     }
 }

@@ -1,9 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Mutex;
 
 use omnia_core::{now_epoch_ms, SecretRedactor};
 use serde::Serialize;
 use serde_json::{json, Value};
+
+/// Default bounded message retention cap for [`PeerMeshGraph`] (`AUD-11` / `AUD-19`).
+pub const DEFAULT_MAX_RETAINED_MESSAGES: usize = 4_096;
 
 /// Errors produced by [`PeerMeshGraph`] or [`crate::GraphifyIndex`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -34,6 +37,10 @@ pub enum AgentGraphError {
     },
     #[error("unknown message sequence `{0}`")]
     UnknownMessageSeq(u64),
+    #[error("invalid owned or excluded path `{0}`")]
+    InvalidOwnedPath(String),
+    #[error("agent `{from}` is not an authorized recipient of message seq {seq}")]
+    UnauthorizedReply { from: String, seq: u64 },
     #[error("invalid graph entity id `{0}`")]
     InvalidEntityId(String),
     #[error("unknown graph entity `{0}`")]
@@ -213,34 +220,79 @@ pub fn valid_agent_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// Normalize a repository-relative path for deterministic `disjoint_paths` comparison.
-#[must_use]
-pub fn normalize_repo_path(path: &str) -> String {
-    let mut s = path
-        .trim_matches([' ', '\t', '\r', '\n'])
-        .replace('\\', "/");
+/// Strictly validates and normalizes a repository-relative path for disjoint ownership checks
+/// (`AUD-26` + PR #1 hardening): rejects absolute/drive/UNC paths, colons/ADS, control chars,
+/// `?<>"|`, trailing `.` or space on segments, mid-path wildcards, and root-escaping `..`.
+pub fn validate_and_normalize_repo_path(path: &str) -> Result<String, AgentGraphError> {
+    let trimmed = path.trim_matches([' ', '\t', '\r', '\n']);
+    if trimmed.is_empty() {
+        return Err(AgentGraphError::InvalidOwnedPath(path.to_owned()));
+    }
+    if trimmed.chars().any(|c| {
+        (c as u32) < 0x20
+            || c == '\x7F'
+            || matches!(c, ':' | '?' | '<' | '>' | '"' | '|')
+    }) {
+        return Err(AgentGraphError::InvalidOwnedPath(path.to_owned()));
+    }
+    let replaced = trimmed.replace('\\', "/");
+    if replaced.starts_with('/') {
+        return Err(AgentGraphError::InvalidOwnedPath(path.to_owned()));
+    }
+    let mut s = replaced.as_str();
     while let Some(rest) = s.strip_prefix("./") {
-        s = rest.to_owned();
+        s = rest;
     }
     if s == "**" || s == "*" {
-        return "*".to_owned();
+        return Ok("*".to_owned());
     }
+    let mut owned = s.to_owned();
     loop {
-        if let Some(rest) = s.strip_suffix("/**") {
-            s = rest.to_owned();
-        } else if let Some(rest) = s.strip_suffix("/*") {
-            s = rest.to_owned();
-        } else if s.len() > 1 && s.ends_with('/') {
-            s.pop();
+        if let Some(rest) = owned.strip_suffix("/**") {
+            owned = rest.to_owned();
+        } else if let Some(rest) = owned.strip_suffix("/*") {
+            owned = rest.to_owned();
+        } else if owned.len() > 1 && owned.ends_with('/') {
+            owned.pop();
         } else {
             break;
         }
     }
+    if owned.contains('*') {
+        return Err(AgentGraphError::InvalidOwnedPath(path.to_owned()));
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in owned.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            if parts.pop().is_none() {
+                return Err(AgentGraphError::InvalidOwnedPath(path.to_owned()));
+            }
+            continue;
+        }
+        if seg.ends_with('.') || seg.ends_with(' ') || seg.starts_with(' ') {
+            return Err(AgentGraphError::InvalidOwnedPath(path.to_owned()));
+        }
+        parts.push(seg);
+    }
+    if parts.is_empty() {
+        return Err(AgentGraphError::InvalidOwnedPath(path.to_owned()));
+    }
+    let mut normalized = parts.join("/");
     #[cfg(windows)]
     {
-        s = s.to_ascii_lowercase();
+        normalized = normalized.to_lowercase();
     }
-    s
+    Ok(normalized)
+}
+
+/// Normalize a repository-relative path for deterministic `disjoint_paths` comparison.
+/// Collapses `.` and `..` segments lexically and returns an empty string on invalid/escaping paths.
+#[must_use]
+pub fn normalize_repo_path(path: &str) -> String {
+    validate_and_normalize_repo_path(path).unwrap_or_default()
 }
 
 /// Return true if normalized `parent` covers normalized `child` (or is `*`).
@@ -294,9 +346,11 @@ fn find_effective_overlap(a: &AgentNode, b: &AgentNode) -> Option<String> {
 #[derive(Debug)]
 struct MeshInner {
     default_max_hops: u32,
+    max_retained_messages: usize,
+    next_seq: u64,
     agents: BTreeMap<String, AgentNode>,
     edges: BTreeMap<(String, String), String>,
-    messages: Vec<PeerMessage>,
+    messages: VecDeque<PeerMessage>,
 }
 
 /// Bidirectional all-to-all peer mesh with disjoint-path ownership enforcement,
@@ -315,12 +369,20 @@ impl Default for PeerMeshGraph {
 impl PeerMeshGraph {
     #[must_use]
     pub fn new(default_max_hops: u32) -> Self {
+        Self::with_retention(default_max_hops, DEFAULT_MAX_RETAINED_MESSAGES)
+    }
+
+    /// Construct a peer mesh with an explicit bounded message retention cap (`>= 1`).
+    #[must_use]
+    pub fn with_retention(default_max_hops: u32, max_retained_messages: usize) -> Self {
         Self {
             inner: Mutex::new(MeshInner {
                 default_max_hops: default_max_hops.max(1),
+                max_retained_messages: max_retained_messages.max(1),
+                next_seq: 1,
                 agents: BTreeMap::new(),
                 edges: BTreeMap::new(),
-                messages: Vec::new(),
+                messages: VecDeque::new(),
             }),
         }
     }
@@ -334,6 +396,12 @@ impl PeerMeshGraph {
     ) -> Result<AgentNode, AgentGraphError> {
         if !valid_agent_id(id) {
             return Err(AgentGraphError::InvalidAgentId(id.to_owned()));
+        }
+        for p in &owned_paths {
+            let _ = validate_and_normalize_repo_path(p)?;
+        }
+        for p in &excluded_paths {
+            let _ = validate_and_normalize_repo_path(p)?;
         }
         let mut guard = self
             .inner
@@ -629,7 +697,7 @@ impl PeerMeshGraph {
             });
         }
         let hops_cap = max_hops.unwrap_or(guard.default_max_hops).max(1);
-        let seq = u64::try_from(guard.messages.len().saturating_add(1)).unwrap_or(u64::MAX);
+        let seq = next_message_seq(&mut guard);
         let msg = PeerMessage {
             seq,
             from_id: from_id.to_owned(),
@@ -642,7 +710,7 @@ impl PeerMeshGraph {
             payload: payload.to_owned(),
             sent_at_ms: sent_at_ms.unwrap_or_else(now_epoch_ms),
         };
-        guard.messages.push(msg.clone());
+        push_message_bounded(&mut guard, msg.clone());
         Ok(msg)
     }
 
@@ -662,16 +730,22 @@ impl PeerMeshGraph {
         if in_reply_to_seq == 0 {
             return Err(AgentGraphError::UnknownMessageSeq(0));
         }
-        let idx = usize::try_from(in_reply_to_seq - 1)
-            .map_err(|_| AgentGraphError::UnknownMessageSeq(in_reply_to_seq))?;
         let orig = guard
             .messages
-            .get(idx)
+            .binary_search_by_key(&in_reply_to_seq, |m| m.seq)
+            .ok()
+            .and_then(|idx| guard.messages.get(idx))
             .cloned()
             .ok_or(AgentGraphError::UnknownMessageSeq(in_reply_to_seq))?;
 
         let target_id = &orig.from_id;
         validate_active_agent(&guard, target_id)?;
+        if !orig.recipients.iter().any(|r| r == from_id) {
+            return Err(AgentGraphError::UnauthorizedReply {
+                from: from_id.to_owned(),
+                seq: in_reply_to_seq,
+            });
+        }
         if !guard
             .edges
             .contains_key(&(from_id.to_owned(), target_id.clone()))
@@ -688,16 +762,17 @@ impl PeerMeshGraph {
                 max_hops: orig.max_hops,
             });
         }
-        let sender_epoch = guard.agents[from_id].epoch;
-        if orig.epoch < sender_epoch {
+        let target_epoch = guard.agents[target_id].epoch;
+        if target_epoch != orig.epoch {
             return Err(AgentGraphError::StaleEpoch {
-                agent_id: from_id.to_owned(),
-                current_epoch: sender_epoch,
+                agent_id: target_id.clone(),
+                current_epoch: target_epoch,
                 provided_epoch: orig.epoch,
             });
         }
+        let sender_epoch = guard.agents[from_id].epoch;
 
-        let seq = u64::try_from(guard.messages.len().saturating_add(1)).unwrap_or(u64::MAX);
+        let seq = next_message_seq(&mut guard);
         let msg = PeerMessage {
             seq,
             from_id: from_id.to_owned(),
@@ -714,7 +789,7 @@ impl PeerMeshGraph {
             payload: payload.to_owned(),
             sent_at_ms: sent_at_ms.unwrap_or_else(now_epoch_ms),
         };
-        guard.messages.push(msg.clone());
+        push_message_bounded(&mut guard, msg.clone());
         Ok(msg)
     }
 
@@ -743,7 +818,7 @@ impl PeerMeshGraph {
             .collect();
         let sender_epoch = guard.agents[from_id].epoch;
         let hops_cap = max_hops.unwrap_or(guard.default_max_hops).max(1);
-        let seq = u64::try_from(guard.messages.len().saturating_add(1)).unwrap_or(u64::MAX);
+        let seq = next_message_seq(&mut guard);
         let msg = PeerMessage {
             seq,
             from_id: from_id.to_owned(),
@@ -756,7 +831,7 @@ impl PeerMeshGraph {
             payload: payload.to_owned(),
             sent_at_ms: sent_at_ms.unwrap_or_else(now_epoch_ms),
         };
-        guard.messages.push(msg.clone());
+        push_message_bounded(&mut guard, msg.clone());
         Ok(msg)
     }
 
@@ -774,15 +849,13 @@ impl PeerMeshGraph {
         if !guard.agents.contains_key(agent_id) {
             return Err(AgentGraphError::UnknownAgent(agent_id.to_owned()));
         }
-        let start_idx = usize::try_from(since_seq).unwrap_or(guard.messages.len());
+        let start_idx = guard.messages.partition_point(|msg| msg.seq <= since_seq);
         let mut delivered = Vec::new();
         let mut max_seen = since_seq;
-        if start_idx < guard.messages.len() {
-            for msg in &guard.messages[start_idx..] {
-                if msg.recipients.iter().any(|r| r == agent_id) {
-                    max_seen = max_seen.max(msg.seq);
-                    delivered.push(msg.clone());
-                }
+        for msg in guard.messages.range(start_idx..) {
+            if msg.recipients.iter().any(|r| r == agent_id) {
+                max_seen = max_seen.max(msg.seq);
+                delivered.push(msg.clone());
             }
         }
         if let Some(node) = guard.agents.get_mut(agent_id) {
@@ -811,7 +884,7 @@ impl PeerMeshGraph {
             .inner
             .lock()
             .map_err(|_| AgentGraphError::InternalLockPoisoned)?;
-        Ok(guard.messages.clone())
+        Ok(guard.messages.iter().cloned().collect())
     }
 
     pub fn detect_stalled_conversations(
@@ -842,6 +915,20 @@ impl PeerMeshGraph {
             stale_threshold_ms,
         ))
     }
+}
+
+fn next_message_seq(guard: &mut MeshInner) -> u64 {
+    let seq = guard.next_seq;
+    guard.next_seq = guard.next_seq.saturating_add(1);
+    seq
+}
+
+fn push_message_bounded(guard: &mut MeshInner, msg: PeerMessage) {
+    let cap = guard.max_retained_messages.max(1);
+    while guard.messages.len() >= cap {
+        guard.messages.pop_front();
+    }
+    guard.messages.push_back(msg);
 }
 
 fn validate_active_agent(guard: &MeshInner, id: &str) -> Result<(), AgentGraphError> {
@@ -896,5 +983,120 @@ fn compute_convergence_locked(
         pending_unread_deliveries,
         converged: pending_unread_deliveries == 0 && stalled.is_empty(),
         stalled_agents: stalled,
+    }
+}
+
+#[cfg(test)]
+mod aud26_path_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_repo_path_collapses_parent_segments_and_blocks_root_escape() {
+        assert_eq!(normalize_repo_path("ui/../cpp/src/**"), "cpp/src");
+        assert!(prefix_covers(
+            &normalize_repo_path("cpp/src/**"),
+            &normalize_repo_path("ui/../cpp/src/main.rs")
+        ));
+        assert_eq!(normalize_repo_path("../outside/secret.txt"), "");
+        assert!(!prefix_covers("*", &normalize_repo_path("../outside")));
+    }
+
+    #[test]
+    fn test_ownership_aliases_and_reactivation() {
+        let mesh = PeerMeshGraph::new(6);
+        for bad in [
+            "../outside/**",
+            "C:/cpp/src/**",
+            "/etc/passwd",
+            "cpp/src:ads",
+            "cpp/**/src",
+            "cpp/a*b",
+            "cpp./src",
+            "cpp/src?x",
+        ] {
+            let err = mesh
+                .register_agent("bad-agent", AgentRole::Worker, vec![bad.into()], vec![])
+                .unwrap_err();
+            assert!(
+                matches!(err, AgentGraphError::InvalidOwnedPath(_)),
+                "expected InvalidOwnedPath for `{bad}`, got {err:?}"
+            );
+        }
+        mesh.register_agent("a", AgentRole::Worker, vec!["rust/omnia-core/**".into()], vec![])
+            .unwrap();
+        let conflict = mesh
+            .register_agent(
+                "b",
+                AgentRole::Worker,
+                vec!["ui/../rust/omnia-core/src".into()],
+                vec![],
+            )
+            .unwrap_err();
+        assert!(matches!(conflict, AgentGraphError::OwnershipConflict { .. }));
+
+        mesh.set_agent_active("a", false).unwrap();
+        mesh.register_agent("b", AgentRole::Worker, vec!["rust/omnia-core/**".into()], vec![])
+            .unwrap();
+        let reactivate = mesh.set_agent_active("a", true).unwrap_err();
+        assert!(matches!(reactivate, AgentGraphError::OwnershipConflict { .. }));
+    }
+
+    #[test]
+    fn test_reply_authorization_and_epochs() {
+        let mesh = PeerMeshGraph::new(6);
+        mesh.register_agent("a", AgentRole::Worker, vec!["a/**".into()], vec![]).unwrap();
+        mesh.register_agent("b", AgentRole::Worker, vec!["b/**".into()], vec![]).unwrap();
+        mesh.register_agent("c", AgentRole::Worker, vec!["c/**".into()], vec![]).unwrap();
+        mesh.connect_duplex("a", "b", "ab").unwrap();
+        mesh.connect_duplex("a", "c", "ac").unwrap();
+
+        let msg = mesh.send_peer("a", "b", "sync", "hello", None, None, Some(100)).unwrap();
+        // Unauthorized third peer c cannot forge a reply to a -> b (zero message append).
+        let unauth = mesh.reply("c", msg.seq, "", "spoof", Some(110)).unwrap_err();
+        assert!(matches!(unauth, AgentGraphError::UnauthorizedReply { .. }));
+        assert_eq!(mesh.all_messages().unwrap().len(), 1);
+
+        // Authorized recipient b can reply, and broadcast recipients can reply.
+        let valid_reply = mesh.reply("b", msg.seq, "", "ack", Some(112)).unwrap();
+        assert_eq!(valid_reply.in_reply_to_seq, Some(msg.seq));
+        let bcast = mesh.broadcast("a", "announce", "all hands", None, Some(115)).unwrap();
+        assert!(mesh.reply("c", bcast.seq, "", "c-ack", Some(116)).is_ok());
+
+        // Bumping original sender a's epoch must invalidate replies to a's pre-bump message.
+        mesh.bump_agent_epoch("a").unwrap();
+        let stale = mesh.reply("b", msg.seq, "", "late reply", Some(120)).unwrap_err();
+        assert!(matches!(stale, AgentGraphError::StaleEpoch { .. }));
+    }
+
+    #[test]
+    fn test_bounded_message_retention_preserves_seq_and_cursor() {
+        let mesh = PeerMeshGraph::with_retention(6, 16);
+        mesh.register_agent("a", AgentRole::Worker, vec!["a/**".into()], vec![]).unwrap();
+        mesh.register_agent("b", AgentRole::Worker, vec!["b/**".into()], vec![]).unwrap();
+        mesh.connect_duplex("a", "b", "ab").unwrap();
+
+        for i in 1..=40_i64 {
+            let m = mesh
+                .send_peer("a", "b", "tick", &format!("msg-{i}"), None, None, Some(i * 10))
+                .unwrap();
+            assert_eq!(m.seq, i as u64);
+        }
+
+        let retained = mesh.all_messages().unwrap();
+        assert_eq!(retained.len(), 16);
+        assert_eq!(retained.first().unwrap().seq, 25);
+        assert_eq!(retained.last().unwrap().seq, 40);
+
+        let since_35 = mesh.read_since("b", 35).unwrap();
+        assert_eq!(since_35.len(), 5);
+        assert_eq!(since_35.first().unwrap().seq, 36);
+        assert_eq!(since_35.last().unwrap().seq, 40);
+
+        let r = mesh.reply("b", 40, "", "tail-reply", Some(500)).unwrap();
+        assert_eq!(r.seq, 41);
+        assert_eq!(mesh.all_messages().unwrap().len(), 16);
+
+        let evicted = mesh.reply("b", 1, "", "too-old", Some(510)).unwrap_err();
+        assert!(matches!(evicted, AgentGraphError::UnknownMessageSeq(1)));
     }
 }

@@ -22,6 +22,8 @@ pub enum EffortLevel {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl EffortLevel {
@@ -32,6 +34,8 @@ impl EffortLevel {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -41,8 +45,10 @@ impl EffortLevel {
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
             other => Err(NotebookError::InvalidInput(format!(
-                "unsupported reasoning effort level '{other}' (expected minimal|low|medium|high)"
+                "unsupported reasoning effort level '{other}' (expected minimal|low|medium|high|xhigh|max)"
             ))),
         }
     }

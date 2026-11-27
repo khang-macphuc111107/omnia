@@ -14,6 +14,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use omnia_agent::web_tools::{web_search_multi, WebSearchOptions, WebSearchScope};
 use omnia_agent::{
     default_omnia_data_dir, process_tree_rss_bytes, redact_secrets, resolve_model_endpoint,
     sanitize_windows_path, AgentStore, ApprovalMode, HarnessEventSink, HarnessStreamEvent,
@@ -21,6 +22,15 @@ use omnia_agent::{
 };
 use omnia_core::credentials::{CredentialStore, MaskedCredential};
 use omnia_core::PrivacyMask;
+use omnia_harness::artifact_os::{
+    verify_artifact_content, ArtifactKind, ArtifactOs, LessonRecord, LifecycleArtifact,
+    SixStateReceipt,
+};
+use omnia_harness::deep_think::{
+    BranchKind, DeepThinkEngine, DeepThinkSession, EpistemicBand, RedTeamChallenge, ThinkBranch,
+};
+use omnia_harness::research_vault::{ResearchVault, VaultTier};
+use omnia_harness::skill_registry::{CodifySkillRequest, SkillRegistry};
 use omnia_routing::DynamicProviderRouter;
 use omnia_workspace_ops::hardware::{collect_host_system_snapshot, HostSystemSnapshot};
 use omnia_workspace_ops::net_diag::{
@@ -36,6 +46,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -126,6 +137,15 @@ impl TuiTheme {
             Self::Blueprint => Color::White,
         }
     }
+
+    const fn drawer_fg(self) -> Color {
+        match self {
+            Self::Obsidian => Color::Gray,
+            Self::Titanium => Color::White,
+            Self::Alabaster => Color::Black,
+            Self::Blueprint => Color::White,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -138,6 +158,8 @@ enum DrawerTab {
     Cache,
     Swarm,
     Memory,
+    Research,
+    Lifecycle,
     Rewind,
 }
 
@@ -150,7 +172,9 @@ impl DrawerTab {
             Self::Router => Self::Cache,
             Self::Cache => Self::Swarm,
             Self::Swarm => Self::Memory,
-            Self::Memory => Self::Rewind,
+            Self::Memory => Self::Research,
+            Self::Research => Self::Lifecycle,
+            Self::Lifecycle => Self::Rewind,
             Self::Rewind => Self::Closed,
         }
     }
@@ -164,6 +188,8 @@ impl DrawerTab {
             Self::Cache => "KV Prefix & Cache",
             Self::Swarm => "Swarm & Graph",
             Self::Memory => "Memory & Playbook",
+            Self::Research => "Research & Deep Think",
+            Self::Lifecycle => "12-Artifact Lifecycle",
             Self::Rewind => "Rewind Preview",
         }
     }
@@ -283,6 +309,81 @@ const SLASH_DEFS: &[SlashDef] = &[
         cmd: "/memory",
         usage: "/memory [query]",
         desc: "Recall workspace memory graph & playbook insights",
+    },
+    SlashDef {
+        cmd: "/research",
+        usage: "/research <query>",
+        desc: "Live RAG recall + web/academic search with [S###]/[G###] citations",
+    },
+    SlashDef {
+        cmd: "/sources",
+        usage: "/sources [local|global|export]",
+        desc: "Sources (Searched, Viewed & Extracted) ledger & dossier export",
+    },
+    SlashDef {
+        cmd: "/rag",
+        usage: "/rag <query|pin <id>>",
+        desc: "Query or pin persistent Local+Global [S###]/[G###] RAG vault",
+    },
+    SlashDef {
+        cmd: "/think",
+        usage: "/think <topic|list|branch|falsify|redteam|conclude>",
+        desc: "Deep Think multi-hypothesis branches, falsification & red-team",
+    },
+    SlashDef {
+        cmd: "/goal",
+        usage: "/goal [set <title> | <body>]",
+        desc: "Inspect or update Goal lifecycle artifact & 6-state receipt",
+    },
+    SlashDef {
+        cmd: "/spec",
+        usage: "/spec [set <title> | <body>]",
+        desc: "Inspect or update Spec lifecycle artifact (AC-1..N)",
+    },
+    SlashDef {
+        cmd: "/blueprint",
+        usage: "/blueprint [set <title> | <body>]",
+        desc: "Inspect or update Architecture Blueprint lifecycle artifact",
+    },
+    SlashDef {
+        cmd: "/plan",
+        usage: "/plan [set <title> | <body>]",
+        desc: "Inspect or update Execution Plan lifecycle artifact",
+    },
+    SlashDef {
+        cmd: "/todo",
+        usage: "/todo [add <title>|done <id> [proof]]",
+        desc: "Inspect, add, or receipt-verify Todo lifecycle tasks",
+    },
+    SlashDef {
+        cmd: "/progress",
+        usage: "/progress [update <note>|phase <name>]",
+        desc: "Inspect Progress & SuperWorkflowState wave/strike/DoD counts",
+    },
+    SlashDef {
+        cmd: "/dod",
+        usage: "/dod [add <title>|pass <id> <proof>]",
+        desc: "Inspect or receipt-gate Definition of Done (DoD) verification",
+    },
+    SlashDef {
+        cmd: "/handoff",
+        usage: "/handoff [write <title> | <body>]",
+        desc: "Inspect/write Handoff preserving AGENT_NOTES & 6-state receipt",
+    },
+    SlashDef {
+        cmd: "/learn",
+        usage: "/learn [<title> | <cause> | <invariant>]",
+        desc: "Capture 2-tier lesson w/ overlap check or inspect Gap Radar",
+    },
+    SlashDef {
+        cmd: "/lessons",
+        usage: "/lessons [project|global]",
+        desc: "List verified 2-tier project/global engineering lessons",
+    },
+    SlashDef {
+        cmd: "/skills",
+        usage: "/skills [query|dag <q>|pipelines|doctor|codify]",
+        desc: "Bilingual VN-EN BM25 + Cold Vault router, 4-stage DAG & doctor",
     },
     SlashDef {
         cmd: "/compact",
@@ -413,6 +514,11 @@ enum UiAsyncEvent {
     },
     SpeedtestProgress(SpeedtestProgressEvent),
     SpeedtestFinished(Box<SpeedtestResult>),
+    ResearchCompleted {
+        query: String,
+        transcript_lines: Vec<String>,
+        drawer_lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -489,9 +595,19 @@ struct TuiAppState {
     last_speedtest_summary: Vec<String>,
     last_router_summary: Vec<String>,
     last_rewind_summary: Vec<String>,
+    last_research_summary: Vec<String>,
+    last_lifecycle_summary: Vec<String>,
+    skill_registry: Option<SkillRegistry>,
 }
 
 impl TuiAppState {
+    fn ensure_skill_registry(&mut self) -> &SkillRegistry {
+        if self.skill_registry.is_none() {
+            self.skill_registry = Some(open_skill_registry(&self.workspace));
+        }
+        self.skill_registry.as_ref().expect("skill_registry initialized")
+    }
+
     fn mask_if_enabled(&self, raw: &str) -> String {
         if self.privacy_mask {
             PrivacyMask::mask_text(raw)
@@ -816,9 +932,24 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
     frame.render_widget(transcript_widget, transcript_area);
 
     if let Some(d_area) = drawer_area_opt {
+        let drawer_fg = state.theme.drawer_fg();
         let d_lines: Vec<Line> = build_drawer_lines(state)
             .into_iter()
-            .map(|l| Line::from(Span::styled(state.mask_if_enabled(&l), Style::default().fg(Color::Gray))))
+            .map(|l| {
+                let masked = state.mask_if_enabled(&l);
+                let style = if masked.starts_with("=== ") || masked.starts_with("--- ") {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else if masked.contains("[BLOCKED_BY_CHALLENGE]")
+                    || masked.contains("[AUTH_REQUIRED]")
+                    || masked.contains("[ERR]")
+                    || masked.contains("strike_")
+                {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(drawer_fg)
+                };
+                Line::from(Span::styled(masked, style))
+            })
             .collect();
         let drawer_widget = Paragraph::new(d_lines)
             .block(
@@ -899,31 +1030,49 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
     ]);
     frame.render_widget(Paragraph::new(hud), chunks[3]);
 
-    // 5. Slash Command Autocomplete Overlay
+    // 5. Slash Command Autocomplete Overlay (windowed scroll across all commands)
     let slash_items = state.filtered_slash();
     if !slash_items.is_empty() && !state.running {
-        let popup_h = (slash_items.len() as u16 + 2).min(10);
+        let popup_h = (slash_items.len() as u16 + 2).min(12);
+        let visible_rows = popup_h.saturating_sub(2) as usize;
+        let selected_idx = state.slash_selected % slash_items.len();
+        let start = selected_idx.saturating_sub(visible_rows.saturating_sub(1));
+        let end = (start + visible_rows).min(slash_items.len());
         let popup_area = Rect {
             x: chunks[2].x + 1,
             y: chunks[2].y.saturating_sub(popup_h),
-            width: chunks[2].width.saturating_sub(2).min(78),
+            width: chunks[2].width.saturating_sub(2).min(88),
             height: popup_h,
         };
-        let list_items: Vec<ListItem> = slash_items
+        let drawer_fg = state.theme.drawer_fg();
+        let list_items: Vec<ListItem> = slash_items[start..end]
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                let style = if i == state.slash_selected % slash_items.len() {
-                    Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
+            .map(|(offset, s)| {
+                let i = start + offset;
+                let style = if i == selected_idx {
+                    Style::default()
+                        .bg(accent)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(drawer_fg)
                 };
-                ListItem::new(Line::from(format!("{:<16} {}", s.usage, s.desc))).style(style)
+                ListItem::new(Line::from(format!("{:<24} {}", s.usage, s.desc))).style(style)
             })
             .collect();
         frame.render_widget(Clear, popup_area);
         frame.render_widget(
-            List::new(list_items).block(Block::default().borders(Borders::ALL).title(" Slash Commands (Tab/Enter) ")),
+            List::new(list_items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(accent))
+                    .title(format!(
+                        " Slash Commands ({}/{}) [Tab/Enter] ",
+                        selected_idx + 1,
+                        slash_items.len()
+                    )),
+            ),
             popup_area,
         );
     }
@@ -1154,6 +1303,26 @@ fn build_drawer_lines(state: &TuiAppState) -> Vec<String> {
                 state.drawer_lines.clone()
             }
         }
+        DrawerTab::Research => {
+            if state.last_research_summary.is_empty() {
+                vec![
+                    "=== Research Vault & Deep Think ===".into(),
+                    "Run /research <query>, /sources, /rag <query>, or /think <topic>.".into(),
+                ]
+            } else {
+                state.last_research_summary.clone()
+            }
+        }
+        DrawerTab::Lifecycle => {
+            if state.last_lifecycle_summary.is_empty() {
+                vec![
+                    "=== 12-Artifact Proactive Lifecycle ===".into(),
+                    "Run /goal /spec /blueprint /plan /todo /progress /dod /handoff /learn /lessons /skills.".into(),
+                ]
+            } else {
+                state.last_lifecycle_summary.clone()
+            }
+        }
         DrawerTab::Rewind => {
             if state.last_rewind_summary.is_empty() {
                 vec!["Run /rewind or /rewind preview <turn> to inspect diffs before rollback.".into()]
@@ -1178,11 +1347,15 @@ fn handle_slash_command(
         "/help" => {
             state.push_line(
                 TranscriptEntryKind::System,
-                "Commands: /model, /wire, /effort, /mode, /cd, /key, /base-url, /creds, /status, /net, /speedtest, /router, /cache, /swarm, /memory, /rewind, /compact, /export, /privacy, /theme, /clear, /exit",
+                "Core: /model /wire /effort /mode /cd /key /base-url /creds /status /net /speedtest /router /cache /swarm /memory /rewind /compact /export /privacy /theme /clear /exit",
             );
             state.push_line(
                 TranscriptEntryKind::System,
-                "Keys: F2 thinking | F3 creds | F4 cockpit drawer | F5 privacy mask | PgUp/PgDn scroll | Esc abort/close",
+                "Steer #18-20: /research /sources /rag /think | /goal /spec /blueprint /plan /todo /progress /dod /handoff /learn /lessons /skills",
+            );
+            state.push_line(
+                TranscriptEntryKind::System,
+                "Keys: F2 thinking | F3 creds | F4 cockpit drawer (incl. Research & Lifecycle) | F5 privacy mask | PgUp/PgDn scroll | Esc abort/close",
             );
         }
         "/creds" => {
@@ -1301,6 +1474,9 @@ fn handle_slash_command(
                     Some(tx.clone()),
                 )?;
                 state.engine = Some(eng);
+                state.skill_registry = None;
+                state.last_research_summary.clear();
+                state.last_lifecycle_summary.clear();
                 state.push_line(TranscriptEntryKind::System, format!("Workspace -> {}", state.workspace.display()));
             } else {
                 state.push_line(TranscriptEntryKind::System, format!("Not a directory: {arg}"));
@@ -1677,9 +1853,1599 @@ fn handle_slash_command(
                 state.push_line(TranscriptEntryKind::System, "Usage: /theme <obsidian|titanium|alabaster|blueprint>");
             }
         }
+        "/research" => {
+            state.drawer_tab = DrawerTab::Research;
+            let (query, scope, tier, auto_fetch, offline) = parse_research_args(arg);
+            if query.is_empty() {
+                refresh_research_drawer(state);
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    "Usage: /research [--scope web|academic|all] [--global] [--no-fetch] [--offline] <query>",
+                );
+                for l in state.last_research_summary.clone().into_iter().take(12) {
+                    state.push_line(TranscriptEntryKind::System, l);
+                }
+            } else {
+                let stage0_lines = match open_research_vault(&state.workspace) {
+                    Ok(vault) => format_rag_query_lines(&vault, &query, None, 5),
+                    Err(e) => vec![format!("ResearchVault unavailable: {e}")],
+                };
+                if offline {
+                    state.last_research_summary = stage0_lines.clone();
+                    for l in stage0_lines {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                } else {
+                    let mut preview = vec![
+                        format!(
+                            "=== Research: {} (scope:{:?} tier:{} fetch:{}) ===",
+                            truncate_chars(&query, 44),
+                            scope,
+                            tier.as_str(),
+                            auto_fetch
+                        ),
+                        "Stage 0 RAG recall complete; searching web/academic backends...".into(),
+                    ];
+                    preview.extend(stage0_lines.iter().take(6).cloned());
+                    state.last_research_summary = preview;
+                    for l in stage0_lines.into_iter().take(6) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!(
+                            "Running live {:?} research search for `{}` (auto_fetch={})...",
+                            scope, query, auto_fetch
+                        ),
+                    );
+                    let tx_res = tx.clone();
+                    let ws_clone = state.workspace.clone();
+                    tokio::spawn(async move {
+                        let (t_lines, d_lines) =
+                            run_live_research_task(&ws_clone, &query, scope, tier, auto_fetch)
+                                .await;
+                        let _ = tx_res.send(UiAsyncEvent::ResearchCompleted {
+                            query,
+                            transcript_lines: t_lines,
+                            drawer_lines: d_lines,
+                        });
+                    });
+                }
+            }
+        }
+        "/sources" => {
+            state.drawer_tab = DrawerTab::Research;
+            let tokens: Vec<&str> = arg.split_whitespace().collect();
+            match open_research_vault(&state.workspace) {
+                Ok(vault) => {
+                    if tokens.first().is_some_and(|t| t.eq_ignore_ascii_case("export")) {
+                        match vault.export_dossier("markdown", None) {
+                            Ok(raw_md) => {
+                                let md = if state.privacy_mask {
+                                    PrivacyMask::mask_text(&raw_md)
+                                } else {
+                                    raw_md
+                                };
+                                let out_path = tokens.get(1).map_or_else(
+                                    || {
+                                        default_omnia_data_dir()
+                                            .join("exports")
+                                            .join(format!("research-dossier-{}.md", uuid_like_id()))
+                                    },
+                                    PathBuf::from,
+                                );
+                                if let Some(parent) = out_path.parent() {
+                                    let _ = fs::create_dir_all(parent);
+                                }
+                                match fs::write(&out_path, md) {
+                                    Ok(()) => state.push_line(
+                                        TranscriptEntryKind::System,
+                                        format!(
+                                            "Exported Research Dossier (privacy_mask={}) -> {}",
+                                            state.privacy_mask,
+                                            out_path.display()
+                                        ),
+                                    ),
+                                    Err(e) => state.push_line(
+                                        TranscriptEntryKind::System,
+                                        format!("Dossier export failed: {e}"),
+                                    ),
+                                }
+                            }
+                            Err(e) => state.push_line(
+                                TranscriptEntryKind::System,
+                                format!("Dossier build failed: {e}"),
+                            ),
+                        }
+                    } else {
+                        let tier_filter = match tokens
+                            .first()
+                            .map(|s| s.to_ascii_lowercase())
+                            .as_deref()
+                        {
+                            Some("local" | "s") => Some(VaultTier::Local),
+                            Some("global" | "g") => Some(VaultTier::Global),
+                            _ => None,
+                        };
+                        let lines = format_sources_ledger_lines(&vault, tier_filter);
+                        state.last_research_summary = lines.clone();
+                        for l in lines.into_iter().take(18) {
+                            state.push_line(TranscriptEntryKind::System, l);
+                        }
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ResearchVault error: {e}"));
+                }
+            }
+        }
+        "/rag" => {
+            state.drawer_tab = DrawerTab::Research;
+            match open_research_vault(&state.workspace) {
+                Ok(vault) => {
+                    let lines = execute_rag_command(&vault, arg);
+                    state.last_research_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ResearchVault error: {e}"));
+                }
+            }
+        }
+        "/think" => {
+            state.drawer_tab = DrawerTab::Research;
+            let session_key = state.engine.as_ref().map_or_else(
+                || "tui-session".to_string(),
+                |e| e.session_key.clone(),
+            );
+            let effort = state.thinking.as_deref().unwrap_or("max");
+            match open_deep_think() {
+                Ok(eng) => {
+                    let lines = execute_think_command(&eng, &session_key, &state.model, effort, arg);
+                    state.last_research_summary = lines.clone();
+                    for l in lines.into_iter().take(20) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("DeepThink error: {e}"));
+                }
+            }
+        }
+        "/goal" | "/spec" | "/blueprint" | "/plan" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            let kind = match cmd {
+                "/goal" => ArtifactKind::Goal,
+                "/spec" => ArtifactKind::Spec,
+                "/blueprint" => ArtifactKind::Blueprint,
+                _ => ArtifactKind::Plan,
+            };
+            match open_artifact_os(&state.workspace) {
+                Ok(os) => {
+                    let lines = execute_lifecycle_artifact_command(&os, &state.workspace, kind, arg);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ArtifactOs error: {e}"));
+                }
+            }
+        }
+        "/todo" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            match open_artifact_os(&state.workspace) {
+                Ok(os) => {
+                    let lines = execute_todo_command(&os, arg);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ArtifactOs error: {e}"));
+                }
+            }
+        }
+        "/progress" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            match open_artifact_os(&state.workspace) {
+                Ok(os) => {
+                    let lines = execute_progress_command(&os, arg);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ArtifactOs error: {e}"));
+                }
+            }
+        }
+        "/dod" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            match open_artifact_os(&state.workspace) {
+                Ok(os) => {
+                    let lines = execute_dod_command(&os, arg);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ArtifactOs error: {e}"));
+                }
+            }
+        }
+        "/handoff" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            match open_artifact_os(&state.workspace) {
+                Ok(os) => {
+                    let lines = execute_handoff_command(&os, &state.workspace, arg);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ArtifactOs error: {e}"));
+                }
+            }
+        }
+        "/learn" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            match open_artifact_os(&state.workspace) {
+                Ok(os) => {
+                    let lines = execute_learn_command(&os, arg);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ArtifactOs error: {e}"));
+                }
+            }
+        }
+        "/lessons" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            match open_artifact_os(&state.workspace) {
+                Ok(os) => {
+                    let lines = execute_lessons_command(&os, arg);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.into_iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
+                Err(e) => {
+                    state.push_line(TranscriptEntryKind::System, format!("ArtifactOs error: {e}"));
+                }
+            }
+        }
+        "/skills" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            if arg.eq_ignore_ascii_case("reload") {
+                state.skill_registry = None;
+            }
+            let ws = state.workspace.clone();
+            let lines = {
+                let reg = state.ensure_skill_registry();
+                execute_skills_command(reg, &ws, arg)
+            };
+            state.last_lifecycle_summary = lines.clone();
+            for l in lines.into_iter().take(20) {
+                state.push_line(TranscriptEntryKind::System, l);
+            }
+        }
         _ => state.push_line(TranscriptEntryKind::System, format!("Unknown command `{cmd}`. Type /help.")),
     }
     Ok(false)
+}
+
+fn truncate_chars(raw: &str, max_chars: usize) -> String {
+    let mut iter = raw.chars();
+    let head: String = iter.by_ref().take(max_chars).collect();
+    if iter.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
+}
+
+fn slugify_tui(raw: &str) -> String {
+    let s: String = raw
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = s.trim_matches('-');
+    if trimmed.is_empty() {
+        format!("item-{}", uuid_like_id())
+    } else {
+        trimmed.chars().take(48).collect()
+    }
+}
+
+fn open_research_vault(workspace: &Path) -> Result<ResearchVault, String> {
+    let global_dir = default_omnia_data_dir().join("research-vault");
+    ResearchVault::open(workspace, Some(&global_dir))
+        .or_else(|_| ResearchVault::open_in_memory())
+}
+
+fn open_deep_think() -> Result<DeepThinkEngine, String> {
+    let db_path = default_omnia_data_dir()
+        .join("memory")
+        .join("omnia_deep_think.db");
+    DeepThinkEngine::open(&db_path).or_else(|_| DeepThinkEngine::open_in_memory())
+}
+
+fn open_artifact_os(workspace: &Path) -> Result<ArtifactOs, String> {
+    let mem_dir = default_omnia_data_dir().join("memory");
+    let db_path = mem_dir.join("omnia_artifact_os.db");
+    ArtifactOs::open(workspace, &db_path, Some(&mem_dir))
+        .or_else(|_| ArtifactOs::open_in_memory(workspace))
+}
+
+fn open_skill_registry(workspace: &Path) -> SkillRegistry {
+    let reg = SkillRegistry::new();
+    let _ = reg.load_from_workspace(workspace);
+    let _ = reg.load_default_cold_vault();
+    reg
+}
+
+fn parse_research_args(raw: &str) -> (String, WebSearchScope, VaultTier, bool, bool) {
+    let mut scope = WebSearchScope::All;
+    let mut tier = VaultTier::Local;
+    let mut auto_fetch = true;
+    let mut offline = false;
+    let mut query_parts = Vec::new();
+    let mut tokens = raw.split_whitespace();
+    while let Some(tok) = tokens.next() {
+        if tok == "--scope" {
+            if let Some(val) = tokens.next() {
+                scope = WebSearchScope::parse(Some(val));
+            }
+        } else if let Some(val) = tok.strip_prefix("--scope=") {
+            scope = WebSearchScope::parse(Some(val));
+        } else if tok == "--web" {
+            scope = WebSearchScope::Web;
+        } else if tok == "--academic" {
+            scope = WebSearchScope::Academic;
+        } else if tok == "--global" {
+            tier = VaultTier::Global;
+        } else if tok == "--no-fetch" {
+            auto_fetch = false;
+        } else if tok == "--offline" {
+            offline = true;
+        } else {
+            query_parts.push(tok);
+        }
+    }
+    (query_parts.join(" "), scope, tier, auto_fetch, offline)
+}
+
+async fn run_live_research_task(
+    workspace: &Path,
+    query: &str,
+    scope: WebSearchScope,
+    tier: VaultTier,
+    auto_fetch: bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut t_lines = Vec::new();
+    let bundle = match web_search_multi(&WebSearchOptions {
+        query: query.to_owned(),
+        limit: 6,
+        scope,
+        ..Default::default()
+    })
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            let msg = format!("Web/academic search error: {}", redact_secrets(&format!("{e:#}")));
+            return (vec![msg.clone()], vec!["=== Research & Deep Think ===".into(), msg]);
+        }
+    };
+
+    t_lines.push(format!(
+        "Search `{}` | providers: {} | hits: {}",
+        truncate_chars(query, 44),
+        bundle.providers_queried.join("+"),
+        bundle.hits.len()
+    ));
+    if !bundle.provider_errors.is_empty() {
+        t_lines.push(format!(
+            "Provider warnings: {}",
+            truncate_chars(&redact_secrets(&bundle.provider_errors.join("; ")), 120)
+        ));
+    }
+
+    match open_research_vault(workspace) {
+        Ok(vault) => {
+            let mut recorded_ids = Vec::new();
+            let mut fetch_urls = Vec::new();
+            for hit in &bundle.hits {
+                if let Ok(rec) = vault.record_searched_candidate(
+                    tier,
+                    &hit.canonical_url,
+                    &hit.title,
+                    query,
+                    &hit.snippet,
+                ) {
+                    if fetch_urls.len() < 3 {
+                        fetch_urls.push(hit.canonical_url.clone());
+                    }
+                    recorded_ids.push(rec);
+                }
+            }
+            let fetched = if auto_fetch && !fetch_urls.is_empty() {
+                vault
+                    .fetch_urls_parallel(tier, &fetch_urls, query, 3, false)
+                    .await
+            } else {
+                Vec::new()
+            };
+            for src in fetched.iter().take(4) {
+                let tag = src
+                    .error_kind
+                    .as_ref()
+                    .map_or_else(String::new, |k| format!(" {}", k.tag()));
+                t_lines.push(format!(
+                    "  [{}] ({}) [{}]{} {} — {}",
+                    src.citation_id,
+                    src.tier.as_str(),
+                    src.stage.as_str(),
+                    tag,
+                    truncate_chars(&src.title, 48),
+                    truncate_chars(&src.canonical_url, 64)
+                ));
+            }
+            if fetched.is_empty() {
+                for src in recorded_ids.iter().take(4) {
+                    t_lines.push(format!(
+                        "  [{}] ({}) [searched] {} — {}",
+                        src.citation_id,
+                        src.tier.as_str(),
+                        truncate_chars(&src.title, 48),
+                        truncate_chars(&src.canonical_url, 64)
+                    ));
+                }
+            }
+            let rag_hits = vault.query_rag(query, None, 5).unwrap_or_default();
+            if !rag_hits.is_empty() {
+                t_lines.push(format!("Persistent RAG Citations ({} hits):", rag_hits.len()));
+                for h in rag_hits.iter().take(4) {
+                    t_lines.push(format!(
+                        "  [{}] ({}) rrf:{:.4} {} | {}",
+                        h.citation_id,
+                        h.tier.as_str(),
+                        h.rrf_score,
+                        truncate_chars(&h.title, 36),
+                        truncate_chars(&h.snippet, 88)
+                    ));
+                }
+            }
+            let d_lines = match open_deep_think() {
+                Ok(dt) => format_research_drawer_snapshot(&vault, &dt),
+                Err(_) => format_sources_ledger_lines(&vault, None),
+            };
+            (t_lines, d_lines)
+        }
+        Err(e) => {
+            t_lines.push(format!("ResearchVault persist skipped: {e}"));
+            let d_lines = t_lines.clone();
+            (t_lines, d_lines)
+        }
+    }
+}
+
+fn format_sources_ledger_lines(vault: &ResearchVault, tier: Option<VaultTier>) -> Vec<String> {
+    let mut out = vec!["=== Sources (Searched, Viewed & Extracted) ===".into()];
+    match vault.sources_ledger(tier) {
+        Ok(ledger) => {
+            let claims = vault.count_claims(None).unwrap_or(0);
+            out.push(format!(
+                "Extracted:{} | Viewed:{} | Searched:{} | Blocked:{} | AuthReq:{} | Failed:{}",
+                ledger.total_extracted,
+                ledger.total_viewed,
+                ledger.total_searched,
+                ledger.total_blocked,
+                ledger.total_auth_required,
+                ledger.total_failed
+            ));
+            out.push(format!(
+                "Claims:{} | Cited IDs: {} | Total Listed: {}",
+                claims,
+                if ledger.cited_ids.is_empty() {
+                    "none".to_string()
+                } else {
+                    ledger
+                        .cited_ids
+                        .iter()
+                        .take(8)
+                        .map(|c| format!("[{c}]"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                },
+                ledger.sources.len()
+            ));
+            if ledger.sources.is_empty() {
+                out.push("  (no sources yet — run `/research <query>` to populate Local/Global RAG)".into());
+            } else {
+                for s in ledger.sources.iter().take(12) {
+                    let pin = if s.pinned { "*" } else { "" };
+                    let http = s
+                        .http_status
+                        .map_or_else(|| "no-http".into(), |c| format!("HTTP {c}"));
+                    let err_tag = s
+                        .error_kind
+                        .as_ref()
+                        .map_or_else(String::new, |k| format!(" {}", k.tag()));
+                    out.push(format!(
+                        "  [{}]{} ({}) [{}|{}]{} {} | {}",
+                        s.citation_id,
+                        pin,
+                        s.tier.as_str(),
+                        s.stage.as_str(),
+                        http,
+                        err_tag,
+                        truncate_chars(&s.title, 34),
+                        truncate_chars(&s.canonical_url, 52)
+                    ));
+                }
+            }
+        }
+        Err(e) => out.push(format!("Ledger error: {e}")),
+    }
+    out
+}
+
+fn format_rag_query_lines(
+    vault: &ResearchVault,
+    query: &str,
+    tier: Option<VaultTier>,
+    top_k: usize,
+) -> Vec<String> {
+    let mut out = vec![format!(
+        "=== Persistent RAG Recall: `{}` ===",
+        truncate_chars(query, 40)
+    )];
+    match vault.query_rag(query, tier, top_k) {
+        Ok(hits) if !hits.is_empty() => {
+            for h in hits {
+                out.push(format!(
+                    "  [{}] ({}) rrf:{:.4} bm25:{:.2} | {}",
+                    h.citation_id,
+                    h.tier.as_str(),
+                    h.rrf_score,
+                    h.bm25_score,
+                    truncate_chars(&h.title, 42)
+                ));
+                out.push(format!(
+                    "    {} — {}",
+                    truncate_chars(&h.source_url, 56),
+                    truncate_chars(&h.snippet, 84)
+                ));
+            }
+        }
+        Ok(_) => {
+            out.push(format!("No persisted Local/Global RAG chunks matched `{query}` yet."));
+        }
+        Err(e) => out.push(format!("RAG query error: {e}")),
+    }
+    out
+}
+
+fn execute_rag_command(vault: &ResearchVault, arg: &str) -> Vec<String> {
+    let trimmed = arg.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+        return format_sources_ledger_lines(vault, None);
+    }
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens[0].eq_ignore_ascii_case("pin") {
+        let Some(cid) = tokens.get(1) else {
+            return vec!["Usage: /rag pin <S###|G###> [global|local]".into()];
+        };
+        let target = tokens
+            .get(2)
+            .copied()
+            .map_or(VaultTier::Global, VaultTier::from_str_lossy);
+        return match vault.pin_source(cid, target) {
+            Ok(src) => vec![
+                "=== RAG Source Pinned ===".into(),
+                format!(
+                    "Pinned [{}] in `{}` tier (pinned={}): {} — {}",
+                    src.citation_id,
+                    src.tier.as_str(),
+                    src.pinned,
+                    truncate_chars(&src.title, 44),
+                    truncate_chars(&src.canonical_url, 56)
+                ),
+            ],
+            Err(e) => vec![format!("RAG pin failed: {e}")],
+        };
+    }
+    let (tier, q) = if tokens[0].eq_ignore_ascii_case("local") && tokens.len() > 1 {
+        (Some(VaultTier::Local), tokens[1..].join(" "))
+    } else if tokens[0].eq_ignore_ascii_case("global") && tokens.len() > 1 {
+        (Some(VaultTier::Global), tokens[1..].join(" "))
+    } else {
+        (None, trimmed.to_string())
+    };
+    format_rag_query_lines(vault, &q, tier, 8)
+}
+
+fn format_deep_think_session_lines(sess: &DeepThinkSession) -> Vec<String> {
+    let mut out = vec![
+        format!(
+            "=== Deep Think `{}` [{} | effort:{}] ===",
+            sess.think_id, sess.stage, sess.effort
+        ),
+        format!("Problem : {}", truncate_chars(&sess.problem, 72)),
+        format!(
+            "Strikes : {} (level:{}, fails:{}) | Winner: {}",
+            sess.escalation.status,
+            sess.escalation.strike_level,
+            sess.escalation.consecutive_failures,
+            sess.winner_branch_id.as_deref().unwrap_or("undecided")
+        ),
+    ];
+    if !sess.branches.is_empty() {
+        out.push(format!("--- Branches ({}) ---", sess.branches.len()));
+        for b in &sess.branches {
+            let fals = match b.falsification_passed {
+                Some(true) => "PASS",
+                Some(false) => "FAIL",
+                None => "PENDING",
+            };
+            out.push(format!(
+                "  {} [{:?} | {:?}] fals:{} score:{}bp — {}",
+                b.branch_id,
+                b.kind,
+                b.epistemic_band,
+                fals,
+                b.score_bps,
+                truncate_chars(&b.title, 44)
+            ));
+            if let Some(ref rcpt) = b.falsification_receipt {
+                out.push(format!(
+                    "    receipt: {} ({})",
+                    truncate_chars(rcpt, 64),
+                    b.falsification_cmd.as_deref().unwrap_or("-")
+                ));
+            }
+        }
+    }
+    if !sess.red_team.is_empty() {
+        out.push(format!("--- Red-Team ({}) ---", sess.red_team.len()));
+        for rt in &sess.red_team {
+            out.push(format!(
+                "  {} vs {} (distinct_family={}) -> {}",
+                rt.challenger_model, rt.primary_model, rt.distinct_family, rt.verdict
+            ));
+            for c in rt.critiques.iter().take(2) {
+                out.push(format!("    critique: {}", truncate_chars(c, 72)));
+            }
+        }
+    }
+    if sess.winner_branch_id.is_some() {
+        let rejected = DeepThinkEngine::rejected_alternatives_matrix(sess);
+        if !rejected.is_empty() {
+            out.push(format!("Rejected Alternatives: {}", rejected.len()));
+        }
+    }
+    if let Some(ref syn) = sess.synthesis {
+        out.push(format!("Synthesis: {}", truncate_chars(syn, 88)));
+    }
+    for w in &sess.warnings {
+        out.push(format!("  [WARN] {}", truncate_chars(w, 80)));
+    }
+    out
+}
+
+fn execute_think_command(
+    eng: &DeepThinkEngine,
+    session_key: &str,
+    primary_model: &str,
+    effort: &str,
+    arg: &str,
+) -> Vec<String> {
+    let trimmed = arg.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("list") {
+        return match eng.list_sessions(None, 8) {
+            Ok(sessions) if !sessions.is_empty() => {
+                let mut out = format_deep_think_session_lines(&sessions[0]);
+                if sessions.len() > 1 {
+                    out.push("--- Recent Deep Think Sessions ---".into());
+                    for s in sessions.iter().skip(1).take(5) {
+                        out.push(format!(
+                            "  {} [{}] branches:{} strikes:{} — {}",
+                            s.think_id,
+                            s.stage,
+                            s.branches.len(),
+                            s.escalation.strike_level,
+                            truncate_chars(&s.problem, 48)
+                        ));
+                    }
+                }
+                out
+            }
+            Ok(_) => vec![
+                "=== Deep Think Engine ===".into(),
+                "No Deep Think sessions yet. Run `/think <topic>` to frame invariants & hypotheses.".into(),
+            ],
+            Err(e) => vec![format!("DeepThink list error: {e}")],
+        };
+    }
+
+    let mut split = trimmed.splitn(2, char::is_whitespace);
+    let sub = split.next().unwrap_or("");
+    let rest = split.next().unwrap_or("").trim();
+
+    if sub.eq_ignore_ascii_case("show") {
+        if rest.is_empty() {
+            return vec!["Usage: /think show <think_id>".into()];
+        }
+        return match eng.get_session(rest) {
+            Ok(Some(sess)) => format_deep_think_session_lines(&sess),
+            Ok(None) => vec![format!("Deep Think session `{rest}` not found.")],
+            Err(e) => vec![format!("DeepThink show error: {e}")],
+        };
+    }
+    if sub.eq_ignore_ascii_case("branch") {
+        let mut p = rest.splitn(3, char::is_whitespace);
+        let Some(tid) = p.next().filter(|s| !s.is_empty()) else {
+            return vec!["Usage: /think branch <think_id> <baseline|sota|contrarian> <title> [| <hypothesis>]".into()];
+        };
+        let Some(kind_str) = p.next().filter(|s| !s.is_empty()) else {
+            return vec!["Usage: /think branch <think_id> <baseline|sota|contrarian> <title> [| <hypothesis>]".into()];
+        };
+        let body = p.next().unwrap_or("").trim();
+        if body.is_empty() {
+            return vec!["Usage: /think branch <think_id> <baseline|sota|contrarian> <title> [| <hypothesis>]".into()];
+        }
+        let (title, hyp) = match body.split_once('|') {
+            Some((t, h)) => (t.trim(), h.trim()),
+            None => (body, body),
+        };
+        let br = ThinkBranch {
+            branch_id: String::new(),
+            kind: BranchKind::from_str_lossy(kind_str),
+            title: title.to_string(),
+            hypothesis: hyp.to_string(),
+            complexity: "O(N)".to_string(),
+            failure_modes: Vec::new(),
+            blast_radius: "scoped".to_string(),
+            citations: Vec::new(),
+            epistemic_band: EpistemicBand::Hypothesis,
+            falsification_cmd: None,
+            falsification_passed: None,
+            falsification_receipt: None,
+            score_bps: 7_000,
+            rejected_reason: None,
+        };
+        return match eng.add_branch(tid, br) {
+            Ok(sess) => format_deep_think_session_lines(&sess),
+            Err(e) => vec![format!("DeepThink branch error: {e}")],
+        };
+    }
+    if sub.eq_ignore_ascii_case("falsify") {
+        let mut p = rest.splitn(4, char::is_whitespace);
+        let (Some(tid), Some(bid), Some(verdict), Some(cmd_rest)) =
+            (p.next(), p.next(), p.next(), p.next())
+        else {
+            return vec!["Usage: /think falsify <think_id> <branch_id> <pass|fail> <cmd> [| <receipt>]".into()];
+        };
+        let passed = matches!(
+            verdict.to_ascii_lowercase().as_str(),
+            "pass" | "passed" | "true" | "ok" | "1"
+        );
+        let (cmd_s, rcpt_s) = match cmd_rest.split_once('|') {
+            Some((c, r)) => (c.trim(), r.trim()),
+            None => (cmd_rest.trim(), if passed { "PASS" } else { "FAIL" }),
+        };
+        return match eng.record_falsification(tid, bid, cmd_s, passed, rcpt_s) {
+            Ok(sess) => format_deep_think_session_lines(&sess),
+            Err(e) => vec![format!("DeepThink falsify error: {e}")],
+        };
+    }
+    if sub.eq_ignore_ascii_case("redteam") {
+        let mut p = rest.splitn(3, char::is_whitespace);
+        let (Some(tid), Some(challenger), Some(critique)) = (p.next(), p.next(), p.next()) else {
+            return vec!["Usage: /think redteam <think_id> <challenger_model> <critique>".into()];
+        };
+        let challenge = RedTeamChallenge {
+            challenger_model: challenger.to_string(),
+            primary_model: primary_model.to_string(),
+            distinct_family: false,
+            critiques: vec![critique.trim().to_string()],
+            mitigations: Vec::new(),
+            verdict: "reviewed".to_string(),
+            created_at_ms: 0,
+        };
+        return match eng.record_redteam(tid, challenge) {
+            Ok(sess) => format_deep_think_session_lines(&sess),
+            Err(e) => vec![format!("DeepThink redteam error: {e}")],
+        };
+    }
+    if sub.eq_ignore_ascii_case("conclude") {
+        let mut p = rest.splitn(3, char::is_whitespace);
+        let (Some(tid), Some(winner), Some(synthesis)) = (p.next(), p.next(), p.next()) else {
+            return vec!["Usage: /think conclude <think_id> <winner_branch_id> <synthesis>".into()];
+        };
+        let receipt = json!({
+            "verified": [format!("Winner `{winner}` selected via TUI /think conclude")],
+            "partial": [],
+            "unresolved": [],
+            "blocked": [],
+            "next": [],
+            "exactPracticalLimits": ["Independent runtime verification recommended."]
+        });
+        return match eng.conclude_session(tid, winner, synthesis, receipt) {
+            Ok(sess) => format_deep_think_session_lines(&sess),
+            Err(e) => vec![format!("DeepThink conclude error: {e}")],
+        };
+    }
+
+    match eng.start_session(session_key, trimmed, Vec::new(), Vec::new(), effort) {
+        Ok(sess) => {
+            let mut out = format_deep_think_session_lines(&sess);
+            out.push(format!(
+                "Next: `/think branch {} baseline|sota|contrarian <title> | <hypothesis>`",
+                sess.think_id
+            ));
+            out
+        }
+        Err(e) => vec![format!("DeepThink start error: {e}")],
+    }
+}
+
+fn format_research_drawer_snapshot(vault: &ResearchVault, think: &DeepThinkEngine) -> Vec<String> {
+    let mut out = format_sources_ledger_lines(vault, None);
+    if let Ok(sessions) = think.list_sessions(None, 1) {
+        if let Some(sess) = sessions.first() {
+            out.push("--- Latest Deep Think ---".into());
+            out.extend(format_deep_think_session_lines(sess).into_iter().take(10));
+        }
+    }
+    out
+}
+
+fn format_receipt_badge(receipt: Option<&SixStateReceipt>) -> String {
+    match receipt {
+        Some(r) => format!(
+            "6st[V:{} P:{} U:{} B:{} N:{} L:{}]",
+            r.verified.len(),
+            r.partial.len(),
+            r.unresolved.len(),
+            r.blocked.len(),
+            r.next.len(),
+            r.exact_practical_limits.len()
+        ),
+        None => "6st[none]".to_string(),
+    }
+}
+
+fn format_artifact_lines(kind: ArtifactKind, items: &[LifecycleArtifact]) -> Vec<String> {
+    let mut out = vec![format!(
+        "=== Lifecycle `{}` Artifacts ({}) ===",
+        kind.as_str(),
+        items.len()
+    )];
+    for a in items.iter().take(10) {
+        out.push(format!(
+            "  {} [{}] {} | links:{} sha:{}",
+            a.id,
+            a.status,
+            format_receipt_badge(a.receipt.as_ref()),
+            a.links.len(),
+            truncate_chars(&a.sha256_hex, 12)
+        ));
+        out.push(format!(
+            "    {} — {}",
+            truncate_chars(&a.title, 44),
+            truncate_chars(&a.body_md.replace('\n', " "), 64)
+        ));
+    }
+    out
+}
+
+fn strip_sync_flag(raw: &str) -> (String, bool) {
+    let mut sync = false;
+    let kept: Vec<&str> = raw
+        .split_whitespace()
+        .filter(|t| {
+            if *t == "--sync" {
+                sync = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    (kept.join(" "), sync)
+}
+
+fn execute_lifecycle_artifact_command(
+    os: &ArtifactOs,
+    workspace: &Path,
+    kind: ArtifactKind,
+    arg: &str,
+) -> Vec<String> {
+    let (cleaned, sync_to_disk) = strip_sync_flag(arg);
+    if cleaned.is_empty() {
+        let items = os.list_artifacts(Some(kind), None).unwrap_or_default();
+        let mut out = format_artifact_lines(kind, &items);
+        if items.is_empty() {
+            let doc_name = match kind {
+                ArtifactKind::Goal => "GOAL.md",
+                ArtifactKind::Spec => "SPEC.md",
+                ArtifactKind::Blueprint => "BLUEPRINT.md",
+                ArtifactKind::Plan => "PLAN.md",
+                _ => "STATUS.md",
+            };
+            let ws_doc = workspace.join("docs").join("workspace").join(doc_name);
+            if ws_doc.is_file() {
+                out.push(format!("Workspace doc detected: {}", ws_doc.display()));
+            }
+            out.push(format!(
+                "Usage: /{} set <title> | <body> [--sync]",
+                kind.as_str()
+            ));
+        }
+        return out;
+    }
+
+    let payload = cleaned
+        .strip_prefix("set ")
+        .or_else(|| cleaned.strip_prefix("SET "))
+        .unwrap_or(&cleaned)
+        .trim();
+    let (title, body) = match payload.split_once('|') {
+        Some((t, b)) => (t.trim(), b.trim()),
+        None => (payload, payload),
+    };
+    let slug = slugify_tui(title);
+    match os.upsert_artifact(
+        kind,
+        &slug,
+        title,
+        "active",
+        "project",
+        body,
+        json!({ "source": "tui" }),
+        None,
+        sync_to_disk,
+    ) {
+        Ok(art) => {
+            let ver = verify_artifact_content(&art.body_md, None, None, None);
+            let mut out = format_artifact_lines(kind, &[art]);
+            out.push(format!(
+                "Verify: ok={} lf={} secrets={} tok~={} sha:{}",
+                ver.ok,
+                ver.lf_only,
+                ver.secret_findings,
+                ver.estimated_tokens,
+                truncate_chars(&ver.sha256_hex, 12)
+            ));
+            out
+        }
+        Err(e) => vec![format!("Upsert {} failed: {e}", kind.as_str())],
+    }
+}
+
+fn execute_todo_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
+    let (cleaned, sync_to_disk) = strip_sync_flag(arg);
+    if cleaned.is_empty() {
+        let items = os.list_artifacts(Some(ArtifactKind::Todo), None).unwrap_or_default();
+        let mut out = format_artifact_lines(ArtifactKind::Todo, &items);
+        if let Ok(st) = os.super_state() {
+            out.push(format!(
+                "SuperState: open_todos={} | phase={} wave={}",
+                st.open_todos, st.phase, st.wave
+            ));
+        }
+        if items.is_empty() {
+            out.push("Usage: /todo add <title> | /todo done <id> [proof]".into());
+        }
+        return out;
+    }
+
+    let mut parts = cleaned.splitn(2, char::is_whitespace);
+    let sub = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("").trim();
+
+    if sub.eq_ignore_ascii_case("done") {
+        let mut dp = rest.splitn(2, char::is_whitespace);
+        let Some(id) = dp.next().filter(|s| !s.is_empty()) else {
+            return vec!["Usage: /todo done <artifact_id> [verified_evidence]".into()];
+        };
+        let ev = dp.next().map(str::trim).filter(|s| !s.is_empty());
+        return match os.update_todo_status(id, "done", ev) {
+            Ok(art) => format_artifact_lines(ArtifactKind::Todo, &[art]),
+            Err(e) => vec![format!("Todo done failed: {e}")],
+        };
+    }
+    if sub.eq_ignore_ascii_case("status") {
+        let mut sp = rest.splitn(3, char::is_whitespace);
+        let (Some(id), Some(st)) = (sp.next(), sp.next()) else {
+            return vec!["Usage: /todo status <artifact_id> <open|in_progress|done|blocked> [proof]".into()];
+        };
+        let ev = sp.next().map(str::trim).filter(|s| !s.is_empty());
+        return match os.update_todo_status(id, st, ev) {
+            Ok(art) => format_artifact_lines(ArtifactKind::Todo, &[art]),
+            Err(e) => vec![format!("Todo status update failed: {e}")],
+        };
+    }
+
+    let body_raw = if sub.eq_ignore_ascii_case("add") {
+        rest
+    } else {
+        cleaned.as_str()
+    };
+    if body_raw.is_empty() {
+        return vec!["Usage: /todo add <title> [| <detail>] [--sync]".into()];
+    }
+    let (title, body) = match body_raw.split_once('|') {
+        Some((t, b)) => (t.trim(), b.trim()),
+        None => (body_raw, body_raw),
+    };
+    match os.upsert_artifact(
+        ArtifactKind::Todo,
+        &slugify_tui(title),
+        title,
+        "open",
+        "project",
+        body,
+        json!({ "source": "tui" }),
+        None,
+        sync_to_disk,
+    ) {
+        Ok(art) => format_artifact_lines(ArtifactKind::Todo, &[art]),
+        Err(e) => vec![format!("Todo add failed: {e}")],
+    }
+}
+
+fn execute_progress_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
+    let (cleaned, sync_to_disk) = strip_sync_flag(arg);
+    let mut out = vec!["=== Progress & SuperWorkflowState ===".into()];
+    if !cleaned.is_empty() {
+        let mut parts = cleaned.splitn(3, char::is_whitespace);
+        let first = parts.next().unwrap_or("");
+        if first.eq_ignore_ascii_case("phase") {
+            let phase = parts.next().unwrap_or("executing");
+            let wave = parts.next().and_then(|w| w.parse::<u32>().ok());
+            let patch = if let Some(w) = wave {
+                json!({ "phase": phase, "wave": w })
+            } else {
+                json!({ "phase": phase })
+            };
+            match os.update_super_state(patch, sync_to_disk) {
+                Ok(st) => out.push(format!("Updated SuperState -> phase:{} wave:{}", st.phase, st.wave)),
+                Err(e) => out.push(format!("SuperState update failed: {e}")),
+            }
+        } else {
+            let note = cleaned
+                .strip_prefix("update ")
+                .or_else(|| cleaned.strip_prefix("UPDATE "))
+                .unwrap_or(&cleaned)
+                .trim();
+            if let Ok(art) = os.upsert_artifact(
+                ArtifactKind::Progress,
+                &format!("log-{}", uuid_like_id()),
+                &truncate_chars(note, 48),
+                "active",
+                "project",
+                note,
+                json!({ "source": "tui" }),
+                None,
+                sync_to_disk,
+            ) {
+                out.push(format!("Logged progress `{}` (sha:{})", art.id, truncate_chars(&art.sha256_hex, 12)));
+            }
+        }
+    }
+    if let Ok(st) = os.super_state() {
+        out.push(format!(
+            "Phase: {} | Wave: {} | Strikes: {} | Open Todos: {} | DoD Verified: {}/{}",
+            st.phase, st.wave, st.strike_count, st.open_todos, st.verified_dod_gates, st.total_dod_gates
+        ));
+        out.push(format!(
+            "Active Goal: {} | Spec: {} | Plan: {} | Handoff: {}",
+            st.active_goal_id.as_deref().unwrap_or("-"),
+            st.active_spec_id.as_deref().unwrap_or("-"),
+            st.active_plan_id.as_deref().unwrap_or("-"),
+            st.last_handoff_id.as_deref().unwrap_or("-")
+        ));
+    }
+    let items = os.list_artifacts(Some(ArtifactKind::Progress), None).unwrap_or_default();
+    for p in items.iter().take(6) {
+        out.push(format!(
+            "  {} [{}] {} — {}",
+            p.id,
+            p.status,
+            format_receipt_badge(p.receipt.as_ref()),
+            truncate_chars(&p.title, 48)
+        ));
+    }
+    out
+}
+
+fn execute_dod_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
+    let (cleaned, sync_to_disk) = strip_sync_flag(arg);
+    if cleaned.is_empty() {
+        let items = os.list_artifacts(Some(ArtifactKind::Dod), None).unwrap_or_default();
+        let mut out = format_artifact_lines(ArtifactKind::Dod, &items);
+        if items.is_empty() {
+            out.push("Usage: /dod add <title> | /dod pass <id> <verified_evidence> | /dod fail <id> <reason>".into());
+        }
+        return out;
+    }
+
+    let mut parts = cleaned.splitn(2, char::is_whitespace);
+    let sub = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("").trim();
+
+    if sub.eq_ignore_ascii_case("pass") {
+        let mut pp = rest.splitn(2, char::is_whitespace);
+        let Some(id) = pp.next().filter(|s| !s.is_empty()) else {
+            return vec!["Usage: /dod pass <dod_id> <verified_evidence>".into()];
+        };
+        let mut receipt = SixStateReceipt::default();
+        if let Some(ev) = pp.next().map(str::trim).filter(|s| !s.is_empty()) {
+            receipt.verified.push(ev.to_string());
+        }
+        return match os.update_dod_gate(id, true, receipt) {
+            Ok(art) => format_artifact_lines(ArtifactKind::Dod, &[art]),
+            Err(e) => vec![format!("DoD gate rejected: {e}")],
+        };
+    }
+    if sub.eq_ignore_ascii_case("fail") {
+        let mut fp = rest.splitn(2, char::is_whitespace);
+        let Some(id) = fp.next().filter(|s| !s.is_empty()) else {
+            return vec!["Usage: /dod fail <dod_id> <reason>".into()];
+        };
+        let mut receipt = SixStateReceipt::default();
+        let reason = fp.next().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("failed verification");
+        receipt.unresolved.push(reason.to_string());
+        return match os.update_dod_gate(id, false, receipt) {
+            Ok(art) => format_artifact_lines(ArtifactKind::Dod, &[art]),
+            Err(e) => vec![format!("DoD update failed: {e}")],
+        };
+    }
+
+    let body_raw = if sub.eq_ignore_ascii_case("add") {
+        rest
+    } else {
+        cleaned.as_str()
+    };
+    let (title, body) = match body_raw.split_once('|') {
+        Some((t, b)) => (t.trim(), b.trim()),
+        None => (body_raw, body_raw),
+    };
+    match os.upsert_artifact(
+        ArtifactKind::Dod,
+        &slugify_tui(title),
+        title,
+        "open",
+        "project",
+        body,
+        json!({ "source": "tui" }),
+        None,
+        sync_to_disk,
+    ) {
+        Ok(art) => format_artifact_lines(ArtifactKind::Dod, &[art]),
+        Err(e) => vec![format!("DoD add failed: {e}")],
+    }
+}
+
+fn execute_handoff_command(os: &ArtifactOs, workspace: &Path, arg: &str) -> Vec<String> {
+    let (cleaned, sync_to_disk) = strip_sync_flag(arg);
+    if cleaned.is_empty() {
+        let items = os.list_artifacts(Some(ArtifactKind::Handoff), None).unwrap_or_default();
+        let mut out = format_artifact_lines(ArtifactKind::Handoff, &items);
+        let disk_h = workspace.join(".agents").join("memory").join("HANDOFF.md");
+        if disk_h.is_file() {
+            out.push(format!("Disk handoff present: {}", disk_h.display()));
+        }
+        if items.is_empty() {
+            out.push("Usage: /handoff write <title> | <body> [--sync] (preserves AGENT_NOTES block)".into());
+        }
+        return out;
+    }
+
+    let payload = cleaned
+        .strip_prefix("write ")
+        .or_else(|| cleaned.strip_prefix("WRITE "))
+        .unwrap_or(&cleaned)
+        .trim();
+    let (title, body) = match payload.split_once('|') {
+        Some((t, b)) => (t.trim(), b.trim()),
+        None => ("Session Handoff", payload),
+    };
+    let mut rcpt = SixStateReceipt::default();
+    if let Ok(st) = os.super_state() {
+        rcpt.verified.push(format!(
+            "DoD gates {}/{} verified",
+            st.verified_dod_gates, st.total_dod_gates
+        ));
+        if st.open_todos > 0 {
+            rcpt.next.push(format!("{} open todo(s) remaining", st.open_todos));
+        }
+    }
+    match os.write_handoff_preserving_notes(title, body, rcpt, sync_to_disk) {
+        Ok(art) => {
+            let ver = verify_artifact_content(&art.body_md, None, None, None);
+            let mut out = format_artifact_lines(ArtifactKind::Handoff, &[art]);
+            out.push(format!(
+                "AGENT_NOTES preserved | verify ok={} lf={} secrets={}",
+                ver.ok, ver.lf_only, ver.secret_findings
+            ));
+            out
+        }
+        Err(e) => vec![format!("Handoff write failed: {e}")],
+    }
+}
+
+fn execute_learn_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
+    let (cleaned, sync_to_disk) = strip_sync_flag(arg);
+    if cleaned.is_empty() {
+        let mut out = vec!["=== Auto-Learn & Gap Radar ===".into()];
+        if let Ok(rep) = os.gap_radar_report() {
+            let total = rep["totalGapEvents"].as_u64().unwrap_or(0);
+            out.push(format!("Gap Radar Events: {total}"));
+            if let Some(cands) = rep["upgradeCandidates"].as_array() {
+                for c in cands.iter().take(5) {
+                    out.push(format!(
+                        "  hotspot `{}` (x{}) — {}",
+                        c["topic"].as_str().unwrap_or("-"),
+                        c["occurrences"].as_u64().unwrap_or(0),
+                        truncate_chars(c["recommendation"].as_str().unwrap_or(""), 56)
+                    ));
+                }
+            }
+        }
+        out.push("Usage: /learn <title> | <root_cause> | <invariant> [| project|global] [--sync]".into());
+        return out;
+    }
+
+    let segs: Vec<&str> = cleaned.split('|').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let (title, root_cause, invariant, scope) = match segs.len() {
+        0 => return vec!["Usage: /learn <title> | <root_cause> | <invariant> [| project|global]".into()],
+        1 => (segs[0], "Captured via TUI /learn", segs[0], "project"),
+        2 => (segs[0], segs[0], segs[1], "project"),
+        3 => (segs[0], segs[1], segs[2], "project"),
+        _ => (segs[0], segs[1], segs[2], segs[3]),
+    };
+    let rec = LessonRecord {
+        id: String::new(),
+        scope: scope.to_string(),
+        title: title.to_string(),
+        symptom: title.to_string(),
+        root_cause: root_cause.to_string(),
+        invariant: invariant.to_string(),
+        anti_pattern: String::new(),
+        verify_cmd: String::new(),
+        tags: vec!["tui".into()],
+        provenance_sha: String::new(),
+        promoted_skill_slug: None,
+        overlap_warning: None,
+        created_at_ms: 0,
+    };
+    match os.capture_lesson(rec, sync_to_disk) {
+        Ok(saved) => {
+            let mut out = vec![
+                "=== Lesson Captured ===".into(),
+                format!(
+                    "  {} [{}] {} (sha:{})",
+                    saved.id,
+                    saved.scope,
+                    truncate_chars(&saved.title, 48),
+                    truncate_chars(&saved.provenance_sha, 12)
+                ),
+                format!("  Invariant: {}", truncate_chars(&saved.invariant, 76)),
+            ];
+            if let Some(ref warn) = saved.overlap_warning {
+                out.push(format!("  [OVERLAP] {}", truncate_chars(warn, 88)));
+            }
+            out
+        }
+        Err(e) => vec![format!("Capture lesson failed: {e}")],
+    }
+}
+
+fn execute_lessons_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
+    let scope = match arg.trim().to_ascii_lowercase().as_str() {
+        "project" => Some("project"),
+        "global" => Some("global"),
+        _ => None,
+    };
+    match os.list_lessons(scope) {
+        Ok(lessons) => {
+            let mut out = vec![format!(
+                "=== 2-Tier Lessons ({}, scope:{}) ===",
+                lessons.len(),
+                scope.unwrap_or("all")
+            )];
+            if lessons.is_empty() {
+                out.push("  (no lessons recorded yet — run `/learn <title> | <cause> | <invariant>`)".into());
+            } else {
+                for l in lessons.iter().take(12) {
+                    let promo = l
+                        .promoted_skill_slug
+                        .as_deref()
+                        .map_or_else(String::new, |s| format!(" -> skill:{s}"));
+                    out.push(format!(
+                        "  {} [{}]{} {} (sha:{})",
+                        l.id,
+                        l.scope,
+                        promo,
+                        truncate_chars(&l.title, 42),
+                        truncate_chars(&l.provenance_sha, 10)
+                    ));
+                    out.push(format!("    inv: {}", truncate_chars(&l.invariant, 74)));
+                }
+            }
+            out
+        }
+        Err(e) => vec![format!("List lessons failed: {e}")],
+    }
+}
+
+fn execute_skills_command(reg: &SkillRegistry, workspace: &Path, arg: &str) -> Vec<String> {
+    let trimmed = arg.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("doctor") {
+        let doc = reg.doctor();
+        let mut out = vec![
+            format!(
+                "=== Skills Registry & Cold Vault [ok:{}] ===",
+                doc.ok
+            ),
+            format!(
+                "Active: {} | Cold Vault: {} | Startup: ~{} tok (<1000 ceiling)",
+                doc.total_skills, doc.cold_vault_count, doc.startup_tokens_est
+            ),
+            format!(
+                "Merkle SHA-256: {} | Findings: {}",
+                truncate_chars(&doc.merkle_root_sha256, 16),
+                doc.findings.len()
+            ),
+        ];
+        if trimmed.eq_ignore_ascii_case("doctor") {
+            for f in doc.findings.iter().take(8) {
+                out.push(format!(
+                    "  [{}] {}: {}",
+                    f["severity"].as_str().unwrap_or("info"),
+                    f["skill"].as_str().unwrap_or("-"),
+                    f["detail"].as_str().unwrap_or("")
+                ));
+            }
+        } else if let Ok(list) = reg.list_skills() {
+            for sk in list.iter().take(8) {
+                out.push(format!(
+                    "  {} ({}t fm / {}t body) — {}",
+                    sk.name,
+                    sk.frontmatter_tokens,
+                    sk.body_tokens,
+                    truncate_chars(&sk.description, 52)
+                ));
+            }
+        }
+        return out;
+    }
+
+    let mut split = trimmed.splitn(2, char::is_whitespace);
+    let sub = split.next().unwrap_or("");
+    let rest = split.next().unwrap_or("").trim();
+
+    if sub.eq_ignore_ascii_case("pipelines") {
+        let pipes = reg.pipelines();
+        let mut out = vec![format!("=== Pre-Wired DAG Pipelines ({}) ===", pipes.len())];
+        for p in pipes.iter().take(12) {
+            out.push(format!(
+                "  {} [{}] — {}",
+                p.id,
+                p.category,
+                truncate_chars(&p.title, 48)
+            ));
+        }
+        return out;
+    }
+    if sub.eq_ignore_ascii_case("dag") {
+        let q = if rest.is_empty() { "deep research" } else { rest };
+        let dag = reg.compose_4stage_dag(q, 3);
+        let mut out = vec![format!("=== 4-Stage Execution DAG: `{}` ===", truncate_chars(q, 36))];
+        if let Some(stages) = dag["stages"].as_array() {
+            for st in stages {
+                let skills_s = st["skills"].as_array().map_or_else(String::new, |a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                });
+                out.push(format!(
+                    "  {} -> [{}]",
+                    st["stage"].as_str().unwrap_or("-"),
+                    skills_s
+                ));
+            }
+        }
+        return out;
+    }
+    if sub.eq_ignore_ascii_case("codify") {
+        let write_disk = rest.contains("--write");
+        let clean_rest = rest.replace("--write", "");
+        let segs: Vec<&str> = clean_rest.split('|').map(str::trim).filter(|s| !s.is_empty()).collect();
+        if segs.len() < 3 {
+            return vec!["Usage: /skills codify <slug> | <Use when...> | <body> [--write]".into()];
+        }
+        let req = CodifySkillRequest {
+            slug: segs[0].to_string(),
+            description: segs[1].to_string(),
+            category: "Omnia Learned Skill".to_string(),
+            canonical_artifacts: Vec::new(),
+            body_md: segs[2].to_string(),
+            invariants_md: None,
+            dry_run: !write_disk,
+        };
+        return match reg.codify_skill(workspace, &req) {
+            Ok(val) => vec![
+                format!("=== Skill Codify [dryRun={}] ===", val["dryRun"].as_bool().unwrap_or(true)),
+                format!(
+                    "  slug: {} | fm:{}t body:{}t | sha:{}",
+                    val["slug"].as_str().unwrap_or("-"),
+                    val["frontmatterTokens"].as_u64().unwrap_or(0),
+                    val["bodyTokens"].as_u64().unwrap_or(0),
+                    truncate_chars(val["sha256"].as_str().unwrap_or(""), 12)
+                ),
+            ],
+            Err(e) => vec![format!("Skill codify rejected: {e}")],
+        };
+    }
+
+    let query = if sub.eq_ignore_ascii_case("route") || sub.eq_ignore_ascii_case("vault") {
+        if rest.is_empty() {
+            return vec!["Usage: /skills route <query> | /skills vault <query>".into()];
+        }
+        rest
+    } else {
+        trimmed
+    };
+    let res = reg.search_with_vault(query, 6, true);
+    let mut out = vec![format!(
+        "=== Skill Route + Cold Vault: `{}` (active:{} vault:{}) ===",
+        truncate_chars(query, 32),
+        res["activeTotal"].as_u64().unwrap_or(0),
+        res["vaultTotal"].as_u64().unwrap_or(0)
+    )];
+    if let Some(arr) = res["matches"].as_array() {
+        out.push("--- Active Skills (BM25 + VN-EN) ---".into());
+        if arr.is_empty() {
+            out.push("  (no active skill match)".into());
+        }
+        for m in arr.iter().take(5) {
+            out.push(format!(
+                "  {} (score:{:.2}) — {}",
+                m["skill"]["name"].as_str().unwrap_or("-"),
+                m["score"].as_f64().unwrap_or(0.0),
+                truncate_chars(m["skill"]["description"].as_str().unwrap_or(""), 48)
+            ));
+        }
+    }
+    if let Some(varr) = res["vaultMatches"].as_array() {
+        if !varr.is_empty() {
+            out.push("--- Cold Vault Matches (1,001 Catalog) ---".into());
+            for vm in varr.iter().take(5) {
+                out.push(format!(
+                    "  {} [{}] (score:{:.2}) — {}",
+                    vm["entry"]["slug"].as_str().unwrap_or("-"),
+                    vm["entry"]["category"].as_str().unwrap_or("-"),
+                    vm["score"].as_f64().unwrap_or(0.0),
+                    truncate_chars(vm["entry"]["focus"].as_str().unwrap_or(""), 44)
+                ));
+            }
+        }
+    }
+    out
+}
+
+fn format_lifecycle_drawer_snapshot(os: &ArtifactOs, skills: &SkillRegistry) -> Vec<String> {
+    let mut out = vec!["=== 12-Artifact Proactive Lifecycle ===".into()];
+    if let Ok(st) = os.super_state() {
+        out.push(format!(
+            "Phase: {} | Wave: {} | Strikes: {}",
+            st.phase, st.wave, st.strike_count
+        ));
+        out.push(format!(
+            "Todos Open: {} | DoD Verified: {}/{}",
+            st.open_todos, st.verified_dod_gates, st.total_dod_gates
+        ));
+    }
+    let all = os.list_artifacts(None, None).unwrap_or_default();
+    let mut verified_rcpts = 0usize;
+    let mut counts = [0usize; 12];
+    for art in &all {
+        if let Some(idx) = ArtifactKind::ALL.iter().position(|k| *k == art.kind) {
+            counts[idx] += 1;
+        }
+        if art
+            .receipt
+            .as_ref()
+            .is_some_and(|r| !r.verified.is_empty())
+        {
+            verified_rcpts += 1;
+        }
+    }
+    out.push(format!(
+        "Artifacts: {} total | 6-State Verified: {}",
+        all.len(),
+        verified_rcpts
+    ));
+    out.push(format!(
+        "  Goal:{} Spec:{} Blueprint:{} Plan:{}",
+        counts[0], counts[1], counts[2], counts[3]
+    ));
+    out.push(format!(
+        "  Todo:{} Progress:{} DoD:{} Ckpt:{}",
+        counts[4], counts[5], counts[6], counts[7]
+    ));
+    out.push(format!(
+        "  Handoff:{} Mem:{} Lesson:{} Skill:{}",
+        counts[8], counts[9], counts[10], counts[11]
+    ));
+    let lessons = os.list_lessons(None).unwrap_or_default();
+    let proj_l = lessons.iter().filter(|l| l.scope == "project").count();
+    let glob_l = lessons.iter().filter(|l| l.scope == "global").count();
+    out.push(format!("Lessons: {proj_l} project / {glob_l} global"));
+    let doc = skills.doctor();
+    out.push("--- Skills & Cold Vault ---".into());
+    out.push(format!(
+        "Active: {} | Cold Vault: {} | ~{} tok",
+        doc.total_skills, doc.cold_vault_count, doc.startup_tokens_est
+    ));
+    out.push(format!(
+        "Merkle: {} | ok: {}",
+        truncate_chars(&doc.merkle_root_sha256, 16),
+        doc.ok
+    ));
+    out
+}
+
+fn refresh_research_drawer(state: &mut TuiAppState) {
+    match (open_research_vault(&state.workspace), open_deep_think()) {
+        (Ok(vault), Ok(think)) => {
+            state.last_research_summary = format_research_drawer_snapshot(&vault, &think);
+        }
+        (Ok(vault), Err(_)) => {
+            state.last_research_summary = format_sources_ledger_lines(&vault, None);
+        }
+        (Err(e), _) => {
+            state.last_research_summary = vec![format!("ResearchVault unavailable: {e}")];
+        }
+    }
+}
+
+fn refresh_lifecycle_drawer(state: &mut TuiAppState) {
+    let ws = state.workspace.clone();
+    match open_artifact_os(&ws) {
+        Ok(os) => {
+            let reg = state.ensure_skill_registry();
+            state.last_lifecycle_summary = format_lifecycle_drawer_snapshot(&os, reg);
+        }
+        Err(e) => {
+            state.last_lifecycle_summary = vec![format!("ArtifactOs unavailable: {e}")];
+        }
+    }
 }
 
 pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
@@ -1812,6 +3578,9 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         last_speedtest_summary: Vec::new(),
         last_router_summary: Vec::new(),
         last_rewind_summary: Vec::new(),
+        last_research_summary: Vec::new(),
+        last_lifecycle_summary: Vec::new(),
+        skill_registry: None,
     };
 
     let _guard = TerminalGuard::enter()?;
@@ -2050,6 +3819,20 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                         state.push_line(TranscriptEntryKind::System, l);
                     }
                 }
+                UiAsyncEvent::ResearchCompleted {
+                    query,
+                    transcript_lines,
+                    drawer_lines,
+                } => {
+                    state.last_research_summary = drawer_lines;
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!("── Research complete: {} ──", truncate_chars(&query, 56)),
+                    );
+                    for l in transcript_lines {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
             }
         }
 
@@ -2135,6 +3918,15 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                 ..
                             } => {
                                 state.drawer_tab = state.drawer_tab.next();
+                                if state.drawer_tab == DrawerTab::Research
+                                    && state.last_research_summary.is_empty()
+                                {
+                                    refresh_research_drawer(&mut state);
+                                } else if state.drawer_tab == DrawerTab::Lifecycle
+                                    && state.last_lifecycle_summary.is_empty()
+                                {
+                                    refresh_lifecycle_drawer(&mut state);
+                                }
                             }
                             KeyEvent {
                                 code: KeyCode::F(5),
@@ -2497,5 +4289,265 @@ mod tests {
         assert!(stale_slow >= Duration::from_secs(2));
         last += stale_slow;
         assert!(last.duration_since(t0) >= Duration::from_secs(2));
+    }
+
+    #[test]
+    fn steer18_20_slash_commands_drawer_tabs_and_wcag_themes_are_wired() {
+        let cmds: Vec<&str> = SLASH_DEFS.iter().map(|d| d.cmd).collect();
+        for req in [
+            "/research",
+            "/sources",
+            "/rag",
+            "/think",
+            "/goal",
+            "/spec",
+            "/blueprint",
+            "/plan",
+            "/todo",
+            "/progress",
+            "/dod",
+            "/handoff",
+            "/learn",
+            "/lessons",
+            "/skills",
+        ] {
+            assert!(cmds.contains(&req), "missing Steer #18-20 slash command {req}");
+        }
+
+        // Verify full 10-state F4 drawer cycle including Research and Lifecycle.
+        let mut tab = DrawerTab::Closed;
+        let mut visited = Vec::new();
+        for _ in 0..10 {
+            tab = tab.next();
+            visited.push(tab);
+        }
+        assert_eq!(
+            visited,
+            vec![
+                DrawerTab::Status,
+                DrawerTab::Network,
+                DrawerTab::Router,
+                DrawerTab::Cache,
+                DrawerTab::Swarm,
+                DrawerTab::Memory,
+                DrawerTab::Research,
+                DrawerTab::Lifecycle,
+                DrawerTab::Rewind,
+                DrawerTab::Closed,
+            ]
+        );
+        assert_eq!(DrawerTab::Research.title(), "Research & Deep Think");
+        assert_eq!(DrawerTab::Lifecycle.title(), "12-Artifact Lifecycle");
+
+        for theme in [
+            TuiTheme::Obsidian,
+            TuiTheme::Titanium,
+            TuiTheme::Alabaster,
+            TuiTheme::Blueprint,
+        ] {
+            assert_eq!(TuiTheme::parse(theme.as_str()), Some(theme));
+            assert_ne!(theme.hud_fg(), theme.hud_bg());
+            assert!(matches!(
+                theme.drawer_fg(),
+                Color::Gray | Color::White | Color::Black
+            ));
+        }
+
+        let (q, scope, tier, fetch, offline) =
+            parse_research_args("--scope academic --global --no-fetch --offline rust wal");
+        assert_eq!(q, "rust wal");
+        assert_eq!(scope, WebSearchScope::Academic);
+        assert_eq!(tier, VaultTier::Global);
+        assert!(!fetch);
+        assert!(offline);
+    }
+
+    #[test]
+    fn tui_research_sources_rag_think_and_privacy_mask_work_end_to_end() {
+        let vault = ResearchVault::open_in_memory().unwrap();
+        let s1 = vault
+            .ingest_document(
+                VaultTier::Local,
+                "https://docs.example.test/wal-leases",
+                None,
+                Some("Cooperative WAL Leases"),
+                "# WAL\nOmnia enforces WAL cooperative leases with 203.0.113.42 telemetry.",
+                "text/markdown",
+                Some(200),
+                "wal leases",
+            )
+            .unwrap();
+        assert_eq!(s1.citation_id, "S001");
+
+        let blocked = vault
+            .record_fetch_failure(
+                VaultTier::Local,
+                "https://gated.example.test/challenge",
+                Some(403),
+                omnia_harness::research_vault::FetchErrorKind::PlatformBlocked,
+                "Cloudflare Turnstile active",
+                "wal leases",
+            )
+            .unwrap();
+        assert_eq!(blocked.citation_id, "S002");
+
+        let ledger_lines = format_sources_ledger_lines(&vault, None);
+        let joined_ledger = ledger_lines.join("\n");
+        assert!(joined_ledger.contains("Sources (Searched, Viewed & Extracted)"));
+        assert!(joined_ledger.contains("[S001]"));
+        assert!(joined_ledger.contains("[BLOCKED_BY_CHALLENGE]"));
+
+        let rag_lines = execute_rag_command(&vault, "cooperative wal leases");
+        assert!(rag_lines.iter().any(|l| l.contains("[S001]")));
+
+        let pin_lines = execute_rag_command(&vault, "pin S001 global");
+        assert!(pin_lines.iter().any(|l| l.contains("[G001]") && l.contains("global")));
+
+        let dt = DeepThinkEngine::open_in_memory().unwrap();
+        let start_out = execute_think_command(
+            &dt,
+            "tui-test",
+            "claude-sonnet-5-5",
+            "max",
+            "Choose zero-bloat RAG storage",
+        );
+        let sessions = dt.list_sessions(None, 4).unwrap();
+        assert_eq!(sessions.len(), 1);
+        let tid = sessions[0].think_id.clone();
+        assert!(start_out.iter().any(|l| l.contains(&tid)));
+
+        let _ = execute_think_command(
+            &dt,
+            "tui-test",
+            "claude-sonnet-5-5",
+            "max",
+            &format!("branch {tid} baseline Flat JSON | Easy but slow"),
+        );
+        let _ = execute_think_command(
+            &dt,
+            "tui-test",
+            "claude-sonnet-5-5",
+            "max",
+            &format!("branch {tid} sota SQLite WAL | Fast concurrent reads"),
+        );
+        let _ = execute_think_command(
+            &dt,
+            "tui-test",
+            "claude-sonnet-5-5",
+            "max",
+            &format!("branch {tid} contrarian In-memory only | Zero disk persistence"),
+        );
+        let fals_out = execute_think_command(
+            &dt,
+            "tui-test",
+            "claude-sonnet-5-5",
+            "max",
+            &format!("falsify {tid} br_2 pass cargo-test | 100% pass"),
+        );
+        assert!(fals_out.iter().any(|l| l.contains("Verified") && l.contains("PASS")));
+
+        let rt_out = execute_think_command(
+            &dt,
+            "tui-test",
+            "claude-sonnet-5-5",
+            "max",
+            &format!("redteam {tid} gpt-6.2-sol Verify AV lock retry on Windows"),
+        );
+        assert!(rt_out.iter().any(|l| l.contains("distinct_family=true")));
+
+        let done_out = execute_think_command(
+            &dt,
+            "tui-test",
+            "claude-sonnet-5-5",
+            "max",
+            &format!("conclude {tid} br_2 Selected SQLite WAL [S001]"),
+        );
+        assert!(done_out.iter().any(|l| l.contains("Rejected Alternatives: 2")));
+
+        let drawer = format_research_drawer_snapshot(&vault, &dt);
+        let drawer_text = drawer.join("\n");
+        assert!(drawer_text.contains("Sources (Searched, Viewed & Extracted)"));
+        assert!(drawer_text.contains(&tid));
+
+        // Verify Privacy Mask strips IP/email from drawer lines cleanly.
+        let masked_sample = PrivacyMask::mask_text("Source 203.0.113.42 owner@example.test");
+        assert!(!masked_sample.contains("203.0.113.42"));
+        assert!(!masked_sample.contains("owner@example.test"));
+    }
+
+    #[test]
+    fn tui_12_artifact_lifecycle_handoff_lessons_and_skills_work_end_to_end() {
+        let ws = Path::new(".");
+        let os = ArtifactOs::open_in_memory(ws).unwrap();
+
+        for (kind, spec) in [
+            (ArtifactKind::Goal, "set Ship Steer 18-20 | Deliver [[spec_tui]] cleanly"),
+            (ArtifactKind::Spec, "set TUI Cockpit Spec | AC-1 all 15 commands work"),
+            (ArtifactKind::Blueprint, "set TUI Drawer Blueprint | Research and Lifecycle tabs"),
+            (ArtifactKind::Plan, "set Rollout Plan | Implement and test in memory"),
+        ] {
+            let out = execute_lifecycle_artifact_command(&os, ws, kind, spec);
+            assert!(out.iter().any(|l| l.contains("Verify: ok=true")));
+        }
+
+        let todo_add = execute_todo_command(&os, "add Verify TUI unit tests");
+        let todo_id = os.list_artifacts(Some(ArtifactKind::Todo), None).unwrap()[0].id.clone();
+        assert!(todo_add.iter().any(|l| l.contains(&todo_id)));
+        let todo_done = execute_todo_command(&os, &format!("done {todo_id} cargo test PASS"));
+        assert!(todo_done.iter().any(|l| l.contains("[done]") && l.contains("V:1")));
+
+        let dod_add = execute_dod_command(&os, "add All TUI tests pass");
+        let dod_id = os.list_artifacts(Some(ArtifactKind::Dod), None).unwrap()[0].id.clone();
+        assert!(dod_add.iter().any(|l| l.contains(&dod_id)));
+        // Receipt-gated DoD refuses empty verified evidence.
+        let dod_reject = execute_dod_command(&os, &format!("pass {dod_id}"));
+        assert!(dod_reject.iter().any(|l| l.contains("rejected")));
+        let dod_pass = execute_dod_command(&os, &format!("pass {dod_id} cargo test -p omnia-cli PASS"));
+        assert!(dod_pass.iter().any(|l| l.contains("[verified]") && l.contains("V:1")));
+
+        let prog = execute_progress_command(&os, "phase verifying 2");
+        assert!(prog.iter().any(|l| l.contains("phase:verifying wave:2")));
+
+        let h1 = execute_handoff_command(
+            &os,
+            ws,
+            "write Handoff 1 | Body 1\n<!-- AGENT_NOTES_START -->\nKeep TUI note\n<!-- AGENT_NOTES_END -->",
+        );
+        assert!(h1.iter().any(|l| l.contains("AGENT_NOTES preserved")));
+        let _ = execute_handoff_command(&os, ws, "write Handoff 2 | Body 2");
+        let latest_h = os.list_artifacts(Some(ArtifactKind::Handoff), None).unwrap();
+        assert!(latest_h[0].body_md.contains("Keep TUI note"));
+
+        let l1 = execute_learn_command(
+            &os,
+            "Never slice UTF-8 by bytes | Multi-byte Vietnamese panics | Use char-aware truncate_chars | project",
+        );
+        assert!(l1.iter().any(|l| l.contains("Lesson Captured")));
+        let l2 = execute_learn_command(
+            &os,
+            "Never slice UTF-8 by bytes | Multi-byte Vietnamese panics | Use char-aware truncate_chars | global",
+        );
+        assert!(l2.iter().any(|l| l.contains("[OVERLAP]")));
+        let listed = execute_lessons_command(&os, "");
+        assert!(listed.iter().any(|l| l.contains("2-Tier Lessons (2")));
+
+        let reg = SkillRegistry::new();
+        let pipelines = execute_skills_command(&reg, ws, "pipelines");
+        assert!(pipelines.iter().any(|l| l.contains("Pre-Wired DAG Pipelines (24)")));
+        let dag = execute_skills_command(&reg, ws, "dag nghien cuu tai lieu");
+        assert!(dag.iter().any(|l| l.contains("stage_1_preflight_framing")));
+        assert!(dag.iter().any(|l| l.contains("stage_4_receipt_handoff")));
+        let dry_codify = execute_skills_command(
+            &reg,
+            ws,
+            "codify tui-demo-skill | Use when verifying TUI codify dry-run | # Body\nRun checks.",
+        );
+        assert!(dry_codify.iter().any(|l| l.contains("dryRun=true")));
+
+        let drawer = format_lifecycle_drawer_snapshot(&os, &reg);
+        let dtext = drawer.join("\n");
+        assert!(dtext.contains("12-Artifact Proactive Lifecycle"));
+        assert!(dtext.contains("DoD Verified: 1/1"));
+        assert!(dtext.contains("Lessons: 1 project / 1 global"));
     }
 }

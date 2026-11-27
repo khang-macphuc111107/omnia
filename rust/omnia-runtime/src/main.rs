@@ -6,7 +6,7 @@ use omnia_connector_gateway::proxy_router::{
     FailureScope, NormalizedProxyConfig, ProxyCandidateConfig, ProxyRouter, QuotaCertainty,
     RouteSelectionRequest, RoutingStrategy,
 };
-use omnia_core::now_epoch_ms;
+use omnia_core::{now_epoch_ms, try_json_i64_in_range};
 use omnia_agent::{
     read_models_config, resolve_model_endpoint, AgentStore, ApprovalMode, HarnessBackendId,
     ManagedSpawnRequest, SuperHarnessManager, WireApiMode,
@@ -38,6 +38,7 @@ use nvidia::NvidiaConfig;
 use skills::{QueryError, SkillCatalog};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_TARGET_BYTES: usize = 4096;
 const DEFAULT_BIND: &str = "127.0.0.1:8790";
 const DEFAULT_ORIGINS: &str = "http://127.0.0.1:8787,http://localhost:8787";
 const DEFAULT_MAX_BODY: usize = 4 * 1024 * 1024;
@@ -195,6 +196,7 @@ impl Config {
 #[derive(Clone)]
 struct App {
     config: Config,
+    bound_port: Option<u16>,
     client: Client,
     retry_client: Client,
     proxy_router: Arc<Mutex<ProxyRouter>>,
@@ -280,6 +282,7 @@ impl App {
 
         Ok(Self {
             config,
+            bound_port: None,
             client,
             retry_client,
             proxy_router: Arc::new(Mutex::new(proxy_router)),
@@ -287,6 +290,11 @@ impl App {
             harness,
             dynamic_router,
         })
+    }
+
+    fn with_bound_port(mut self, port: u16) -> Self {
+        self.bound_port = (port > 0).then_some(port);
+        self
     }
 
     fn select_candidate_for_attempt(
@@ -391,18 +399,25 @@ fn endpoint(base: &Url, suffix: &str) -> Result<Url, String> {
 
 fn valid_port(value: &str) -> bool {
     !value.is_empty()
+        && value.len() <= 5
+        && !value.starts_with('0')
         && value.bytes().all(|byte| byte.is_ascii_digit())
         && value.parse::<u16>().map(|port| port > 0).unwrap_or(false)
 }
 
+#[cfg(test)]
 fn validate_host_header(value: &str) -> Result<(), String> {
+    validate_host_header_for_port(value, None)
+}
+
+fn validate_host_header_for_port(value: &str, bound_port: Option<u16>) -> Result<(), String> {
     let host = value.trim();
     if host.is_empty() || host.contains(',') || host.bytes().any(|byte| byte.is_ascii_whitespace())
     {
         return Err("Host header is malformed".to_string());
     }
 
-    if let Some(rest) = host.strip_prefix('[') {
+    let parsed_port = if let Some(rest) = host.strip_prefix('[') {
         let end = rest
             .find(']')
             .ok_or_else(|| "Host header is malformed".to_string())?;
@@ -411,33 +426,45 @@ fn validate_host_header(value: &str) -> Result<(), String> {
         if address != "::1" {
             return Err("Host header is not loopback".to_string());
         }
-        if !port.is_empty() && (!port.starts_with(':') || !valid_port(&port[1..])) {
+        if port.is_empty() {
+            None
+        } else if let Some(digits) = port.strip_prefix(':') {
+            if !valid_port(digits) {
+                return Err("Host header port is malformed".to_string());
+            }
+            digits.parse::<u16>().ok()
+        } else {
             return Err("Host header port is malformed".to_string());
         }
-        return Ok(());
-    }
-
-    if host == "::1" {
-        return Ok(());
-    }
-
-    let (name, port) = match host.split_once(':') {
-        Some((name, port)) => (name, Some(port)),
-        None => (host, None),
-    };
-    if let Some(port) = port {
-        if !valid_port(port) {
-            return Err("Host header port is malformed".to_string());
-        }
-    }
-    if matches!(
-        name.to_ascii_lowercase().as_str(),
-        "localhost" | "127.0.0.1"
-    ) {
-        Ok(())
     } else {
-        Err("Host header is not loopback".to_string())
+        let (name, port) = match host.split_once(':') {
+            Some((name, port)) => (name, Some(port)),
+            None => (host, None),
+        };
+        let port_num = if let Some(port) = port {
+            if !valid_port(port) {
+                return Err("Host header port is malformed".to_string());
+            }
+            port.parse::<u16>().ok()
+        } else {
+            None
+        };
+        if !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "localhost" | "127.0.0.1"
+        ) {
+            return Err("Host header is not loopback".to_string());
+        }
+        port_num
+    };
+
+    if let Some(expected) = bound_port.filter(|&p| p > 0) {
+        let effective = parsed_port.unwrap_or(80);
+        if effective != expected {
+            return Err("Host header port does not match bound listener port".to_string());
+        }
     }
+    Ok(())
 }
 
 fn validate_origin(origin: Option<&str>, allowed_origins: &[String]) -> Result<(), String> {
@@ -607,6 +634,13 @@ fn parse_header_block(
         code: "malformed_request_line",
         detail: "request line is missing",
     })?;
+    if request_line.bytes().any(|b| b == b'\r' || b == b'\n') {
+        return Err(ParseFailure {
+            status: 400,
+            code: "malformed_request_line",
+            detail: "request line contains bare line break",
+        });
+    }
     let mut parts = request_line
         .split([' ', '\t'])
         .filter(|part| !part.is_empty());
@@ -620,6 +654,13 @@ fn parse_header_block(
         code: "malformed_request_line",
         detail: "request target is missing",
     })?;
+    if target.len() > MAX_REQUEST_TARGET_BYTES {
+        return Err(ParseFailure {
+            status: 414,
+            code: "target_too_long",
+            detail: "request target exceeds the 4 KiB limit",
+        });
+    }
     let version = parts.next().ok_or(ParseFailure {
         status: 400,
         code: "malformed_request_line",
@@ -773,6 +814,13 @@ where
     }
     let (method, path, query, headers) = parse_header_block(&buffer[..header_end - 4])?;
     if let Some(transfer_encoding) = headers.get("transfer-encoding") {
+        if headers.contains_key("content-length") {
+            return Err(ParseFailure {
+                status: 400,
+                code: "conflicting_framing",
+                detail: "Transfer-Encoding and Content-Length cannot both be present",
+            });
+        }
         if !transfer_encoding.eq_ignore_ascii_case("identity") {
             return Err(ParseFailure {
                 status: 400,
@@ -782,11 +830,20 @@ where
         }
     }
     let content_length = match headers.get("content-length") {
-        Some(value) => value.parse::<usize>().map_err(|_| ParseFailure {
-            status: 400,
-            code: "malformed_content_length",
-            detail: "Content-Length is malformed",
-        })?,
+        Some(value) => {
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(ParseFailure {
+                    status: 400,
+                    code: "malformed_content_length",
+                    detail: "Content-Length must be an unsigned decimal integer",
+                });
+            }
+            value.parse::<usize>().map_err(|_| ParseFailure {
+                status: 400,
+                code: "malformed_content_length",
+                detail: "Content-Length is malformed",
+            })?
+        }
         None => 0,
     };
     if content_length > max_body_bytes {
@@ -842,7 +899,9 @@ fn status_reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        408 => "Request Timeout",
         413 => "Payload Too Large",
+        414 => "URI Too Long",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
@@ -1733,11 +1792,44 @@ fn handle_runtime_router_state(app: &App) -> Result<Dispatch, ResponseSpec> {
 
 fn handle_runtime_router_decide(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
     let body = parse_json_object(request)?;
+    let simulate = match body.get("simulate") {
+        None => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => {
+            return Err(json_error(
+                400,
+                "invalid_simulate",
+                "simulate must be a JSON boolean",
+            ));
+        }
+    };
+    let estimated_tokens = match body.get("estimatedTokens") {
+        None => None,
+        Some(raw) => match try_json_i64_in_range(raw, 64, 1_000_000) {
+            Some(tokens) => Some(tokens as u64),
+            None => {
+                return Err(ResponseSpec::json(
+                    400,
+                    json!({
+                        "ok": false,
+                        "error": "invalid_estimated_tokens",
+                        "field": "estimatedTokens",
+                        "detail": "estimatedTokens must be an integer between 64 and 1000000"
+                    }),
+                ));
+            }
+        },
+    };
     let mut policy = RouteRequestPolicy {
         token_budget: None,
         now_epoch_ms: Some(now_epoch_ms()),
         ..RouteRequestPolicy::default()
     };
+    if let Some(total) = estimated_tokens {
+        let est_in = (total * 7) / 10;
+        policy.estimated_input_tokens = est_in;
+        policy.estimated_output_tokens = total.saturating_sub(est_in);
+    }
     if let Some(req_id) = body.get("requestId").and_then(Value::as_str) {
         if !req_id.trim().is_empty() {
             policy.request_id = req_id.trim().to_string();
@@ -1746,11 +1838,30 @@ fn handle_runtime_router_decide(app: &App, request: &Request) -> Result<Dispatch
     if body.get("taskRisk").and_then(Value::as_str) == Some("high") {
         policy.task_risk = TaskRisk::High;
     }
+    if simulate {
+        return match app.dynamic_router.simulate_route(&policy) {
+            Ok(decision) => Ok(Dispatch::Response(ResponseSpec::json(
+                200,
+                json!({
+                    "ok": true,
+                    "simulated": true,
+                    "status": if decision.allowed { "SIMULATED_DETERMINISTIC" } else { "FENCED_NO_ELIGIBLE_ROUTE" },
+                    "allowed": decision.allowed,
+                    "reservationId": Value::Null,
+                    "reservedTokens": 0,
+                    "tokenBudget": Value::Null,
+                    "selectedCandidateId": decision.receipt.selected_candidate_id,
+                }),
+            ))),
+            Err(e) => Err(json_error(503, "route_decision_failed", &e.to_string())),
+        };
+    }
     match app.dynamic_router.decide_and_reserve(&policy) {
         Ok(decision) => Ok(Dispatch::Response(ResponseSpec::json(
             200,
             json!({
                 "ok": true,
+                "simulated": false,
                 "allowed": decision.allowed,
                 "tokenBudget": Value::Null,
                 "selectedCandidateId": decision.receipt.selected_candidate_id,
@@ -1774,11 +1885,20 @@ fn handle_runtime_router_breaker(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| json_error(400, "missing_candidate_id", "candidateId is required"))?;
-    let cooldown_ms = body
-        .get("cooldownMs")
-        .and_then(Value::as_i64)
-        .unwrap_or(60_000)
-        .clamp(1_000, 3_600_000);
+    let cooldown_ms = match body.get("cooldownMs") {
+        None => 60_000,
+        Some(raw) => try_json_i64_in_range(raw, 1_000, 3_600_000).ok_or_else(|| {
+            ResponseSpec::json(
+                400,
+                json!({
+                    "ok": false,
+                    "error": "invalid_cooldown_ms",
+                    "field": "cooldownMs",
+                    "detail": "cooldownMs must be an integer between 1000 and 3600000"
+                }),
+            )
+        })?,
+    };
     let res = if trip {
         app.dynamic_router
             .trip_circuit(candidate_id, now_epoch_ms(), Some(cooldown_ms))
@@ -1928,7 +2048,11 @@ async fn write_stream_response(
     header.push_str("\r\n");
     stream.write_all(header.as_bytes()).await?;
 
+    let is_sse = content_type
+        .to_ascii_lowercase()
+        .starts_with("text/event-stream");
     let mut body_bytes = 0usize;
+    let mut saw_meaningful_data = false;
     let mut upstream = response.bytes_stream();
     let mut progress_tracker = SseProgressTracker::new();
     let mut token_deadline = time::Instant::now() + token_timeout;
@@ -1979,6 +2103,7 @@ async fn write_stream_response(
             continue;
         }
         if progress_tracker.feed(&chunk) {
+            saw_meaningful_data = true;
             token_deadline = time::Instant::now() + token_timeout;
         }
         body_bytes += chunk.len();
@@ -1987,6 +2112,12 @@ async fn write_stream_response(
         stream.write_all(&chunk).await?;
         stream.write_all(b"\r\n").await?;
         stream.flush().await?;
+    }
+    if is_sse && !saw_meaningful_data {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "provider SSE stream closed without any event data",
+        ));
     }
     stream.write_all(b"0\r\n\r\n").await?;
     stream.flush().await
@@ -2016,7 +2147,7 @@ async fn serve_connection(mut stream: TcpStream, app: App) -> io::Result<()> {
         .headers
         .get("host")
         .ok_or_else(|| "Host header is required".to_string())
-        .and_then(|host| validate_host_header(host))
+        .and_then(|host| validate_host_header_for_port(host, app.bound_port))
     {
         return write_response(&mut stream, json_error(403, "invalid_host", &detail)).await;
     }
@@ -2067,6 +2198,7 @@ async fn run() -> Result<(), String> {
     let address = listener
         .local_addr()
         .map_err(|error| format!("unable to read runtime listener: {error}"))?;
+    let app = app.with_bound_port(address.port());
     eprintln!(
         "omnia-runtime listening on {} (provider_configured={})",
         address,
@@ -3345,5 +3477,206 @@ mod tests {
         assert_eq!(tv["ok"], true);
         assert_eq!(tv["service"], "omnia-runtime");
         assert!(tv["tokenBudget"].is_null());
+    }
+
+    #[test]
+    fn pr1_aud02_bound_port_host_and_aud17_framing_hardening() {
+        // AUD-02: bound listener port rejects alternate local ports, leading-zero ports, and bare ::1.
+        assert!(validate_host_header_for_port("127.0.0.1:8790", Some(8790)).is_ok());
+        assert!(validate_host_header_for_port("localhost:8790", Some(8790)).is_ok());
+        assert!(validate_host_header_for_port("[::1]:8790", Some(8790)).is_ok());
+        assert!(validate_host_header_for_port("127.0.0.1:9999", Some(8790)).is_err());
+        assert!(validate_host_header_for_port("localhost:9999", Some(8790)).is_err());
+        assert!(validate_host_header_for_port("127.0.0.1", Some(8790)).is_err());
+        assert!(validate_host_header("127.0.0.1:08790").is_err());
+        assert!(validate_host_header("::1").is_err());
+
+        // AUD-17: overly long target rejected with 414.
+        let long_path = format!("/{}", "a".repeat(MAX_REQUEST_TARGET_BYTES + 1));
+        let long_req = format!("GET {long_path} HTTP/1.1\r\nHost: 127.0.0.1:8790\r\n");
+        let err = parse_header_block(long_req.as_bytes()).expect_err("oversized target must fail");
+        assert_eq!(err.status, 414);
+        assert_eq!(err.code, "target_too_long");
+    }
+
+    #[tokio::test]
+    async fn pr1_aud17_rejects_signed_content_length_and_te_cl_smuggling() {
+        for raw in [
+            b"POST /api/health HTTP/1.1\r\nHost: 127.0.0.1:8790\r\nContent-Length: +4\r\n\r\n{}".as_slice(),
+            b"POST /api/health HTTP/1.1\r\nHost: 127.0.0.1:8790\r\nTransfer-Encoding: identity\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+        ] {
+            let (mut server_stream, mut client_stream) = tokio::io::duplex(4096);
+            let bytes = raw.to_vec();
+            let sender = tokio::spawn(async move {
+                client_stream.write_all(&bytes).await.unwrap();
+            });
+            let err = read_request(&mut server_stream, 1024)
+                .await
+                .expect_err("malformed framing must fail");
+            assert_eq!(err.status, 400);
+            sender.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn pr1_aud09_and_aud29_router_decide_validates_budgets_and_simulates_without_mutation() {
+        let app = test_app();
+        // Seed one eligible candidate in the dynamic router so decide/simulate can evaluate it.
+        let cand = RouteCandidate {
+            candidate_id: "test-sim:gpt-5.4".to_string(),
+            provider_id: "test-sim".to_string(),
+            model_id: "gpt-5.4".to_string(),
+            auth_boundary: "workspace:default".to_string(),
+            region: "local".to_string(),
+            privacy_tier: PrivacyTier::ZeroDataRetention,
+            capabilities: ModelCapabilities::standard_candidate(),
+            context_limit_tokens: 128_000,
+            max_output_tokens: 16_384,
+            quality_tier: 3,
+            pricing_version: "test".to_string(),
+            input_cost_per_million_microunits: None,
+            output_cost_per_million_microunits: None,
+            credential_present: true,
+            enabled: true,
+            route_priority: 1,
+            supported_roles: Vec::new(),
+        };
+        app.dynamic_router
+            .upsert_candidate(
+                cand,
+                CandidateResourceState {
+                    quota: QuotaState::known(500_000, 1_000),
+                    circuit: CircuitState::Closed,
+                    ..CandidateResourceState::default()
+                },
+            )
+            .expect("seed candidate");
+
+        // AUD-29: malformed estimatedTokens must fail closed with 400 invalid_estimated_tokens.
+        for bad_body in [
+            br#"{"estimatedTokens":1e100}"#.as_slice(),
+            br#"{"estimatedTokens":-1e100}"#.as_slice(),
+            br#"{"estimatedTokens":9223372036854775808}"#.as_slice(),
+            br#"{"estimatedTokens":64.9}"#.as_slice(),
+            br#"{"estimatedTokens":63}"#.as_slice(),
+            br#"{"estimatedTokens":1000001}"#.as_slice(),
+            br#"{"estimatedTokens":"64"}"#.as_slice(),
+            br#"{"estimatedTokens":null}"#.as_slice(),
+        ] {
+            let err = dispatch_request(&app, &request("POST", "/api/router/decide", bad_body))
+                .await
+                .expect_err("malformed estimatedTokens must reject");
+            assert_eq!(err.status, 400);
+            let j = json_body(&err);
+            assert_eq!(j["error"], "invalid_estimated_tokens");
+            assert_eq!(j["field"], "estimatedTokens");
+        }
+
+        // AUD-29: malformed cooldownMs must reject before mutating circuit.
+        let bad_cd = dispatch_request(
+            &app,
+            &request(
+                "POST",
+                "/api/router/trip",
+                br#"{"candidateId":"test-sim:gpt-5.4","cooldownMs":64.9}"#,
+            ),
+        )
+        .await
+        .expect_err("float cooldownMs must reject");
+        assert_eq!(bad_cd.status, 400);
+        assert_eq!(json_body(&bad_cd)["error"], "invalid_cooldown_ms");
+
+        // AUD-09: repeated simulate:true calls return SIMULATED_DETERMINISTIC with zero reservations.
+        let before = app.dynamic_router.snapshots(now_epoch_ms()).unwrap();
+        for _ in 0..3 {
+            let Dispatch::Response(resp) = dispatch_request(
+                &app,
+                &request(
+                    "POST",
+                    "/api/router/decide",
+                    br#"{"simulate":true,"estimatedTokens":1024}"#,
+                ),
+            )
+            .await
+            .expect("simulate should succeed") else {
+                panic!("expected response");
+            };
+            assert_eq!(resp.status, 200);
+            let j = json_body(&resp);
+            assert_eq!(j["simulated"], true);
+            assert_eq!(j["status"], "SIMULATED_DETERMINISTIC");
+            assert!(j["reservationId"].is_null());
+            assert_eq!(j["reservedTokens"], 0);
+        }
+        let after = app.dynamic_router.snapshots(now_epoch_ms()).unwrap();
+        assert_eq!(
+            before[0].state.reserved_tokens,
+            after[0].state.reserved_tokens
+        );
+        assert_eq!(
+            before[0].state.reserved_requests,
+            after[0].state.reserved_requests
+        );
+    }
+
+    #[tokio::test]
+    async fn pr1_aud03_empty_and_keepalive_only_sse_eof_fails_without_clean_chunk_terminator() {
+        for raw_body in [b"".as_slice(), b": keepalive\r\n\r\n".as_slice()] {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                raw_body.len(),
+                String::from_utf8_lossy(raw_body)
+            )
+            .into_bytes();
+            let (base_url, provider_task) = spawn_provider_response(response).await;
+            let app = App::new(provider_config(base_url)).expect("test app");
+            let Dispatch::Stream(resp) = request_chat(
+                &app,
+                &request(
+                    "POST",
+                    "/chat/completions",
+                    br#"{"messages":[],"stream":true}"#,
+                ),
+            )
+            .await
+            .expect("stream connects") else {
+                panic!("expected stream");
+            };
+            let out_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let out_addr = out_listener.local_addr().unwrap();
+            let client_task = tokio::spawn(async move { TcpStream::connect(out_addr).await.unwrap() });
+            let (srv_stream, _) = out_listener.accept().await.unwrap();
+            let mut client = client_task.await.unwrap();
+            let (mut reader, mut writer) = srv_stream.into_split();
+            let err = write_stream_response(
+                &mut writer,
+                &mut reader,
+                resp,
+                None,
+                4096,
+                Duration::from_secs(2),
+            )
+            .await
+            .expect_err("empty/keepalive-only SSE EOF must fail (AUD-03)");
+            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+            drop(writer);
+            drop(reader);
+            let mut output = Vec::new();
+            client.read_to_end(&mut output).await.unwrap();
+            let output_str = String::from_utf8_lossy(&output);
+            assert!(
+                !output_str.ends_with("0\r\n\r\n"),
+                "failed SSE stream must not emit clean chunked terminator"
+            );
+            provider_task.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn pr1_aud04_sse_progress_tracker_handles_crlf_and_multiline_frames() {
+        let mut tracker = SseProgressTracker::new();
+        assert!(tracker.feed(b"event: message\r\ndata: {\"a\":1}\r\ndata: {\"b\":2}\r\n\r\n"));
+        assert!(!tracker.feed(b": ping\r\n\r\n"));
+        assert!(tracker.feed(b"data: [DONE]\r\n\r\n"));
     }
 }

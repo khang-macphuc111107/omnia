@@ -22,7 +22,10 @@ pub use encoding::{
     uuid_v4_simple,
 };
 pub use error::CoreError;
-pub use json::{canonical_json, compact_json, parse_json, pretty_json, try_parse_json};
+pub use json::{
+    canonical_json, compact_json, json_i64_or, parse_json, parse_optional_json_i64_in_range,
+    pretty_json, try_f64_to_i64, try_json_i64, try_json_i64_in_range, try_json_u64, try_parse_json,
+};
 pub use prompt_norm::{
     detect_unaccented_vietnamese_collision, encapsulate_data_plane_record,
     extract_protected_spans, fold_vietnamese_ascii, has_vietnamese_diacritics,

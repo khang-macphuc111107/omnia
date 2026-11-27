@@ -143,9 +143,25 @@ pub struct SkillMetadata {
 pub struct WorkspaceContextBundle {
     pub rules: Vec<DiscoveredRule>,
     pub skills: Vec<SkillMetadata>,
+    pub lifecycle_docs: Vec<DiscoveredRule>,
     pub workspace_trusted: bool,
     pub quarantined_files: Vec<String>,
 }
+
+const MAX_LIFECYCLE_DOC_CHARS: usize = 1_200;
+const MAX_TOTAL_LIFECYCLE_CHARS: usize = 4_000;
+const LIFECYCLE_HYDRATION_PATHS: &[&str] = &[
+    "HANDOFF.md",
+    ".agents/memory/lessons.md",
+    "GOAL.md",
+    "SPEC.md",
+    "BLUEPRINT.md",
+    "PLAN.md",
+    "TODO.md",
+    "PROGRESS.md",
+    "DOD.md",
+    ".agents/super/state.json",
+];
 
 impl WorkspaceContextBundle {
     pub fn discover(workspace_root: &Path) -> Self {
@@ -268,9 +284,40 @@ impl WorkspaceContextBundle {
             }
         }
 
+        let mut lifecycle_docs = Vec::new();
+        let mut lifecycle_chars = 0usize;
+        for rel in LIFECYCLE_HYDRATION_PATHS {
+            let p = root.join(rel);
+            if !p.is_file() {
+                continue;
+            }
+            if !workspace_trusted {
+                quarantined_files.push((*rel).to_string());
+                continue;
+            }
+            if lifecycle_chars >= MAX_TOTAL_LIFECYCLE_CHARS {
+                break;
+            }
+            if let Ok(raw) = fs::read_to_string(&p) {
+                let trimmed = raw.trim();
+                if !trimmed.is_empty() {
+                    let rem = MAX_TOTAL_LIFECYCLE_CHARS.saturating_sub(lifecycle_chars);
+                    let take_chars = MAX_LIFECYCLE_DOC_CHARS.min(rem);
+                    let snippet: String = trimmed.chars().take(take_chars).collect();
+                    let san = sanitize_untrusted_text(&snippet, rel);
+                    lifecycle_chars += san.cleaned.len();
+                    lifecycle_docs.push(DiscoveredRule {
+                        rel_path: (*rel).to_string(),
+                        content: san.cleaned,
+                    });
+                }
+            }
+        }
+
         Self {
             rules,
             skills,
+            lifecycle_docs,
             workspace_trusted,
             quarantined_files,
         }
@@ -338,6 +385,13 @@ impl WorkspaceContextBundle {
 
         for r in &self.rules {
             ctx.push_str(&format!("\n[Rule: {}]\n{}\n", r.rel_path, r.content));
+        }
+
+        if !self.lifecycle_docs.is_empty() {
+            ctx.push_str("\n[Hydrated Workspace Lifecycle & Lessons]\n");
+            for doc in &self.lifecycle_docs {
+                ctx.push_str(&format!("--- {} ---\n{}\n", doc.rel_path, doc.content));
+            }
         }
 
         if !self.skills.is_empty() {
@@ -566,5 +620,30 @@ mod tests {
         assert!(delta.contains("AGENTS.md"));
         assert!(delta.contains("[removed CLAUDE.md]"));
         assert_eq!(tracker.initial_values, init_snapshot);
+    }
+
+    #[test]
+    fn hydrates_workspace_lifecycle_docs_and_lessons_when_trusted_and_quarantines_when_untrusted() {
+        let tmp = std::env::temp_dir().join(format!("omni_ctx_life_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(tmp.join(".agents/memory")).unwrap();
+        fs::create_dir_all(tmp.join(".agents/super")).unwrap();
+        fs::write(tmp.join("HANDOFF.md"), "# Handoff\nResume Phase 2 cleanly.\n").unwrap();
+        fs::write(tmp.join("GOAL.md"), "# Goal\nShip Steer 18-20.\n").unwrap();
+        fs::write(tmp.join(".agents/memory/lessons.md"), "- Always use LF.\n").unwrap();
+        fs::write(tmp.join(".agents/super/state.json"), "{\"wave\":2,\"strikes\":0}\n").unwrap();
+
+        let trusted = WorkspaceContextBundle::discover_for_trust(&tmp, true);
+        assert_eq!(trusted.lifecycle_docs.len(), 4);
+        let turn1 = trusted.format_turn1_prefix(&tmp, "Git Bash", None, "continue", &[]);
+        assert!(turn1.contains("[Hydrated Workspace Lifecycle & Lessons]"));
+        assert!(turn1.contains("Resume Phase 2 cleanly."));
+        assert!(turn1.contains("Always use LF."));
+        assert!(turn1.contains("\"wave\":2"));
+
+        let untrusted = WorkspaceContextBundle::discover_for_trust(&tmp, false);
+        assert!(untrusted.lifecycle_docs.is_empty());
+        assert_eq!(untrusted.quarantined_files.len(), 4);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -691,12 +691,13 @@ pub fn builtin_deferred_semantic_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "web_fetch".into(),
-            description: "SSRF-safe HTTP(S) fetch extracting clean readable text/markdown from public URLs.".into(),
+            description: "SSRF-safe HTTP(S) fetch extracting heading-preserving Markdown, canonical URL, metadata, BLAKE3 digest, and honest [BLOCKED_BY_CHALLENGE]/[AUTH_REQUIRED] status (zero bypass).".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "url": { "type": "string", "description": "Public http:// or https:// URL" },
                     "raw": { "type": "boolean" },
+                    "structured": { "type": "boolean", "description": "Return StructuredWebFetch metadata envelope" },
                     "max_chars": { "type": "integer" }
                 },
                 "required": ["url"],
@@ -706,14 +707,171 @@ pub fn builtin_deferred_semantic_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "web_search".into(),
-            description: "Web search returning sanitized result titles, snippets, and URLs.".into(),
+            description: "Multi-backend parallel web & academic search (Tavily/Exa/Brave/DDG-HTML/Wikipedia + arXiv/OpenAlex/EuropePMC) with site/date filters and query-wave fanout.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "query": { "type": "string", "description": "Single search query" },
+                    "queries": { "type": "array", "items": { "type": "string" }, "description": "Optional <=6 parallel search wave queries" },
+                    "scope": { "type": "string", "enum": ["web", "academic", "all"], "description": "Search scope (default web)" },
+                    "site": { "type": "string", "description": "Optional domain filter (e.g. docs.rs)" },
+                    "published_after": { "type": "string", "description": "Optional YYYY-MM-DD lower bound" },
+                    "published_before": { "type": "string", "description": "Optional YYYY-MM-DD upper bound" },
+                    "limit": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "deep_research".into(),
+            description: "Persistent Local+Global Research RAG Vault ([S###]/[G###] citations), active multi-wave web+academic search, full URL extraction, 5-level evidence claim verification, structured result-set tables, and full 'Sources (Searched, Viewed & Extracted)' ledger.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["status", "search_wave", "fetch_ingest", "ingest", "query_rag", "record_claim", "sources_ledger", "extract_table", "pin_source", "export_dossier"] },
+                    "query": { "type": "string" },
+                    "queries": { "type": "array", "items": { "type": "string" } },
+                    "scope": { "type": "string", "enum": ["web", "academic", "all"] },
+                    "site": { "type": "string" },
+                    "published_after": { "type": "string" },
+                    "published_before": { "type": "string" },
+                    "urls": { "type": "array", "items": { "type": "string" } },
+                    "url": { "type": "string" },
+                    "title": { "type": "string" },
+                    "content": { "type": "string" },
+                    "tier": { "type": "string", "enum": ["local", "global", "both"] },
+                    "session_id": { "type": "string" },
+                    "claim_text": { "type": "string" },
+                    "citations": { "type": "array", "items": { "type": "string" } },
+                    "grade": { "type": "string", "enum": ["verified", "corroborated", "single_source", "conflict", "unverified_gap"] },
+                    "citation_id": { "type": "string" },
+                    "result_set_id": { "type": "string" },
+                    "columns": { "type": "array", "items": { "type": "string" } },
+                    "format": { "type": "string", "enum": ["markdown", "json"] },
+                    "auto_fetch": { "type": "boolean" },
+                    "limit": { "type": "integer" },
+                    "top_k": { "type": "integer" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "deep_think".into(),
+            description: "Persisted 5-stage Deep Think engine: invariant framing, >=3 distinct hypothesis branches (baseline/sota/contrarian), executable falsification receipt linking, cross-model red-team critique, epistemic calibration, and 6-state conclusion.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["start", "branch", "falsify", "redteam", "conclude", "status", "list"] },
+                    "session_id": { "type": "string" },
+                    "problem": { "type": "string" },
+                    "invariants": { "type": "array", "items": { "type": "string" } },
+                    "assumptions": { "type": "array", "items": { "type": "string" } },
+                    "effort": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["baseline", "sota", "contrarian", "custom"] },
+                    "title": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "complexity": { "type": "string" },
+                    "failure_modes": { "type": "array", "items": { "type": "string" } },
+                    "blast_radius": { "type": "string" },
+                    "branch_id": { "type": "string" },
+                    "command": { "type": "string" },
+                    "passed": { "type": "boolean" },
+                    "evidence": { "type": "string" },
+                    "challenger_model": { "type": "string" },
+                    "critique": { "type": "string" },
+                    "severity": { "type": "string" },
+                    "winner_branch_id": { "type": "string" },
+                    "epistemic_band": { "type": "string", "enum": ["verified", "corroborated", "inferred", "hypothesis", "unknown"] },
+                    "synthesis": { "type": "string" },
+                    "citations": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "workspace_lifecycle".into(),
+            description: "Proactive 12-Artifact Engineering OS (Goal, Spec, Blueprint, Plan, Todo, Progress, DoD, Checkpoint, Handoff preserving AGENT_NOTES, Memory, Lessons, Skills) with cross-linking, 6-state receipts, 2-tier Auto-Learn, Gap Radar, and .agents/super/state.json tracking.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["status", "list", "upsert", "link", "todo", "dod", "handoff", "learn", "lessons", "gap_radar", "super_state"] },
+                    "kind": { "type": "string", "enum": ["goal", "spec", "blueprint", "plan", "todo", "progress", "dod", "checkpoint", "handoff", "memory", "lesson", "skill"] },
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "content": { "type": "string" },
+                    "status": { "type": "string" },
+                    "from_id": { "type": "string" },
+                    "to_id": { "type": "string" },
+                    "relation": { "type": "string", "enum": ["satisfies", "blocks", "derived_from", "supersedes", "learned_from", "cites", "tracks"] },
+                    "gate_id": { "type": "string" },
+                    "verified": { "type": "boolean" },
+                    "evidence_receipt": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["project", "global", "both"] },
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "query": { "type": "string" },
+                    "project_to_disk": { "type": "boolean" },
+                    "wave": { "type": "integer" },
+                    "strikes": { "type": "integer" },
+                    "phase": { "type": "string" },
+                    "summary": { "type": "string" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "skill_codify".into(),
+            description: "Crystallize verified workflows/lessons into atomic SKILL.md packages enforcing 'Use when...' triggers, semantic overlap deduplication, <=110 tok frontmatter, <=3500 tok body, and 5-phase/6-state receipts.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["codify", "doctor"] },
+                    "slug": { "type": "string" },
+                    "description": { "type": "string" },
+                    "category": { "type": "string" },
+                    "body": { "type": "string" },
+                    "canonical_artifacts": { "type": "array", "items": { "type": "string" } },
+                    "dependencies": { "type": "array", "items": { "type": "string" } },
+                    "overwrite": { "type": "boolean" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "verify_artifact".into(),
+            description: "Deterministic Phase-3 machine verifier checking UTF-8, zero BOM, Unix LF, zero control bytes, SHA-256 digest, zero secrets, <5k token ceiling, inline citation integrity, and optional WCAG 2.1 contrast ratio.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Optional workspace-relative file path to verify" },
+                    "content": { "type": "string", "description": "Optional inline text to verify" },
+                    "known_citations": { "type": "array", "items": { "type": "string" } },
+                    "fg_hex": { "type": "string", "description": "Optional #RRGGBB foreground for WCAG contrast check" },
+                    "bg_hex": { "type": "string", "description": "Optional #RRGGBB background for WCAG contrast check" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "omni_skills".into(),
+            description: "Bilingual VN-EN BM25+Levenshtein skill router across active skills & 1,001-entry Zero-Bloat Cold Vault, 4-stage Execution DAG composer, 24 pre-wired pipelines, and SHA-256 skill doctor.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["route", "vault", "dag", "pipelines", "doctor"] },
                     "query": { "type": "string" },
                     "limit": { "type": "integer" }
                 },
-                "required": ["query"],
+                "required": ["action"],
                 "additionalProperties": false
             }),
             read_only: true,
@@ -1032,5 +1190,19 @@ mod tests {
             guard.verify_turn_prefix(BASE_SYSTEM_PROMPT, &active_t2),
             "Token-0 tools[] prefix must stay 100% byte-identical across discover & invoke!"
         );
+    }
+
+    #[test]
+    fn builtin_deferred_registry_discovers_steer18_20_research_think_lifecycle_and_skills_tools() {
+        let mut deferred = DeferredToolRegistry::new();
+        for spec in builtin_deferred_semantic_tools() {
+            deferred.register(spec);
+        }
+        assert!(deferred.discover("deep research citations rag", 5).iter().any(|t| t.name == "deep_research"));
+        assert!(deferred.discover("deep think hypothesis redteam", 5).iter().any(|t| t.name == "deep_think"));
+        assert!(deferred.discover("workspace lifecycle goal spec blueprint handoff", 5).iter().any(|t| t.name == "workspace_lifecycle"));
+        assert!(deferred.discover("skill codify doctor", 5).iter().any(|t| t.name == "skill_codify"));
+        assert!(deferred.discover("verify artifact wcag secrets", 5).iter().any(|t| t.name == "verify_artifact"));
+        assert!(deferred.discover("omni skills vault dag pipelines", 5).iter().any(|t| t.name == "omni_skills"));
     }
 }

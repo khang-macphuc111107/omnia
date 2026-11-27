@@ -184,6 +184,41 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "research" => match run_research_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia research error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
+        "think" => match run_think_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia think error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
+        "rag" => match run_rag_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia rag error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
+        "lifecycle" => match run_lifecycle_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia lifecycle error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
+        "skills" => match run_skills_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia skills error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprintln!("Unknown command '{first}'. Run `omnia --help` for usage.");
             ExitCode::FAILURE
@@ -235,6 +270,11 @@ USAGE:
   omnia rewind --workspace <dir> --turn <n> [--session <id>] [--preview]
   omnia net [--dns] [--proxy] [--all] [--offline] [--json] [--privacy-mask]
   omnia speedtest [--quick | --standard] [--url <override>] [--json] [--privacy-mask]
+  omnia research <query> [--workspace <dir>] [--scope web|academic|all] [--site <dom>] [--fetch] [--export <path>] [--json]
+  omnia think <start|branch|falsify|redteam|conclude|list> [--workspace <dir>] [--json] ...
+  omnia rag <query|sources|ingest|pin|export> [--workspace <dir>] [--tier local|global|both] [--json] ...
+  omnia lifecycle <status|list|upsert|link|todo|dod|handoff|learn|lessons|gap-radar|super-state|verify> [--workspace <dir>] [--json]
+  omnia skills <route|vault|dag|pipelines|doctor|codify> [--workspace <dir>] [--json] ...
 
 RUN OPTIONS:
   --workspace, --cwd <dir>       Target workspace directory (default: current dir)
@@ -244,6 +284,9 @@ RUN OPTIONS:
   --wire-api <mode>              auto | chat | responses | messages | gemini (default: auto)
   --effort, --reasoning-effort, --thinking <level>
                                  auto | none | minimal | low | medium | high | xhigh | max (default: max)
+  --research <auto|deep|off>     Default-ON adaptive Deep Research mode (default: auto)
+  --think <auto|deep|off>        Default-ON adaptive Deep Think mode (default: auto)
+  --proactive-lifecycle <on|off> Proactive 12-artifact workspace lifecycle & auto-handoff (default: on)
   --output-format <fmt>          stream-json | json | text (default: text)
   --auto-approve                 Run with ApprovalMode::Yolo (non-interactive)
   --approval-mode <mode>         yolo | write | plan | always-ask | always-ask-cached
@@ -295,6 +338,27 @@ fn extract_positional_prompt(args: &[String]) -> Option<String> {
         "--out",
         "--session",
         "--turn",
+        "--research",
+        "--think",
+        "--proactive-lifecycle",
+        "--scope",
+        "--site",
+        "--limit",
+        "--export",
+        "--tier",
+        "--query",
+        "--top-k",
+        "--url",
+        "--file",
+        "--content",
+        "--title",
+        "--id",
+        "--kind",
+        "--summary",
+        "--complexity",
+        "--winner",
+        "--fg",
+        "--bg",
     ];
     let mut i = 0;
     let mut positionals = Vec::new();
@@ -676,6 +740,20 @@ async fn run_agent_cmd(args: &[String]) -> Result<bool> {
         plugins: PluginRegistry::with_default_pillars(),
         db: db.clone(),
         event_sink,
+        research_mode: omnia_agent::engine::AdaptiveMode::parse(
+            arg_value(args, "--research").as_deref(),
+        ),
+        think_mode: omnia_agent::engine::AdaptiveMode::parse(
+            arg_value(args, "--think").as_deref(),
+        ),
+        proactive_lifecycle: !matches!(
+            arg_value(args, "--proactive-lifecycle")
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("off" | "false" | "0" | "no")
+        ),
     })
     .await?;
 
@@ -1019,6 +1097,521 @@ fn run_speedtest_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn resolve_workspace_arg(args: &[String]) -> PathBuf {
+    let raw = arg_value(args, "--workspace")
+        .or_else(|| arg_value(args, "--cwd"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    sanitize_windows_path(&raw)
+}
+
+fn open_cli_research_vault(workspace: &std::path::Path) -> Result<omnia_harness::research_vault::ResearchVault> {
+    let global_dir = default_omnia_data_dir().join("research-vault");
+    omnia_harness::research_vault::ResearchVault::open(workspace, Some(&global_dir))
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
+fn open_cli_deep_think() -> Result<omnia_harness::deep_think::DeepThinkEngine> {
+    let db_path = default_omnia_data_dir()
+        .join("memory")
+        .join("omnia_deep_think.db");
+    omnia_harness::deep_think::DeepThinkEngine::open(&db_path).map_err(|e| anyhow::anyhow!(e))
+}
+
+fn open_cli_artifact_os(workspace: &std::path::Path) -> Result<omnia_harness::artifact_os::ArtifactOs> {
+    let mem_dir = default_omnia_data_dir().join("memory");
+    let db_path = mem_dir.join("omnia_artifact_os.db");
+    omnia_harness::artifact_os::ArtifactOs::open(workspace, &db_path, Some(&mem_dir))
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
+fn run_research_cmd(args: &[String]) -> Result<()> {
+    use omnia_agent::web_tools::{web_search_multi, WebSearchOptions, WebSearchScope};
+    use omnia_harness::research_vault::VaultTier;
+
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia research <query> [--workspace <dir>] [--scope web|academic|all] [--site <domain>] [--limit <n>] [--fetch] [--offline] [--export <path>] [--json]"
+        );
+        return Ok(());
+    }
+    let workspace = resolve_workspace_arg(args);
+    let json_out = args.iter().any(|a| a == "--json");
+    let offline = args.iter().any(|a| a == "--offline");
+    let auto_fetch = args.iter().any(|a| a == "--fetch");
+    let scope = WebSearchScope::parse(arg_value(args, "--scope").as_deref());
+    let site = arg_value(args, "--site");
+    let limit = arg_value(args, "--limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(6);
+    let export_path = arg_value(args, "--export");
+    let tier = VaultTier::from_str_lossy(arg_value(args, "--tier").as_deref().unwrap_or("local"));
+    let query = extract_positional_prompt(args)
+        .or_else(|| arg_value(args, "--query"))
+        .unwrap_or_default();
+    if query.trim().is_empty() {
+        bail!("omnia research requires a query string");
+    }
+
+    let vault = open_cli_research_vault(&workspace)?;
+    let rag_hits = vault.query_rag(&query, None, 6).unwrap_or_default();
+
+    let (web_hits, fetched_sources, provider_errors) = if offline {
+        (Vec::new(), Vec::new(), Vec::new())
+    } else {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let bundle = rt.block_on(web_search_multi(&WebSearchOptions {
+            query: query.clone(),
+            limit,
+            scope,
+            site,
+            ..Default::default()
+        }))?;
+        let mut urls = Vec::new();
+        for h in &bundle.hits {
+            let _ = vault.record_searched_candidate(tier, &h.canonical_url, &h.title, &query, &h.snippet);
+            if urls.len() < 4 {
+                urls.push(h.canonical_url.clone());
+            }
+        }
+        let fetched = if auto_fetch && !urls.is_empty() {
+            rt.block_on(vault.fetch_urls_parallel(tier, &urls, &query, 4, false))
+        } else {
+            Vec::new()
+        };
+        (bundle.hits, fetched, bundle.provider_errors)
+    };
+
+    let ledger = vault.sources_ledger(None).map_err(|e| anyhow::anyhow!(e))?;
+    if let Some(ref ep) = export_path {
+        let md = vault
+            .export_dossier("markdown", None)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        omnia_harness::research_vault::atomic_write_with_retry(std::path::Path::new(ep), md.as_bytes())
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "ok": true,
+                "query": query,
+                "offline": offline,
+                "ragHits": rag_hits,
+                "webHits": web_hits,
+                "fetchedSources": fetched_sources,
+                "providerErrors": provider_errors,
+                "ledger": ledger,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("Omnia Deep Research | query: `{query}`");
+    println!(
+        "  RAG Recall : {} hit(s) | Web/Academic: {} hit(s) | Fetched: {}",
+        rag_hits.len(),
+        web_hits.len(),
+        fetched_sources.len()
+    );
+    for hit in rag_hits.iter().take(5) {
+        println!("  [{}] {} — {}", hit.citation_id, hit.title, hit.source_url);
+    }
+    println!(
+        "  Sources (Searched: {} | Viewed: {} | Extracted: {} | Blocked: {} | AuthReq: {} | Failed: {})",
+        ledger.total_searched,
+        ledger.total_viewed,
+        ledger.total_extracted,
+        ledger.total_blocked,
+        ledger.total_auth_required,
+        ledger.total_failed
+    );
+    Ok(())
+}
+
+fn run_rag_cmd(args: &[String]) -> Result<()> {
+    use omnia_harness::research_vault::VaultTier;
+
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia rag <query|sources|ingest|pin|export> [--workspace <dir>] [--tier local|global|both] [--json] ..."
+        );
+        return Ok(());
+    }
+    let sub = args[0].as_str();
+    let rest = &args[1..];
+    let workspace = resolve_workspace_arg(rest);
+    let json_out = rest.iter().any(|a| a == "--json");
+    let tier_raw = arg_value(rest, "--tier");
+    let tier_filter = match tier_raw.as_deref().map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("local") => Some(VaultTier::Local),
+        Some("global") => Some(VaultTier::Global),
+        _ => None,
+    };
+    let vault = open_cli_research_vault(&workspace)?;
+
+    match sub {
+        "sources" | "list" | "status" => {
+            let ledger = vault.sources_ledger(tier_filter).map_err(|e| anyhow::anyhow!(e))?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&ledger)?);
+            } else {
+                println!(
+                    "Omnia Persistent RAG | searched={} viewed={} extracted={} blocked={} auth_req={} failed={}",
+                    ledger.total_searched,
+                    ledger.total_viewed,
+                    ledger.total_extracted,
+                    ledger.total_blocked,
+                    ledger.total_auth_required,
+                    ledger.total_failed
+                );
+                for s in ledger.sources.iter().take(20) {
+                    println!("  [{}] ({:?}) {} — {}", s.citation_id, s.stage, s.title, s.canonical_url);
+                }
+            }
+        }
+        "query" | "search" => {
+            let q = extract_positional_prompt(rest)
+                .or_else(|| arg_value(rest, "--query"))
+                .context("omnia rag query requires a query string")?;
+            let top_k = arg_value(rest, "--top-k")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(8);
+            let hits = vault
+                .query_rag(&q, tier_filter, top_k)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&json!({ "ok": true, "query": q, "hits": hits }))?);
+            } else {
+                println!("RAG Query `{q}` -> {} hit(s):", hits.len());
+                for h in hits {
+                    println!("  [{}] rrf={:.4} {} ({})", h.citation_id, h.rrf_score, h.title, h.source_url);
+                }
+            }
+        }
+        "ingest" => {
+            let url = arg_value(rest, "--url").context("omnia rag ingest requires --url <url>")?;
+            let file = arg_value(rest, "--file");
+            let content = if let Some(fp) = file {
+                fs::read_to_string(&fp).with_context(|| format!("read {fp}"))?
+            } else {
+                arg_value(rest, "--content")
+                    .or_else(|| extract_positional_prompt(rest))
+                    .context("omnia rag ingest requires --file <path> or --content <text>")?
+            };
+            let title = arg_value(rest, "--title");
+            let tier = VaultTier::from_str_lossy(tier_raw.as_deref().unwrap_or("local"));
+            let rec = vault
+                .ingest_document(tier, &url, None, title.as_deref(), &content, "text/markdown", Some(200), "cli_ingest")
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&rec)?);
+        }
+        "pin" => {
+            let cid = extract_positional_prompt(rest)
+                .or_else(|| arg_value(rest, "--id"))
+                .context("omnia rag pin requires citation id e.g. S001")?;
+            let target = VaultTier::from_str_lossy(tier_raw.as_deref().unwrap_or("global"));
+            let rec = vault.pin_source(&cid, target).map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&rec)?);
+        }
+        "export" => {
+            let fmt = if json_out { "json" } else { "markdown" };
+            let out = vault.export_dossier(fmt, None).map_err(|e| anyhow::anyhow!(e))?;
+            println!("{out}");
+        }
+        other => bail!("unknown omnia rag subcommand `{other}`"),
+    }
+    Ok(())
+}
+
+fn run_think_cmd(args: &[String]) -> Result<()> {
+    use omnia_harness::deep_think::{BranchKind, EpistemicBand, ThinkBranch};
+
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia think <list|start|branch|conclude> [--id <think_id>] [--effort max] [--json] ..."
+        );
+        return Ok(());
+    }
+    let sub = args[0].as_str();
+    let rest = &args[1..];
+    let json_out = rest.iter().any(|a| a == "--json");
+    let eng = open_cli_deep_think()?;
+
+    match sub {
+        "list" | "status" => {
+            let sessions = eng.list_sessions(None, 20).map_err(|e| anyhow::anyhow!(e))?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&json!({ "ok": true, "sessions": sessions }))?);
+            } else {
+                println!("Omnia Deep Think Sessions ({}):", sessions.len());
+                for s in sessions {
+                    println!(
+                        "  {} [{} | {} branches | effort={}] {}",
+                        s.think_id,
+                        s.stage,
+                        s.branches.len(),
+                        s.effort,
+                        s.problem
+                    );
+                }
+            }
+        }
+        "start" => {
+            let problem = extract_positional_prompt(rest)
+                .or_else(|| arg_value(rest, "--problem"))
+                .context("omnia think start requires a problem description")?;
+            let effort = arg_value(rest, "--effort").unwrap_or_else(|| "max".into());
+            let sess = eng
+                .start_session("cli", &problem, Vec::new(), Vec::new(), &effort)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&sess)?);
+        }
+        "branch" => {
+            let think_id = arg_value(rest, "--id").context("omnia think branch requires --id <think_id>")?;
+            let title = extract_positional_prompt(rest)
+                .or_else(|| arg_value(rest, "--title"))
+                .unwrap_or_else(|| "Candidate Branch".into());
+            let kind = BranchKind::from_str_lossy(arg_value(rest, "--kind").as_deref().unwrap_or("baseline"));
+            let branch = ThinkBranch {
+                branch_id: format!("br-{}", &omnia_core::uuid_v4()[..8]),
+                kind,
+                title,
+                hypothesis: arg_value(rest, "--summary").unwrap_or_default(),
+                complexity: arg_value(rest, "--complexity").unwrap_or_else(|| "O(N)".into()),
+                failure_modes: Vec::new(),
+                blast_radius: "localized".into(),
+                citations: Vec::new(),
+                epistemic_band: EpistemicBand::Hypothesis,
+                falsification_cmd: None,
+                falsification_passed: None,
+                falsification_receipt: None,
+                score_bps: 7_500,
+                rejected_reason: None,
+            };
+            let sess = eng.add_branch(&think_id, branch).map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&sess)?);
+        }
+        "conclude" => {
+            let think_id = arg_value(rest, "--id").context("omnia think conclude requires --id <think_id>")?;
+            let winner = arg_value(rest, "--winner").context("omnia think conclude requires --winner <branch_id>")?;
+            let synthesis = extract_positional_prompt(rest).unwrap_or_default();
+            let sess = eng
+                .conclude_session(&think_id, &winner, &synthesis, json!({ "verified": [winner] }))
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&sess)?);
+        }
+        other => bail!("unknown omnia think subcommand `{other}`"),
+    }
+    Ok(())
+}
+
+fn run_lifecycle_cmd(args: &[String]) -> Result<()> {
+    use omnia_harness::artifact_os::{ArtifactKind, LessonRecord, SixStateReceipt};
+
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia lifecycle <status|list|upsert|handoff|learn|lessons|gap-radar|super-state|verify> [--workspace <dir>] [--json] ..."
+        );
+        return Ok(());
+    }
+    let sub = args[0].as_str();
+    let rest = &args[1..];
+    let workspace = resolve_workspace_arg(rest);
+    let json_out = rest.iter().any(|a| a == "--json");
+    let sync_disk = rest.iter().any(|a| a == "--sync-disk");
+    let aos = open_cli_artifact_os(&workspace)?;
+
+    match sub {
+        "status" => {
+            let arts = aos.list_artifacts(None, None).map_err(|e| anyhow::anyhow!(e))?;
+            let links = aos.list_all_links().map_err(|e| anyhow::anyhow!(e))?;
+            let lessons = aos.list_lessons(None).map_err(|e| anyhow::anyhow!(e))?;
+            let super_st = aos.super_state().map_err(|e| anyhow::anyhow!(e))?;
+            if json_out {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "ok": true,
+                        "artifactCount": arts.len(),
+                        "linkCount": links.len(),
+                        "lessonCount": lessons.len(),
+                        "superState": super_st,
+                        "artifacts": arts,
+                    }))?
+                );
+            } else {
+                println!(
+                    "Omnia Lifecycle OS | artifacts={} links={} lessons={} phase={} wave={} strikes={}",
+                    arts.len(),
+                    links.len(),
+                    lessons.len(),
+                    super_st.phase,
+                    super_st.wave,
+                    super_st.strike_count
+                );
+            }
+        }
+        "list" => {
+            let kind = arg_value(rest, "--kind").and_then(|k| ArtifactKind::from_str_lossy(&k));
+            let arts = aos.list_artifacts(kind, None).map_err(|e| anyhow::anyhow!(e))?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&json!({ "ok": true, "artifacts": arts }))?);
+            } else {
+                for a in arts {
+                    println!("  [{}] {} ({}) — {}", a.kind.as_str(), a.id, a.status, a.title);
+                }
+            }
+        }
+        "upsert" => {
+            let kind_str = arg_value(rest, "--kind").context("omnia lifecycle upsert requires --kind <kind>")?;
+            let kind = ArtifactKind::from_str_lossy(&kind_str)
+                .ok_or_else(|| anyhow::anyhow!("unknown artifact kind `{kind_str}`"))?;
+            let title = arg_value(rest, "--title").unwrap_or_else(|| kind_str.clone());
+            let slug = arg_value(rest, "--id").unwrap_or_else(|| title.clone());
+            let content = arg_value(rest, "--content")
+                .or_else(|| extract_positional_prompt(rest))
+                .unwrap_or_default();
+            let art = aos
+                .upsert_artifact(kind, &slug, &title, "active", "project", &content, json!({}), None, sync_disk)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&art)?);
+        }
+        "handoff" => {
+            let title = arg_value(rest, "--title").unwrap_or_else(|| "CLI Session Handoff".into());
+            let content = arg_value(rest, "--content")
+                .or_else(|| extract_positional_prompt(rest))
+                .unwrap_or_else(|| "Checkpoint handoff".into());
+            let art = aos
+                .write_handoff_preserving_notes(&title, &content, SixStateReceipt::default(), sync_disk)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&art)?);
+        }
+        "learn" => {
+            let title = arg_value(rest, "--title")
+                .or_else(|| extract_positional_prompt(rest))
+                .context("omnia lifecycle learn requires --title or text")?;
+            let content = arg_value(rest, "--content").unwrap_or_else(|| title.clone());
+            let scope = arg_value(rest, "--scope").unwrap_or_else(|| "project".into());
+            let lesson = LessonRecord {
+                id: format!("les-{}", &omnia_core::uuid_v4()[..8]),
+                scope,
+                title,
+                symptom: content.clone(),
+                root_cause: content.clone(),
+                invariant: content,
+                anti_pattern: String::new(),
+                verify_cmd: String::new(),
+                tags: Vec::new(),
+                provenance_sha: String::new(),
+                promoted_skill_slug: None,
+                overlap_warning: None,
+                created_at_ms: omnia_core::now_epoch_ms(),
+            };
+            let saved = aos.capture_lesson(lesson, sync_disk).map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&saved)?);
+        }
+        "lessons" => {
+            let lessons = aos.list_lessons(None).map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&json!({ "ok": true, "lessons": lessons }))?);
+        }
+        "gap-radar" => {
+            let rep = aos.gap_radar_report().map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&rep)?);
+        }
+        "super-state" => {
+            let st = aos.super_state().map_err(|e| anyhow::anyhow!(e))?;
+            println!("{}", serde_json::to_string_pretty(&st)?);
+        }
+        "verify" => {
+            let file = arg_value(rest, "--file").or_else(|| extract_positional_prompt(rest));
+            let content = if let Some(fp) = file {
+                fs::read_to_string(&fp).with_context(|| format!("read {fp}"))?
+            } else {
+                arg_value(rest, "--content").context("omnia lifecycle verify requires --file or --content")?
+            };
+            let fg = arg_value(rest, "--fg");
+            let bg = arg_value(rest, "--bg");
+            let rep = omnia_harness::artifact_os::verify_artifact_content(
+                &content,
+                fg.as_deref(),
+                bg.as_deref(),
+                None,
+            );
+            println!("{}", serde_json::to_string_pretty(&rep)?);
+        }
+        other => bail!("unknown omnia lifecycle subcommand `{other}`"),
+    }
+    Ok(())
+}
+
+fn run_skills_cmd(args: &[String]) -> Result<()> {
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia skills <route|vault|dag|pipelines|doctor> [query] [--workspace <dir>] [--limit <n>] [--json]"
+        );
+        return Ok(());
+    }
+    let sub = args[0].as_str();
+    let rest = &args[1..];
+    let workspace = resolve_workspace_arg(rest);
+    let json_out = rest.iter().any(|a| a == "--json");
+    let limit = arg_value(rest, "--limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(8);
+    let reg = omnia_harness::skill_registry::SkillRegistry::new();
+    let _ = reg.load_from_workspace(&workspace);
+    let _ = reg.load_default_cold_vault();
+
+    match sub {
+        "route" | "vault" => {
+            let q = extract_positional_prompt(rest)
+                .or_else(|| arg_value(rest, "--query"))
+                .unwrap_or_default();
+            let res = reg.search_with_vault(&q, limit, true);
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&res)?);
+            } else {
+                println!("Omnia Skills Route `{q}`:\n{}", serde_json::to_string_pretty(&res)?);
+            }
+        }
+        "dag" => {
+            let q = extract_positional_prompt(rest)
+                .or_else(|| arg_value(rest, "--query"))
+                .unwrap_or_else(|| "deep research rust studio".into());
+            let dag = reg.compose_4stage_dag(&q, 3);
+            println!("{}", serde_json::to_string_pretty(&dag)?);
+        }
+        "pipelines" => {
+            let pipes = reg.pipelines();
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&json!({ "ok": true, "pipelines": pipes }))?);
+            } else {
+                println!("Omnia Pre-Wired Pipelines ({}):", pipes.len());
+                for p in pipes {
+                    let skill_count: usize = p.stages.iter().map(|s| s.skills.len()).sum();
+                    println!(
+                        "  {} — {} ({} stages, {} skills)",
+                        p.id,
+                        p.title,
+                        p.stages.len(),
+                        skill_count
+                    );
+                }
+            }
+        }
+        "doctor" => {
+            let doc = reg.doctor();
+            println!("{}", serde_json::to_string_pretty(&doc)?);
+        }
+        other => bail!("unknown omnia skills subcommand `{other}`"),
+    }
+    Ok(())
+}
+
 fn redact_json_value(val: serde_json::Value) -> serde_json::Value {
     match val {
         serde_json::Value::String(s) => serde_json::Value::String(redact_secrets(&s)),
@@ -1158,5 +1751,37 @@ mod tests {
         let cfg = parse_speedtest_config(&quick_args);
         assert_eq!(cfg.profile, "quick");
         assert_eq!(cfg.base_url_override.as_deref(), Some("http://127.0.0.1:19999"));
+    }
+
+    #[test]
+    fn cli_steer18_20_adaptive_flags_and_positional_extraction_work_cleanly() {
+        let args: Vec<String> = vec![
+            "--workspace",
+            r"D:\Omnia",
+            "--research",
+            "deep",
+            "--think",
+            "auto",
+            "--proactive-lifecycle",
+            "on",
+            "--scope",
+            "academic",
+            "Rust KV cache invariance",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            omnia_agent::engine::AdaptiveMode::parse(arg_value(&args, "--research").as_deref()),
+            omnia_agent::engine::AdaptiveMode::Deep
+        );
+        assert_eq!(
+            omnia_agent::engine::AdaptiveMode::parse(arg_value(&args, "--think").as_deref()),
+            omnia_agent::engine::AdaptiveMode::Auto
+        );
+        assert_eq!(
+            extract_positional_prompt(&args).as_deref(),
+            Some("Rust KV cache invariance")
+        );
     }
 }

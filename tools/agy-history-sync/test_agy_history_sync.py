@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import agy_history_sync as sync_mod
@@ -401,6 +402,126 @@ class AgyHistorySyncTests(unittest.TestCase):
             backup_base_dir=self.data_dir / "backups",
         )
         self.assertEqual(applied["copied_trajectory_dbs"]["desktop_to_cli"], 1)
+
+    def test_fts_exclusion_and_growth_refresh(self) -> None:
+        # Applying the normal broad CLI backfill must still honor active IDs.
+        for cid in (self.cid_coord, self.cid_worker, self.cid_wal):
+            _create_trajectory_db(self.cli / "conversations" / f"{cid}.db", cid,
+                                  [("Excluded term", "Private active content")])
+        running_id = "55555555-5555-4555-8555-555555555555"
+        _create_trajectory_db(self.cli / "conversations" / f"{running_id}.db", running_id,
+                              [("Running content", "Still active")])
+        _insert_summary_row(self.cli / "conversation_summaries.db", running_id, "Running", 2, "antigravity-cli")
+        conn = sqlite3.connect(str(self.cli / "conversation_summaries.db"))
+        try:
+            conn.execute("UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_RUNNING' "
+                         "WHERE conversation_id = ?;", (running_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        excluded = {self.cid_coord, self.cid_worker, self.cid_wal, running_id}
+        before = {cid: (self.cli / "conversations" / f"{cid}.db").read_bytes() for cid in excluded}
+        extract = sync_mod.extract_db_bodies_for_fts
+        def guarded_extract(path, **kwargs):
+            self.assertNotIn(path.stem, excluded)
+            return extract(path, **kwargs)
+        with mock.patch.object(sync_mod, "extract_db_bodies_for_fts", side_effect=guarded_extract):
+            first = sync_mod.plan_and_run_sync(
+                self.topo, apply=True, exclude_active={self.cid_coord},
+                lock_window_seconds=600.0, backup_base_dir=self.data_dir / "backups",
+            )
+        self.assertTrue(excluded.issubset(first["excluded_active"]))
+        for cid in excluded:
+            self.assertEqual(before[cid], (self.cli / "conversations" / f"{cid}.db").read_bytes())
+        conn = sqlite3.connect(str(self.cli / "conversation_summaries.db"))
+        try:
+            for cid in excluded:
+                self.assertEqual(conn.execute("SELECT count(*) FROM conversations_fts WHERE conversation_id = ?;",
+                                               (cid,)).fetchone()[0], 0)
+        finally:
+            conn.close()
+
+        def fts_hits(root: Path, term: str) -> list[tuple[str, str]]:
+            conn = sqlite3.connect(str(root / "conversation_summaries.db"))
+            try:
+                return conn.execute(
+                    "SELECT conversation_id, agent_body FROM conversations_fts WHERE conversations_fts MATCH ?;",
+                    (term,),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(fts_hits(self.cli, "Active"), [])
+        self.assertTrue(fts_hits(self.cli, "DirectWrite"))
+
+        # Grow an eligible trajectory and ensure the new term becomes searchable.
+        _create_trajectory_db(
+            self.cli / "conversations" / f"{self.cid_cli}.db", self.cid_cli,
+            [
+                ("Fix workspace overflow", "Patched flexbox min-height"),
+                ("FTS growth marker", "Indexed newly appended planner response"),
+            ],
+        )
+        _insert_summary_row(self.cli / "conversation_summaries.db", self.cid_cli,
+                            "Fix Workspace UI Overflow", 4, "antigravity-cli")
+        grown = sync_mod.plan_and_run_sync(
+            self.topo, apply=True, exclude_active={self.cid_coord},
+            lock_window_seconds=600.0, backup_base_dir=self.data_dir / "backups",
+        )
+        self.assertGreaterEqual(grown["cli_summaries_db_updates"]["fts_conversations_indexed"], 1)
+        self.assertTrue(fts_hits(self.cli, "growth"))
+        self.assertTrue(fts_hits(self.desk, "growth"))
+        again = sync_mod.plan_and_run_sync(
+            self.topo, apply=True, exclude_active={self.cid_coord},
+            lock_window_seconds=600.0, backup_base_dir=self.data_dir / "backups",
+        )
+        self.assertEqual(again["cli_summaries_db_updates"]["fts_conversations_indexed"], 0)
+        self.assertEqual(again["desktop_summaries_db_updates"]["fts_conversations_indexed"], 0)
+
+    def test_fts_refresh_failure_preserves_index_and_excluded_rows(self) -> None:
+        sync_mod.plan_and_run_sync(self.topo, True, {self.cid_coord}, 600, self.data_dir / "backups")
+        sum_path = self.cli / "conversation_summaries.db"
+        def rows():
+            conn = sqlite3.connect(str(sum_path))
+            try:
+                return conn.execute("SELECT * FROM conversations_fts ORDER BY conversation_id, chunk_index;").fetchall()
+            finally:
+                conn.close()
+        original_rows = rows()
+        with mock.patch.object(sync_mod, "extract_db_bodies_for_fts", side_effect=sqlite3.DatabaseError("fixture")):
+            receipt = sync_mod._upsert_summaries_and_fts(self.cli, [], {self.cid_cli})
+        self.assertEqual(receipt["fts_refresh_failures"], {self.cid_cli: "DatabaseError"})
+        self.assertEqual(rows(), original_rows)
+        with mock.patch.object(sync_mod, "extract_db_bodies_for_fts", side_effect=AssertionError("excluded extraction")):
+            sync_mod._upsert_summaries_and_fts(self.cli, [], {self.cid_cli}, excluded_ids={self.cid_cli})
+        self.assertEqual(rows(), original_rows)
+        # A changed same-length trajectory also invalidates the digest.
+        _create_trajectory_db(self.cli / "conversations" / f"{self.cid_cli}.db", self.cid_cli,
+                              [("Replacement marker", "New indexed content")])
+        conn = sqlite3.connect(str(sum_path))
+        try:
+            conn.execute("CREATE TRIGGER reject_revision BEFORE INSERT ON omnia_fts_revisions "
+                         "BEGIN SELECT RAISE(ABORT, 'fixture'); END;")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(sqlite3.IntegrityError):
+            sync_mod._upsert_summaries_and_fts(self.cli, [], {self.cid_cli})
+        self.assertEqual(rows(), original_rows)
+        conn = sqlite3.connect(str(sum_path))
+        try:
+            conn.execute("DROP TRIGGER reject_revision;")
+            conn.commit()
+        finally:
+            conn.close()
+        receipt = sync_mod._upsert_summaries_and_fts(self.cli, [], {self.cid_cli})
+        self.assertEqual(receipt["fts_conversations_indexed"], 1)
+        conn = sqlite3.connect(str(sum_path))
+        try:
+            self.assertEqual(conn.execute("SELECT count(*) FROM conversations_fts "
+                                          "WHERE conversations_fts MATCH 'Replacement';").fetchone()[0], 1)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

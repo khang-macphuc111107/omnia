@@ -206,8 +206,13 @@ pub async fn complete_prompt(
             "messages": [{ "role": "user", "content": user_prompt }],
             "stream": false
         });
-        if cfg.effort == Some(EffortLevel::High) {
-            body["thinking"] = json!({ "type": "enabled", "budget_tokens": 2048 });
+        if let Some(budget) = match cfg.effort {
+            Some(EffortLevel::High) => Some(2048),
+            Some(EffortLevel::XHigh) => Some(4096),
+            Some(EffortLevel::Max) => Some(8192),
+            _ => None,
+        } {
+            body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
         }
         let rb = client
             .post(&u)

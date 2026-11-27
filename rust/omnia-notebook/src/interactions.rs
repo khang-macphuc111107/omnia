@@ -537,6 +537,74 @@ impl InteractionService {
     }
 }
 
+/// 1-Click Contextual Ask preset matching Atelier Research Studio v3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextualAskPreset {
+    Explain,
+    Verify,
+    Summarize,
+    Code,
+}
+
+impl ContextualAskPreset {
+    #[must_use]
+    pub fn parse_lossy(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "explain" => Some(Self::Explain),
+            "verify" | "factcheck" | "fact_check" => Some(Self::Verify),
+            "summarize" | "summary" => Some(Self::Summarize),
+            "code" | "implement" => Some(Self::Code),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn instruction(self) -> &'static str {
+        match self {
+            Self::Explain => "Explain the quoted passage clearly from first principles with concrete examples.",
+            Self::Verify => "Independently verify every factual and technical claim in the quoted passage, citing exact evidence or flagging gaps.",
+            Self::Summarize => "Summarize the quoted passage into concise, high-density structured bullets.",
+            Self::Code => "Translate the quoted specification or concept into clean, production-grade runnable code with edge-case handling.",
+        }
+    }
+}
+
+/// Formats zero, one, or multiple [`QuoteRef`] passages plus an optional [`ContextualAskPreset`]
+/// into a unified, secret-redacted prompt ready for Atelier Q&A or BTW threads (`R11`).
+#[must_use]
+pub fn format_multi_quote_prompt(
+    quotes: &[QuoteRef],
+    preset: Option<ContextualAskPreset>,
+    question: &str,
+) -> String {
+    let mut parts = Vec::new();
+    for (idx, q) in quotes.iter().enumerate() {
+        let excerpt = SecretRedactor::redact(q.excerpt.trim());
+        if excerpt.is_empty() {
+            continue;
+        }
+        let header = match &q.source_id {
+            Some(sid) => format!("Quote {} ({} · {sid}):", idx + 1, q.surface.as_str()),
+            None => format!("Quote {} ({}):", idx + 1, q.surface.as_str()),
+        };
+        let bq = excerpt
+            .lines()
+            .map(|l| format!("> {l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("{header}\n{bq}"));
+    }
+    if let Some(p) = preset {
+        parts.push(format!("Preset ({:?}): {}", p, p.instruction()));
+    }
+    let clean_q = SecretRedactor::redact(question.trim());
+    if !clean_q.is_empty() {
+        parts.push(clean_q);
+    }
+    parts.join("\n\n")
+}
+
 /// Build a structured [`ComposerQuoteCard`] directly from a [`QuoteRef`].
 #[must_use]
 pub fn build_composer_quote_card(quote: QuoteRef) -> ComposerQuoteCard {

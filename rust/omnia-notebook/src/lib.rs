@@ -48,17 +48,19 @@ pub use ingestion::{
     chunk_copied_text_fallback, chunk_text_semantically, clean_html_to_text,
     clean_json_to_markdown, extract_docx_markdown, extract_epub_markdown, extract_odt_markdown,
     extract_pptx_slides, extract_xlsx_sheets, extract_xml_text, inspect_and_extract_pdf,
-    inspect_zip_archive_safe, is_likely_binary, normalize_utf8_and_lf, package_code_repository,
-    parse_delimited_table, parse_ipynb_cells, read_zip_entries_bounded, render_ipynb_to_markdown,
-    render_sheets_to_markdown, render_slides_to_markdown, strip_rtf_to_text, ExtractedNotebookCell,
-    ExtractedSheet, ExtractedSlide, HealSweepReport, IngestSourceOutcome, IngestSourceRequest,
-    IngestionEngine, IngestionStage, MultipartIngestOutcome, PackagedRepository, PdfClassification,
+    inspect_zip_archive_safe, is_likely_binary, normalize_subtitles_to_webvtt,
+    normalize_utf8_and_lf, package_code_repository, parse_delimited_table, parse_ipynb_cells,
+    read_zip_entries_bounded, render_ipynb_to_markdown, render_sheets_to_markdown,
+    render_slides_to_markdown, strip_rtf_to_text, ExtractedNotebookCell, ExtractedSheet,
+    ExtractedSlide, HealSweepReport, IngestSourceOutcome, IngestSourceRequest, IngestionEngine,
+    IngestionStage, MultipartIngestOutcome, PackagedRepository, PdfClassification,
     PdfExtractionResult, RepoPackageConfig, SafeZipEntry,
 };
 pub use interactions::{
-    build_composer_quote_card, BridgeDirection, BridgeTransferReceipt, BridgeTransferRequest,
-    BtwMessage, BtwThread, BtwThreadStatus, ComposerQuoteCard, CreateQuoteCardRequest,
-    InteractionService, InteractionSurface, PromoteBtwOutcome, QuoteRef, SelectionAction,
+    build_composer_quote_card, format_multi_quote_prompt, BridgeDirection, BridgeTransferReceipt,
+    BridgeTransferRequest, BtwMessage, BtwThread, BtwThreadStatus, ComposerQuoteCard,
+    ContextualAskPreset, CreateQuoteCardRequest, InteractionService, InteractionSurface,
+    PromoteBtwOutcome, QuoteRef, SelectionAction,
 };
 pub use policy::{
     validate_archive_entry_path, validate_archive_limits, validate_filename_and_mime,
@@ -383,6 +385,46 @@ impl NotebookEngine {
         filter: &SourceFilter,
     ) -> Result<Vec<SourceRecord>, NotebookError> {
         self.library.list_sources(notebook_id, filter)
+    }
+
+    /// Returns a source's metadata, reconstructed textual body across its semantic chunks,
+    /// and strict [`PreviewSecurityHeaders`] (`nosniff`, forced `attachment` for HTML/SVG/XML/binary).
+    pub fn get_source_content(
+        &self,
+        notebook_id: &str,
+        source_id: &str,
+    ) -> Result<(SourceRecord, String, PreviewSecurityHeaders), NotebookError> {
+        let _ = self.library.require_notebook(notebook_id)?;
+        let Some(src) = self.store.get_source(source_id)? else {
+            return Err(NotebookError::NotFound {
+                entity: "source",
+                id: source_id.to_string(),
+            });
+        };
+        if src.notebook_id != notebook_id {
+            return Err(NotebookError::NotFound {
+                entity: "source",
+                id: source_id.to_string(),
+            });
+        }
+        let chunks = self.store.list_chunks_for_source(source_id)?;
+        let mut combined = String::new();
+        for (idx, ch) in chunks.iter().enumerate() {
+            if idx > 0 {
+                combined.push_str("\n\n");
+            }
+            if !ch.heading.trim().is_empty() {
+                combined.push_str("## ");
+                combined.push_str(ch.heading.trim());
+                combined.push('\n');
+            }
+            combined.push_str(&ch.body);
+        }
+        let ext = policy::extract_extension_lower(&src.safe_filename);
+        let force_attachment = policy::requires_forced_attachment(&ext, &src.mime_type)
+            || matches!(ext.as_str(), "xml" | "xhtml");
+        let headers = PreviewSecurityHeaders::for_format(&src.safe_filename, force_attachment);
+        Ok((src, SecretRedactor::redact(&combined), headers))
     }
 
     pub fn clear_sources(&self, notebook_id: &str) -> Result<ClearSourcesReceipt, NotebookError> {
@@ -953,5 +995,50 @@ mod v5_tests {
         assert!(reconcile.active_sources.is_empty());
 
         srv.abort();
+    }
+
+    #[test]
+    fn effort_xhigh_max_subtitles_webvtt_and_source_content_headers() {
+        assert_eq!(EffortLevel::parse_strict("xhigh").unwrap(), EffortLevel::XHigh);
+        assert_eq!(EffortLevel::parse_strict("max").unwrap(), EffortLevel::Max);
+
+        let srt = "1\n00:00:01,500 --> 00:00:03,250\nHello Omnia\n";
+        let vtt = normalize_subtitles_to_webvtt(srt);
+        assert!(vtt.starts_with("WEBVTT"));
+        assert!(vtt.contains("00:00:01.500 --> 00:00:03.250"));
+
+        let json3 = r#"{"events":[{"tStartMs":1000,"dDurationMs":2000,"segs":[{"utf8":"Hi"}]}]}"#;
+        assert!(normalize_subtitles_to_webvtt(json3).contains("00:00:01.000 --> 00:00:03.000"));
+
+        let eng = NotebookEngine::open_in_memory().unwrap();
+        let nb = eng
+            .create_notebook(CreateNotebookRequest {
+                title: "Content Header Test".into(),
+                description: "".into(),
+                allow_overflow_notebook: false,
+                max_sources: 10,
+                model_id: "gemini-3.5-flash-lite".into(),
+                effort_level: "max".into(),
+            })
+            .unwrap();
+        let out = eng
+            .ingest_source(IngestSourceRequest {
+                notebook_id: nb.notebook_id.clone(),
+                title: Some("Unsafe Page".into()),
+                filename: "page.html".into(),
+                mime_type: Some("text/html".into()),
+                remote_id: None,
+                bytes: b"<html><body><h1>Title</h1><p>Body text</p></body></html>".to_vec(),
+                copied_text_fallback: None,
+                max_chunk_bytes: None,
+                metadata: serde_json::json!({}),
+            })
+            .unwrap();
+        let (_src, body, sec) = eng
+            .get_source_content(&nb.notebook_id, &out.source.source_id)
+            .unwrap();
+        assert!(body.contains("Title"));
+        assert_eq!(sec.x_content_type_options, "nosniff");
+        assert!(sec.force_attachment);
     }
 }

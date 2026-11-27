@@ -32,6 +32,7 @@ pub async fn dispatch_notebook_route(
             Some(handle_sources_ingest(state, req).await)
         }
         ("GET", "/api/notebooks/sources") => Some(handle_sources_list(state, req)),
+        ("GET", "/api/notebooks/sources/content") => Some(handle_source_content(state, req)),
         ("POST", "/api/notebooks/sources/clear") => Some(handle_sources_clear(state, req)),
         ("POST", "/api/notebooks/sources/heal") => Some(handle_sources_heal(state, req).await),
         ("POST", "/api/notebooks/preview") => Some(handle_preview(state, req).await),
@@ -67,6 +68,7 @@ pub async fn dispatch_notebook_route(
             | "/api/notebooks/model"
             | "/api/notebooks/sources/ingest"
             | "/api/notebooks/sources"
+            | "/api/notebooks/sources/content"
             | "/api/notebooks/sources/clear"
             | "/api/notebooks/sources/heal"
             | "/api/notebooks/preview"
@@ -156,10 +158,12 @@ fn parse_effort(raw: &str) -> Result<EffortLevel, HttpResponse> {
         "low" => Ok(EffortLevel::Low),
         "medium" => Ok(EffortLevel::Medium),
         "high" => Ok(EffortLevel::High),
+        "xhigh" => Ok(EffortLevel::XHigh),
+        "max" => Ok(EffortLevel::Max),
         other => Err(HttpResponse::error(
             400,
             "invalid_effort",
-            &format!("Unsupported effort '{other}'; expected minimal, low, medium, or high."),
+            &format!("Unsupported effort '{other}'; expected minimal, low, medium, high, xhigh, or max."),
         )),
     }
 }
@@ -479,6 +483,60 @@ fn handle_sources_list(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRespo
             "count": sources.len(),
             "sources": sources,
         })),
+        Err(err) => map_notebook_error(err),
+    }
+}
+
+fn handle_source_content(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let Some(notebook_id) = req
+        .query_param("notebook_id")
+        .or_else(|| req.query_param("notebookId"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return HttpResponse::error(400, "missing_notebook_id", "Query parameter 'notebook_id' is required.");
+    };
+    let Some(source_id) = req
+        .query_param("source_id")
+        .or_else(|| req.query_param("sourceId"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return HttpResponse::error(400, "missing_source_id", "Query parameter 'source_id' is required.");
+    };
+    let raw_mode = parse_bool_query(req, "raw") || parse_bool_query(req, "download");
+    match state.notebooks.get_source_content(&notebook_id, &source_id) {
+        Ok((source, content, sec)) => {
+            let mut resp = if raw_mode {
+                let mut r = HttpResponse::ok(json!({
+                    "ok": true,
+                    "source": source,
+                    "content": content,
+                    "headers": sec,
+                }));
+                r.body = content.into_bytes();
+                r.content_type = if sec.force_attachment {
+                    "application/octet-stream".to_string()
+                } else {
+                    "text/plain; charset=utf-8".to_string()
+                };
+                r
+            } else {
+                HttpResponse::ok(json!({
+                    "ok": true,
+                    "source": source,
+                    "content": content,
+                    "headers": sec,
+                }))
+            };
+            resp.headers
+                .push(("X-Content-Type-Options".to_string(), sec.x_content_type_options));
+            resp.headers
+                .push(("Content-Disposition".to_string(), sec.content_disposition));
+            resp.headers
+                .push(("Content-Security-Policy".to_string(), sec.content_security_policy));
+            resp
+        }
         Err(err) => map_notebook_error(err),
     }
 }

@@ -1274,6 +1274,7 @@ dependencies = [
  "mimalloc",
  "omnia-agent",
  "omnia-core",
+ "omnia-harness",
  "omnia-routing",
  "omnia-workspace-ops",
  "ratatui",
@@ -1358,9 +1359,16 @@ name = "omnia-harness"
 version = "0.1.0"
 dependencies = [
  "omnia-core",
+ "omnia-winsqlite",
+ "omnia-workspace-ops",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
+ "tokio",
+ "url",
+ "xxhash-rust",
 ]
 
 [[package]]

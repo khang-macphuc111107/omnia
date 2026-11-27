@@ -29,13 +29,14 @@ pub use native_types::{
     MAX_NAVIGATION_OPEN_SESSION_IDS,
 };
 pub use session_store::{
-    AttachmentPlacement, LeaseRecord, RunJournalEntry, SessionCursor, SessionMessageRecord,
-    SessionPage, SessionRecord, SessionStore, StoredAttachment,
+    is_valid_studio_session_id, AttachmentPlacement, LeaseRecord, RunJournalEntry, SessionCursor,
+    SessionMessageRecord, SessionPage, SessionRecord, SessionStore, StoredAttachment,
 };
 pub use sessions::{
     build_provider, get_profile_on, list_profiles_on, prepare_session_config, provider_selection,
-    provider_selection_on, publish_run_event, upsert_profile_on, EnvSecretBroker, MapSecretBroker,
-    ProviderProfileRepository, RunCoordinator, RunRegistry, SecretBroker, SessionCommand,
-    SessionRegistry, SessionResponse, SessionWorker, Sessions, SessionsSnapshot,
-    MAX_PENDING_SESSION_COMMANDS, MAX_PENDING_SESSION_RESPONSES,
+    provider_selection_on, publish_run_event, upsert_profile_on, validate_loopback_http_url,
+    validate_provider_base_url, EnvSecretBroker, MapSecretBroker, ProviderProfileRepository,
+    RunCoordinator, RunRegistry, SecretBroker, SessionCommand, SessionRegistry, SessionResponse,
+    SessionWorker, Sessions, SessionsSnapshot, MAX_PENDING_SESSION_COMMANDS,
+    MAX_PENDING_SESSION_RESPONSES,
 };

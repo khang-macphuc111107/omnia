@@ -493,6 +493,20 @@ async fn legacy_routes_cover_graph_graphify_router_memory_rag_skills_composer_st
     assert_eq!(peers.status, 200);
     assert_eq!(peers.json()["peerCount"].as_u64().unwrap_or(99), 0);
 
+    let bad_wildcard_peers = http_request(
+        addr,
+        "POST",
+        "/api/graph/peers",
+        &[],
+        Some(json!({
+            "peers": [
+                { "id": "verifier", "role": "verifier", "ownedPaths": ["rust/*/tests/**"], "excludedPaths": ["docs/**"] }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(bad_wildcard_peers.status, 400);
+
     let reg_peers = http_request(
         addr,
         "POST",
@@ -501,7 +515,7 @@ async fn legacy_routes_cover_graph_graphify_router_memory_rag_skills_composer_st
         Some(json!({
             "peers": [
                 { "id": "coordinator", "role": "coordinator", "ownedPaths": ["docs/**"], "excludedPaths": ["rust/**"] },
-                { "id": "verifier", "role": "verifier", "ownedPaths": ["rust/*/tests/**"], "excludedPaths": ["docs/**"] }
+                { "id": "verifier", "role": "verifier", "ownedPaths": ["rust/omnia-studio/tests/**"], "excludedPaths": ["docs/**"] }
             ]
         })),
     )

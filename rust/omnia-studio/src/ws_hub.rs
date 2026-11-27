@@ -101,7 +101,7 @@ async fn serve_websocket(
         "payload": {
             "server": "omnia-studio",
             "pinnedPtyId": active_pty,
-            "channels": ["agent", "pty", "swarm", "downloads", "browser", "workspace", "router", "mcp", "network", "telemetry", "alerts"],
+            "channels": ["agent", "pty", "swarm", "downloads", "browser", "workspace", "router", "mcp", "network", "telemetry", "alerts", "research", "think", "lifecycle"],
         }
     });
     if ws_tx

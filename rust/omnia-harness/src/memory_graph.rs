@@ -283,11 +283,32 @@ pub fn parse_wiki_links(content: &str) -> Vec<(String, String)> {
     links
 }
 
-#[derive(Debug, Default)]
+/// Default bounded in-memory entry retention cap for [`MemoryGraph`] (`AUD-11` / `AUD-19`).
+pub const DEFAULT_MAX_MEMORY_ENTRIES: usize = 4_096;
+/// Default bounded erasure-receipt retention cap for [`MemoryGraph`] (`AUD-11` / `AUD-19`).
+pub const DEFAULT_MAX_ERASURE_RECEIPTS: usize = 2_048;
+
+#[derive(Debug)]
 struct MemoryInner {
     entries: BTreeMap<String, MemoryEntry>,
     edges: Vec<MemoryEdge>,
-    erasure_receipts: Vec<ErasureReceipt>,
+    erasure_receipts: VecDeque<ErasureReceipt>,
+    next_erasure_seq: u64,
+    max_entries: usize,
+    max_erasure_receipts: usize,
+}
+
+impl Default for MemoryInner {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            edges: Vec::new(),
+            erasure_receipts: VecDeque::new(),
+            next_erasure_seq: 1,
+            max_entries: DEFAULT_MAX_MEMORY_ENTRIES,
+            max_erasure_receipts: DEFAULT_MAX_ERASURE_RECEIPTS,
+        }
+    }
 }
 
 /// Thread-safe knowledge-linked memory graph with cryptographic erasure receipts
@@ -301,6 +322,21 @@ impl MemoryGraph {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct a [`MemoryGraph`] with explicit bounded entry and erasure-receipt retention caps.
+    #[must_use]
+    pub fn with_retention(max_entries: usize, max_erasure_receipts: usize) -> Self {
+        Self {
+            inner: Mutex::new(MemoryInner {
+                entries: BTreeMap::new(),
+                edges: Vec::new(),
+                erasure_receipts: VecDeque::new(),
+                next_erasure_seq: 1,
+                max_entries: max_entries.max(1),
+                max_erasure_receipts: max_erasure_receipts.max(1),
+            }),
+        }
     }
 
     pub fn upsert(
@@ -396,6 +432,7 @@ impl MemoryGraph {
         guard.entries.insert(id.clone(), entry.clone());
         guard.edges.retain(|edge| edge.from_id != id);
         guard.edges.extend(parsed_edges);
+        enforce_entry_retention_locked(&mut guard, &id);
         Ok(entry)
     }
 
@@ -431,7 +468,8 @@ impl MemoryGraph {
             entry.links.retain(|target| target != &id);
         }
 
-        let seq = guard.erasure_receipts.len() + 1;
+        let seq = guard.next_erasure_seq;
+        guard.next_erasure_seq = guard.next_erasure_seq.saturating_add(1);
         let prefix: String = erased_sha.chars().take(8).collect();
         let receipt = ErasureReceipt {
             receipt_id: format!("erase-{seq}-{prefix}"),
@@ -442,7 +480,11 @@ impl MemoryGraph {
             removed_edges,
             verified_plaintext_free: true,
         };
-        guard.erasure_receipts.push(receipt.clone());
+        let receipt_cap = guard.max_erasure_receipts.max(1);
+        while guard.erasure_receipts.len() >= receipt_cap {
+            guard.erasure_receipts.pop_front();
+        }
+        guard.erasure_receipts.push_back(receipt.clone());
         Ok(receipt)
     }
 
@@ -476,7 +518,7 @@ impl MemoryGraph {
             .inner
             .lock()
             .map_err(|_| MemoryError::InternalLockPoisoned)?;
-        Ok(guard.erasure_receipts.clone())
+        Ok(guard.erasure_receipts.iter().cloned().collect())
     }
 
     /// Cycle-safe breadth-first traversal up to `max_depth` hops.
@@ -660,6 +702,7 @@ impl MemoryGraph {
         guard.entries.insert(id.clone(), entry.clone());
         guard.edges.retain(|edge| edge.from_id != id);
         guard.edges.extend(parsed_edges);
+        enforce_entry_retention_locked(&mut guard, &id);
         Ok(entry)
     }
 
@@ -758,6 +801,38 @@ impl MemoryGraph {
             })
             .cloned()
             .collect())
+    }
+}
+
+fn enforce_entry_retention_locked(guard: &mut MemoryInner, keep_id: &str) {
+    let cap = guard.max_entries.max(1);
+    while guard.entries.len() > cap {
+        let victim_id = guard
+            .entries
+            .iter()
+            .filter(|(id, _)| id.as_str() != keep_id)
+            .min_by_key(|(id, entry)| {
+                let tier_rank: u8 = match (entry.t_invalid_ms.is_some(), entry.tier) {
+                    (true, MemoryTier::Working) => 0,
+                    (true, MemoryTier::Durable) => 1,
+                    (false, MemoryTier::Working) => 2,
+                    (false, MemoryTier::Durable) => 3,
+                };
+                (tier_rank, entry.updated_at_ms, (*id).clone())
+            })
+            .map(|(id, _)| id.clone());
+        let Some(evicted) = victim_id else {
+            break;
+        };
+        if let Some(mut removed) = guard.entries.remove(&evicted) {
+            removed.content.clear();
+        }
+        guard
+            .edges
+            .retain(|edge| edge.from_id != evicted && edge.to_id != evicted);
+        for entry in guard.entries.values_mut() {
+            entry.links.retain(|target| target != &evicted);
+        }
     }
 }
 
@@ -902,5 +977,65 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e.key == "poison-note"));
+    }
+
+    #[test]
+    fn bounded_retention_caps_entries_and_erasure_receipts() {
+        let g = MemoryGraph::with_retention(8, 5);
+        for i in 0..4_i64 {
+            g.upsert(
+                "omnia/durable",
+                &format!("d{i}"),
+                MemoryTier::Durable,
+                &format!("Durable fact {i} [[w0]]"),
+                &[],
+                Some(100 + i),
+            )
+            .unwrap();
+        }
+        for i in 0..10_i64 {
+            g.upsert(
+                "omnia/working",
+                &format!("w{i}"),
+                MemoryTier::Working,
+                &format!("Working note {i} [[d0]]"),
+                &[],
+                Some(200 + i),
+            )
+            .unwrap();
+        }
+        let entries = g.list_entries().unwrap();
+        assert_eq!(entries.len(), 8);
+        // All 4 Durable entries must be preserved while oldest Working entries are evicted.
+        for i in 0..4 {
+            assert!(g.get("omnia/durable", &format!("d{i}")).unwrap().is_some());
+        }
+        assert!(g.get("omnia/working", "w0").unwrap().is_none());
+        assert!(g.get("omnia/working", "w9").unwrap().is_some());
+        // Evicted working entries must not leave orphan edges behind.
+        assert!(!g
+            .list_edges()
+            .unwrap()
+            .iter()
+            .any(|e| e.from_id == "omnia/working/w0" || e.to_id == "omnia/working/w0"));
+
+        // Erase 8 entries in sequence and confirm erasure_receipts cap holds at 5 with monotonic IDs.
+        for i in 0..8_i64 {
+            g.upsert(
+                "omnia/ephemeral",
+                &format!("e{i}"),
+                MemoryTier::Working,
+                &format!("Ephemeral {i}"),
+                &[],
+                Some(500 + i),
+            )
+            .unwrap();
+            g.erase("omnia/ephemeral", &format!("e{i}"), Some(600 + i))
+                .unwrap();
+        }
+        let receipts = g.erasure_receipts().unwrap();
+        assert_eq!(receipts.len(), 5);
+        assert!(receipts[0].receipt_id.starts_with("erase-4-"));
+        assert!(receipts[4].receipt_id.starts_with("erase-8-"));
     }
 }

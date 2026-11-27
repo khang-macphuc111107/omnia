@@ -872,6 +872,36 @@ pub enum HarnessStreamEvent {
 
 pub type HarnessEventSink = Arc<dyn Fn(HarnessStreamEvent) + Send + Sync>;
 
+/// Default-ON adaptive workflow mode for Deep Research & Deep Think (`--research`, `--think`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveMode {
+    #[default]
+    Auto,
+    Deep,
+    Off,
+}
+
+impl AdaptiveMode {
+    #[must_use]
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).unwrap_or("auto").to_ascii_lowercase().as_str() {
+            "deep" | "force" | "always" | "on" => Self::Deep,
+            "off" | "none" | "false" | "0" => Self::Off,
+            _ => Self::Auto,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Deep => "deep",
+            Self::Off => "off",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SuperEvalOptions {
     pub cwd: PathBuf,
@@ -891,6 +921,9 @@ pub struct SuperEvalOptions {
     pub plugins: PluginRegistry,
     pub db: Option<AgentStore>,
     pub event_sink: Option<HarnessEventSink>,
+    pub research_mode: AdaptiveMode,
+    pub think_mode: AdaptiveMode,
+    pub proactive_lifecycle: bool,
 }
 
 /// Canonical `EvalRunReport` output for `omnia run` and `--eval-acp`.
@@ -978,6 +1011,83 @@ struct TurnLlmUsage {
     output: u64,
     reasoning: Option<u64>,
     saw_usage: bool,
+}
+
+/// RFC/WHATWG-compliant incremental SSE frame decoder (`AUD-04`).
+/// Handles LF (`\n`), CRLF (`\r\n`), arbitrary chunk splits, comments (`:...`),
+/// and multi-line `data:` event fields joined with `\n` on blank-line boundaries,
+/// while flushing complete single-line JSON / `[DONE]` immediately for minimal TTFT.
+#[derive(Default)]
+struct SseFrameBuffer {
+    raw_buf: Vec<u8>,
+    pending_data: Vec<String>,
+}
+
+impl SseFrameBuffer {
+    fn push_chunk(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.raw_buf.extend_from_slice(chunk);
+        let mut events = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(rel_nl) = memchr(b'\n', &self.raw_buf[cursor..]) {
+            let mut line_end = cursor + rel_nl;
+            if line_end > cursor && self.raw_buf[line_end - 1] == b'\r' {
+                line_end -= 1;
+            }
+            let line = String::from_utf8_lossy(&self.raw_buf[cursor..line_end]).into_owned();
+            cursor += rel_nl + 1;
+            self.consume_line(&line, &mut events);
+        }
+        if cursor > 0 {
+            self.raw_buf.drain(..cursor);
+        }
+        events
+    }
+
+    fn finish(&mut self) -> Vec<String> {
+        let mut events = Vec::new();
+        if !self.raw_buf.is_empty() {
+            let mut slice = self.raw_buf.as_slice();
+            if slice.ends_with(b"\r") {
+                slice = &slice[..slice.len() - 1];
+            }
+            let tail = String::from_utf8_lossy(slice).into_owned();
+            self.raw_buf.clear();
+            self.consume_line(&tail, &mut events);
+        }
+        if !self.pending_data.is_empty() {
+            events.push(self.pending_data.join("\n"));
+            self.pending_data.clear();
+        }
+        events
+    }
+
+    fn consume_line(&mut self, line: &str, out: &mut Vec<String>) {
+        let trimmed_end = line.trim_end_matches('\r');
+        if trimmed_end.trim().is_empty() {
+            if !self.pending_data.is_empty() {
+                out.push(self.pending_data.join("\n"));
+                self.pending_data.clear();
+            }
+            return;
+        }
+        if trimmed_end.starts_with(':') {
+            return;
+        }
+        if let Some(rest) = trimmed_end.strip_prefix("data:") {
+            let payload = rest.strip_prefix(' ').unwrap_or(rest);
+            let trimmed = payload.trim();
+            if self.pending_data.is_empty()
+                && (trimmed == "[DONE]"
+                    || (trimmed.starts_with('{')
+                        && trimmed.ends_with('}')
+                        && serde_json::from_str::<Value>(trimmed).is_ok()))
+            {
+                out.push(trimmed.to_owned());
+                return;
+            }
+            self.pending_data.push(payload.to_owned());
+        }
+    }
 }
 
 /// RAII guard for D4 `PASTE`-lite speculative read-only tool tasks:
@@ -1198,6 +1308,12 @@ pub struct NativeSuperEngine {
     pub total_final_review_nudges: u32,
     /// One-shot requirements/edge-case review before a mutating task finishes (default on).
     pub final_review_gate: bool,
+    /// Default-ON adaptive Deep Research mode (`Auto` | `Deep` | `Off`).
+    pub research_mode: AdaptiveMode,
+    /// Default-ON adaptive Deep Think mode (`Auto` | `Deep` | `Off`).
+    pub think_mode: AdaptiveMode,
+    /// Proactive 12-artifact workspace lifecycle & auto-handoff on compaction (default on).
+    pub proactive_lifecycle: bool,
     pub last_context_tokens: u64,
     pub total_kv_savings_usd: f64,
     pub turn_telemetry: Vec<TurnTelemetryRecord>,
@@ -1208,9 +1324,32 @@ pub struct NativeSuperEngine {
     last_prompt_cache_hit_at: Option<Instant>,
     first_prompt_sent: bool,
     shell_label: &'static str,
+    last_partial_assistant_text: std::sync::Mutex<String>,
 }
 
 impl NativeSuperEngine {
+    fn clear_partial_assistant_text(&self) {
+        if let Ok(mut buf) = self.last_partial_assistant_text.lock() {
+            buf.clear();
+        }
+    }
+
+    fn record_partial_assistant_text(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Ok(mut buf) = self.last_partial_assistant_text.lock() {
+            buf.clear();
+            buf.push_str(text);
+        }
+    }
+
+    fn take_partial_assistant_text(&self) -> String {
+        self.last_partial_assistant_text
+            .lock()
+            .map(|mut buf| std::mem::take(&mut *buf))
+            .unwrap_or_default()
+    }
     pub(crate) fn restore_acp_history(&mut self, turns: u32, messages: Vec<HarnessMessage>) {
         self.first_prompt_sent = !messages.is_empty();
         self.total_turns = turns;
@@ -1385,6 +1524,9 @@ impl NativeSuperEngine {
             total_hedges_issued: 0,
             total_final_review_nudges: 0,
             final_review_gate: true,
+            research_mode: AdaptiveMode::Auto,
+            think_mode: AdaptiveMode::Auto,
+            proactive_lifecycle: true,
             last_context_tokens: 0,
             total_kv_savings_usd: 0.0,
             turn_telemetry: Vec::new(),
@@ -1395,6 +1537,7 @@ impl NativeSuperEngine {
             last_prompt_cache_hit_at: None,
             first_prompt_sent: false,
             shell_label,
+            last_partial_assistant_text: std::sync::Mutex::new(String::new()),
         })
     }
 
@@ -1818,6 +1961,8 @@ impl NativeSuperEngine {
     }
 
     /// Manually fold stale tool observations while preserving Prefix-0 immutability (`/compact`).
+    /// When proactive lifecycle is active and `HANDOFF.md` or `.agents/memory/` exists in a trusted
+    /// workspace, refreshes `HANDOFF.md` while preserving `<!-- AGENT_NOTES_START -->...<!-- AGENT_NOTES_END -->`.
     pub fn compact_conversation_now(&mut self) -> crate::lakeview::LakeviewCompressionReport {
         let rep = crate::lakeview::compress_stale_tool_results(
             &mut self.messages,
@@ -1829,7 +1974,48 @@ impl NativeSuperEngine {
             self.cache_guard.lakeview_compressions += rep.compressed_count;
             self.cache_guard.lakeview_chars_saved += rep.chars_saved;
         }
+        if self.proactive_lifecycle
+            && self.tool_runtime.workspace_trusted
+            && (self.workspace_root.join("HANDOFF.md").is_file()
+                || self.workspace_root.join(".agents/memory").is_dir())
+        {
+            let _ = self.write_auto_handoff_snapshot("compaction");
+        }
         rep
+    }
+
+    /// Atomically write/update `HANDOFF.md` preserving manual `<!-- AGENT_NOTES_START -->` blocks.
+    pub fn write_auto_handoff_snapshot(&self, trigger: &str) -> Result<PathBuf> {
+        let handoff_path = self.workspace_root.join("HANDOFF.md");
+        let existing = std::fs::read_to_string(&handoff_path).unwrap_or_default();
+        let snap = self.session_telemetry_snapshot();
+        let generated = format!(
+            "# Omnia Session Handoff\n\n\
+             - **Session**: `{}`\n\
+             - **Trigger**: `{}`\n\
+             - **Model**: `{}` (`{}` | effort: `{}`)\n\
+             - **Progress**: {} turns, {} tool calls ({} errors), KV hit {:.1}%\n\
+             - **Token Budget**: `NULL` (uncapped `ADDITIVE_INTAKE`)\n\n\
+             ## Completion Receipt (6-State)\n\
+             - **Verified**: Observed passing checks recorded in session telemetry.\n\
+             - **Partial**: Active multi-turn work checkpointed cleanly prior to compaction/handoff.\n\
+             - **Unresolved**: Review open `TODO.md` / `DOD.md` gates before closing.\n\
+             - **Blocked**: None recorded.\n\
+             - **Next**: Re-read `HANDOFF.md`, `GOAL.md`, `TODO.md`, and continue from current watermark.\n\
+             - **Exact Practical Limits**: Automatic checkpoint captures session telemetry; verify git diff & live tests independently.\n",
+            snap.session_key,
+            trigger,
+            snap.model_id,
+            snap.wire_dialect,
+            snap.effort.as_deref().unwrap_or("none"),
+            snap.total_turns,
+            snap.total_tool_calls,
+            snap.total_tool_errors,
+            snap.cache_stats.cache_hit_pct,
+        );
+        let merged = preserve_agent_notes_handoff(&existing, &generated);
+        atomic_write_text_with_win_retry(&handoff_path, &merged)?;
+        Ok(handoff_path)
     }
 
     /// Render a secret-redacted (and optionally Privacy-Masked) Markdown session report (`/export`).
@@ -2015,6 +2201,23 @@ impl NativeSuperEngine {
                 user_content.push_str("\n\n");
                 user_content.push_str(&recalled_tail);
             }
+        }
+        if self.research_mode != AdaptiveMode::Auto
+            || self.think_mode != AdaptiveMode::Auto
+            || !self.proactive_lifecycle
+        {
+            user_content.push_str(&format!(
+                "\n\n<adaptive_directive research=\"{}\" think=\"{}\" proactive_lifecycle=\"{}\">{}</adaptive_directive>",
+                self.research_mode.as_str(),
+                self.think_mode.as_str(),
+                self.proactive_lifecycle,
+                match (self.research_mode, self.think_mode) {
+                    (AdaptiveMode::Deep, AdaptiveMode::Deep) => "Run full 6-stage Deep Research (RAG + parallel web/academic search + URL extraction + [S###]/[G###] inline citations + Sources ledger) AND 5-stage Deep Think (>=3 branches + executable falsification + red-team).",
+                    (AdaptiveMode::Deep, _) => "Run full 6-stage Deep Research via `deep_research` / `web_search` / `web_fetch` with inline [S###]/[G###] citations, 5-level evidence grades, and mandatory 'Sources (Searched, Viewed & Extracted)' ledger.",
+                    (_, AdaptiveMode::Deep) => "Run full 5-stage Deep Think via `deep_think`: formal invariants, >=3 distinct branches (baseline/SOTA/contrarian), executable falsification, and adversarial red-team review.",
+                    _ => "Follow configured adaptive workflow flags cleanly without mutating Prefix-0.",
+                }
+            ));
         }
 
         let user_msg = if user_blocks.is_empty() {
@@ -2263,6 +2466,21 @@ impl NativeSuperEngine {
                         status = "aborted".into();
                     } else {
                         status = "error".into();
+                    }
+                    let partial = self.take_partial_assistant_text();
+                    if !partial.is_empty() {
+                        if final_text.is_empty() {
+                            final_text = partial.clone();
+                        } else if !final_text.ends_with(&partial) {
+                            final_text.push('\n');
+                            final_text.push_str(&partial);
+                        }
+                        self.messages.push(HarnessMessage::assistant(
+                            partial,
+                            None,
+                            Vec::new(),
+                            cur_turn,
+                        ));
                     }
                     error_msg = Some(s);
                     break;
@@ -2603,7 +2821,7 @@ impl NativeSuperEngine {
                         json!({ "editedFiles": progress.files_mutated.len() }),
                     );
                     self.messages.push(HarnessMessage::user(
-                        "[Final Review Gate] Before finishing, re-read the original task and check EVERY stated requirement and edge case (boundaries, inclusive/exclusive limits, rounding/precision, idempotency, error paths). If any item is not yet proven by a passing run, add or run a targeted check and fix it now. If everything is verified, reply with your concise final summary.",
+                        "[Final Review Gate] [Pre-Completion Checklist & Clean-Context Verification] Step back as an independent adversarial reviewer (anti-sycophancy check): re-read the original request and verify EVERY stated requirement, boundary condition, rounding/precision invariant, idempotency guarantee, and error path against FRESH command output (exit_code == 0). If web/research sources were used, confirm inline [S###]/[G###] citations match your 'Sources (Searched, Viewed & Extracted)' ledger. Fix any gap now; if all checks are proven green, reply concisely with honest 6-state status.",
                         cur_turn,
                     ));
                     if let Some(ref s) = sink {
@@ -3356,6 +3574,7 @@ impl NativeSuperEngine {
         let mut slow_step_downs = 0u32;
         let mut unreachable_started_at: Option<Instant> = None;
         let mut unreachable_attempt = 0u32;
+        self.clear_partial_assistant_text();
 
         loop {
             if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
@@ -3603,6 +3822,7 @@ impl NativeSuperEngine {
             let attempt_latency_ms = t_attempt.elapsed().as_millis() as f64;
             match attempt_res {
                 Ok(mut r) => {
+                    self.clear_partial_assistant_text();
                     self.reconcile_router_slot(
                         router_grant,
                         true,
@@ -4097,7 +4317,7 @@ impl NativeSuperEngine {
                     }
                 }
             }
-            if is_retryable_status(status) {
+            if is_retryable_status(status) || is_transient_transport_body(&snippet) {
                 return Err(StreamTurnError::Retryable {
                     status: Some(status),
                     retry_after_secs: retry_after,
@@ -4134,7 +4354,7 @@ impl NativeSuperEngine {
                 .max(total_remaining);
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
-        let mut line_buf = Vec::<u8>::new();
+        let mut sse_buf = SseFrameBuffer::default();
 
         'sse: loop {
             let tool_arg_bytes: usize = tool_accum.values().map(|tc| tc.arguments.len()).sum();
@@ -4189,52 +4409,31 @@ impl NativeSuperEngine {
                 ),
             })?;
 
-            let Some(chunk_res) = next_opt else {
-                if !line_buf.is_empty() {
-                    let tail = String::from_utf8_lossy(&line_buf);
-                    if tail
-                        .trim()
-                        .strip_prefix("data:")
-                        .is_some_and(|d| d.trim() == "[DONE]")
-                    {
-                        saw_done = true;
+            let (events, reached_eof) = match next_opt {
+                None => (sse_buf.finish(), true),
+                Some(chunk_res) => {
+                    if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
+                        return Err(StreamTurnError::Fatal("Aborted by user".into()));
                     }
-                    line_buf.clear();
+                    let chunk: Bytes = chunk_res.map_err(|e| StreamTurnError::Retryable {
+                        status: None,
+                        retry_after_secs: None,
+                        kind: RetryKind::Transport,
+                        detail: format!("SSE stream read error: {e}"),
+                    })?;
+                    if !chunk.is_empty() {
+                        last_wire_activity_at = Some(Instant::now());
+                        if raw_sse_log.len() < 256 * 1024 {
+                            let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                            raw_sse_log.extend_from_slice(&chunk[..take]);
+                        }
+                    }
+                    (sse_buf.push_chunk(&chunk), false)
                 }
-                break;
             };
 
-            if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
-                return Err(StreamTurnError::Fatal("Aborted by user".into()));
-            }
-            let chunk: Bytes = chunk_res.map_err(|e| StreamTurnError::Retryable {
-                status: None,
-                retry_after_secs: None,
-                kind: RetryKind::Transport,
-                detail: format!("SSE stream read error: {e}"),
-            })?;
-            if !chunk.is_empty() {
-                last_wire_activity_at = Some(Instant::now());
-                if raw_sse_log.len() < 256 * 1024 {
-                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
-                    raw_sse_log.extend_from_slice(&chunk[..take]);
-                }
-            }
-            line_buf.extend_from_slice(&chunk);
-
-            let mut cursor = 0usize;
-            while let Some(rel_nl) = memchr(b'\n', &line_buf[cursor..]) {
-                let line_slice = &line_buf[cursor..cursor + rel_nl];
-                cursor += rel_nl + 1;
-                let line_str = String::from_utf8_lossy(line_slice);
-                let trimmed = line_str.trim();
-                if trimmed.is_empty() || trimmed.starts_with(':') {
-                    continue;
-                }
-                let Some(data) = trimmed.strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
+            for raw_data in events {
+                let data = raw_data.trim();
                 if data == "[DONE]" {
                     saw_done = true;
                     break 'sse;
@@ -4286,6 +4485,7 @@ impl NativeSuperEngine {
                             if !c.is_empty() {
                                 got_token = true;
                                 text.push_str(c);
+                                self.record_partial_assistant_text(&text);
                                 pending_text_delta.push_str(c);
                             }
                         }
@@ -4374,8 +4574,8 @@ impl NativeSuperEngine {
                     }
                 }
             }
-            if cursor > 0 {
-                line_buf.drain(..cursor);
+            if reached_eof {
+                break 'sse;
             }
         }
 
@@ -5189,7 +5389,7 @@ impl NativeSuperEngine {
                     "Responses HTTP {status}: {snippet}"
                 )));
             }
-            if is_retryable_status(status) {
+            if is_retryable_status(status) || is_transient_transport_body(&snippet) {
                 return Err(StreamTurnError::Retryable {
                     status: Some(status),
                     retry_after_secs: None,
@@ -5211,7 +5411,7 @@ impl NativeSuperEngine {
                 .max(total_remaining);
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
-        let mut line_buf = Vec::<u8>::new();
+        let mut sse_buf = SseFrameBuffer::default();
         let mut raw_sse_log: Vec<u8> = Vec::new();
 
         'resp_sse: loop {
@@ -5265,39 +5465,30 @@ impl NativeSuperEngine {
                     hit_turn_deadline,
                 ),
             })?;
-            let Some(chunk_res) = next_opt else {
-                break;
+            let (events, reached_eof) = match next_opt {
+                None => (sse_buf.finish(), true),
+                Some(chunk_res) => {
+                    if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
+                        return Err(StreamTurnError::Fatal("Aborted by user".into()));
+                    }
+                    let chunk = chunk_res.map_err(|e| StreamTurnError::Retryable {
+                        status: None,
+                        retry_after_secs: None,
+                        kind: RetryKind::Transport,
+                        detail: format!("Responses stream error: {e}"),
+                    })?;
+                    if !chunk.is_empty() {
+                        acc.last_wire_activity_at = Some(Instant::now());
+                        if raw_sse_log.len() < 256 * 1024 {
+                            let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                            raw_sse_log.extend_from_slice(&chunk[..take]);
+                        }
+                    }
+                    (sse_buf.push_chunk(&chunk), false)
+                }
             };
-            if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
-                return Err(StreamTurnError::Fatal("Aborted by user".into()));
-            }
-            let chunk = chunk_res.map_err(|e| StreamTurnError::Retryable {
-                status: None,
-                retry_after_secs: None,
-                kind: RetryKind::Transport,
-                detail: format!("Responses stream error: {e}"),
-            })?;
-            if !chunk.is_empty() {
-                acc.last_wire_activity_at = Some(Instant::now());
-                if raw_sse_log.len() < 256 * 1024 {
-                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
-                    raw_sse_log.extend_from_slice(&chunk[..take]);
-                }
-            }
-            line_buf.extend_from_slice(&chunk);
-            let mut cursor = 0usize;
-            while let Some(rel_nl) = memchr(b'\n', &line_buf[cursor..]) {
-                let line_slice = &line_buf[cursor..cursor + rel_nl];
-                cursor += rel_nl + 1;
-                let line = String::from_utf8_lossy(line_slice);
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with(':') {
-                    continue;
-                }
-                let Some(data) = trimmed.strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
+            for raw_data in events {
+                let data = raw_data.trim();
                 if data == "[DONE]" {
                     acc.saw_completed = true;
                     break 'resp_sse;
@@ -5305,7 +5496,7 @@ impl NativeSuperEngine {
                 let Ok(val) = serde_json::from_str::<Value>(data) else {
                     continue;
                 };
-                if acc.process_event(
+                let done = acc.process_event(
                     &val,
                     msg_id,
                     &self.tool_runtime,
@@ -5314,12 +5505,16 @@ impl NativeSuperEngine {
                     &known_full,
                     sink,
                     hedge_slot,
-                )? {
+                )?;
+                if !acc.text.is_empty() {
+                    self.record_partial_assistant_text(&acc.text);
+                }
+                if done {
                     break 'resp_sse;
                 }
             }
-            if cursor > 0 {
-                line_buf.drain(..cursor);
+            if reached_eof {
+                break 'resp_sse;
             }
         }
 
@@ -5573,7 +5768,7 @@ impl NativeSuperEngine {
                     "Anthropic HTTP {status}: {snippet}"
                 )));
             }
-            if is_retryable_status(status) {
+            if is_retryable_status(status) || is_transient_transport_body(&snippet) {
                 return Err(StreamTurnError::Retryable {
                     status: Some(status),
                     retry_after_secs: retry_after,
@@ -5604,7 +5799,7 @@ impl NativeSuperEngine {
         let mut raw_sse_log: Vec<u8> = Vec::new();
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
-        let mut line_buf = Vec::<u8>::new();
+        let mut sse_buf = SseFrameBuffer::default();
 
         let active_stream_deadline = t_req
             + attempt_hint
@@ -5638,60 +5833,30 @@ impl NativeSuperEngine {
                         hit_turn_deadline,
                     ),
                 })?;
-            let Some(chunk_res) = next_opt else {
-                // Flush any final SSE data line if the proxy closed the stream without trailing `\n`.
-                if !line_buf.is_empty() {
-                    let tail = String::from_utf8_lossy(&line_buf);
-                    if let Some(data) = tail.trim().strip_prefix("data:") {
-                        if let Ok(val) = serde_json::from_str::<Value>(data.trim()) {
-                            match val.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-                                "message_delta" => {
-                                    if let Some(sr) =
-                                        val.pointer("/delta/stop_reason").and_then(|v| v.as_str())
-                                    {
-                                        stop_reason = Some(sr.to_string());
-                                    }
-                                    if let Some(u) = val.get("usage") {
-                                        apply_anthropic_usage_fields(u, &mut usage);
-                                    }
-                                }
-                                "message_stop" => {
-                                    saw_message_stop = true;
-                                }
-                                _ => {}
-                            }
+            let (events, reached_eof) = match next_opt {
+                None => (sse_buf.finish(), true),
+                Some(chunk_res) => {
+                    if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
+                        return Err(StreamTurnError::Fatal("Aborted by user".into()));
+                    }
+                    let chunk = chunk_res.map_err(|e| StreamTurnError::Retryable {
+                        status: None,
+                        retry_after_secs: None,
+                        kind: RetryKind::Transport,
+                        detail: format!("Anthropic stream error: {e}"),
+                    })?;
+                    if !chunk.is_empty() {
+                        last_wire_activity_at = Some(Instant::now());
+                        if raw_sse_log.len() < 256 * 1024 {
+                            let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                            raw_sse_log.extend_from_slice(&chunk[..take]);
                         }
                     }
-                    line_buf.clear();
+                    (sse_buf.push_chunk(&chunk), false)
                 }
-                break;
             };
-            if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
-                return Err(StreamTurnError::Fatal("Aborted by user".into()));
-            }
-            let chunk = chunk_res.map_err(|e| StreamTurnError::Retryable {
-                status: None,
-                retry_after_secs: None,
-                kind: RetryKind::Transport,
-                detail: format!("Anthropic stream error: {e}"),
-            })?;
-            if !chunk.is_empty() {
-                last_wire_activity_at = Some(Instant::now());
-                if raw_sse_log.len() < 256 * 1024 {
-                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
-                    raw_sse_log.extend_from_slice(&chunk[..take]);
-                }
-            }
-            line_buf.extend_from_slice(&chunk);
-            let mut cursor = 0usize;
-            while let Some(rel_nl) = memchr(b'\n', &line_buf[cursor..]) {
-                let line_slice = &line_buf[cursor..cursor + rel_nl];
-                cursor += rel_nl + 1;
-                let line = String::from_utf8_lossy(line_slice);
-                let Some(data) = line.trim().strip_prefix("data:") else {
-                    continue;
-                };
-                let Ok(val) = serde_json::from_str::<Value>(data.trim()) else {
+            for raw_data in events {
+                let Ok(val) = serde_json::from_str::<Value>(raw_data.trim()) else {
                     continue;
                 };
                 match val.get("type").and_then(|v| v.as_str()).unwrap_or("") {
@@ -5797,6 +5962,7 @@ impl NativeSuperEngine {
                                 {
                                     stamp_token();
                                     text.push_str(t);
+                                    self.record_partial_assistant_text(&text);
                                     if let Some(s) = sink {
                                         s(HarnessStreamEvent::DeltaBatch {
                                             message_id: msg_id.to_string(),
@@ -5870,8 +6036,8 @@ impl NativeSuperEngine {
                     _ => {}
                 }
             }
-            if cursor > 0 {
-                line_buf.drain(..cursor);
+            if reached_eof {
+                break 'ant;
             }
         }
 
@@ -6127,7 +6293,7 @@ impl NativeSuperEngine {
         if !status.is_success() {
             let err_body = resp.text().await.unwrap_or_default();
             let snippet: String = err_body.chars().take(400).collect();
-            if is_retryable_status(status) {
+            if is_retryable_status(status) || is_transient_transport_body(&snippet) {
                 return Err(StreamTurnError::Retryable {
                     status: Some(status),
                     retry_after_secs: None,
@@ -6158,7 +6324,7 @@ impl NativeSuperEngine {
                 .max(total_remaining);
         let stream_started_at = Instant::now();
         let mut stream = resp.bytes_stream();
-        let mut line_buf = Vec::<u8>::new();
+        let mut sse_buf = SseFrameBuffer::default();
         let mut raw_sse_log: Vec<u8> = Vec::new();
 
         loop {
@@ -6188,35 +6354,30 @@ impl NativeSuperEngine {
                         hit_turn_deadline,
                     ),
                 })?;
-            let Some(chunk_res) = next_opt else {
-                break;
-            };
-            if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
-                return Err(StreamTurnError::Fatal("Aborted by user".into()));
-            }
-            let chunk = chunk_res.map_err(|e| StreamTurnError::Retryable {
-                status: None,
-                retry_after_secs: None,
-                kind: RetryKind::Transport,
-                detail: format!("Gemini stream error: {e}"),
-            })?;
-            if !chunk.is_empty() {
-                last_wire_activity_at = Some(Instant::now());
-                if raw_sse_log.len() < 256 * 1024 {
-                    let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
-                    raw_sse_log.extend_from_slice(&chunk[..take]);
+            let (events, reached_eof) = match next_opt {
+                None => (sse_buf.finish(), true),
+                Some(chunk_res) => {
+                    if self.tool_runtime.cancel_flag.load(Ordering::Relaxed) {
+                        return Err(StreamTurnError::Fatal("Aborted by user".into()));
+                    }
+                    let chunk = chunk_res.map_err(|e| StreamTurnError::Retryable {
+                        status: None,
+                        retry_after_secs: None,
+                        kind: RetryKind::Transport,
+                        detail: format!("Gemini stream error: {e}"),
+                    })?;
+                    if !chunk.is_empty() {
+                        last_wire_activity_at = Some(Instant::now());
+                        if raw_sse_log.len() < 256 * 1024 {
+                            let take = (256 * 1024 - raw_sse_log.len()).min(chunk.len());
+                            raw_sse_log.extend_from_slice(&chunk[..take]);
+                        }
+                    }
+                    (sse_buf.push_chunk(&chunk), false)
                 }
-            }
-            line_buf.extend_from_slice(&chunk);
-            let mut cursor = 0usize;
-            while let Some(rel_nl) = memchr(b'\n', &line_buf[cursor..]) {
-                let line_slice = &line_buf[cursor..cursor + rel_nl];
-                cursor += rel_nl + 1;
-                let line = String::from_utf8_lossy(line_slice);
-                let Some(data) = line.trim().strip_prefix("data:") else {
-                    continue;
-                };
-                let Ok(val) = serde_json::from_str::<Value>(data.trim()) else {
+            };
+            for raw_data in events {
+                let Ok(val) = serde_json::from_str::<Value>(raw_data.trim()) else {
                     continue;
                 };
                 if let Some(fr) = val
@@ -6281,6 +6442,7 @@ impl NativeSuperEngine {
                                     }
                                 } else {
                                     text.push_str(t);
+                                    self.record_partial_assistant_text(&text);
                                     if let Some(s) = sink {
                                         s(HarnessStreamEvent::DeltaBatch {
                                             message_id: msg_id.to_string(),
@@ -6316,8 +6478,8 @@ impl NativeSuperEngine {
                     }
                 }
             }
-            if cursor > 0 {
-                line_buf.drain(..cursor);
+            if reached_eof {
+                break;
             }
         }
 
@@ -6927,6 +7089,76 @@ enum StreamTurnError {
 
 fn is_retryable_status(st: StatusCode) -> bool {
     matches!(st.as_u16(), 429 | 500 | 502 | 503 | 504 | 529)
+}
+
+/// Pure transport/quota resilience body matcher (`RESOURCE_EXHAUSTED`, `QUOTA_EXCEEDED`,
+/// `ECONNRESET`, `RPC_FAILED`, `socket hang up`, `overloaded_error`) — strictly network/capacity
+/// recovery only, NEVER overrides safety/policy responses.
+#[must_use]
+pub(crate) fn is_transient_transport_body(body: &str) -> bool {
+    let up = body.to_ascii_uppercase();
+    up.contains("RESOURCE_EXHAUSTED")
+        || up.contains("QUOTA_EXCEEDED")
+        || up.contains("ECONNRESET")
+        || up.contains("RPC_FAILED")
+        || up.contains("SOCKET HANG UP")
+        || up.contains("OVERLOADED_ERROR")
+        || up.contains("TOO MANY REQUESTS")
+}
+
+/// Merge generated `HANDOFF.md` body while preserving existing `<!-- AGENT_NOTES_START -->...<!-- AGENT_NOTES_END -->` verbatim.
+#[must_use]
+pub(crate) fn preserve_agent_notes_handoff(existing: &str, generated: &str) -> String {
+    const START_MARK: &str = "<!-- AGENT_NOTES_START -->";
+    const END_MARK: &str = "<!-- AGENT_NOTES_END -->";
+    let preserved = if let (Some(s), Some(e)) = (existing.find(START_MARK), existing.find(END_MARK)) {
+        if e > s {
+            existing[s..e + END_MARK.len()].to_owned()
+        } else {
+            format!("{START_MARK}\n- (preserve manual session notes here)\n{END_MARK}")
+        }
+    } else {
+        format!("{START_MARK}\n- (preserve manual session notes here)\n{END_MARK}")
+    };
+    format!("{}\n\n{preserved}\n", generated.trim_end())
+}
+
+/// Atomic LF write with 6x Windows AV/indexer transient lock retry and `.tmp` cleanup.
+pub(crate) fn atomic_write_text_with_win_retry(target: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let lf = content.replace("\r\n", "\n");
+    let tmp = target.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..6u32 {
+        if let Err(e) = std::fs::write(&tmp, lf.as_bytes()) {
+            last_err = Some(e);
+            std::thread::sleep(Duration::from_millis(20 * u64::from(attempt + 1)));
+            continue;
+        }
+        match std::fs::rename(&tmp, target) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                let _ = std::fs::remove_file(target);
+                if std::fs::rename(&tmp, target).is_ok() {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(25 * u64::from(attempt + 1)));
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(target, lf.as_bytes()).map_err(|fallback_err| {
+        anyhow::anyhow!(
+            "atomic write to {} failed (last rename err={:?}, fallback err={fallback_err})",
+            target.display(),
+            last_err
+        )
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -7641,6 +7873,9 @@ pub async fn run_super_eval(opts: SuperEvalOptions) -> Result<SuperEvalReport> {
         opts.trajectory_path,
     )?;
     engine.wire_api_mode = opts.wire_api;
+    engine.research_mode = opts.research_mode;
+    engine.think_mode = opts.think_mode;
+    engine.proactive_lifecycle = opts.proactive_lifecycle;
 
     let startup_ms = start_all.elapsed().as_millis() as u64;
 
@@ -11012,6 +11247,114 @@ data: [DONE]\n\n";
         assert!(masked.contains("[MASKED_IP]"));
         assert!(masked.contains("[MASKED_EMAIL]"));
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn steer18_20_adaptive_modes_transport_classifier_and_handoff_notes_preservation() {
+        assert_eq!(AdaptiveMode::parse(None), AdaptiveMode::Auto);
+        assert_eq!(AdaptiveMode::parse(Some("deep")), AdaptiveMode::Deep);
+        assert_eq!(AdaptiveMode::parse(Some("off")), AdaptiveMode::Off);
+        assert!(is_transient_transport_body("RESOURCE_EXHAUSTED: quota exceeded"));
+        assert!(is_transient_transport_body("socket hang up ECONNRESET"));
+        assert!(!is_transient_transport_body("invalid json parameter"));
+
+        let existing = "# Old\n<!-- AGENT_NOTES_START -->\n- Keep my manual note!\n<!-- AGENT_NOTES_END -->\n";
+        let merged = preserve_agent_notes_handoff(existing, "# New Handoff\n- Updated state");
+        assert!(merged.contains("# New Handoff"));
+        assert!(merged.contains("- Keep my manual note!"));
+        assert!(merged.contains("<!-- AGENT_NOTES_START -->"));
+        assert!(merged.contains("<!-- AGENT_NOTES_END -->"));
+    }
+
+    #[tokio::test]
+    async fn aud04_sse_frame_buffer_handles_crlf_lf_split_chunks_and_multiline_data_identically() {
+        let lf_wire = b": keepalive\ndata: {\"choices\":[{\"delta\":{\"content\":\"HI\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        let crlf_wire = b": keepalive\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"HI\"},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+        let multiline_crlf = b"data: {\"choices\":[{\"delta\":\r\ndata: {\"content\":\"HI\"},\r\ndata: \"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+
+        let decode = |wire: &[u8], step: usize| -> Vec<String> {
+            let mut buf = SseFrameBuffer::default();
+            let mut out = Vec::new();
+            for chunk in wire.chunks(step) {
+                out.extend(buf.push_chunk(chunk));
+            }
+            out.extend(buf.finish());
+            out
+        };
+
+        let r_lf = decode(lf_wire, lf_wire.len());
+        let r_crlf = decode(crlf_wire, crlf_wire.len());
+        let r_1b = decode(crlf_wire, 1);
+        let r_ml = decode(multiline_crlf, 5);
+        assert_eq!(r_lf.len(), 2);
+        assert_eq!(r_crlf, r_lf);
+        assert_eq!(r_1b, r_lf);
+        assert_eq!(r_ml.len(), 2);
+        assert_eq!(r_ml[1], "[DONE]");
+        let v_lf: Value = serde_json::from_str(&r_lf[0]).unwrap();
+        let v_ml: Value = serde_json::from_str(&r_ml[0]).unwrap();
+        assert_eq!(v_lf, v_ml);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = listener.accept().await {
+                let mut req_buf = [0u8; 8192];
+                let _ = s.read(&mut req_buf).await;
+                let part1 = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+data: {\"choices\":[{\"delta\":\r\n";
+                let part2 = "data: {\"content\":\"MULTILINE_CRLF_OK\"},\r\n\
+data: \"finish_reason\":\"stop\"}]}\r\n\r\n\
+data: [DONE]\r\n\r\n";
+                let _ = s.write_all(part1.as_bytes()).await;
+                let _ = s.flush().await;
+                let _ = s.write_all(part2.as_bytes()).await;
+                let _ = s.shutdown().await;
+            }
+        });
+        let tmp = std::env::temp_dir().join(format!("omnia_aud04_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://127.0.0.1:{port}/v1"));
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        eng.stream_budget.inter_chunk_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("say ok", 3, 20, None).await.unwrap();
+        assert_eq!(sum.status, "completed");
+        assert_eq!(sum.final_text, "MULTILINE_CRLF_OK");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn aud18_preserves_emitted_partial_assistant_output_on_truncated_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = listener.accept().await {
+                let mut req_buf = [0u8; 8192];
+                let _ = s.read(&mut req_buf).await;
+                let partial = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"Partial answer before socket drop.\"},\"finish_reason\":null}]}\r\n\r\n";
+                let _ = s.write_all(partial.as_bytes()).await;
+                let _ = s.shutdown().await;
+            }
+        });
+        let tmp = std::env::temp_dir().join(format!("omnia_aud18_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://127.0.0.1:{port}/v1"));
+        eng.stream_budget.max_retries_per_turn = 0;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        eng.stream_budget.inter_chunk_timeout = Duration::from_secs(5);
+        let sum = eng.run_prompt("stream partial", 3, 20, None).await.unwrap();
+        assert_eq!(sum.status, "error");
+        assert_eq!(sum.final_text, "Partial answer before socket drop.");
+        assert!(
+            eng.messages
+                .iter()
+                .any(|m| m.content.contains("Partial answer before socket drop.")),
+            "emitted partial assistant text must be preserved in message history on failure"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

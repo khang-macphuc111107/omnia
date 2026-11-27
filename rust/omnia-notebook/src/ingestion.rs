@@ -2620,6 +2620,134 @@ fn sanitize_slug(input: &str) -> String {
     }
 }
 
+/// Normalizes `SRT`, YouTube `JSON3`, or `TTML` subtitle payloads into clean `WEBVTT`
+/// (reusable across Atelier media ingestion and Deep Research transcript extraction).
+#[must_use]
+pub fn normalize_subtitles_to_webvtt(raw: &str) -> String {
+    let trimmed = raw.trim_start_matches('\u{FEFF}').trim();
+    if trimmed.is_empty() {
+        return "WEBVTT\n".to_string();
+    }
+    if trimmed.starts_with("WEBVTT") {
+        return format!("{}\n", trimmed.replace("\r\n", "\n").replace('\r', "\n"));
+    }
+    // 1. YouTube JSON3 format (`{ "events": [{ "tStartMs": ..., "dDurationMs": ..., "segs": [{ "utf8": ... }] }] }`)
+    if trimmed.starts_with('{') {
+        if let Ok(Value::Object(root)) = serde_json::from_str::<Value>(trimmed) {
+            if let Some(events) = root.get("events").and_then(Value::as_array) {
+                let mut out = String::from("WEBVTT\n\n");
+                for ev in events {
+                    let start_ms = ev.get("tStartMs").and_then(Value::as_u64).unwrap_or(0);
+                    let dur_ms = ev.get("dDurationMs").and_then(Value::as_u64).unwrap_or(2000);
+                    let Some(segs) = ev.get("segs").and_then(Value::as_array) else {
+                        continue;
+                    };
+                    let text: String = segs
+                        .iter()
+                        .filter_map(|s| s.get("utf8").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("");
+                    let clean = text.replace('\n', " ").trim().to_string();
+                    if clean.is_empty() {
+                        continue;
+                    }
+                    out.push_str(&format!(
+                        "{} --> {}\n{}\n\n",
+                        format_vtt_ms(start_ms),
+                        format_vtt_ms(start_ms.saturating_add(dur_ms.max(100))),
+                        clean
+                    ));
+                }
+                return out;
+            }
+        }
+    }
+    // 2. TTML / XML captions (`<p begin="..." end="...">...</p>`)
+    if trimmed.starts_with('<') && (trimmed.contains("<tt") || trimmed.contains("<p ")) {
+        let mut out = String::from("WEBVTT\n\n");
+        let mut rest = trimmed;
+        while let Some(pos) = rest.find("<p ") {
+            let after = &rest[pos + 3..];
+            let Some(tag_end) = after.find('>') else {
+                break;
+            };
+            let attrs = &after[..tag_end];
+            let body_rest = &after[tag_end + 1..];
+            let Some(close_pos) = body_rest.find("</p>") else {
+                break;
+            };
+            let body_raw = &body_rest[..close_pos];
+            let begin = extract_xml_attr(attrs, "begin").unwrap_or_else(|| "00:00:00.000".into());
+            let end = extract_xml_attr(attrs, "end").unwrap_or_else(|| "00:00:02.000".into());
+            let text = clean_html_to_text(body_raw).trim().to_string();
+            if !text.is_empty() {
+                out.push_str(&format!(
+                    "{} --> {}\n{}\n\n",
+                    normalize_vtt_timestamp(&begin),
+                    normalize_vtt_timestamp(&end),
+                    text
+                ));
+            }
+            rest = &body_rest[close_pos + 4..];
+        }
+        return out;
+    }
+    // 3. SRT -> WEBVTT (replace `,` milliseconds with `.` on timestamp arrow lines)
+    let normalized = trimmed.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out = String::from("WEBVTT\n\n");
+    for line in normalized.lines() {
+        let t = line.trim();
+        if t.contains("-->") {
+            let parts: Vec<&str> = t.split("-->").collect();
+            if parts.len() == 2 {
+                out.push_str(&format!(
+                    "{} --> {}\n",
+                    normalize_vtt_timestamp(parts[0].trim()),
+                    normalize_vtt_timestamp(parts[1].trim())
+                ));
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn format_vtt_ms(ms: u64) -> String {
+    let hrs = ms / 3_600_000;
+    let rem = ms % 3_600_000;
+    let mins = rem / 60_000;
+    let rem2 = rem % 60_000;
+    let secs = rem2 / 1_000;
+    let millis = rem2 % 1_000;
+    format!("{hrs:02}:{mins:02}:{secs:02}.{millis:03}")
+}
+
+fn normalize_vtt_timestamp(raw: &str) -> String {
+    let cleaned = raw.trim().replace(',', ".");
+    if let Some(secs_str) = cleaned.strip_suffix('s') {
+        if let Ok(sec_f) = secs_str.parse::<f64>() {
+            if sec_f.is_finite() && sec_f >= 0.0 {
+                return format_vtt_ms((sec_f * 1000.0).round() as u64);
+            }
+        }
+    }
+    let parts: Vec<&str> = cleaned.split(':').collect();
+    if parts.len() == 2 {
+        format!("00:{cleaned}")
+    } else {
+        cleaned
+    }
+}
+
+fn extract_xml_attr(attrs: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let start = attrs.find(&needle)? + needle.len();
+    let end = attrs[start..].find('"')?;
+    Some(attrs[start..start + end].to_string())
+}
+
 /// Expose archive entry ceiling constant for callers.
 #[must_use]
 pub const fn max_archive_entries() -> usize {

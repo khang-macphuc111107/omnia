@@ -35,7 +35,10 @@ use crate::search::SearchMode;
 use crate::supervisor::spawn_supervised_command;
 use crate::swarm_runtime::{dispatch_swarm_tool_json, SwarmRuntime};
 use crate::test_time_scaling::{dispatch_test_scale_tool_json, TestTimeScalingConfig};
-use crate::web_tools::{web_fetch, web_search, BrowserToolManager};
+use crate::web_tools::{
+    web_fetch, web_fetch_structured, web_search_multi, web_search_wave, BrowserToolManager,
+    WebSearchOptions, WebSearchScope,
+};
 use aho_corasick::AhoCorasickBuilder;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -126,6 +129,14 @@ pub struct ToolRuntime {
     pub swarm: Arc<SwarmRuntime>,
     /// Test-time scaling configuration.
     pub tts_config: TestTimeScalingConfig,
+    /// Lazily opened dual-tier persistent ResearchVault (`Local` + `Global` SQLite WAL RAG).
+    pub research_vault: Arc<Mutex<Option<Arc<omnia_harness::research_vault::ResearchVault>>>>,
+    /// Lazily opened persisted DeepThinkEngine (5-stage multi-hypothesis & falsification ledger).
+    pub deep_think: Arc<Mutex<Option<Arc<omnia_harness::deep_think::DeepThinkEngine>>>>,
+    /// Lazily opened 12-Artifact Proactive Lifecycle OS & 2-Tier Lessons store.
+    pub artifact_os: Arc<Mutex<Option<Arc<omnia_harness::artifact_os::ArtifactOs>>>>,
+    /// Lazily loaded Bilingual SkillRegistry + 1,001-entry Zero-Bloat Cold Vault.
+    pub skill_registry: Arc<Mutex<Option<Arc<omnia_harness::skill_registry::SkillRegistry>>>>,
     /// Explicit per-tool handlers registered via `register_deferred_tool`.
     pub deferred_handlers: Arc<Mutex<HashMap<String, ExtensionToolHandler>>>,
     /// Dynamic read-only flag overrides for deferred tools.
@@ -220,6 +231,10 @@ impl ToolRuntime {
             memory,
             swarm,
             tts_config: TestTimeScalingConfig::default(),
+            research_vault: Arc::new(Mutex::new(None)),
+            deep_think: Arc::new(Mutex::new(None)),
+            artifact_os: Arc::new(Mutex::new(None)),
+            skill_registry: Arc::new(Mutex::new(None)),
             workspace_root: clean_root,
             approval_mode,
             workspace_trusted,
@@ -269,6 +284,8 @@ impl ToolRuntime {
                 | "ast_grep"
                 | "web_fetch"
                 | "web_search"
+                | "verify_artifact"
+                | "omni_skills"
                 | "memory_recall"
                 | "swarm_read"
                 | "advisor_check"
@@ -315,6 +332,35 @@ impl ToolRuntime {
         }
         rep.cleaned
     }
+}
+
+/// Deterministic head+tail truncation keeping omitted line/byte counts (`<= 4,500` tok / `15,500` chars).
+#[must_use]
+pub(crate) fn bound_head_tail_chars(input: &str, max_chars: usize) -> String {
+    let total_chars = input.chars().count();
+    if total_chars <= max_chars || max_chars < 512 {
+        return input.to_owned();
+    }
+    let head_keep = (max_chars * 7) / 10;
+    let tail_keep = max_chars.saturating_sub(head_keep).saturating_sub(140);
+    let head: String = input.chars().take(head_keep).collect();
+    let tail: String = input
+        .chars()
+        .skip(total_chars.saturating_sub(tail_keep))
+        .collect();
+    let omitted_chars = total_chars.saturating_sub(head_keep + tail_keep);
+    let omitted_lines = input
+        .chars()
+        .skip(head_keep)
+        .take(omitted_chars)
+        .filter(|&c| c == '\n')
+        .count();
+    format!(
+        "{head}\n\n[... truncated {omitted_chars} chars / {omitted_lines} lines to stay within <=4,500-token safe read budget ...]\n\n{tail}"
+    )
+}
+
+impl ToolRuntime {
 
     pub async fn authorize(&self, perm_tool: &str, target: &str) -> Result<()> {
         self.authorize_any(&[perm_tool], target).await
@@ -579,6 +625,12 @@ impl ToolRuntime {
             "dap" => self.exec_dap(args).await,
             "web_fetch" => self.exec_web_fetch(args).await,
             "web_search" => self.exec_web_search(args).await,
+            "deep_research" => self.exec_deep_research(args).await,
+            "deep_think" => self.exec_deep_think(args).await,
+            "workspace_lifecycle" => self.exec_workspace_lifecycle(args).await,
+            "skill_codify" => self.exec_skill_codify(args).await,
+            "verify_artifact" => self.exec_verify_artifact(args).await,
+            "omni_skills" => self.exec_omni_skills(args).await,
             "browser" => self.exec_browser(args).await,
             "mcp_call" => self.exec_mcp_call(args).await,
             "mcp_manage" => self.exec_mcp_manage(args).await,
@@ -1487,6 +1539,12 @@ impl ToolRuntime {
                 | "dap"
                 | "web_fetch"
                 | "web_search"
+                | "deep_research"
+                | "deep_think"
+                | "workspace_lifecycle"
+                | "skill_codify"
+                | "verify_artifact"
+                | "omni_skills"
                 | "browser"
                 | "mcp_call"
                 | "mcp_manage"
@@ -2044,25 +2102,953 @@ impl ToolRuntime {
             .context("web_fetch requires string parameter 'url'")?;
         self.authorize("web_fetch", url).await?;
         let raw = args.get("raw").and_then(Value::as_bool).unwrap_or(false);
+        let structured = args
+            .get("structured")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let max_chars = args
             .get("max_chars")
             .and_then(Value::as_u64)
-            .unwrap_or(16_000) as usize;
-        let out = web_fetch(url, raw, max_chars).await?;
-        let serialized = serde_json::to_string_pretty(&out)?;
-        Ok(self.sanitize_and_track_taint(&serialized, "web_fetch"))
+            .unwrap_or(15_500) as usize;
+        let serialized = if structured {
+            let out = web_fetch_structured(url, raw, max_chars).await?;
+            serde_json::to_string_pretty(&out)?
+        } else {
+            let out = web_fetch(url, raw, max_chars).await?;
+            serde_json::to_string_pretty(&out)?
+        };
+        let bounded = bound_head_tail_chars(&serialized, 15_500);
+        Ok(self.sanitize_and_track_taint(&bounded, "web_fetch"))
     }
 
     async fn exec_web_search(&self, args: &Value) -> Result<String> {
+        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize;
+        let scope = WebSearchScope::parse(args.get("scope").and_then(Value::as_str));
+        let site = args.get("site").and_then(Value::as_str).map(str::to_owned);
+        let published_after = args
+            .get("published_after")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let published_before = args
+            .get("published_before")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+
+        if let Some(arr) = args.get("queries").and_then(Value::as_array) {
+            let queries: Vec<String> = arr
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if queries.is_empty() {
+                bail!("web_search `queries` array must contain at least one non-empty query");
+            }
+            self.authorize("web_search", &queries.join(" | ")).await?;
+            let bundles = web_search_wave(&queries, limit, scope, site.as_deref()).await?;
+            let serialized = serde_json::to_string_pretty(&json!({
+                "waveCount": bundles.len(),
+                "scope": scope,
+                "bundles": bundles,
+            }))?;
+            let bounded = bound_head_tail_chars(&serialized, 15_500);
+            return Ok(self.sanitize_and_track_taint(&bounded, "web_search"));
+        }
+
         let query = args
             .get("query")
             .and_then(Value::as_str)
-            .context("web_search requires string parameter 'query'")?;
+            .context("web_search requires string parameter 'query' or array 'queries'")?;
         self.authorize("web_search", query).await?;
+        let bundle = web_search_multi(&WebSearchOptions {
+            query: query.to_owned(),
+            limit,
+            scope,
+            site,
+            published_after,
+            published_before,
+        })
+        .await?;
+        let serialized = serde_json::to_string_pretty(&json!({
+            "provider": bundle.providers_queried.join("+"),
+            "query": bundle.query,
+            "effectiveQuery": bundle.effective_query,
+            "scope": bundle.scope,
+            "providerErrors": bundle.provider_errors,
+            "results": bundle.hits,
+        }))?;
+        let bounded = bound_head_tail_chars(&serialized, 15_500);
+        Ok(self.sanitize_and_track_taint(&bounded, "web_search"))
+    }
+
+    fn get_or_open_research_vault(
+        &self,
+    ) -> Result<Arc<omnia_harness::research_vault::ResearchVault>> {
+        let mut slot = self.research_vault.lock().unwrap();
+        if let Some(ref v) = *slot {
+            return Ok(Arc::clone(v));
+        }
+        let vault = if cfg!(test) && self.db.is_none() {
+            omnia_harness::research_vault::ResearchVault::open_in_memory()
+                .map_err(|e| anyhow::anyhow!(e))?
+        } else {
+            let global_dir = crate::agent_store::default_omnia_data_dir().join("research-vault");
+            omnia_harness::research_vault::ResearchVault::open(
+                &self.workspace_root,
+                Some(&global_dir),
+            )
+            .or_else(|_| omnia_harness::research_vault::ResearchVault::open_in_memory())
+            .map_err(|e| anyhow::anyhow!(e))?
+        };
+        let arc = Arc::new(vault);
+        *slot = Some(Arc::clone(&arc));
+        Ok(arc)
+    }
+
+    fn get_or_open_deep_think(
+        &self,
+    ) -> Result<Arc<omnia_harness::deep_think::DeepThinkEngine>> {
+        let mut slot = self.deep_think.lock().unwrap();
+        if let Some(ref e) = *slot {
+            return Ok(Arc::clone(e));
+        }
+        let engine = if cfg!(test) && self.db.is_none() {
+            omnia_harness::deep_think::DeepThinkEngine::open_in_memory()
+                .map_err(|e| anyhow::anyhow!(e))?
+        } else {
+            let db_path = crate::agent_store::default_omnia_data_dir()
+                .join("memory")
+                .join("omnia_deep_think.db");
+            omnia_harness::deep_think::DeepThinkEngine::open(&db_path)
+                .or_else(|_| omnia_harness::deep_think::DeepThinkEngine::open_in_memory())
+                .map_err(|e| anyhow::anyhow!(e))?
+        };
+        let arc = Arc::new(engine);
+        *slot = Some(Arc::clone(&arc));
+        Ok(arc)
+    }
+
+    async fn exec_deep_research(&self, args: &Value) -> Result<String> {
+        use omnia_harness::research_vault::{EvidenceGrade, VaultTier};
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("deep_research requires string parameter 'action'")?;
+        self.authorize("deep_research", action).await?;
+        let vault = self.get_or_open_research_vault()?;
+        let tier_raw = args.get("tier").and_then(Value::as_str);
+        let tier = VaultTier::from_str_lossy(tier_raw.unwrap_or("local"));
+        let tier_filter = match tier_raw.map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("local") => Some(VaultTier::Local),
+            Some("global") => Some(VaultTier::Global),
+            _ => None,
+        };
+        let session_id = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or(&self.session_key);
+
+        let serialized = match action {
+            "status" => {
+                let ledger = vault.sources_ledger(tier_filter).map_err(|e| anyhow::anyhow!(e))?;
+                let claims = vault.count_claims(None).unwrap_or(0);
+                serde_json::to_string_pretty(&json!({
+                    "ok": true,
+                    "searched": ledger.total_searched,
+                    "viewed": ledger.total_viewed,
+                    "extracted": ledger.total_extracted,
+                    "blocked": ledger.total_blocked,
+                    "authRequired": ledger.total_auth_required,
+                    "failed": ledger.total_failed,
+                    "claimsCount": claims,
+                    "citedIds": ledger.cited_ids,
+                }))?
+            }
+            "search_wave" => {
+                let query = args.get("query").and_then(Value::as_str).unwrap_or("").trim();
+                let mut queries: Vec<String> = args
+                    .get("queries")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if queries.is_empty() && !query.is_empty() {
+                    queries.push(query.to_owned());
+                }
+                if queries.is_empty() {
+                    bail!("deep_research search_wave requires 'query' or non-empty 'queries'");
+                }
+                let scope = WebSearchScope::parse(args.get("scope").and_then(Value::as_str));
+                let site = args.get("site").and_then(Value::as_str);
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(6) as usize;
+                let auto_fetch = args
+                    .get("auto_fetch")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let primary_q = queries[0].clone();
+                let rag_hits = vault
+                    .query_rag(&primary_q, tier_filter, 6)
+                    .unwrap_or_default();
+                let bundles = web_search_wave(&queries, limit, scope, site).await?;
+                let mut recorded = Vec::new();
+                let mut fetch_urls = Vec::new();
+                for b in &bundles {
+                    for h in &b.hits {
+                        if let Ok(rec) = vault.record_searched_candidate(
+                            tier,
+                            &h.canonical_url,
+                            &h.title,
+                            &b.query,
+                            &h.snippet,
+                        ) {
+                            if fetch_urls.len() < 4 {
+                                fetch_urls.push(h.canonical_url.clone());
+                            }
+                            recorded.push(rec);
+                        }
+                    }
+                }
+                let fetched = if auto_fetch && !fetch_urls.is_empty() {
+                    vault
+                        .fetch_urls_parallel(tier, &fetch_urls, &primary_q, 4, false)
+                        .await
+                } else {
+                    Vec::new()
+                };
+                let ledger = vault.sources_ledger(tier_filter).map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({
+                    "ok": true,
+                    "queries": queries,
+                    "ragHits": rag_hits,
+                    "searchedSources": recorded,
+                    "fetchedSources": fetched,
+                    "ledger": ledger,
+                }))?
+            }
+            "fetch_ingest" => {
+                let mut urls: Vec<String> = args
+                    .get("urls")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(u) = args.get("url").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+                    urls.push(u.to_owned());
+                }
+                if urls.is_empty() {
+                    bail!("deep_research fetch_ingest requires 'url' or 'urls'");
+                }
+                let origin = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or("direct_fetch");
+                let sources = vault
+                    .fetch_urls_parallel(tier, &urls, origin, 4, false)
+                    .await;
+                let ledger = vault.sources_ledger(tier_filter).map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({
+                    "ok": true,
+                    "sources": sources,
+                    "ledger": ledger,
+                }))?
+            }
+            "ingest" => {
+                let url = args
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .context("deep_research ingest requires 'url'")?;
+                let content = args
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .context("deep_research ingest requires 'content'")?;
+                let title = args.get("title").and_then(Value::as_str);
+                let origin = args.get("query").and_then(Value::as_str).unwrap_or("manual_ingest");
+                let rec = vault
+                    .ingest_document(tier, url, None, title, content, "text/markdown", Some(200), origin)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "source": rec }))?
+            }
+            "query_rag" => {
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .context("deep_research query_rag requires 'query'")?;
+                let top_k = args.get("top_k").and_then(Value::as_u64).unwrap_or(8) as usize;
+                let hits = vault
+                    .query_rag(query, tier_filter, top_k)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({
+                    "ok": true,
+                    "query": query,
+                    "hits": hits,
+                }))?
+            }
+            "record_claim" => {
+                let text = args
+                    .get("claim_text")
+                    .or_else(|| args.get("content"))
+                    .and_then(Value::as_str)
+                    .context("deep_research record_claim requires 'claim_text'")?;
+                let citations: Vec<String> = args
+                    .get("citations")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let grade = EvidenceGrade::from_str_lossy(
+                    args.get("grade").and_then(Value::as_str).unwrap_or("single_source"),
+                );
+                let claim = vault
+                    .record_claim(session_id, text, citations, grade, "")
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let check = vault.verify_inline_citations(text);
+                serde_json::to_string_pretty(&json!({
+                    "ok": true,
+                    "claim": claim,
+                    "citationCheck": check,
+                }))?
+            }
+            "sources_ledger" => {
+                let ledger = vault.sources_ledger(tier_filter).map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "ledger": ledger }))?
+            }
+            "extract_table" => {
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .context("deep_research extract_table requires 'query'")?;
+                let columns: Vec<String> = args
+                    .get("columns")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_else(|| vec!["source".into(), "finding".into(), "citation".into()]);
+                let rs_id = args.get("result_set_id").and_then(Value::as_str);
+                let top_k = args.get("top_k").and_then(Value::as_u64).unwrap_or(10) as usize;
+                let table = vault
+                    .extract_structured_table(rs_id, query, &columns, top_k)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "table": table }))?
+            }
+            "pin_source" => {
+                let cid = args
+                    .get("citation_id")
+                    .and_then(Value::as_str)
+                    .context("deep_research pin_source requires 'citation_id'")?;
+                let target = VaultTier::from_str_lossy(
+                    args.get("tier").and_then(Value::as_str).unwrap_or("global"),
+                );
+                let pinned = vault
+                    .pin_source(cid, target)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "source": pinned }))?
+            }
+            "export_dossier" => {
+                let fmt = args.get("format").and_then(Value::as_str).unwrap_or("markdown");
+                vault
+                    .export_dossier(fmt, Some(session_id))
+                    .map_err(|e| anyhow::anyhow!(e))?
+            }
+            other => bail!("unsupported deep_research action `{other}`"),
+        };
+        let bounded = bound_head_tail_chars(&serialized, 15_500);
+        Ok(self.sanitize_and_track_taint(&bounded, "deep_research"))
+    }
+
+    async fn exec_deep_think(&self, args: &Value) -> Result<String> {
+        use omnia_harness::deep_think::{
+            model_vendor_family, BranchKind, DeepThinkEngine, EpistemicBand, RedTeamChallenge,
+            ThinkBranch,
+        };
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("deep_think requires string parameter 'action'")?;
+        self.authorize("deep_think", action).await?;
+        let eng = self.get_or_open_deep_think()?;
+        let session_id = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or(&self.session_key);
+
+        let serialized = match action {
+            "start" => {
+                let problem = args
+                    .get("problem")
+                    .and_then(Value::as_str)
+                    .context("deep_think start requires 'problem'")?;
+                let invariants: Vec<String> = args
+                    .get("invariants")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_default();
+                let assumptions: Vec<String> = args
+                    .get("assumptions")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_default();
+                let effort = args.get("effort").and_then(Value::as_str).unwrap_or("max");
+                let sess = eng
+                    .start_session(session_id, problem, invariants, assumptions, effort)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&sess)?
+            }
+            "branch" => {
+                let think_id = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("deep_think branch requires 'session_id' (think_id)")?;
+                let title = args
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Candidate Approach");
+                let kind = BranchKind::from_str_lossy(
+                    args.get("kind").and_then(Value::as_str).unwrap_or("baseline"),
+                );
+                let branch = ThinkBranch {
+                    branch_id: args
+                        .get("branch_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("br-{}", &uuid::Uuid::new_v4().to_string()[..8])),
+                    kind,
+                    title: title.to_owned(),
+                    hypothesis: args
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    complexity: args
+                        .get("complexity")
+                        .and_then(Value::as_str)
+                        .unwrap_or("O(N)")
+                        .to_owned(),
+                    failure_modes: args
+                        .get("failure_modes")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                        .unwrap_or_default(),
+                    blast_radius: args
+                        .get("blast_radius")
+                        .and_then(Value::as_str)
+                        .unwrap_or("localized")
+                        .to_owned(),
+                    citations: args
+                        .get("citations")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                        .unwrap_or_default(),
+                    epistemic_band: EpistemicBand::from_str_lossy(
+                        args.get("epistemic_band")
+                            .and_then(Value::as_str)
+                            .unwrap_or("hypothesis"),
+                    ),
+                    falsification_cmd: None,
+                    falsification_passed: None,
+                    falsification_receipt: None,
+                    score_bps: 7_500,
+                    rejected_reason: None,
+                };
+                let sess = eng
+                    .add_branch(think_id, branch)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&sess)?
+            }
+            "falsify" => {
+                let think_id = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("deep_think falsify requires 'session_id' (think_id)")?;
+                let branch_id = args
+                    .get("branch_id")
+                    .and_then(Value::as_str)
+                    .context("deep_think falsify requires 'branch_id'")?;
+                let cmd = args.get("command").and_then(Value::as_str).unwrap_or("probe");
+                let passed = args.get("passed").and_then(Value::as_bool).unwrap_or(false);
+                let ev = args.get("evidence").and_then(Value::as_str).unwrap_or("");
+                let sess = eng
+                    .record_falsification(think_id, branch_id, cmd, passed, ev)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&sess)?
+            }
+            "redteam" => {
+                let think_id = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("deep_think redteam requires 'session_id' (think_id)")?;
+                let challenger = args
+                    .get("challenger_model")
+                    .and_then(Value::as_str)
+                    .unwrap_or("gpt-6.2-sol");
+                let primary = "claude-sonnet-5-5";
+                let critique = args.get("critique").and_then(Value::as_str).unwrap_or("");
+                let severity = args.get("severity").and_then(Value::as_str).unwrap_or("reviewed");
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let challenge = RedTeamChallenge {
+                    challenger_model: challenger.to_owned(),
+                    primary_model: primary.to_owned(),
+                    distinct_family: model_vendor_family(challenger)
+                        != model_vendor_family(primary),
+                    critiques: if critique.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![critique.to_owned()]
+                    },
+                    mitigations: Vec::new(),
+                    verdict: severity.to_owned(),
+                    created_at_ms: now_ms,
+                };
+                let sess = eng
+                    .record_redteam(think_id, challenge)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&sess)?
+            }
+            "conclude" => {
+                let think_id = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("deep_think conclude requires 'session_id' (think_id)")?;
+                let winner = args
+                    .get("winner_branch_id")
+                    .and_then(Value::as_str)
+                    .context("deep_think conclude requires 'winner_branch_id'")?;
+                let synthesis = args.get("synthesis").and_then(Value::as_str).unwrap_or("");
+                let receipt = json!({
+                    "verified": [format!("Winner branch `{winner}` concluded")],
+                    "partial": [],
+                    "unresolved": [],
+                    "blocked": [],
+                    "next": [],
+                    "exactPracticalLimits": "Verify executable falsification receipts independently."
+                });
+                let sess = eng
+                    .conclude_session(think_id, winner, synthesis, receipt)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let rejected = DeepThinkEngine::rejected_alternatives_matrix(&sess);
+                serde_json::to_string_pretty(&json!({
+                    "session": sess,
+                    "rejectedAlternatives": rejected,
+                }))?
+            }
+            "status" => {
+                let think_id = args
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .context("deep_think status requires 'session_id' (think_id)")?;
+                let sess = eng.get_session(think_id).map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&sess)?
+            }
+            "list" => {
+                let sessions = eng
+                    .list_sessions(None, 20)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&sessions)?
+            }
+            other => bail!("unsupported deep_think action `{other}`"),
+        };
+        Ok(bound_head_tail_chars(&serialized, 15_500))
+    }
+
+    fn get_or_open_artifact_os(&self) -> Result<Arc<omnia_harness::artifact_os::ArtifactOs>> {
+        let mut slot = self.artifact_os.lock().unwrap();
+        if let Some(ref a) = *slot {
+            return Ok(Arc::clone(a));
+        }
+        let aos = if cfg!(test) && self.db.is_none() {
+            omnia_harness::artifact_os::ArtifactOs::open_in_memory(&self.workspace_root)
+                .map_err(|e| anyhow::anyhow!(e))?
+        } else {
+            let mem_dir = crate::agent_store::default_omnia_data_dir().join("memory");
+            let db_path = mem_dir.join("omnia_artifact_os.db");
+            omnia_harness::artifact_os::ArtifactOs::open(
+                &self.workspace_root,
+                &db_path,
+                Some(&mem_dir),
+            )
+            .or_else(|_| omnia_harness::artifact_os::ArtifactOs::open_in_memory(&self.workspace_root))
+            .map_err(|e| anyhow::anyhow!(e))?
+        };
+        let arc = Arc::new(aos);
+        *slot = Some(Arc::clone(&arc));
+        Ok(arc)
+    }
+
+    fn get_or_load_skill_registry(
+        &self,
+    ) -> Arc<omnia_harness::skill_registry::SkillRegistry> {
+        let mut slot = self.skill_registry.lock().unwrap();
+        if let Some(ref r) = *slot {
+            return Arc::clone(r);
+        }
+        let reg = omnia_harness::skill_registry::SkillRegistry::new();
+        if self.workspace_trusted {
+            let _ = reg.load_from_workspace(&self.workspace_root);
+        }
+        let _ = reg.load_default_cold_vault();
+        let arc = Arc::new(reg);
+        *slot = Some(Arc::clone(&arc));
+        arc
+    }
+
+    async fn exec_workspace_lifecycle(&self, args: &Value) -> Result<String> {
+        use omnia_harness::artifact_os::{
+            ArtifactKind, LessonRecord, LinkRelation, SixStateReceipt,
+        };
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("workspace_lifecycle requires string parameter 'action'")?;
+        self.authorize("workspace_lifecycle", action).await?;
+        let aos = self.get_or_open_artifact_os()?;
+        let project_to_disk = args
+            .get("project_to_disk")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && self.workspace_trusted;
+
+        let serialized = match action {
+            "status" => {
+                let arts = aos.list_artifacts(None, None).map_err(|e| anyhow::anyhow!(e))?;
+                let links = aos.list_all_links().map_err(|e| anyhow::anyhow!(e))?;
+                let lessons = aos.list_lessons(None).map_err(|e| anyhow::anyhow!(e))?;
+                let super_st = aos.super_state().map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({
+                    "ok": true,
+                    "artifactCount": arts.len(),
+                    "linkCount": links.len(),
+                    "lessonCount": lessons.len(),
+                    "superState": super_st,
+                    "artifacts": arts,
+                }))?
+            }
+            "list" => {
+                let kind = args
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .and_then(ArtifactKind::from_str_lossy);
+                let scope = args.get("scope").and_then(Value::as_str);
+                let arts = aos
+                    .list_artifacts(kind, scope)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let links = aos.list_all_links().map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({
+                    "ok": true,
+                    "artifacts": arts,
+                    "links": links,
+                }))?
+            }
+            "upsert" => {
+                let kind_raw = args
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .context("workspace_lifecycle upsert requires 'kind'")?;
+                let kind = ArtifactKind::from_str_lossy(kind_raw)
+                    .ok_or_else(|| anyhow::anyhow!("unknown artifact kind `{kind_raw}`"))?;
+                let title = args
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or(kind_raw);
+                let slug = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(title);
+                let status = args
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("active");
+                let scope = args
+                    .get("scope")
+                    .and_then(Value::as_str)
+                    .unwrap_or("project");
+                let body = args.get("content").and_then(Value::as_str).unwrap_or("");
+                let art = aos
+                    .upsert_artifact(kind, slug, title, status, scope, body, json!({}), None, project_to_disk)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "artifact": art }))?
+            }
+            "link" => {
+                let from_id = args
+                    .get("from_id")
+                    .and_then(Value::as_str)
+                    .context("workspace_lifecycle link requires 'from_id'")?;
+                let to_id = args
+                    .get("to_id")
+                    .and_then(Value::as_str)
+                    .context("workspace_lifecycle link requires 'to_id'")?;
+                let rel = LinkRelation::from_str_lossy(
+                    args.get("relation").and_then(Value::as_str).unwrap_or("tracks"),
+                );
+                let note = args.get("summary").and_then(Value::as_str).unwrap_or("");
+                let link = aos
+                    .link_artifacts(from_id, to_id, rel, note)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "link": link }))?
+            }
+            "todo" => {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("workspace_lifecycle todo requires 'id'")?;
+                let status = args
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("in_progress");
+                let evidence = args.get("evidence_receipt").and_then(Value::as_str);
+                let art = aos
+                    .update_todo_status(id, status, evidence)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "artifact": art }))?
+            }
+            "dod" => {
+                let id = args
+                    .get("gate_id")
+                    .or_else(|| args.get("id"))
+                    .and_then(Value::as_str)
+                    .context("workspace_lifecycle dod requires 'gate_id' or 'id'")?;
+                let passed = args.get("verified").and_then(Value::as_bool).unwrap_or(false);
+                let ev = args
+                    .get("evidence_receipt")
+                    .or_else(|| args.get("summary"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let mut receipt = SixStateReceipt::default();
+                if passed {
+                    if !ev.trim().is_empty() {
+                        receipt.verified.push(ev.trim().to_owned());
+                    }
+                } else if !ev.trim().is_empty() {
+                    receipt.unresolved.push(ev.trim().to_owned());
+                }
+                let art = aos
+                    .update_dod_gate(id, passed, receipt)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "artifact": art }))?
+            }
+            "handoff" => {
+                let title = args
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Session Handoff");
+                let body = args
+                    .get("content")
+                    .or_else(|| args.get("summary"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Session checkpoint handoff");
+                let mut receipt = SixStateReceipt::default();
+                if let Some(ev) = args.get("evidence_receipt").and_then(Value::as_str) {
+                    if !ev.trim().is_empty() {
+                        receipt.verified.push(ev.trim().to_owned());
+                    }
+                }
+                let art = aos
+                    .write_handoff_preserving_notes(title, body, receipt, project_to_disk)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "artifact": art }))?
+            }
+            "learn" => {
+                let title = args
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .context("workspace_lifecycle learn requires 'title'")?;
+                let content = args
+                    .get("content")
+                    .or_else(|| args.get("summary"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let scope = args.get("scope").and_then(Value::as_str).unwrap_or("project");
+                let tags: Vec<String> = args
+                    .get("tags")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_default();
+                let lesson = LessonRecord {
+                    id: args
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("les-{}", &uuid::Uuid::new_v4().to_string()[..8])),
+                    scope: scope.to_owned(),
+                    title: title.to_owned(),
+                    symptom: content.to_owned(),
+                    root_cause: args
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .unwrap_or(content)
+                        .to_owned(),
+                    invariant: content.to_owned(),
+                    anti_pattern: String::new(),
+                    verify_cmd: args
+                        .get("evidence_receipt")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    tags,
+                    provenance_sha: String::new(),
+                    promoted_skill_slug: None,
+                    overlap_warning: None,
+                    created_at_ms: chrono::Utc::now().timestamp_millis(),
+                };
+                let saved = aos
+                    .capture_lesson(lesson, project_to_disk)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "lesson": saved }))?
+            }
+            "lessons" => {
+                let scope = args.get("scope").and_then(Value::as_str);
+                let lessons = aos.list_lessons(scope).map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "lessons": lessons }))?
+            }
+            "gap_radar" => {
+                if let Some(q) = args.get("query").and_then(Value::as_str) {
+                    let _ = aos.record_gap_telemetry(
+                        q,
+                        0.0,
+                        1,
+                        args.get("summary").and_then(Value::as_str).unwrap_or("reported_gap"),
+                    );
+                }
+                let rep = aos.gap_radar_report().map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&json!({ "ok": true, "gapRadar": rep }))?
+            }
+            "super_state" => {
+                let mut patch = serde_json::Map::new();
+                if let Some(w) = args.get("wave").and_then(Value::as_u64) {
+                    patch.insert("wave".to_owned(), json!(w));
+                }
+                if let Some(s) = args.get("strikes").and_then(Value::as_u64) {
+                    patch.insert("strikeCount".to_owned(), json!(s));
+                }
+                if let Some(p) = args.get("phase").and_then(Value::as_str) {
+                    patch.insert("phase".to_owned(), json!(p));
+                }
+                let st = if patch.is_empty() {
+                    aos.super_state().map_err(|e| anyhow::anyhow!(e))?
+                } else {
+                    aos.update_super_state(Value::Object(patch), project_to_disk)
+                        .map_err(|e| anyhow::anyhow!(e))?
+                };
+                serde_json::to_string_pretty(&json!({ "ok": true, "superState": st }))?
+            }
+            other => bail!("unsupported workspace_lifecycle action `{other}`"),
+        };
+        Ok(bound_head_tail_chars(&serialized, 15_500))
+    }
+
+    async fn exec_skill_codify(&self, args: &Value) -> Result<String> {
+        use omnia_harness::skill_registry::CodifySkillRequest;
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("skill_codify requires string parameter 'action'")?;
+        self.authorize("skill_codify", action).await?;
+        let reg = self.get_or_load_skill_registry();
+        let serialized = match action {
+            "doctor" => serde_json::to_string_pretty(&reg.doctor())?,
+            "codify" => {
+                if !self.workspace_trusted {
+                    bail!("skill_codify blocked in untrusted workspace");
+                }
+                let slug = args
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .context("skill_codify codify requires 'slug'")?;
+                let description = args
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .context("skill_codify codify requires 'description' starting with 'Use when...'")?;
+                let body = args
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .context("skill_codify codify requires 'body'")?;
+                let category = args
+                    .get("category")
+                    .and_then(Value::as_str)
+                    .unwrap_or("engineering");
+                let canonical_artifacts: Vec<String> = args
+                    .get("canonical_artifacts")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_default();
+                let req = CodifySkillRequest {
+                    slug: slug.to_owned(),
+                    description: description.to_owned(),
+                    category: category.to_owned(),
+                    canonical_artifacts,
+                    body_md: body.to_owned(),
+                    invariants_md: None,
+                    dry_run: false,
+                };
+                let res = reg
+                    .codify_skill(&self.workspace_root, &req)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                serde_json::to_string_pretty(&res)?
+            }
+            other => bail!("unsupported skill_codify action `{other}`"),
+        };
+        Ok(bound_head_tail_chars(&serialized, 15_500))
+    }
+
+    async fn exec_verify_artifact(&self, args: &Value) -> Result<String> {
+        let content = if let Some(rel) = args.get("path").and_then(Value::as_str) {
+            let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+            self.authorize("verify_artifact", &abs.to_string_lossy())
+                .await?;
+            fs::read_to_string(&abs)
+                .with_context(|| format!("failed reading artifact {}", abs.display()))?
+        } else {
+            let raw = args
+                .get("content")
+                .and_then(Value::as_str)
+                .context("verify_artifact requires either 'path' or 'content'")?;
+            self.authorize("verify_artifact", "inline").await?;
+            raw.to_owned()
+        };
+        let fg = args.get("fg_hex").and_then(Value::as_str);
+        let bg = args.get("bg_hex").and_then(Value::as_str);
+        let vault_opt = self.research_vault.lock().unwrap().clone();
+        let report = omnia_harness::artifact_os::verify_artifact_content(
+            &content,
+            fg,
+            bg,
+            vault_opt.as_deref(),
+        );
+        Ok(serde_json::to_string_pretty(&report)?)
+    }
+
+    async fn exec_omni_skills(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .context("omni_skills requires string parameter 'action'")?;
+        self.authorize("omni_skills", action).await?;
+        let reg = self.get_or_load_skill_registry();
+        let query = args.get("query").and_then(Value::as_str).unwrap_or("");
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize;
-        let out = web_search(query, limit).await?;
-        let serialized = serde_json::to_string_pretty(&out)?;
-        Ok(self.sanitize_and_track_taint(&serialized, "web_search"))
+        let serialized = match action {
+            "route" => serde_json::to_string_pretty(&reg.search_with_vault(query, limit, true))?,
+            "vault" => serde_json::to_string_pretty(&reg.search_with_vault(query, limit.max(12), true))?,
+            "dag" => serde_json::to_string_pretty(&reg.compose_4stage_dag(query, 3))?,
+            "pipelines" => serde_json::to_string_pretty(&reg.pipelines())?,
+            "doctor" => serde_json::to_string_pretty(&reg.doctor())?,
+            other => bail!("unsupported omni_skills action `{other}`"),
+        };
+        Ok(bound_head_tail_chars(&serialized, 15_500))
     }
 
     async fn exec_browser(&self, args: &Value) -> Result<String> {
@@ -4035,6 +5021,247 @@ mod tests {
             "clean 30k output under 20k cap should keep >=19k chars, got {}",
             capped_clean.len()
         );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn steer18_20_deferred_research_think_lifecycle_verify_and_skills_tools_work_end_to_end() {
+        let tmp = std::env::temp_dir().join(format!("omni_s18_tools_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(tmp.join(".agents/skills")).unwrap();
+        let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Yolo,
+            true,
+            PermissionsEngine::default_rules(),
+            graph,
+            ctx,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        // 1. deep_research: ingest -> query_rag -> record_claim -> sources_ledger -> extract_table -> export_dossier
+        let ing = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_research",
+                    "arguments": {
+                        "action": "ingest",
+                        "tier": "local",
+                        "url": "https://example.org/rust-kv-cache",
+                        "title": "Prefix-0 KV Cache Architecture",
+                        "content": "# Prefix-0 Invariance\nKeeping system prompt and sorted tool schemas immutable achieves >92% KV cache hits."
+                    }
+                }),
+            )
+            .await;
+        assert!(!ing.is_error, "deep_research ingest failed: {}", ing.content);
+        let ing_v: Value = serde_json::from_str(&ing.content).unwrap();
+        let cid = ing_v["source"]["citationId"].as_str().unwrap().to_owned();
+        assert!(cid.starts_with("S"), "expected local [S###] id, got {cid}");
+
+        let rag = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_research",
+                    "arguments": { "action": "query_rag", "query": "KV cache hits Prefix-0", "top_k": 5 }
+                }),
+            )
+            .await;
+        assert!(!rag.is_error, "query_rag failed: {}", rag.content);
+        assert!(rag.content.contains(&cid));
+
+        let cl = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_research",
+                    "arguments": {
+                        "action": "record_claim",
+                        "claim_text": format!("Immutable Prefix-0 yields >92% KV cache hits [{cid}]."),
+                        "citations": [cid.clone()],
+                        "grade": "verified"
+                    }
+                }),
+            )
+            .await;
+        assert!(!cl.is_error, "record_claim failed: {}", cl.content);
+        assert!(cl.content.contains("verified"));
+
+        let exp = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_research",
+                    "arguments": { "action": "export_dossier", "format": "markdown" }
+                }),
+            )
+            .await;
+        assert!(!exp.is_error, "export_dossier failed: {}", exp.content);
+        assert!(exp.content.contains(&cid));
+
+        // 2. deep_think: start -> 3 branches -> falsify -> redteam -> conclude
+        let dt_start = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_think",
+                    "arguments": {
+                        "action": "start",
+                        "problem": "Select optimal SQLite WAL indexing layout",
+                        "invariants": ["zero data loss", "pure UTF-8 LF"],
+                        "assumptions": ["single writer with WAL readers"],
+                        "effort": "max"
+                    }
+                }),
+            )
+            .await;
+        assert!(!dt_start.is_error, "deep_think start failed: {}", dt_start.content);
+        let dt_v: Value = serde_json::from_str(&dt_start.content).unwrap();
+        let think_id = dt_v["thinkId"].as_str().unwrap().to_owned();
+
+        for (bid, kind, title) in [
+            ("br-a", "baseline", "Flat table scan"),
+            ("br-b", "sota", "WAL + FTS5 + BM25 RRF"),
+            ("br-c", "contrarian", "Append-only JSONL only"),
+        ] {
+            let br = rt
+                .execute(
+                    "invoke_extension_tool",
+                    &json!({
+                        "name": "deep_think",
+                        "arguments": {
+                            "action": "branch",
+                            "session_id": think_id,
+                            "branch_id": bid,
+                            "kind": kind,
+                            "title": title,
+                            "summary": format!("Evaluate {title}"),
+                            "complexity": "O(log N)"
+                        }
+                    }),
+                )
+                .await;
+            assert!(!br.is_error, "branch {bid} failed: {}", br.content);
+        }
+        let fals = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_think",
+                    "arguments": {
+                        "action": "falsify",
+                        "session_id": think_id,
+                        "branch_id": "br-b",
+                        "command": "cargo test -p omnia-harness",
+                        "passed": true,
+                        "evidence": "exit_code=0"
+                    }
+                }),
+            )
+            .await;
+        assert!(!fals.is_error, "falsify failed: {}", fals.content);
+        let red = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_think",
+                    "arguments": {
+                        "action": "redteam",
+                        "session_id": think_id,
+                        "challenger_model": "gpt-6.2-sol",
+                        "critique": "Verify FTS5 fallback when compiled without FTS5."
+                    }
+                }),
+            )
+            .await;
+        assert!(!red.is_error, "redteam failed: {}", red.content);
+        let conc = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "deep_think",
+                    "arguments": {
+                        "action": "conclude",
+                        "session_id": think_id,
+                        "winner_branch_id": "br-b",
+                        "synthesis": "WAL + BM25 RRF verified winner."
+                    }
+                }),
+            )
+            .await;
+        assert!(!conc.is_error, "conclude failed: {}", conc.content);
+        assert!(conc.content.contains("rejectedAlternatives"));
+
+        // 3. workspace_lifecycle: upsert Goal+Spec -> link -> learn -> handoff -> super_state
+        let goal = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "workspace_lifecycle",
+                    "arguments": {
+                        "action": "upsert",
+                        "kind": "goal",
+                        "id": "root-goal",
+                        "title": "Ship Steer 18-20",
+                        "content": "# Goal\nDeliver native Deep Research, Deep Think, and Lifecycle OS."
+                    }
+                }),
+            )
+            .await;
+        assert!(!goal.is_error, "lifecycle upsert failed: {}", goal.content);
+        let les = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "workspace_lifecycle",
+                    "arguments": {
+                        "action": "learn",
+                        "title": "Never delayload ws2_32.dll",
+                        "content": "MSVC delayload crashes on dual WS2_32.dll casing.",
+                        "scope": "project",
+                        "tags": ["windows", "msvc"]
+                    }
+                }),
+            )
+            .await;
+        assert!(!les.is_error, "lifecycle learn failed: {}", les.content);
+
+        // 4. verify_artifact: UTF-8/LF/WCAG/citation check
+        let ver = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "verify_artifact",
+                    "arguments": {
+                        "content": format!("# Verified Doc\nClean Unix LF text referencing [{cid}].\n"),
+                        "fg_hex": "#FFFFFF",
+                        "bg_hex": "#0B0F14"
+                    }
+                }),
+            )
+            .await;
+        assert!(!ver.is_error, "verify_artifact failed: {}", ver.content);
+        let ver_v: Value = serde_json::from_str(&ver.content).unwrap();
+        assert_eq!(ver_v["ok"], true);
+
+        // 5. omni_skills: pipelines & dag
+        let pipes = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "omni_skills",
+                    "arguments": { "action": "pipelines" }
+                }),
+            )
+            .await;
+        assert!(!pipes.is_error, "omni_skills pipelines failed: {}", pipes.content);
+        assert!(pipes.content.contains("omnia-deep-research"));
 
         let _ = fs::remove_dir_all(&tmp);
     }

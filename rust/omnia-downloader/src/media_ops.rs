@@ -86,11 +86,54 @@ pub struct MediaMuxRequest {
     pub subtitle_input: Option<PathBuf>,
     pub subtitle_lang: Option<String>,
     pub output_path: PathBuf,
+    #[serde(default, alias = "clip_start_sec", alias = "clipStartSec")]
     pub clip_in_secs: Option<f64>,
+    #[serde(default, alias = "clip_end_sec", alias = "clipEndSec")]
     pub clip_out_secs: Option<f64>,
     pub workspace_root: Option<PathBuf>,
     pub verify_with_ffprobe: bool,
     pub timeout_secs: Option<u64>,
+}
+
+/// Computes the half-open segment index range `[start_idx, end_idx)` covering `[clip_start_sec, clip_end_sec]`
+/// for lossless HLS/DASH segment slicing without downloading unrelated segments.
+#[must_use]
+pub fn slice_segments_for_clip_range(
+    segment_durations_secs: &[f64],
+    clip_start_sec: Option<f64>,
+    clip_end_sec: Option<f64>,
+) -> (usize, usize) {
+    if segment_durations_secs.is_empty() {
+        return (0, 0);
+    }
+    let start_t = clip_start_sec.unwrap_or(0.0).max(0.0);
+    let end_t = clip_end_sec.unwrap_or(f64::INFINITY);
+    if end_t <= start_t {
+        return (0, 0);
+    }
+    let mut cursor = 0.0_f64;
+    let mut first: Option<usize> = None;
+    let mut last_excl = 0usize;
+    for (idx, &dur_raw) in segment_durations_secs.iter().enumerate() {
+        let dur = if dur_raw.is_finite() && dur_raw > 0.0 {
+            dur_raw
+        } else {
+            0.0
+        };
+        let seg_start = cursor;
+        let seg_end = cursor + dur;
+        cursor = seg_end;
+        if seg_end > start_t && seg_start < end_t {
+            if first.is_none() {
+                first = Some(idx);
+            }
+            last_excl = idx + 1;
+        }
+    }
+    match first {
+        Some(s) => (s, last_excl),
+        None => (0, 0),
+    }
 }
 
 /// Outcome of a bounded FFmpeg `-c copy` operation and optional `ffprobe` verification.

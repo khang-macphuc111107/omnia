@@ -43,6 +43,7 @@ pub enum HandoffReason {
 #[serde(rename_all = "snake_case")]
 pub enum HandoffStatus {
     PendingUserAction,
+    OpenedInVisibleBrowser,
     CompletedByUser,
     Cancelled,
     RefusedPolicy,
@@ -274,22 +275,39 @@ impl VisibleHandoffManager {
         DownloaderError::DrmUnsupported { detail }
     }
 
-    /// Marks a pending ticket as completed by the user after interactive verification.
-    pub fn mark_completed_by_user(&self, ticket_id: &str) -> Option<VisibleHandoffTicket> {
+    /// Marks a pending ticket as opened in a visible user browser window (`MANUAL_VISIBLE_BROWSER_ONLY`).
+    pub fn mark_opened_in_visible_browser(&self, ticket_id: &str) -> Option<VisibleHandoffTicket> {
         let mut map = self.tickets.write();
         let ticket = map.get_mut(ticket_id)?;
         if ticket.status == HandoffStatus::PendingUserAction {
+            ticket.status = HandoffStatus::OpenedInVisibleBrowser;
+            ticket.updated_at_ms = current_epoch_ms();
+        }
+        Some(ticket.clone())
+    }
+
+    /// Marks a pending or opened ticket as completed by the user after interactive verification.
+    pub fn mark_completed_by_user(&self, ticket_id: &str) -> Option<VisibleHandoffTicket> {
+        let mut map = self.tickets.write();
+        let ticket = map.get_mut(ticket_id)?;
+        if matches!(
+            ticket.status,
+            HandoffStatus::PendingUserAction | HandoffStatus::OpenedInVisibleBrowser
+        ) {
             ticket.status = HandoffStatus::CompletedByUser;
             ticket.updated_at_ms = current_epoch_ms();
         }
         Some(ticket.clone())
     }
 
-    /// Cancels a pending handoff ticket.
+    /// Cancels a pending or opened handoff ticket.
     pub fn cancel_ticket(&self, ticket_id: &str) -> Option<VisibleHandoffTicket> {
         let mut map = self.tickets.write();
         let ticket = map.get_mut(ticket_id)?;
-        if ticket.status == HandoffStatus::PendingUserAction {
+        if matches!(
+            ticket.status,
+            HandoffStatus::PendingUserAction | HandoffStatus::OpenedInVisibleBrowser
+        ) {
             ticket.status = HandoffStatus::Cancelled;
             ticket.updated_at_ms = current_epoch_ms();
         }

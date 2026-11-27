@@ -320,8 +320,9 @@ impl RecallStore {
         let tags_json = serde_json::to_string(tags)
             .map_err(|e| StoreError::storage_failed(format!("Serialize tags error: {e}")))?;
         let tags_joined = tags.join(" ");
-        let conn = self.lock_conn()?;
-        let mut stmt = conn.prepare(
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+        let mut stmt = tx.prepare(
             "INSERT INTO recall_messages (session_id, turn_index, role, content, tags_json, provenance, tainted, created_at_ms)\n\
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
         )?;
@@ -334,9 +335,10 @@ impl RecallStore {
         stmt.bind_int64(7, i64::from(tainted))?;
         stmt.bind_int64(8, created_at_ms)?;
         stmt.step()?;
-        let rowid = conn.last_insert_rowid();
+        drop(stmt);
+        let rowid = tx.last_insert_rowid();
         if self.fts5_enabled {
-            let mut fts = conn.prepare(
+            let mut fts = tx.prepare(
                 "INSERT INTO recall_messages_fts (rowid, session_id, role, content, tags) VALUES (?1, ?2, ?3, ?4, ?5);",
             )?;
             fts.bind_int64(1, rowid)?;
@@ -344,8 +346,10 @@ impl RecallStore {
             fts.bind_text(3, role)?;
             fts.bind_text(4, &clean)?;
             fts.bind_text(5, &tags_joined)?;
-            let _ = fts.step();
+            fts.step()?;
+            drop(fts);
         }
+        tx.commit()?;
         Ok(rowid)
     }
 
@@ -474,8 +478,9 @@ impl RecallStore {
         let links_json = serde_json::to_string(&note.outbound_links)
             .map_err(|e| StoreError::storage_failed(format!("Serialize kb links error: {e}")))?;
         let tags_joined = note.tags.join(" ");
-        let conn = self.lock_conn()?;
-        let mut stmt = conn.prepare(
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+        let mut stmt = tx.prepare(
             "INSERT INTO kb_notes (slug, title, content, tags_json, outbound_links_json, updated_at)\n\
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)\n\
              ON CONFLICT(slug) DO UPDATE SET title=excluded.title, content=excluded.content, tags_json=excluded.tags_json, outbound_links_json=excluded.outbound_links_json, updated_at=excluded.updated_at;",
@@ -487,19 +492,23 @@ impl RecallStore {
         stmt.bind_text(5, &links_json)?;
         stmt.bind_int64(6, note.updated_at)?;
         stmt.step()?;
+        drop(stmt);
         if self.fts5_enabled {
-            let mut del = conn.prepare("DELETE FROM kb_fts WHERE slug = ?1;")?;
-            let _ = del.bind_text(1, &note.slug);
-            let _ = del.step();
-            let mut ins = conn.prepare(
+            let mut del = tx.prepare("DELETE FROM kb_fts WHERE slug = ?1;")?;
+            del.bind_text(1, &note.slug)?;
+            del.step()?;
+            drop(del);
+            let mut ins = tx.prepare(
                 "INSERT INTO kb_fts (slug, title, content, tags) VALUES (?1, ?2, ?3, ?4);",
             )?;
-            let _ = ins.bind_text(1, &note.slug);
-            let _ = ins.bind_text(2, &note.title);
-            let _ = ins.bind_text(3, &clean);
-            let _ = ins.bind_text(4, &tags_joined);
-            let _ = ins.step();
+            ins.bind_text(1, &note.slug)?;
+            ins.bind_text(2, &note.title)?;
+            ins.bind_text(3, &clean)?;
+            ins.bind_text(4, &tags_joined)?;
+            ins.step()?;
+            drop(ins);
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -556,13 +565,14 @@ impl RecallStore {
     ) -> Result<PasteRecord, StoreError> {
         let scrubbed = SecretRedactor::redact(content);
         let digest = sha256_hex(scrubbed.as_bytes());
-        let conn = self.lock_conn()?;
-        let mut existing = conn.prepare(
+        let mut conn = self.lock_conn()?;
+        let tx = conn.begin_immediate()?;
+        let mut existing = tx.prepare(
             "SELECT paste_id, sha256_hex, title, mime_type, byte_len, content, created_at_ms FROM pastes WHERE sha256_hex = ?1;",
         )?;
         existing.bind_text(1, &digest)?;
         if existing.step()? == StepStatus::Row {
-            return Ok(PasteRecord {
+            let rec = PasteRecord {
                 paste_id: existing.column_text(0)?,
                 sha256_hex: existing.column_text(1)?,
                 title: existing.column_text(2)?,
@@ -570,12 +580,15 @@ impl RecallStore {
                 byte_len: existing.column_int64(4)?,
                 content: existing.column_text(5)?,
                 created_at_ms: existing.column_int64(6)?,
-            });
+            };
+            drop(existing);
+            tx.commit()?;
+            return Ok(rec);
         }
         drop(existing);
 
         let byte_len = scrubbed.len() as i64;
-        let mut ins = conn.prepare(
+        let mut ins = tx.prepare(
             "INSERT INTO pastes (paste_id, sha256_hex, title, mime_type, byte_len, content, created_at_ms)\n\
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
         )?;
@@ -587,6 +600,8 @@ impl RecallStore {
         ins.bind_text(6, &scrubbed)?;
         ins.bind_int64(7, created_at_ms)?;
         ins.step()?;
+        drop(ins);
+        tx.commit()?;
         Ok(PasteRecord {
             paste_id: paste_id.to_owned(),
             sha256_hex: digest,
