@@ -29,6 +29,9 @@ import scorer_v5
 
 DEFAULT_SUITE_V5_DIR = Path(r"D:\OmniaData\qa\v5-bench\suite-v5")
 DEFAULT_PUBLIC_DIR = Path(r"D:\OmniaData\qa\v5-bench\public_suites")
+DEFAULT_ALL_MODELS_DIR = Path(r"D:\OmniaData\qa\v5-bench\all-models-v5")
+DEFAULT_EFFORT_SWEEP_DIR = Path(r"D:\OmniaData\qa\v5-bench\effort-sweep-v5")
+DEFAULT_CATALOG_PATH = Path(r"D:\OmniaData\qa\v5-bench\htmustc_models_catalog.json")
 DEFAULT_MICROBENCH = Path(r"D:\OmniaData\qa\v5-bench\microbench_v5_all7.json")
 DEFAULT_OMNIA_BIN = Path(r"D:\OmniaData\build\omnia-rust-native-release\omnia.exe")
 DEFAULT_OUT_JSON = Path(r"D:\OmniaData\qa\v5-bench\final_scoreboard_v5.json")
@@ -141,10 +144,53 @@ def _compact_tasks(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [by_task[k] for k in sorted(by_task)]
 
 
+def _summarize_grouped_records(records: List[Dict[str, Any]], group_fn: Any) -> Dict[str, Any]:
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in records:
+        groups[str(group_fn(r))].append(r)
+    out: Dict[str, Any] = {}
+    for gk, items in sorted(groups.items()):
+        n = len(items)
+        solved = sum(1 for x in items if x.get("passed"))
+        pct = round(100.0 * solved / n, 2) if n else 0.0
+        ci = list(scorer_v5.wilson_ci(solved, n))
+        mean_score = round(sum(float(x.get("score") or 0.0) for x in items) / n, 4) if n else 0.0
+        tot_in = sum(int(x.get("wire_prompt_total") or 0) for x in items)
+        tot_cr = sum(int(x.get("wire_cache_read") or 0) for x in items)
+        kv_pct = round(100.0 * tot_cr / tot_in, 2) if tot_in > 0 else 0.0
+        ttfts = sorted(float(x["wire_first_ttft_ms"]) for x in items if x.get("wire_first_ttft_ms") is not None)
+        walls = sorted(float(x["wall_s"]) for x in items if x.get("wall_s") is not None)
+        rss = sorted(float(x["peak_rss_mb"]) for x in items if x.get("peak_rss_mb") is not None)
+        toks = [int(x["wire_total_tokens"]) for x in items if x.get("wire_total_tokens") is not None and not x.get("wire_requests_missing_usage")]
+        tok_per_solved = round(sum(toks) / solved, 1) if (solved > 0 and len(toks) == n) else None
+        costs = [scorer_v5.estimate_record_cost_usd(x) for x in items]
+        cost_per_solved = round(sum(float(c) for c in costs if c is not None) / solved, 5) if (solved > 0 and all(c is not None for c in costs)) else None
+        leaks = sum(len(x.get("non_loopback_sockets") or []) for x in items)
+        med = lambda arr: round(arr[len(arr) // 2], 2) if arr else None
+        out[gk] = {
+            "runs": n,
+            "solved": solved,
+            "pass_at_1_pct": pct,
+            "wilson_95ci": ci,
+            "mean_score": mean_score,
+            "median_wall_s": med(walls),
+            "median_ttft_ms": med(ttfts),
+            "tokens_per_solved": tok_per_solved,
+            "cost_per_solved_usd": cost_per_solved,
+            "pooled_kv_cache_hit_pct": kv_pct,
+            "peak_rss_mb_median": med(rss),
+            "network_leaks_total": leaks,
+        }
+    return out
+
+
 def build_final_scoreboard(
     *,
     suite_v5_dir: Path = DEFAULT_SUITE_V5_DIR,
     public_dir: Path = DEFAULT_PUBLIC_DIR,
+    all_models_dir: Optional[Path] = DEFAULT_ALL_MODELS_DIR,
+    effort_sweep_dir: Optional[Path] = DEFAULT_EFFORT_SWEEP_DIR,
+    catalog_path: Optional[Path] = DEFAULT_CATALOG_PATH,
     microbench_path: Path = DEFAULT_MICROBENCH,
     omnia_bin: Path = DEFAULT_OMNIA_BIN,
     recorded_at_ms: Optional[int] = None,
@@ -190,6 +236,54 @@ def build_final_scoreboard(
     public_suites, inventory = load_public_suites_summaries(public_dir)
     microbench = json.loads(microbench_path.read_text(encoding="utf-8")) if microbench_path.is_file() else {}
 
+    all_models_recs = load_suite_v5_records(all_models_dir) if (all_models_dir and all_models_dir.is_dir()) else []
+    effort_recs = load_suite_v5_records(effort_sweep_dir) if (effort_sweep_dir and effort_sweep_dir.is_dir()) else []
+    catalog_raw = json.loads(catalog_path.read_text(encoding="utf-8")) if (catalog_path and catalog_path.is_file()) else {}
+
+    catalog_summary: Dict[str, Any] = {}
+    if catalog_raw:
+        cat_models = catalog_raw.get("models") or []
+        catalog_summary = {
+            "probed_at_utc": catalog_raw.get("probed_at_utc"),
+            "endpoint": catalog_raw.get("endpoint"),
+            "total_models": len(cat_models),
+            "live_llm_count": sum(1 for x in cat_models if x.get("coding_runnable")),
+            "key_restricted_count": sum(1 for x in cat_models if x.get("classification") == "key_restricted_403"),
+            "non_coding_media_count": sum(1 for x in cat_models if x.get("classification") == "non_coding_media"),
+            "models": [
+                {
+                    "id": x.get("id"),
+                    "family": x.get("family"),
+                    "classification": x.get("classification"),
+                    "wire_protocol": x.get("wire_protocol"),
+                    "coding_runnable": bool(x.get("coding_runnable")),
+                    "status": x.get("status"),
+                    "efforts_ok": [k for k, v in (x.get("efforts") or {}).items() if isinstance(v, dict) and v.get("ok")],
+                }
+                for x in cat_models
+            ],
+        }
+
+    all_models_summary: Dict[str, Any] = {}
+    if all_models_recs:
+        all_models_summary = {
+            "total_trials": len(all_models_recs),
+            "unique_models": sorted({str(r.get("model") or "") for r in all_models_recs if r.get("model")}),
+            "by_model": _summarize_grouped_records(all_models_recs, lambda r: r.get("model")),
+            "by_harness_model": _summarize_grouped_records(all_models_recs, lambda r: f"{r.get('harness')}:{r.get('model')}"),
+            "by_harness": _summarize_grouped_records(all_models_recs, lambda r: r.get("harness")),
+        }
+
+    effort_sweep_summary: Dict[str, Any] = {}
+    if effort_recs:
+        effort_sweep_summary = {
+            "total_trials": len(effort_recs),
+            "efforts_evaluated": sorted({str(r.get("effort") or "default").lower() for r in effort_recs}),
+            "by_effort": _summarize_grouped_records(effort_recs, lambda r: str(r.get("effort") or "default").lower()),
+            "by_model_effort": _summarize_grouped_records(effort_recs, lambda r: f"{r.get('model')}:{str(r.get('effort') or 'default').lower()}"),
+            "by_harness_effort": _summarize_grouped_records(effort_recs, lambda r: f"{r.get('harness')}:{str(r.get('effort') or 'default').lower()}"),
+        }
+
     omnia_stats = scored.get("harnesses", {}).get("omnia") or {}
     omnia_pass = float(omnia_stats.get("pass_at_1_pct") or 0.0)
     ts_ms = int(recorded_at_ms if recorded_at_ms is not None else time.time() * 1000)
@@ -198,10 +292,10 @@ def build_final_scoreboard(
     compact_tasks = _compact_tasks(records)
 
     sb: Dict[str, Any] = {
-        "schema_version": "5.0",
+        "schema_version": "5.1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "recordedAtMs": ts_ms,
-        "suite": "Omnia Suite v5 (11 Axes / 33 Tasks) + 9 AA/Frontier Public Suites",
+        "suite": "Omnia Suite v5 (11 Axes / 33 Tasks) + 9 AA/Frontier Public Suites + All-51 HTMUSTC Models + 5-Level Effort Sweep",
         "axes": axes_map,
         "pass_rate": omnia_pass,
         "passRate": omnia_pass,
@@ -214,6 +308,9 @@ def build_final_scoreboard(
         "public_suites": public_suites,
         "public_suites_completed": [s for s in REQUIRED_PUBLIC_SUITES if s in public_suites],
         "public_suites_missing": [s for s in REQUIRED_PUBLIC_SUITES if s not in public_suites],
+        "models_catalog": catalog_summary,
+        "all_models_matrix": all_models_summary,
+        "effort_sweep": effort_sweep_summary,
         "container_blockers": {
             "terminal_bench_41": (inventory.get("terminal_bench_41") or {}),
             "swe_bench_verified_pro": ((inventory.get("terminal_bench_41") or {}).get("container_runtime") or {}).get("swe_bench_verified_pro", {}),
@@ -222,6 +319,10 @@ def build_final_scoreboard(
         "tasks": compact_tasks,
         "summary": {
             "total_suite_v5_trials": len(records),
+            "total_all_models_trials": len(all_models_recs),
+            "total_effort_sweep_trials": len(effort_recs),
+            "catalog_total_models": catalog_summary.get("total_models", 0),
+            "catalog_live_llms": catalog_summary.get("live_llm_count", 0),
             "unique_suite_v5_tasks": len(compact_tasks),
             "harnesses_evaluated": len(scored.get("harnesses") or {}),
             "omnia_rank": (scored.get("ranking") or []).index("omnia") + 1 if "omnia" in (scored.get("ranking") or []) else None,
@@ -232,11 +333,14 @@ def build_final_scoreboard(
             "omnia_cold_start_ms": omnia_stats.get("cold_start_ms"),
             "zero_network_leaks": all(
                 int(hs.get("network_leaks_total") or 0) == 0 for hs in (scored.get("harnesses") or {}).values()
-            ),
+            ) and all(len(r.get("non_loopback_sockets") or []) == 0 for r in all_models_recs + effort_recs),
             "public_suites_count": len(public_suites),
             "trace_roots": {
                 "suite_v5": str(suite_v5_dir),
                 "public_suites": str(public_dir),
+                "all_models_v5": str(all_models_dir) if all_models_dir else None,
+                "effort_sweep_v5": str(effort_sweep_dir) if effort_sweep_dir else None,
+                "models_catalog": str(catalog_path) if catalog_path else None,
                 "microbench": str(microbench_path),
             },
         },
@@ -293,8 +397,9 @@ def format_final_scoreboard_markdown(sb: Dict[str, Any]) -> str:
         "# Omnia v5 vs 6 Clean-Room Competitors — Canonical Wave 3-4 Benchmark Scoreboard",
         "",
         f"- **Generated (UTC)**: `{sb['generated_at_utc']}`",
-        f"- **Models**: `{', '.join(sb.get('models') or [])}` (`https://htmustc.id.vn` only; 0 Gemini calls, `agy` excluded)",
+        f"- **Suite v5 Core Models**: `{', '.join(sb.get('models') or [])}` (`https://htmustc.id.vn` only; `agy` strictly excluded)",
         f"- **Suite v5 Trials**: `{sb['summary']['total_suite_v5_trials']}` across `{sb['summary']['unique_suite_v5_tasks']}` tasks (11 axes)",
+        f"- **All-Models Matrix Trials**: `{sb['summary'].get('total_all_models_trials', 0)}` | **5-Level Effort Sweep Trials**: `{sb['summary'].get('total_effort_sweep_trials', 0)}` | **Catalog Probed**: `{sb['summary'].get('catalog_total_models', 0)}` (`{sb['summary'].get('catalog_live_llms', 0)}` live coding LLMs)",
         f"- **Zero Network Leaks**: `{sb['summary']['zero_network_leaks']}`",
         f"- **Trace Roots**: `{sb['summary']['trace_roots']['suite_v5']}`, `{sb['summary']['trace_roots']['public_suites']}`",
         "",
@@ -353,6 +458,67 @@ def format_final_scoreboard_markdown(sb: Dict[str, Any]) -> str:
         f"- **Exact Blocker**: {crt.get('exact_blocker') or 'Linux container runtime unavailable.'}",
         "",
     ])
+
+    def _render_group_table(header_col: str, rows_map: Dict[str, Any]) -> List[str]:
+        tbl = [
+            f"| {header_col} | Runs | Solved | Pass@1 (95% Wilson CI) | Mean Score | Med Wall | Med TTFT | Tok/Solved | Cost/Solved | KV Hit % | Med RSS | Leaks |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        for k, s in sorted(rows_map.items()):
+            ci = s.get("wilson_95ci") or [0.0, 0.0]
+            tbl.append(
+                f"| `{k}` | {s['runs']} | {s['solved']} | **{s['pass_at_1_pct']:.2f}%** [{ci[0]:.2f}, {ci[1]:.2f}] | "
+                f"{s['mean_score']:.4f} | {_fmt(s.get('median_wall_s'), 's', '.1f')} | "
+                f"{_fmt(s.get('median_ttft_ms'), 'ms', '.1f')} | {_fmt(s.get('tokens_per_solved'), '', '.0f')} | "
+                f"{'$' + format(s['cost_per_solved_usd'], '.4f') if s.get('cost_per_solved_usd') is not None else '—'} | "
+                f"{s['pooled_kv_cache_hit_pct']:.2f}% | {_fmt(s.get('peak_rss_mb_median'), ' MB', '.1f')} | {s['network_leaks_total']} |"
+            )
+        return tbl
+
+    am = sb.get("all_models_matrix") or {}
+    if am.get("by_model"):
+        out.extend([
+            f"## 5. All-Models `https://htmustc.id.vn` Matrix ({am.get('total_trials', 0)} trials across {len(am.get('unique_models') or [])} live LLMs)",
+            "",
+            *_render_group_table("Model", am["by_model"]),
+            "",
+            "### By Harness x Model",
+            "",
+            *_render_group_table("Harness:Model", am.get("by_harness_model") or {}),
+            "",
+        ])
+
+    es = sb.get("effort_sweep") or {}
+    if es.get("by_effort"):
+        out.extend([
+            f"## 6. Reasoning Effort Sweep (`low` / `medium` / `high` / `xhigh` / `max` — {es.get('total_trials', 0)} trials)",
+            "",
+            *_render_group_table("Effort", es["by_effort"]),
+            "",
+            "### By Model x Effort",
+            "",
+            *_render_group_table("Model:Effort", es.get("by_model_effort") or {}),
+            "",
+        ])
+
+    cat = sb.get("models_catalog") or {}
+    if cat.get("models"):
+        out.extend([
+            f"## 7. Complete `https://htmustc.id.vn/v1/models` Live Probe Receipt ({cat.get('total_models', 0)}/51 Probed)",
+            "",
+            f"- **Live Coding LLMs**: `{cat.get('live_llm_count', 0)}` | **Key-Restricted (HTTP 403)**: `{cat.get('key_restricted_count', 0)}` | **Non-Coding Media (HTTP 403)**: `{cat.get('non_coding_media_count', 0)}`",
+            "",
+            "| Model ID | Family | Classification | Primary Wire Protocol | Coding Runnable | Effort Levels Accepted | Status |",
+            "|---|---|---|---|---|---|---|",
+        ])
+        for m in cat["models"]:
+            effs = ",".join(m.get("efforts_ok") or []) or "—"
+            out.append(
+                f"| `{m.get('id')}` | `{m.get('family')}` | `{m.get('classification')}` | "
+                f"`{m.get('wire_protocol')}` | `{m.get('coding_runnable')}` | `{effs}` | `{m.get('status')}` |"
+            )
+        out.append("")
+
     return "\n".join(out)
 
 
@@ -360,6 +526,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Generate canonical final_scoreboard_v5.{json,md}")
     ap.add_argument("--suite-v5-dir", type=Path, default=DEFAULT_SUITE_V5_DIR)
     ap.add_argument("--public-dir", type=Path, default=DEFAULT_PUBLIC_DIR)
+    ap.add_argument("--all-models-dir", type=Path, default=DEFAULT_ALL_MODELS_DIR)
+    ap.add_argument("--effort-sweep-dir", type=Path, default=DEFAULT_EFFORT_SWEEP_DIR)
+    ap.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG_PATH)
     ap.add_argument("--microbench", type=Path, default=DEFAULT_MICROBENCH)
     ap.add_argument("--omnia-bin", type=Path, default=DEFAULT_OMNIA_BIN)
     ap.add_argument("--out-json", type=Path, default=DEFAULT_OUT_JSON)
@@ -369,6 +538,9 @@ def main() -> int:
     sb = build_final_scoreboard(
         suite_v5_dir=args.suite_v5_dir,
         public_dir=args.public_dir,
+        all_models_dir=args.all_models_dir,
+        effort_sweep_dir=args.effort_sweep_dir,
+        catalog_path=args.catalog,
         microbench_path=args.microbench,
         omnia_bin=args.omnia_bin,
     )
