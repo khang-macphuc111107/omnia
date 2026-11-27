@@ -130,8 +130,8 @@ impl Drop for HiddenStdioProcess {
 
 /// Spawns `program` with `CREATE_SUSPENDED` + `CREATE_NO_WINDOW` + `STARTF_USESHOWWINDOW(SW_HIDE)`
 /// + `STARTF_USESTDHANDLES`, assigns it to a `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job Object,
-/// and resumes the primary thread. Secrets (`API_KEY`/`AUTH_TOKEN`/`SECRET`) are stripped unless
-/// explicitly passed in `extra_env`.
+///   and resumes the primary thread. Secrets (`API_KEY`/`AUTH_TOKEN`/`SECRET`) are stripped unless
+///   explicitly passed in `extra_env`.
 pub fn spawn_hidden_suspended_stdio(
     program: &str,
     args: &[String],
@@ -322,7 +322,7 @@ fn capture_window_png_win32(hwnd_val: isize, max_dim: u32) -> Result<CapturedWin
     }
 
     // Convert BGRA -> RGBA in place.
-    for px in bgra.chunks_exact_mut(4) {
+    for px in bgra.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
         if px[3] == 0 {
             px[3] = 255;
@@ -348,7 +348,7 @@ fn spawn_hidden_suspended_win32(
 ) -> Result<(u32, usize), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,

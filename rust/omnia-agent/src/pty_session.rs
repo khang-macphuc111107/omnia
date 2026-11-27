@@ -457,7 +457,7 @@ fn resolve_pty_program(req: &PtyCreateRequest) -> (String, Vec<String>) {
 
 fn extract_sentinel_line<'a>(text: &'a str, sentinel: &str) -> Option<(String, &'a str)> {
     // Wait for `sentinel:<exit>` on its own output line rather than echoing the command input line.
-    for (idx, line) in text.match_indices(sentinel) {
+    for (idx, _line) in text.match_indices(sentinel) {
         let tail = &text[idx + sentinel.len()..];
         let after_colon = tail.strip_prefix(':')?;
         let end_line = after_colon.find('\n')?;
@@ -484,7 +484,7 @@ fn strip_ansi_basic(raw: &str) -> String {
             match chars.peek().copied() {
                 Some('[') => {
                     chars.next();
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if ('@'..='~').contains(&c) {
                             break;
                         }

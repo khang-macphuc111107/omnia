@@ -281,26 +281,6 @@ impl StreamBudgetConfig {
 /// - Tracks `last_meaningful_delta_at` post-TTFT (`: ping` keepalives NEVER extend post-TTFT stalls).
 /// - Pre-TTFT, dead/quiet sockets fail at `first_delta_timeout`; when production keepalives/lifecycle
 ///   events are actively arriving (`last_wire_activity_at`), healthy silent reasoning extends up to `240s`.
-/// - Overall turn-deadline expiry returns `Fatal` (never mislabeled as an `<18s` `ChunkStall`).
-fn compute_token_progress_wait(
-    stream_started_at: Instant,
-    last_meaningful_delta_at: Option<Instant>,
-    first_delta_timeout: Duration,
-    post_delta_token_timeout: Duration,
-    turn_deadline: Instant,
-    dialect_label: &str,
-) -> std::result::Result<Duration, StreamTurnError> {
-    compute_token_progress_wait_with_wire(
-        stream_started_at,
-        last_meaningful_delta_at,
-        None,
-        first_delta_timeout,
-        post_delta_token_timeout,
-        turn_deadline,
-        dialect_label,
-    )
-}
-
 fn has_fresh_wire_keepalive(
     now: Instant,
     first_delta_timeout: Duration,
@@ -314,6 +294,7 @@ fn has_fresh_wire_keepalive(
         })
 }
 
+#[cfg(test)]
 fn compute_token_progress_wait_with_wire(
     stream_started_at: Instant,
     last_meaningful_delta_at: Option<Instant>,
@@ -409,6 +390,178 @@ fn compute_token_progress_wait_with_phase(
         });
     }
     Ok((budget - elapsed).min(rem_turn))
+}
+
+const PRE_TOOL_PREAMBLE_MAX_BYTES: usize = 512;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AttemptPolicyHint {
+    slow_step_downs: u32,
+    pre_ttft_cap: Option<Duration>,
+    rem_run_budget: Option<Duration>,
+    total_run_budget: Option<Duration>,
+}
+
+/// Step reasoning effort down after slow `TruncatedStream` / `ChunkStall` / `HeaderTimeout`
+/// retries or under tight remaining budget so subsequent attempts clear upstream idle cliffs
+/// while leaving Prefix-0 (`system`, `tools`, `messages`) unchanged.
+#[must_use]
+pub fn apply_retry_effort_step_down(
+    base: Option<EffortLevel>,
+    model_id: &str,
+    slow_step_downs: u32,
+    rem_run_budget: Duration,
+    total_run_budget: Duration,
+    heavy_model: bool,
+) -> Option<EffortLevel> {
+    let mut steps = slow_step_downs;
+    if heavy_model
+        && total_run_budget >= Duration::from_secs(120)
+        && (rem_run_budget <= Duration::from_secs(50)
+            || (slow_step_downs >= 1 && rem_run_budget <= Duration::from_secs(85)))
+    {
+        steps = steps.max(2);
+    }
+    if steps == 0 {
+        return base;
+    }
+    let mut stepped = base?;
+    for _ in 0..steps.min(3) {
+        stepped = match stepped {
+            EffortLevel::Max | EffortLevel::XHigh | EffortLevel::High => EffortLevel::Medium,
+            EffortLevel::Medium | EffortLevel::Low => EffortLevel::Low,
+            EffortLevel::Minimal => EffortLevel::Minimal,
+            EffortLevel::None => EffortLevel::None,
+        };
+    }
+    clamp_effort_for_model(model_id, stepped).or(Some(stepped))
+}
+
+/// Cap Attempt-0 pre-TTFT keepalive waiting on multi-retry production turns (`>= 120s`)
+/// so a stuck zero-token keepalive socket never leaves Attempt 1+ starved below ~55% budget.
+fn attempt0_pre_ttft_keepalive_cap(rem_run: Duration, max_attempts: u32) -> Option<Duration> {
+    if max_attempts > 1 && rem_run >= Duration::from_secs(120) {
+        Some(
+            rem_run
+                .mul_f64(0.45)
+                .clamp(Duration::from_secs(75), Duration::from_secs(115)),
+        )
+    } else {
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_sse_loop_wait(
+    req_started_at: Instant,
+    stream_started_at: Instant,
+    last_meaningful_delta_at: Option<Instant>,
+    last_wire_activity_at: Option<Instant>,
+    first_delta_timeout: Duration,
+    post_delta_token_timeout: Duration,
+    turn_deadline: Instant,
+    pre_ttft_attempt_cap: Option<Duration>,
+    dialect_label: &str,
+    visible_text_len: usize,
+    has_started_tools: bool,
+) -> std::result::Result<(Duration, bool), StreamTurnError> {
+    let now = Instant::now();
+    let rem_turn = turn_deadline.saturating_duration_since(now);
+    if rem_turn.is_zero() {
+        return Err(StreamTurnError::Retryable {
+            status: None,
+            retry_after_secs: None,
+            kind: RetryKind::ChunkStall,
+            detail: format!("Timed out waiting for {dialect_label} turn deadline"),
+        });
+    }
+
+    let is_preamble_keepalive = visible_text_len > 0
+        && visible_text_len <= PRE_TOOL_PREAMBLE_MAX_BYTES
+        && !has_started_tools
+        && has_fresh_wire_keepalive(
+            now,
+            first_delta_timeout,
+            post_delta_token_timeout,
+            last_wire_activity_at,
+        );
+    let in_reasoning_or_pretool =
+        (visible_text_len == 0 && !has_started_tools) || is_preamble_keepalive;
+
+    let far_deadline = now + Duration::from_secs(86_400);
+    let mut ideal_wait = compute_token_progress_wait_with_phase(
+        stream_started_at,
+        last_meaningful_delta_at,
+        last_wire_activity_at,
+        first_delta_timeout,
+        post_delta_token_timeout,
+        far_deadline,
+        dialect_label,
+        in_reasoning_or_pretool,
+    )?;
+
+    if last_meaningful_delta_at.is_none() {
+        if let Some(cap) = pre_ttft_attempt_cap {
+            let header_elapsed = stream_started_at.saturating_duration_since(req_started_at);
+            let stream_cap = cap
+                .saturating_sub(header_elapsed)
+                .max(Duration::from_secs(15));
+            let stream_elapsed = now.saturating_duration_since(stream_started_at);
+            if stream_elapsed >= stream_cap {
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::ChunkStall,
+                    detail: format!(
+                        "{dialect_label} pre-TTFT retry-reserved timeout after {}ms (cap {}ms)",
+                        now.saturating_duration_since(req_started_at).as_millis(),
+                        cap.as_millis()
+                    ),
+                });
+            }
+            ideal_wait = ideal_wait.min(stream_cap - stream_elapsed);
+        }
+    } else if is_preamble_keepalive {
+        if let Some(ts) = last_meaningful_delta_at {
+            let elapsed = now.saturating_duration_since(ts);
+            let preamble_cap = first_delta_timeout.max(post_delta_token_timeout);
+            if elapsed >= preamble_cap {
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::ChunkStall,
+                    detail: format!(
+                        "{dialect_label} pre-tool preamble keepalive timeout after {}ms (limit {}ms)",
+                        elapsed.as_millis(),
+                        preamble_cap.as_millis()
+                    ),
+                });
+            }
+            ideal_wait = ideal_wait.min(preamble_cap - elapsed);
+        }
+    }
+
+    let capped_by_turn_deadline = rem_turn <= ideal_wait;
+    Ok((ideal_wait.min(rem_turn), capped_by_turn_deadline))
+}
+
+fn format_chunk_timeout_detail(
+    dialect_label: &str,
+    chunk_budget: Duration,
+    capped_by_turn_deadline: bool,
+    turn_deadline: Instant,
+) -> String {
+    if capped_by_turn_deadline || turn_deadline.saturating_duration_since(Instant::now()).is_zero() {
+        format!(
+            "Timed out waiting for {dialect_label} turn deadline (remaining {}ms)",
+            chunk_budget.as_millis()
+        )
+    } else {
+        format!(
+            "{dialect_label} token-progress stall timeout after {}ms",
+            chunk_budget.as_millis()
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -876,7 +1029,6 @@ struct TurnStreamResult {
     reasoning_signature: Option<String>,
     redacted_thinking: Vec<String>,
     reasoning_encrypted_items: Vec<Value>,
-    response_id: Option<String>,
     tool_calls: Vec<ToolCallRecord>,
     /// Pre-spawned speculative read-only tool handles keyed by positional index in `tool_calls`.
     speculative_results: HashMap<usize, tokio::task::JoinHandle<ToolExecOutput>>,
@@ -1425,6 +1577,33 @@ impl NativeSuperEngine {
         }
     }
 
+    fn resolve_effort_for_attempt(
+        &self,
+        force_low_reasoning: bool,
+        escalate_reasoning: bool,
+        attempt_hint: AttemptPolicyHint,
+    ) -> Option<EffortLevel> {
+        let effective_escalate = escalate_reasoning && attempt_hint.slow_step_downs == 0;
+        let base = self.resolve_effort_for_turn(force_low_reasoning, effective_escalate);
+        if force_low_reasoning {
+            return base;
+        }
+        let heavy =
+            StreamBudgetConfig::is_heavy_model(&self.endpoint.model_id, self.last_context_tokens);
+        apply_retry_effort_step_down(
+            base,
+            &self.endpoint.model_id,
+            attempt_hint.slow_step_downs,
+            attempt_hint
+                .rem_run_budget
+                .unwrap_or(Duration::from_secs(300)),
+            attempt_hint
+                .total_run_budget
+                .unwrap_or(Duration::from_secs(300)),
+            heavy,
+        )
+    }
+
     /// Resolve active wire dialect honoring `wire_api_mode` and automatic fallback.
     #[must_use]
     pub fn active_wire_dialect(&self) -> &'static str {
@@ -1804,6 +1983,7 @@ impl NativeSuperEngine {
                 .call_llm_streaming(
                     &msg_id,
                     remaining,
+                    Duration::from_secs(total_budget_secs.max(1)),
                     force_low_reasoning,
                     progress.escalate_reasoning,
                     force_no_tools,
@@ -2280,6 +2460,7 @@ impl NativeSuperEngine {
             had_tool_result_this_prompt = true;
             let mut loop_nudges_this_turn = Vec::new();
             let mut turn_had_mutation = false;
+            let mut turn_ran_shell = false;
             let mut turn_had_error = false;
             let mut turn_had_syntax_error = false;
             let mut turn_fail_to_pass: Option<(u32, u32)> = None;
@@ -2404,6 +2585,9 @@ impl NativeSuperEngine {
                     }
                     "shell" => {
                         progress.shell_runs_total += 1;
+                        if !out.is_error {
+                            turn_ran_shell = true;
+                        }
                         // D2: Test Regression Detector + Anti-Termination-Lag (`FAIL -> PASS`)
                         let transition = self
                             .tool_runtime
@@ -2562,14 +2746,18 @@ impl NativeSuperEngine {
                     if self.plugins.is_enabled("merkle_index") {
                         let root_hex = {
                             let mut g = self.tool_runtime.graph_index.lock().unwrap();
-                            if turn_had_mutation {
+                            if turn_had_mutation || turn_ran_shell {
                                 let _ = g.refresh();
                             }
                             g.merkle().root_hash().to_string()
                         };
+                        let tree_mutated = turn_had_mutation
+                            || (turn_ran_shell
+                                && self.oscillation_detector.last_tree_hash()
+                                    != Some(root_hex.as_str()));
                         if let Some(osc) = self
                             .oscillation_detector
-                            .observe_turn_tree(&root_hex, turn_had_mutation)
+                            .observe_turn_tree(&root_hex, tree_mutated)
                         {
                             let msg = osc.format_nudge();
                             self.total_oscillation_nudges += 1;
@@ -2808,10 +2996,12 @@ impl NativeSuperEngine {
         sources
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn call_llm_streaming(
         &mut self,
         msg_id: &str,
         remaining: Duration,
+        total_run_budget: Duration,
         force_low_reasoning: bool,
         escalate_reasoning: bool,
         force_no_tools: bool,
@@ -2831,6 +3021,7 @@ impl NativeSuperEngine {
         let mut retries = 0u32;
         let mut compat_bounces = 0u32;
         let mut attempt = 0u32;
+        let mut slow_step_downs = 0u32;
         let mut unreachable_started_at: Option<Instant> = None;
         let mut unreachable_attempt = 0u32;
 
@@ -2853,6 +3044,17 @@ impl NativeSuperEngine {
             let t_attempt = Instant::now();
             let api_kind = self.active_wire_dialect();
             let force_fresh_socket = attempt > 0;
+            let pre_ttft_cap = if attempt == 0 {
+                attempt0_pre_ttft_keepalive_cap(rem_run, max_attempts)
+            } else {
+                None
+            };
+            let attempt_hint = AttemptPolicyHint {
+                slow_step_downs,
+                pre_ttft_cap,
+                rem_run_budget: Some(rem_run),
+                total_run_budget: Some(total_run_budget),
+            };
             let (header_to, first_delta_to, inter_chunk_to) =
                 self.stream_budget.effective_timeouts(
                     &self.endpoint.model_id,
@@ -2890,6 +3092,7 @@ impl NativeSuperEngine {
                                 escalate_reasoning,
                                 force_no_tools,
                                 force_fresh_socket,
+                                attempt_hint,
                                 sink,
                                 Some((&winner, &notify, 1)),
                             )
@@ -2906,6 +3109,7 @@ impl NativeSuperEngine {
                                 escalate_reasoning,
                                 force_no_tools,
                                 force_fresh_socket,
+                                attempt_hint,
                                 sink,
                                 Some((&winner, &notify, 1)),
                             )
@@ -2944,6 +3148,7 @@ impl NativeSuperEngine {
                                 escalate_reasoning,
                                 force_no_tools,
                                 true,
+                                attempt_hint,
                                 sink,
                                 Some((&winner, &notify, 2)),
                             )
@@ -2960,6 +3165,7 @@ impl NativeSuperEngine {
                                 escalate_reasoning,
                                 force_no_tools,
                                 true,
+                                attempt_hint,
                                 sink,
                                 Some((&winner, &notify, 2)),
                             )
@@ -3005,6 +3211,7 @@ impl NativeSuperEngine {
                             escalate_reasoning,
                             force_no_tools,
                             force_fresh_socket,
+                            attempt_hint,
                             sink,
                         )
                         .await
@@ -3020,6 +3227,7 @@ impl NativeSuperEngine {
                             escalate_reasoning,
                             force_no_tools,
                             force_fresh_socket,
+                            attempt_hint,
                             sink,
                         )
                         .await
@@ -3034,6 +3242,7 @@ impl NativeSuperEngine {
                             force_low_reasoning,
                             escalate_reasoning,
                             force_fresh_socket,
+                            attempt_hint,
                             sink,
                         )
                         .await
@@ -3050,6 +3259,7 @@ impl NativeSuperEngine {
                             escalate_reasoning,
                             force_no_tools,
                             force_fresh_socket,
+                            attempt_hint,
                             sink,
                             None,
                         )
@@ -3227,6 +3437,15 @@ impl NativeSuperEngine {
                                 }
                                 RetryKind::HttpStatus | RetryKind::Transport => {}
                             }
+                            if matches!(
+                                kind,
+                                RetryKind::TruncatedStream
+                                    | RetryKind::ChunkStall
+                                    | RetryKind::HeaderTimeout
+                            ) || attempt_latency_ms >= 20_000.0
+                            {
+                                slow_step_downs = slow_step_downs.saturating_add(1);
+                            }
 
                             let base = self.stream_budget.retry_base_backoff_ms;
                             let exp_ms = (base << attempt.min(3)).min(8_000);
@@ -3278,12 +3497,14 @@ impl NativeSuperEngine {
         let router = self.dynamic_router.as_ref()?;
         Self::register_endpoint_candidate(router, &self.endpoint);
         let cid = format!("{}::{}", self.endpoint.provider_id, self.endpoint.model_id);
-        let mut policy = RouteRequestPolicy::default();
-        policy.request_id = format!("{msg_id}:a{attempt}");
-        policy.idempotency_key = format!("{}:{msg_id}:a{attempt}", self.session_key);
-        policy.allow_unknown_quota_without_emergency = true;
-        policy.preferred_candidate_ids = vec![cid];
-        policy.session_affinity_key = Some(self.session_key.clone());
+        let policy = RouteRequestPolicy {
+            request_id: format!("{msg_id}:a{attempt}"),
+            idempotency_key: format!("{}:{msg_id}:a{attempt}", self.session_key),
+            allow_unknown_quota_without_emergency: true,
+            preferred_candidate_ids: vec![cid],
+            session_affinity_key: Some(self.session_key.clone()),
+            ..Default::default()
+        };
         if let Ok(res) = router.decide_and_reserve(&policy) {
             if let Some(grant) = res.reservation {
                 let _ = router.mark_dispatched(&grant.reservation_id, grant.fencing_token);
@@ -3310,25 +3531,28 @@ impl NativeSuperEngine {
         else {
             return;
         };
-        let mut report = OutcomeReport::default();
-        report.reservation_id = reservation_id;
-        report.fencing_token = fencing_token;
-        report.success = success;
-        report.acceptance = acceptance;
-        report.latency_ms = Some(latency_ms);
-        report.retry_after_ms = retry_after_ms;
-        report.diagnostic_note = note.chars().take(240).collect();
-        if let Some(u) = usage {
-            if u.saw_usage {
-                report.actual_input_tokens = Some(u.uncached_input + u.cache_read + u.cache_write);
-                report.actual_output_tokens = Some(u.output);
-            }
-        }
-        if let Some(sc) = scope {
-            report.is_request_scoped = matches!(sc, UpstreamFailureScope::RequestScoped);
-            report.model_entitlement_error =
-                matches!(sc, UpstreamFailureScope::ModelEntitlementLock);
-        }
+        let (actual_input_tokens, actual_output_tokens) = match usage {
+            Some(u) if u.saw_usage => (
+                Some(u.uncached_input + u.cache_read + u.cache_write),
+                Some(u.output),
+            ),
+            _ => (None, None),
+        };
+        let report = OutcomeReport {
+            reservation_id,
+            fencing_token,
+            success,
+            acceptance,
+            latency_ms: Some(latency_ms),
+            retry_after_ms,
+            diagnostic_note: note.chars().take(240).collect(),
+            actual_input_tokens,
+            actual_output_tokens,
+            is_request_scoped: scope.is_some_and(|sc| matches!(sc, UpstreamFailureScope::RequestScoped)),
+            model_entitlement_error: scope
+                .is_some_and(|sc| matches!(sc, UpstreamFailureScope::ModelEntitlementLock)),
+            ..Default::default()
+        };
         let _ = router.reconcile_outcome(report);
     }
 
@@ -3345,6 +3569,7 @@ impl NativeSuperEngine {
         escalate_reasoning: bool,
         force_no_tools: bool,
         force_fresh_socket: bool,
+        attempt_hint: AttemptPolicyHint,
         sink: Option<&HarnessEventSink>,
         hedge_slot: Option<(&AtomicU8, &Notify, u8)>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
@@ -3399,7 +3624,9 @@ impl NativeSuperEngine {
             body["prompt_cache_key"] = Value::String(self.session_key.clone());
         }
 
-        if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning) {
+        if let Some(effort) =
+            self.resolve_effort_for_attempt(force_low_reasoning, escalate_reasoning, attempt_hint)
+        {
             apply_reasoning_effort_wire(
                 &mut body,
                 "openai-completions",
@@ -3547,15 +3774,18 @@ impl NativeSuperEngine {
         let mut line_buf = Vec::<u8>::new();
 
         'sse: loop {
-            let chunk_budget = compute_token_progress_wait_with_phase(
+            let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
+                t_req,
                 stream_started_at,
                 last_delta_at,
                 last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
+                attempt_hint.pre_ttft_cap,
                 "OpenAI SSE",
-                text.is_empty() && tool_accum.is_empty(),
+                text.len(),
+                !tool_accum.is_empty(),
             )?;
 
             let next_res = if first_delta_at.is_none() {
@@ -3588,9 +3818,11 @@ impl NativeSuperEngine {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::ChunkStall,
-                detail: format!(
-                    "OpenAI SSE token-progress stall timeout after {}ms",
-                    chunk_budget.as_millis()
+                detail: format_chunk_timeout_detail(
+                    "OpenAI SSE",
+                    chunk_budget,
+                    hit_turn_deadline,
+                    turn_deadline,
                 ),
             })?;
 
@@ -3878,7 +4110,6 @@ impl NativeSuperEngine {
             reasoning_signature: thought_signature,
             redacted_thinking: Vec::new(),
             reasoning_encrypted_items: Vec::new(),
-            response_id: None,
             tool_calls: finalized_tools,
             speculative_results,
             finish_reason,
@@ -4024,6 +4255,7 @@ impl NativeSuperEngine {
         force_low_reasoning: bool,
         escalate_reasoning: bool,
         force_no_tools: bool,
+        attempt_hint: AttemptPolicyHint,
     ) {
         if !resp_tools.is_empty() {
             body["tools"] = Value::Array(resp_tools);
@@ -4036,7 +4268,9 @@ impl NativeSuperEngine {
         }
         body["include"] = json!(["reasoning.encrypted_content"]);
         body["parallel_tool_calls"] = json!(true);
-        if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning) {
+        if let Some(effort) =
+            self.resolve_effort_for_attempt(force_low_reasoning, escalate_reasoning, attempt_hint)
+        {
             apply_reasoning_effort_wire(
                 body,
                 "openai-responses",
@@ -4046,7 +4280,7 @@ impl NativeSuperEngine {
             );
         } else if force_low_reasoning {
             body["reasoning"] = json!({ "effort": "low" });
-        } else if escalate_reasoning {
+        } else if escalate_reasoning && attempt_hint.slow_step_downs == 0 {
             body["reasoning"] = json!({ "effort": "high" });
         }
     }
@@ -4063,6 +4297,7 @@ impl NativeSuperEngine {
         escalate_reasoning: bool,
         force_no_tools: bool,
         force_fresh_socket: bool,
+        attempt_hint: AttemptPolicyHint,
         sink: Option<&HarnessEventSink>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
         let mut http_fresh_socket = force_fresh_socket;
@@ -4078,6 +4313,7 @@ impl NativeSuperEngine {
                     escalate_reasoning,
                     force_no_tools,
                     force_fresh_socket,
+                    attempt_hint,
                     sink,
                 )
                 .await
@@ -4110,6 +4346,7 @@ impl NativeSuperEngine {
             escalate_reasoning,
             force_no_tools,
             http_fresh_socket,
+            attempt_hint,
             sink,
             None,
         )
@@ -4128,6 +4365,7 @@ impl NativeSuperEngine {
         escalate_reasoning: bool,
         force_no_tools: bool,
         force_fresh_socket: bool,
+        attempt_hint: AttemptPolicyHint,
         sink: Option<&HarnessEventSink>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
         let ws_url = openai_responses_ws_url(&self.endpoint.base_url);
@@ -4253,6 +4491,7 @@ impl NativeSuperEngine {
                 force_low_reasoning,
                 escalate_reasoning,
                 force_no_tools,
+                attempt_hint,
             );
 
             let mut ws = match self.ws_state.stream.take() {
@@ -4288,15 +4527,18 @@ impl NativeSuperEngine {
             let mut saw_data_frame = false;
 
             loop {
-                let chunk_budget = compute_token_progress_wait_with_phase(
+                let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
+                    t_req,
                     stream_started_at,
                     acc.last_delta_at,
                     acc.last_wire_activity_at,
                     first_delta_timeout,
                     inter_chunk_timeout,
                     turn_deadline,
+                    attempt_hint.pre_ttft_cap,
                     "OpenAI Responses WS",
-                    acc.in_reasoning_only(),
+                    acc.text.len(),
+                    !acc.tool_calls.is_empty(),
                 )?;
                 let next_frame = tokio::time::timeout(chunk_budget, ws.next())
                     .await
@@ -4307,9 +4549,11 @@ impl NativeSuperEngine {
                             status: None,
                             retry_after_secs: None,
                             kind: RetryKind::ChunkStall,
-                            detail: format!(
-                                "Responses WS stall timeout after {}ms",
-                                chunk_budget.as_millis()
+                            detail: format_chunk_timeout_detail(
+                                "Responses WS",
+                                chunk_budget,
+                                hit_turn_deadline,
+                                turn_deadline,
                             ),
                         }
                     })?;
@@ -4454,6 +4698,7 @@ impl NativeSuperEngine {
         escalate_reasoning: bool,
         force_no_tools: bool,
         force_fresh_socket: bool,
+        attempt_hint: AttemptPolicyHint,
         sink: Option<&HarnessEventSink>,
         hedge_slot: Option<(&AtomicU8, &Notify, u8)>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
@@ -4484,6 +4729,7 @@ impl NativeSuperEngine {
             force_low_reasoning,
             escalate_reasoning,
             force_no_tools,
+            attempt_hint,
         );
 
         let client = if force_fresh_socket {
@@ -4583,15 +4829,18 @@ impl NativeSuperEngine {
         let mut raw_sse_log: Vec<u8> = Vec::new();
 
         'resp_sse: loop {
-            let chunk_budget = compute_token_progress_wait_with_phase(
+            let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
+                t_req,
                 stream_started_at,
                 acc.last_delta_at,
                 acc.last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
+                attempt_hint.pre_ttft_cap,
                 "OpenAI Responses SSE",
-                acc.in_reasoning_only(),
+                acc.text.len(),
+                !acc.tool_calls.is_empty(),
             )?;
             let next_res = if acc.first_delta_at.is_none() {
                 if let Some((winner, notify, slot)) = hedge_slot {
@@ -4623,9 +4872,11 @@ impl NativeSuperEngine {
                 status: None,
                 retry_after_secs: None,
                 kind: RetryKind::ChunkStall,
-                detail: format!(
-                    "Responses SSE stall timeout after {}ms",
-                    chunk_budget.as_millis()
+                detail: format_chunk_timeout_detail(
+                    "Responses SSE",
+                    chunk_budget,
+                    hit_turn_deadline,
+                    turn_deadline,
                 ),
             })?;
             let Some(chunk_res) = next_opt else {
@@ -4725,6 +4976,7 @@ impl NativeSuperEngine {
         escalate_reasoning: bool,
         force_no_tools: bool,
         force_fresh_socket: bool,
+        attempt_hint: AttemptPolicyHint,
         sink: Option<&HarnessEventSink>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
         let url = if self.endpoint.base_url.ends_with("/messages") {
@@ -4763,6 +5015,7 @@ impl NativeSuperEngine {
 
         // Breakpoint #3: cache_control on last block of penultimate user/tool_result message
         // Breakpoint #4: cache_control on last block of trailing user/tool_result message when >= 3 messages
+        // On Turn 1 (`ant_msgs.len() == 1`), also mark `user[0]` so Turn-1 retries and Turn 2 hit cache.
         let user_indices: Vec<usize> = ant_msgs
             .iter()
             .enumerate()
@@ -4780,6 +5033,13 @@ impl NativeSuperEngine {
             if let Some(msg) = ant_msgs.get_mut(target_idx) {
                 set_ephemeral(msg);
                 bp3_idx = Some(target_idx);
+            }
+        } else if ant_msgs.len() == 1 {
+            if let Some(&first_u) = user_indices.first() {
+                if let Some(msg) = ant_msgs.get_mut(first_u) {
+                    set_ephemeral(msg);
+                    bp3_idx = Some(first_u);
+                }
             }
         }
         if ant_msgs.len() >= 3 {
@@ -4830,7 +5090,8 @@ impl NativeSuperEngine {
         }
         let is_claude_model = self.endpoint.model_id.to_ascii_lowercase().contains("claude");
         if is_claude_model {
-            if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning)
+            if let Some(effort) =
+                self.resolve_effort_for_attempt(force_low_reasoning, escalate_reasoning, attempt_hint)
             {
                 apply_reasoning_effort_wire(
                     &mut body,
@@ -4942,15 +5203,18 @@ impl NativeSuperEngine {
         let mut line_buf = Vec::<u8>::new();
 
         'ant: loop {
-            let chunk_budget = compute_token_progress_wait_with_phase(
+            let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
+                t_req,
                 stream_started_at,
                 last_delta_at,
                 last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
+                attempt_hint.pre_ttft_cap,
                 "Anthropic SSE",
-                text.is_empty() && tool_calls.is_empty(),
+                text.len(),
+                !tool_calls.is_empty(),
             )?;
             let next_opt = tokio::time::timeout(chunk_budget, stream.next())
                 .await
@@ -4958,9 +5222,11 @@ impl NativeSuperEngine {
                     status: None,
                     retry_after_secs: None,
                     kind: RetryKind::ChunkStall,
-                    detail: format!(
-                        "Anthropic SSE token-progress stall timeout after {}ms",
-                        chunk_budget.as_millis()
+                    detail: format_chunk_timeout_detail(
+                        "Anthropic SSE",
+                        chunk_budget,
+                        hit_turn_deadline,
+                        turn_deadline,
                     ),
                 })?;
             let Some(chunk_res) = next_opt else {
@@ -5266,7 +5532,6 @@ impl NativeSuperEngine {
             },
             redacted_thinking,
             reasoning_encrypted_items: Vec::new(),
-            response_id: None,
             tool_calls,
             speculative_results,
             finish_reason: stop_reason.or_else(|| Some("end_turn".into())),
@@ -5289,6 +5554,7 @@ impl NativeSuperEngine {
         force_low_reasoning: bool,
         escalate_reasoning: bool,
         force_fresh_socket: bool,
+        attempt_hint: AttemptPolicyHint,
         sink: Option<&HarnessEventSink>,
     ) -> std::result::Result<TurnStreamResult, StreamTurnError> {
         let url = format!(
@@ -5403,7 +5669,9 @@ impl NativeSuperEngine {
             "tools": [{ "functionDeclarations": decls }],
             "generationConfig": { "maxOutputTokens": self.endpoint.max_tokens }
         });
-        if let Some(effort) = self.resolve_effort_for_turn(force_low_reasoning, escalate_reasoning) {
+        if let Some(effort) =
+            self.resolve_effort_for_attempt(force_low_reasoning, escalate_reasoning, attempt_hint)
+        {
             apply_reasoning_effort_wire(
                 &mut body,
                 "gemini",
@@ -5480,15 +5748,18 @@ impl NativeSuperEngine {
         let mut raw_sse_log: Vec<u8> = Vec::new();
 
         loop {
-            let chunk_budget = compute_token_progress_wait_with_phase(
+            let (chunk_budget, hit_turn_deadline) = compute_sse_loop_wait(
+                t_req,
                 stream_started_at,
                 last_delta_at,
                 last_wire_activity_at,
                 first_delta_timeout,
                 inter_chunk_timeout,
                 turn_deadline,
+                attempt_hint.pre_ttft_cap,
                 "Gemini SSE",
-                text.is_empty() && tool_calls.is_empty(),
+                text.len(),
+                !tool_calls.is_empty(),
             )?;
             let next_opt = tokio::time::timeout(chunk_budget, stream.next())
                 .await
@@ -5496,9 +5767,11 @@ impl NativeSuperEngine {
                     status: None,
                     retry_after_secs: None,
                     kind: RetryKind::ChunkStall,
-                    detail: format!(
-                        "Gemini SSE token-progress stall timeout after {}ms",
-                        chunk_budget.as_millis()
+                    detail: format_chunk_timeout_detail(
+                        "Gemini SSE",
+                        chunk_budget,
+                        hit_turn_deadline,
+                        turn_deadline,
                     ),
                 })?;
             let Some(chunk_res) = next_opt else {
@@ -5674,7 +5947,6 @@ impl NativeSuperEngine {
             reasoning_signature: thought_signature,
             redacted_thinking: Vec::new(),
             reasoning_encrypted_items: Vec::new(),
-            response_id: None,
             tool_calls,
             speculative_results: HashMap::new(),
             finish_reason: finish_reason.or_else(|| Some("STOP".into())),
@@ -5725,10 +5997,6 @@ impl ResponsesFrameState {
             last_wire_activity_at: None,
             active_decode_ms: 0,
         }
-    }
-
-    fn in_reasoning_only(&self) -> bool {
-        self.text.is_empty() && self.tool_calls.is_empty()
     }
 
     fn stamp_token(
@@ -6030,7 +6298,6 @@ impl ResponsesFrameState {
             reasoning_signature: None,
             redacted_thinking: Vec::new(),
             reasoning_encrypted_items: self.reasoning_encrypted_items,
-            response_id: self.response_id,
             tool_calls: self.tool_calls,
             speculative_results,
             finish_reason: self.finish_reason,
@@ -6334,6 +6601,7 @@ fn extract_thought_signature(v: &Value) -> Option<String> {
 
 /// Serialize a `HarnessMessage` into OpenAI Chat Completions wire JSON with
 /// cross-model cryptographic proof scoping and multimodal `ContentBlock` lowering.
+#[cfg(test)]
 fn message_to_openai_json(
     m: &HarnessMessage,
     active_prompt_start_turn: u32,
@@ -6586,13 +6854,8 @@ fn parse_openai_usage(u: &Value, dst: &mut TurnLlmUsage) {
     }
 }
 
-/// Build Anthropic `/v1/messages` array with strict role alternation:
-/// - Merges any consecutive `user` / `tool` (`role: "user"`) turns into one content array
-///   so Anthropic never rejects with HTTP 400 (`roles must alternate`).
-/// - Echoes verbatim `thinking`+`signature` AND `redacted_thinking` blocks within the active prompt.
-/// Build Anthropic `/v1/messages` array with strict role alternation:
-/// - Merges any consecutive `user` / `tool` (`role: "user"`) turns into one content array.
-/// - Enforces cross-model cryptographic proof scoping and multimodal `ContentBlock` lowering.
+/// Test convenience wrapper over [`build_anthropic_messages_for_target`] with empty provider/model target.
+#[cfg(test)]
 fn build_anthropic_messages(
     messages: &[HarnessMessage],
     supports_reasoning_echo: bool,
@@ -6607,6 +6870,11 @@ fn build_anthropic_messages(
     )
 }
 
+/// Build Anthropic `/v1/messages` array with strict role alternation:
+/// - Merges any consecutive `user` / `tool` (`role: "user"`) turns into one content array
+///   so Anthropic never rejects with HTTP 400 (`roles must alternate`).
+/// - Echoes verbatim `thinking`+`signature` AND `redacted_thinking` blocks within the active prompt.
+/// - Enforces cross-model cryptographic proof scoping and multimodal `ContentBlock` lowering.
 fn build_anthropic_messages_for_target(
     messages: &[HarnessMessage],
     supports_reasoning_echo: bool,
@@ -9595,5 +9863,348 @@ data: [DONE]\n\n";
             tool_msg.len()
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn pre_tool_preamble_keepalive_and_turn_deadline_cap_labeling() {
+        let now = Instant::now();
+        let long_deadline = now + Duration::from_secs(300);
+        let first_to = Duration::from_secs(150);
+        let chunk_to = Duration::from_secs(65);
+
+        // Short pre-tool preamble (`<= 512` bytes, zero started tools) with fresh `: ping` keepalives
+        // MUST stay alive beyond 65s (eliminating `atlas_01`/`bfcl_01` 69.9s false aborts).
+        let (preamble_wait, hit_dl) = compute_sse_loop_wait(
+            now - Duration::from_secs(75),
+            now - Duration::from_secs(74),
+            Some(now - Duration::from_secs(70)),
+            Some(now - Duration::from_secs(5)),
+            first_to,
+            chunk_to,
+            long_deadline,
+            None,
+            "Anthropic SSE",
+            48,
+            false,
+        )
+        .unwrap();
+        assert!(!hit_dl);
+        assert!(
+            preamble_wait >= Duration::from_secs(75),
+            "active preamble keepalive should allow >=75s left (got {preamble_wait:?})"
+        );
+
+        // Without fresh keepalives, a stalled preamble MUST still fail at 65s.
+        assert!(compute_sse_loop_wait(
+            now - Duration::from_secs(75),
+            now - Duration::from_secs(74),
+            Some(now - Duration::from_secs(70)),
+            Some(now - Duration::from_secs(70)),
+            first_to,
+            chunk_to,
+            long_deadline,
+            None,
+            "Anthropic SSE",
+            48,
+            false,
+        )
+        .is_err());
+
+        // Once >512 bytes of visible text or a tool_use block has started, strict 65s stall applies.
+        assert!(compute_sse_loop_wait(
+            now - Duration::from_secs(75),
+            now - Duration::from_secs(74),
+            Some(now - Duration::from_secs(70)),
+            Some(now - Duration::from_secs(5)),
+            first_to,
+            chunk_to,
+            long_deadline,
+            None,
+            "Anthropic SSE",
+            600,
+            false,
+        )
+        .is_err());
+        assert!(compute_sse_loop_wait(
+            now - Duration::from_secs(75),
+            now - Duration::from_secs(74),
+            Some(now - Duration::from_secs(70)),
+            Some(now - Duration::from_secs(5)),
+            first_to,
+            chunk_to,
+            long_deadline,
+            None,
+            "Anthropic SSE",
+            24,
+            true,
+        )
+        .is_err());
+
+        // Attempt-0 pre-TTFT keepalive cap reserves >=55% budget for recovery retries on >=120s runs.
+        assert_eq!(
+            attempt0_pre_ttft_keepalive_cap(Duration::from_secs(273), 4),
+            Some(Duration::from_secs(115))
+        );
+        assert_eq!(
+            attempt0_pre_ttft_keepalive_cap(Duration::from_secs(273), 1),
+            None
+        );
+        let (a0_wait, a0_dl) = compute_sse_loop_wait(
+            now - Duration::from_secs(36),
+            now,
+            None,
+            Some(now),
+            first_to,
+            chunk_to,
+            long_deadline,
+            attempt0_pre_ttft_keepalive_cap(Duration::from_secs(273), 4),
+            "Anthropic SSE",
+            0,
+            false,
+        )
+        .unwrap();
+        assert!(!a0_dl);
+        assert!(
+            a0_wait <= Duration::from_secs(80) && a0_wait >= Duration::from_secs(75),
+            "expected ~79s remaining under 115s Attempt-0 pre-TTFT cap, got {a0_wait:?}"
+        );
+
+        // Short remaining turn deadline (< stall limit) must label deadline expiry cleanly, not "stall".
+        let short_dl = now + Duration::from_millis(2_593);
+        let (dl_wait, capped_dl) = compute_sse_loop_wait(
+            now,
+            now,
+            None,
+            Some(now),
+            first_to,
+            chunk_to,
+            short_dl,
+            None,
+            "Anthropic SSE",
+            0,
+            false,
+        )
+        .unwrap();
+        assert!(capped_dl);
+        let msg = format_chunk_timeout_detail("Anthropic SSE", dl_wait, capped_dl, short_dl);
+        assert!(
+            msg.contains("turn deadline") && !msg.contains("stall timeout"),
+            "unexpected deadline detail: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_effort_step_down_preserves_prefix0_across_anthropic_and_responses_truncations() {
+        assert_eq!(
+            apply_retry_effort_step_down(
+                Some(EffortLevel::High),
+                "claude-sonnet-5-5",
+                0,
+                Duration::from_secs(200),
+                Duration::from_secs(300),
+                true,
+            ),
+            Some(EffortLevel::High)
+        );
+        assert_eq!(
+            apply_retry_effort_step_down(
+                Some(EffortLevel::High),
+                "claude-sonnet-5-5",
+                1,
+                Duration::from_secs(200),
+                Duration::from_secs(300),
+                true,
+            ),
+            Some(EffortLevel::Medium)
+        );
+        assert_eq!(
+            apply_retry_effort_step_down(
+                Some(EffortLevel::High),
+                "claude-sonnet-5-5",
+                2,
+                Duration::from_secs(200),
+                Duration::from_secs(300),
+                true,
+            ),
+            Some(EffortLevel::Low)
+        );
+        assert_eq!(
+            apply_retry_effort_step_down(
+                Some(EffortLevel::Medium),
+                "gpt-6.2-sol",
+                1,
+                Duration::from_secs(200),
+                Duration::from_secs(300),
+                true,
+            ),
+            Some(EffortLevel::Low)
+        );
+        assert_eq!(
+            apply_retry_effort_step_down(
+                Some(EffortLevel::High),
+                "claude-sonnet-5-5",
+                0,
+                Duration::from_secs(40),
+                Duration::from_secs(300),
+                true,
+            ),
+            Some(EffortLevel::Low)
+        );
+        // Short sub-120s run/test budget must NOT trigger tight-budget step-down on Attempt 0.
+        assert_eq!(
+            apply_retry_effort_step_down(
+                Some(EffortLevel::High),
+                "claude-sonnet-5-5",
+                0,
+                Duration::from_secs(20),
+                Duration::from_secs(20),
+                true,
+            ),
+            Some(EffortLevel::High)
+        );
+
+        // 1. Anthropic Turn-1 cache_control on user[0] + High -> Medium -> Low on TruncatedStream retries
+        let ant_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ant_addr = ant_listener.local_addr().unwrap();
+        let ant_reqs = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let ant_reqs_bg = Arc::clone(&ant_reqs);
+        let ant_srv = tokio::spawn(async move {
+            for idx in 0..3 {
+                let (mut sock, _) = ant_listener.accept().await.unwrap();
+                let req = http_body_json(&read_http_request(&mut sock).await);
+                ant_reqs_bg.lock().unwrap().push(req);
+                let body = if idx < 2 {
+                    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":400}}}\n\n"
+                } else {
+                    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":390}}}\n\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ANTHROPIC_RETRY_OK\"}}\n\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n\
+data: {\"type\":\"message_stop\"}\n\n"
+                };
+                let frame = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = sock.write_all(frame.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_step_down_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut ant_eng = make_test_engine(&tmp, format!("http://{ant_addr}/v1"));
+        ant_eng.endpoint.model_id = "claude-sonnet-5-5".into();
+        ant_eng.wire_api_mode = WireApiMode::Messages;
+        ant_eng.stream_budget.header_timeout = Duration::from_secs(5);
+        ant_eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        ant_eng.stream_budget.retry_base_backoff_ms = 10;
+
+        let ant_sum = ant_eng
+            .run_prompt("check step down", 4, 20, None)
+            .await
+            .unwrap();
+        ant_srv.await.unwrap();
+        assert_eq!(ant_sum.status, "completed");
+        assert_eq!(ant_sum.final_text, "ANTHROPIC_RETRY_OK");
+        assert_eq!(ant_sum.truncated_stream_retries, 2);
+
+        let ant_captured = ant_reqs.lock().unwrap().clone();
+        assert_eq!(ant_captured.len(), 3);
+        let msg0_json = serde_json::to_string(&ant_captured[0]["messages"][0]).unwrap();
+        assert!(
+            msg0_json.contains("\"cache_control\":{\"type\":\"ephemeral\"}"),
+            "Turn 1 messages[0] must carry breakpoint #3 cache_control: {msg0_json}"
+        );
+        for pair in ant_captured.windows(2) {
+            assert_eq!(pair[0]["system"], pair[1]["system"]);
+            assert_eq!(pair[0]["tools"], pair[1]["tools"]);
+            assert_eq!(pair[0]["messages"], pair[1]["messages"]);
+        }
+        assert_ne!(
+            ant_captured[0].get("output_config"),
+            ant_captured[1].get("output_config"),
+            "Attempt 1 must step down from Attempt 0 effort"
+        );
+        assert_ne!(
+            ant_captured[1].get("output_config"),
+            ant_captured[2].get("output_config"),
+            "Attempt 2 must step down further from Attempt 1 effort"
+        );
+
+        // 2. OpenAI Responses (`gpt-6.2-sol`): Medium -> Low after TruncatedStream while Prefix-0 stays identical
+        let resp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let resp_addr = resp_listener.local_addr().unwrap();
+        let resp_reqs = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let resp_reqs_bg = Arc::clone(&resp_reqs);
+        let resp_srv = tokio::spawn(async move {
+            for idx in 0..2 {
+                let (mut sock, _) = resp_listener.accept().await.unwrap();
+                let req = http_body_json(&read_http_request(&mut sock).await);
+                resp_reqs_bg.lock().unwrap().push(req);
+                let body = if idx == 0 {
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r_trunc\"}}\n\n"
+                } else {
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"RESPONSES_RETRY_OK\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":300,\"output_tokens\":4}}}\n\n"
+                };
+                let frame = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+                let _ = sock.write_all(frame.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let mut resp_eng = make_test_engine(&tmp, format!("http://{resp_addr}/v1"));
+        resp_eng.endpoint.model_id = "gpt-6.2-sol".into();
+        resp_eng.wire_api_mode = WireApiMode::Responses;
+        resp_eng.responses_ws_enabled = false;
+        resp_eng.stream_budget.header_timeout = Duration::from_secs(5);
+        resp_eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        resp_eng.stream_budget.retry_base_backoff_ms = 10;
+
+        let resp_sum = resp_eng
+            .run_prompt("check responses step down", 4, 20, None)
+            .await
+            .unwrap();
+        resp_srv.await.unwrap();
+        assert_eq!(resp_sum.status, "completed");
+        assert_eq!(resp_sum.final_text, "RESPONSES_RETRY_OK");
+        assert_eq!(resp_sum.truncated_stream_retries, 1);
+
+        let resp_captured = resp_reqs.lock().unwrap().clone();
+        assert_eq!(resp_captured.len(), 2);
+        assert_eq!(resp_captured[0]["instructions"], resp_captured[1]["instructions"]);
+        assert_eq!(resp_captured[0]["tools"], resp_captured[1]["tools"]);
+        assert_eq!(resp_captured[0]["input"], resp_captured[1]["input"]);
+        assert_eq!(resp_captured[0]["reasoning"]["effort"], json!("medium"));
+        assert_eq!(resp_captured[1]["reasoning"]["effort"], json!("low"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn shell_merkle_mutation_resets_zero_mutation_churn_in_oscillation_detector() {
+        let mut det = OscillationDetector::new(16);
+        assert_eq!(det.last_tree_hash(), None);
+        for _ in 0..4 {
+            assert!(det.observe_turn_tree("hash_init", false).is_none());
+        }
+        assert_eq!(det.last_tree_hash(), Some("hash_init"));
+
+        // Simulated Turn 5 shell command (`git merge`) changes Merkle tree hash -> must reset churn!
+        let new_hash = "hash_after_git_merge";
+        let tree_mutated = det.last_tree_hash() != Some(new_hash);
+        assert!(tree_mutated);
+        assert!(det.observe_turn_tree(new_hash, tree_mutated).is_none());
+        assert_eq!(det.last_tree_hash(), Some(new_hash));
+
+        // 4 more read-only turns remain clear; 5th genuinely unchanged turn triggers churn alert.
+        for _ in 0..4 {
+            assert!(det.observe_turn_tree(new_hash, false).is_none());
+        }
+        assert!(matches!(
+            det.observe_turn_tree(new_hash, false),
+            Some(crate::lakeview::OscillationAlert::ZeroMutationChurn { turns: 5 })
+        ));
     }
 }

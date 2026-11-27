@@ -223,12 +223,14 @@ impl BrowserToolManager {
     }
 
     pub async fn launch(&self, headless: bool, initial_url: Option<String>) -> Result<Value> {
-        let mut opts = IsolatedBrowserLaunchOptions::default();
-        opts.headless = headless;
         if let Some(ref u) = initial_url {
             validate_browser_target_url(u)?;
-            opts.initial_url = Some(u.clone());
         }
+        let opts = IsolatedBrowserLaunchOptions {
+            headless,
+            initial_url,
+            ..Default::default()
+        };
         let handle = launch_isolated_browser(opts)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;

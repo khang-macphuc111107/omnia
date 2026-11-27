@@ -8,34 +8,24 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Parameter requirement level matching Goose YAML recipe semantics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeParamRequirement {
+    #[default]
     Required,
     Optional,
     UserPrompt,
 }
 
-impl Default for RecipeParamRequirement {
-    fn default() -> Self {
-        Self::Required
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeParamType {
+    #[default]
     String,
     Number,
     Boolean,
     Select,
     File,
-}
-
-impl Default for RecipeParamType {
-    fn default() -> Self {
-        Self::String
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

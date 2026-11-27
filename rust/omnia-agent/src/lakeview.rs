@@ -1508,6 +1508,12 @@ impl OscillationDetector {
         None
     }
 
+    /// Latest observed workspace Merkle root hash, if any turn has been recorded.
+    #[must_use]
+    pub fn last_tree_hash(&self) -> Option<&str> {
+        self.tree_history.back().map(String::as_str)
+    }
+
     /// Observe post-turn workspace Merkle root hash to detect `S_t == S_{t-2}` oscillations
     /// or `>= 5` consecutive zero-mutation turns.
     pub fn observe_turn_tree(

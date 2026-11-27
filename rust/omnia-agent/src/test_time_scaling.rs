@@ -564,10 +564,10 @@ where
     // 2. Execute K x K execution matrix (every test suite T_j on every candidate worktree P_i)
     let mut matrix = Vec::with_capacity(k * k);
     let mut matrix_tasks = Vec::with_capacity(k * k);
-    for i in 0..k {
-        for j in 0..k {
-            let wt_dir = patch_wts[i].worktree_path.clone();
-            let suite = test_suites[j].clone();
+    for (i, patch_wt) in patch_wts.iter().enumerate().take(k) {
+        for (j, test_suite) in test_suites.iter().enumerate().take(k) {
+            let wt_dir = patch_wt.worktree_path.clone();
+            let suite = test_suite.clone();
             let ex = Arc::clone(&exec_suite);
             let permit = sem.clone().acquire_owned().await?;
             matrix_tasks.push(tokio::spawn(async move {

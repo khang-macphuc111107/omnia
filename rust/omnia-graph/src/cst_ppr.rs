@@ -89,7 +89,9 @@ fn ts_language(lang: &str) -> Option<Language> {
         "typescript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
         "go" => Some(tree_sitter_go::LANGUAGE.into()),
+        #[cfg(feature = "cpp-c-ast")]
         "c" => Some(tree_sitter_c::LANGUAGE.into()),
+        #[cfg(feature = "cpp-c-ast")]
         "cpp" => Some(tree_sitter_cpp::LANGUAGE.into()),
         _ => None,
     }
@@ -276,7 +278,7 @@ fn collect_cst_node(
             if let Some(func) = node.child_by_field_name("function") {
                 let raw = node_text(func, bytes);
                 if let Some(last) = raw
-                    .rsplit(|c| c == '.' || c == ':')
+                    .rsplit(['.', ':'])
                     .next()
                     .map(str::trim)
                     .filter(|s| s.len() >= 2 && s.len() <= 64)

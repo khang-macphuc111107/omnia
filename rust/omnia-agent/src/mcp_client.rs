@@ -16,7 +16,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader as StdBufReader, Write as StdWrite};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -539,7 +539,7 @@ impl McpToolSearchIndex {
         let mut used_chars = 0usize;
         let max_chars = budget * 4;
         let mut results = Vec::new();
-        for (_, spec) in scored.into_iter().take(limit.max(1).min(25)) {
+        for (_, spec) in scored.into_iter().take(limit.clamp(1, 25)) {
             let short_desc: String = spec.description.chars().take(160).collect();
             let prop_names: Vec<String> = spec
                 .input_schema
@@ -586,8 +586,8 @@ enum ConnectedTransport {
 struct ConnectedServer {
     config: McpServerConfig,
     protocol_version: String,
-    capabilities: Value,
-    instructions: Option<String>,
+    _capabilities: Value,
+    _instructions: Option<String>,
     transport: ConnectedTransport,
     tool_count: usize,
 }
@@ -627,10 +627,10 @@ impl StdioMcpTransport {
         args: &[String],
         env: &BTreeMap<String, String>,
         cwd: Option<&str>,
-        workspace_root: &PathBuf,
+        workspace_root: &Path,
         list_changed_notify: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Result<Arc<Self>> {
-        let work_dir = cwd.map(PathBuf::from).unwrap_or_else(|| workspace_root.clone());
+        let work_dir = cwd.map(PathBuf::from).unwrap_or_else(|| workspace_root.to_path_buf());
 
         #[cfg(windows)]
         let (mut guard, stdin_file, stdout_file) = {
@@ -1201,8 +1201,8 @@ impl McpManager {
         let conn = Arc::new(ConnectedServer {
             config: cfg.clone(),
             protocol_version: protocol_version.clone(),
-            capabilities,
-            instructions,
+            _capabilities: capabilities,
+            _instructions: instructions,
             transport,
             tool_count,
         });

@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::process::Command;
 
 /// Network isolation posture enforced on sandboxed child processes and HTTP/WS tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EgressMode {
     /// Block all outbound network destinations (`127.0.0.1` included).
@@ -14,15 +14,10 @@ pub enum EgressMode {
     /// Allow only verified loopback destinations (`127.0.0.1`, `[::1]`, `localhost`) on allowed ports.
     LoopbackOnly,
     /// Allow public HTTPS/HTTP hosts matching allowlist rules while rejecting private/IMDS/SSRF targets.
+    #[default]
     PublicOnly,
     /// Allow public hosts AND explicit loopback ports (for local dev servers), while blocking RFC-1918/IMDS.
     PublicAndLoopback,
-}
-
-impl Default for EgressMode {
-    fn default() -> Self {
-        Self::PublicOnly
-    }
 }
 
 /// Configurable fail-closed outbound network policy.

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Stdio;
-use std::time::Duration;
 
 /// Sandbox configuration applied to confined subprocess execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

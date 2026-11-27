@@ -3,7 +3,7 @@
 //!
 //! Zero `serde` derive dependency (matches `omnia-connector-gateway/Cargo.toml` no-derive feature).
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
@@ -766,6 +766,7 @@ fn truncate_utf8_at(s: &str, max_bytes: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn conversation_fingerprint_uses_fnv64a_and_caps_user_prefix_at_256() {

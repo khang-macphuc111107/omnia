@@ -21,7 +21,9 @@ pub enum AstLang {
     TypeScript,
     Tsx,
     Go,
+    #[cfg(feature = "cpp-c-ast")]
     C,
+    #[cfg(feature = "cpp-c-ast")]
     Cpp,
     Json,
 }
@@ -36,7 +38,9 @@ impl AstLang {
             "ts" | "typescript" | "mts" | "cts" => Some(Self::TypeScript),
             "tsx" => Some(Self::Tsx),
             "go" | "golang" => Some(Self::Go),
+            #[cfg(feature = "cpp-c-ast")]
             "c" => Some(Self::C),
+            #[cfg(feature = "cpp-c-ast")]
             "cpp" | "c++" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Some(Self::Cpp),
             "json" => Some(Self::Json),
             _ => None,
@@ -58,7 +62,9 @@ impl AstLang {
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::Go => tree_sitter_go::LANGUAGE.into(),
+            #[cfg(feature = "cpp-c-ast")]
             Self::C => tree_sitter_c::LANGUAGE.into(),
+            #[cfg(feature = "cpp-c-ast")]
             Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Self::Json => tree_sitter_json::LANGUAGE.into(),
         }
@@ -73,7 +79,9 @@ impl AstLang {
             Self::TypeScript => "typescript",
             Self::Tsx => "tsx",
             Self::Go => "go",
+            #[cfg(feature = "cpp-c-ast")]
             Self::C => "c",
+            #[cfg(feature = "cpp-c-ast")]
             Self::Cpp => "cpp",
             Self::Json => "json",
         }
@@ -153,6 +161,7 @@ fn parse_pattern_node(lang: AstLang, pattern: &str) -> Result<(String, HashMap<S
             sanitized.clone(),
             format!("package p\nfunc __omnia_pat__() {{ {sanitized} }}"),
         ],
+        #[cfg(feature = "cpp-c-ast")]
         AstLang::C | AstLang::Cpp => vec![
             sanitized.clone(),
             format!("void __omnia_pat__() {{ {sanitized}; }}"),
@@ -455,7 +464,7 @@ fn match_subtree(
     if p_children.len() != c_children.len() {
         return false;
     }
-    for (c_ch, p_ch) in c_children.into_iter().zip(p_children.into_iter()) {
+    for (c_ch, p_ch) in c_children.into_iter().zip(p_children) {
         if !match_subtree(c_ch, src, p_ch, pat_src, ph_map, captures) {
             return false;
         }
@@ -481,7 +490,7 @@ pub fn ast_edit_source(
         }
         // Apply non-overlapping spans right-to-left to preserve byte offsets.
         let mut sorted = hits;
-        sorted.sort_by(|a, b| b.start_byte.cmp(&a.start_byte));
+        sorted.sort_by_key(|m| std::cmp::Reverse(m.start_byte));
         let mut last_start = usize::MAX;
         for m in sorted {
             if m.end_byte > last_start {
@@ -517,7 +526,7 @@ fn render_ast_replacement(template: &str, captures: &BTreeMap<String, String>) -
     let mut out = template.to_owned();
     // Replace longest capture keys first so `$ARGS` doesn't corrupt `$A`
     let mut keys: Vec<(&String, &String)> = captures.iter().collect();
-    keys.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    keys.sort_by_key(|k| std::cmp::Reverse(k.0.len()));
     for (k, v) in keys {
         out = out.replace(k, v);
     }
@@ -562,7 +571,9 @@ mod tests {
             (AstLang::TypeScript, "export function f(x: number): number { return x + 1; }\n"),
             (AstLang::Tsx, "export const C = () => <div>ok</div>;\n"),
             (AstLang::Go, "package main\nfunc f(x int) int { return x + 1 }\n"),
+            #[cfg(feature = "cpp-c-ast")]
             (AstLang::C, "int f(int x) { return x + 1; }\n"),
+            #[cfg(feature = "cpp-c-ast")]
             (AstLang::Cpp, "int f(int x) { return x + 1; }\n"),
             (AstLang::Json, "{\"ok\": true, \"count\": 8}\n"),
         ];

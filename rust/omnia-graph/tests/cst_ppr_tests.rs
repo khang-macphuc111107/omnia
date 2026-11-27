@@ -68,12 +68,15 @@ fn cst_extracts_symbols_imports_calls_across_rust_python_ts_go_cpp() {
     assert_eq!(go.language, "go");
     assert!(go.symbols.iter().any(|s| s.name == "Run" && s.is_public));
 
-    let cpp = extract_cst_facts(
-        "native/win.cpp",
-        "#include <windows.h>\nclass WinShell {};\nint main() { return 0; }\n",
-    );
-    assert_eq!(cpp.language, "cpp");
-    assert!(cpp.symbols.iter().any(|s| s.name == "WinShell"));
+    #[cfg(feature = "cpp-c-ast")]
+    {
+        let cpp = extract_cst_facts(
+            "native/win.cpp",
+            "#include <windows.h>\nclass WinShell {};\nint main() { return 0; }\n",
+        );
+        assert_eq!(cpp.language, "cpp");
+        assert!(cpp.symbols.iter().any(|s| s.name == "WinShell"));
+    }
 }
 
 #[test]

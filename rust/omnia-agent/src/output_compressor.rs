@@ -464,10 +464,7 @@ fn is_progress_or_spinner_line(trimmed: &str) -> bool {
         return true;
     }
     let b = trimmed.as_bytes();
-    if b.len() <= 2 && matches!(trimmed, "-" | "\\" | "|" | "/" | "⠋" | "⠙" | "⠹" | "⠸" | "⠼" | "⠴" | "⠦" | "⠧" | "⠇" | "⠏") {
-        return true;
-    }
-    false
+    b.len() <= 2 && matches!(trimmed, "-" | "\\" | "|" | "/" | "⠋" | "⠙" | "⠹" | "⠸" | "⠼" | "⠴" | "⠦" | "⠧" | "⠇" | "⠏")
 }
 
 fn is_pass_noise_line(trimmed: &str) -> bool {
@@ -806,11 +803,11 @@ fn cap_preserving_diagnostics(
         if is_high_signal_line(lines[idx]) {
             let ctx_start = idx.saturating_sub(1).max(head_idx_end);
             let ctx_end = (idx + 2).min(tail_idx_start);
-            for k in ctx_start..ctx_end {
+            for (k, raw_line) in lines.iter().enumerate().take(ctx_end).skip(ctx_start) {
                 if last_kept.is_some_and(|prev| k <= prev) {
                     continue;
                 }
-                let line = truncate_line_utf8(lines[k], 480);
+                let line = truncate_line_utf8(raw_line, 480);
                 if diag_bytes + line.len() + 1 > diag_budget {
                     break;
                 }

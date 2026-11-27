@@ -751,7 +751,7 @@ impl MemoryGraph {
                 match as_of_ms {
                     Some(ts) => {
                         entry.t_valid_ms <= ts
-                            && entry.t_invalid_ms.map_or(true, |inv| inv > ts)
+                            && entry.t_invalid_ms.is_none_or(|inv| inv > ts)
                     }
                     None => entry.t_invalid_ms.is_none(),
                 }
@@ -781,10 +781,7 @@ pub fn strip_anti_feedback_tags(input: &str) -> String {
     for tag in ["memories", "mental_models", "recalled_memories", "advisory"] {
         let open = format!("<{tag}");
         let close = format!("</{tag}>");
-        loop {
-            let Some(start) = out.find(&open) else {
-                break;
-            };
+        while let Some(start) = out.find(&open) {
             if let Some(rel_end) = out[start..].find(&close) {
                 let end = start + rel_end + close.len();
                 out.replace_range(start..end, " ");

@@ -563,9 +563,7 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
     let inner_height = chunks[1].height.saturating_sub(2) as usize;
     let total_rows = visible_lines.len();
     let max_scroll = total_rows.saturating_sub(inner_height) as u16;
-    if state.auto_scroll {
-        state.scroll_offset = max_scroll;
-    } else if state.scroll_offset > max_scroll {
+    if state.auto_scroll || state.scroll_offset > max_scroll {
         state.scroll_offset = max_scroll;
     }
 

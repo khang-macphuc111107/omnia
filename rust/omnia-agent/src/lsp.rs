@@ -112,7 +112,7 @@ pub struct LspRenameOutcome {
 struct LiveLspClient {
     server_name: String,
     lang: LspLanguage,
-    workspace_root: PathBuf,
+    _workspace_root: PathBuf,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<i64, std::sync::mpsc::Sender<Value>>>>,
     diagnostics: Arc<Mutex<HashMap<String, Vec<LspDiagnosticItem>>>>,
@@ -183,7 +183,7 @@ impl LiveLspClient {
         let client = Arc::new(Self {
             server_name: exe.to_owned(),
             lang,
-            workspace_root: workspace_root.to_path_buf(),
+            _workspace_root: workspace_root.to_path_buf(),
             stdin: Arc::new(Mutex::new(stdin)),
             pending,
             diagnostics,
@@ -573,8 +573,7 @@ impl LazyLspManager {
             Duration::from_secs(5),
         )?;
 
-        let mut edits_by_file: BTreeMap<PathBuf, Vec<(u32, u32, u32, u32, String)>> =
-            BTreeMap::new();
+        let mut edits_by_file: WorkspaceEditsMap = BTreeMap::new();
         collect_workspace_edits(&ws_edit, &self.workspace_root, &mut edits_by_file)?;
 
         let mut files_modified = Vec::new();
@@ -600,7 +599,7 @@ impl LazyLspManager {
                         (s_off.min(e_off), s_off.max(e_off), txt)
                     })
                     .collect();
-                byte_edits.sort_by(|a, b| b.0.cmp(&a.0));
+                byte_edits.sort_by_key(|b| std::cmp::Reverse(b.0));
                 let mut updated = raw;
                 for (s, e, replacement) in byte_edits {
                     updated.replace_range(s..e, &replacement);
@@ -738,10 +737,13 @@ fn line_utf16_col_to_byte(text: &str, line_0: usize, utf16_col: usize) -> usize 
     text.len()
 }
 
+type WorkspaceTextEdit = (u32, u32, u32, u32, String);
+type WorkspaceEditsMap = BTreeMap<PathBuf, Vec<WorkspaceTextEdit>>;
+
 fn collect_workspace_edits(
     ws_edit: &Value,
     workspace_root: &Path,
-    out: &mut BTreeMap<PathBuf, Vec<(u32, u32, u32, u32, String)>>,
+    out: &mut WorkspaceEditsMap,
 ) -> Result<()> {
     if let Some(changes) = ws_edit.get("changes").and_then(Value::as_object) {
         for (uri, arr_val) in changes {

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -239,6 +239,18 @@ pub struct RecallStore {
     fts5_enabled: bool,
 }
 
+type RecallCandidateRow = (
+    i64,
+    String,
+    i64,
+    String,
+    String,
+    Vec<String>,
+    String,
+    i64,
+    Option<f64>,
+);
+
 impl RecallStore {
     pub fn ensure_schema(conn: &Connection) -> Result<bool, StoreError> {
         conn.exec_batch(RECALL_STORE_SCHEMA_SQL)?;
@@ -347,7 +359,7 @@ impl RecallStore {
     ) -> Result<Vec<SessionSearchHit>, StoreError> {
         let cap = limit.clamp(1, 100);
         let conn = self.lock_conn()?;
-        let mut candidates: Vec<(i64, String, i64, String, String, Vec<String>, String, i64, Option<f64>)> = Vec::new();
+        let mut candidates: Vec<RecallCandidateRow> = Vec::new();
 
         let fts_query = build_fts5_or_query(query);
         if self.fts5_enabled && !fts_query.is_empty() {
@@ -606,6 +618,7 @@ impl RecallStore {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_kanban_task(
         &self,
         id: &str,

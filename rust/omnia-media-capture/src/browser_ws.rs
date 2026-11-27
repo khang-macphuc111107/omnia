@@ -402,6 +402,8 @@ async fn probe_json_version_ws_url(port: u16) -> Result<Option<String>, String> 
         .map(str::to_owned))
 }
 
+type PendingCdpRequests = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
+
 /// Real WebSocket CDP Session attached to an isolated Chromium page target with virtual cursor overlay.
 pub struct CdpSession {
     writer: Arc<
@@ -414,7 +416,7 @@ pub struct CdpSession {
             >,
         >,
     >,
-    pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    pending: PendingCdpRequests,
     next_id: AtomicI64,
     pub target_id: String,
     pub session_id: String,
@@ -438,8 +440,7 @@ impl CdpSession {
             .await
             .map_err(|e| format!("CDP WebSocket connect `{ws_url}` failed: {e}"))?;
         let (sink, mut stream) = ws_stream.split();
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingCdpRequests = Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = Arc::clone(&pending);
 
         tokio::spawn(async move {

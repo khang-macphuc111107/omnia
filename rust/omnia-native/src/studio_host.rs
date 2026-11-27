@@ -170,12 +170,9 @@ pub fn resolve_webview2_browser_folder() -> Option<PathBuf> {
         }
     }
 
-    for dir in candidates {
-        if !contains_thorium(&dir) && dir.join("msedgewebview2.exe").is_file() {
-            return Some(dir);
-        }
-    }
-    None
+    candidates
+        .into_iter()
+        .find(|dir| !contains_thorium(dir) && dir.join("msedgewebview2.exe").is_file())
 }
 
 /// Keep WebView2 user-data outside the `D:\Omnia` repository tree (`DOD-06`).

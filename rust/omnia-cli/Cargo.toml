@@ -13,7 +13,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 crossterm.workspace = true
 mimalloc.workspace = true
-omnia-agent.workspace = true
+omnia-agent = { path = "../omnia-agent", default-features = false }
 omnia-core.workspace = true
 ratatui.workspace = true
 serde.workspace = true

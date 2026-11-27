@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 description = "Full Native Rust SOTA v4 Autonomous Coding Agent Engine for Omnia"
 
+[features]
+default = ["cpp-c-ast"]
+cpp-c-ast = ["omnia-graph/cpp-c-ast", "dep:tree-sitter-c", "dep:tree-sitter-cpp"]
+
 [dependencies]
 aho-corasick.workspace = true
 anyhow.workspace = true
@@ -21,7 +25,7 @@ imara-diff.workspace = true
 memchr.workspace = true
 omnia-connector-gateway.workspace = true
 omnia-core.workspace = true
-omnia-graph.workspace = true
+omnia-graph = { path = "../omnia-graph", default-features = false }
 omnia-harness.workspace = true
 omnia-media-capture.workspace = true
 omnia-routing.workspace = true
@@ -42,8 +46,8 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 tree-sitter.workspace = true
-tree-sitter-c.workspace = true
-tree-sitter-cpp.workspace = true
+tree-sitter-c = { workspace = true, optional = true }
+tree-sitter-cpp = { workspace = true, optional = true }
 tree-sitter-go.workspace = true
 tree-sitter-javascript.workspace = true
 tree-sitter-json.workspace = true

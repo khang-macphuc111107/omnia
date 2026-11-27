@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 description = "Bidirectional PeerMeshGraph and GraphifyIndex code/doc provenance graph"
 
+[features]
+default = ["cpp-c-ast"]
+cpp-c-ast = ["dep:tree-sitter-c", "dep:tree-sitter-cpp"]
+
 [dependencies]
 omnia-core = { path = "../omnia-core" }
 rustc-hash.workspace = true
@@ -12,8 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tree-sitter.workspace = true
-tree-sitter-c.workspace = true
-tree-sitter-cpp.workspace = true
+tree-sitter-c = { workspace = true, optional = true }
+tree-sitter-cpp = { workspace = true, optional = true }
 tree-sitter-go.workspace = true
 tree-sitter-javascript.workspace = true
 tree-sitter-python.workspace = true

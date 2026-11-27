@@ -650,6 +650,7 @@ impl MemoryEngine {
     }
 
     /// Record or reinforce an incremental ACE delta bullet (never overwrites unrelated rules).
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_ace_delta(
         &self,
         bullet_id: &str,
@@ -768,7 +769,7 @@ impl MemoryEngine {
                 }
             }
         }
-        lex_ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        lex_ranked.sort_by_key(|x| std::cmp::Reverse(x.1));
 
         let seed_refs: Vec<&str> = seed_ids.iter().map(String::as_str).collect();
         let ppr_hits = csr.personalized_pagerank(&seed_refs, 64);
@@ -1061,6 +1062,7 @@ impl MemoryEngine {
             .map_err(|e| anyhow::anyhow!("put_paste failed: {e}"))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_kanban_task(
         &self,
         id: &str,
@@ -1171,7 +1173,7 @@ impl MemoryEngine {
             let t_valid_ms = stmt.column_int64(15)?;
             let t_invalid_ms = stmt.column_opt_int64(16)?;
             let valid_at = match as_of_ms {
-                Some(ts) => t_valid_ms <= ts && t_invalid_ms.map_or(true, |inv| inv > ts),
+                Some(ts) => t_valid_ms <= ts && t_invalid_ms.is_none_or(|inv| inv > ts),
                 None => t_invalid_ms.is_none(),
             };
             if !valid_at {
@@ -1223,7 +1225,7 @@ impl MemoryEngine {
             let t_valid = stmt.column_int64(4)?;
             let t_invalid = stmt.column_opt_int64(5)?;
             let ok = match as_of_ms {
-                Some(ts) => t_valid <= ts && t_invalid.map_or(true, |inv| inv > ts),
+                Some(ts) => t_valid <= ts && t_invalid.is_none_or(|inv| inv > ts),
                 None => t_invalid.is_none(),
             };
             if ok {
