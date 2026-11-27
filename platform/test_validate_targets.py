@@ -57,7 +57,7 @@ def _make_mock_env(
         return [children[k] for k in sorted(children.keys(), key=str.lower)]
 
     def _glob(root: Path, pattern: str) -> list[Path]:
-        if pattern == "ui/app/*.js":
+        if pattern in {"ui/app/*.js", "ui/app/**/*.js"}:
             return globbed_js
         return []
 
@@ -149,6 +149,8 @@ def _baseline_windows_web_mock_data(repo: Path, build_root: Path) -> tuple[set[P
         "omnia-rust-workspace/release/omnia-native.exe",
         "omnia-rust-workspace/release/omnia-studio.exe",
         "omnia-rust-workspace/release/omnia-runtime.exe",
+        "omnia-rust-workspace/release/omnia.exe",
+        "omnia-rust-workspace/release/omnia_qa_seed.exe",
     ):
         ap = build_root / rel
         files.add(ap)
@@ -467,7 +469,7 @@ class ValidateTargetsTests(unittest.TestCase):
             self.assertEqual(win["artifact_status"], "present_external")
             self.assertEqual(
                 {a["name"] for a in win["artifacts"] if a["present"]},
-                {"omnia-native.exe", "omnia-studio.exe", "omnia-runtime.exe"},
+                {"omnia-native.exe", "omnia-studio.exe", "omnia-runtime.exe", "omnia.exe", "omnia_qa_seed.exe"},
             )
             web = by_id["web-studio"]
             self.assertEqual(web["overall_status"], "ready")

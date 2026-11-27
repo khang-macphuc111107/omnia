@@ -28,6 +28,8 @@
         "Cargo.lock",
         "rust/omnia-core/Cargo.toml",
         "rust/omnia-storage/Cargo.toml",
+        "rust/omnia-agent/Cargo.toml",
+        "rust/omnia-cli/Cargo.toml",
         "rust/omnia-studio/Cargo.toml",
         "rust/omnia-native/Cargo.toml",
         "rust/omnia-runtime/Cargo.toml",
@@ -78,6 +80,26 @@
             "omnia-full-rust/release",
             "omnia-full-rust/debug"
           ]
+        },
+        {
+          "name": "omnia.exe",
+          "role": "Full Native Rust ultra-lightweight headless CLI and ratatui TUI super-harness",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug",
+            "omnia-rust-native-release",
+            "omnia-rust-native-debug"
+          ]
+        },
+        {
+          "name": "omnia_qa_seed.exe",
+          "role": "Full Native Rust SQLite QA fixture seeder for Win32 native QA suites",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug",
+            "omnia-rust-native-release",
+            "omnia-rust-native-debug"
+          ]
         }
       ],
       "lifecycle": {
@@ -98,26 +120,23 @@
       ],
       "required_source_inputs": [
         "ui/index.html",
+        "ui/favicon.svg",
         "ui/styles/tokens.css",
-        "ui/styles/themes.css",
+        "ui/styles/base.css",
         "ui/styles/layout.css",
         "ui/styles/components.css",
         "ui/app/api.js",
-        "ui/app/command-palette.js",
-        "ui/app/composer.js",
-        "ui/app/history.js",
-        "ui/app/ide-explorer.js",
         "ui/app/main.js",
-        "ui/app/memory-vault.js",
-        "ui/app/peer-graph.js",
-        "ui/app/router-lab.js",
+        "ui-v5/index.html",
+        "ui-v5/package.json",
+        "ui-v5/vite.config.ts",
         "Cargo.toml",
         "rust/omnia-studio/Cargo.toml",
         "rust/omnia-studio/src/lib.rs",
         "rust/omnia-studio/src/main.rs"
       ],
       "syntax_check_globs": [
-        "ui/app/*.js"
+        "ui/app/**/*.js"
       ],
       "required_toolchains": [
         "node",

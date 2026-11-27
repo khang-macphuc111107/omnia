@@ -70,7 +70,7 @@ class ProbeEnv:
     is_dir: Callable[[Path], bool] = lambda p: p.is_dir()
     iterdir: Callable[[Path], list[Path]] = lambda p: sorted(p.iterdir(), key=lambda x: x.name.lower())
     glob_paths: Callable[[Path, str], list[Path]] = lambda root, pattern: sorted(
-        (Path(m) for m in glob.glob(str(root / pattern))),
+        (Path(m) for m in glob.glob(str(root / pattern), recursive=True)),
         key=lambda p: p.as_posix().lower(),
     )
     read_text: Callable[[Path], str] = lambda p: p.read_text(encoding="utf-8")
