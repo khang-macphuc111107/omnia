@@ -1,0 +1,85 @@
+/* Omnia Studio UI — knowledge view styles (owned by the knowledge view).
+   Shared components first; only layout glue and the few knowledge-specific pieces live here. */
+
+.omnia .knowledge-tabs { align-self: stretch; align-items: stretch; border-bottom: 0; }
+.omnia .knowledge-tabs .tab { height: auto; text-decoration: none; }
+.omnia .knowledge-body { flex-direction: column; }
+
+.omnia .knowledge-memory,
+.omnia .knowledge-skills,
+.omnia .knowledge-rag { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
+.omnia .knowledge-skills,
+.omnia .knowledge-rag { flex-direction: column; }
+.omnia .knowledge-skills > .scroll,
+.omnia .knowledge-rag > .scroll { flex: 1 1 auto; }
+
+/* ---------- Memory ---------- */
+.omnia .knowledge-ns {
+  width: 240px;
+  flex: none;
+  gap: 2px;
+  padding: var(--sp-3);
+  border-right: 1px solid var(--line-1);
+  background: var(--surface-1);
+}
+.omnia .knowledge-ns__title { padding: var(--sp-1) var(--sp-2) var(--sp-2); }
+.omnia .knowledge-ns-item { padding-left: calc(var(--sp-2) + var(--depth, 0) * 14px); }
+.omnia .knowledge-ns-select { display: none; width: auto; max-width: 220px; }
+
+.omnia .knowledge-list__inner { padding: var(--sp-5) var(--sp-6) var(--sp-8); }
+.omnia .knowledge-list__title { font-size: var(--fs-md); }
+.omnia .knowledge-list__title:focus { outline: none; }
+.omnia .knowledge-filter { width: 260px; max-width: 100%; }
+
+.omnia .knowledge-entry__id { overflow-wrap: anywhere; min-width: 0; }
+.omnia .knowledge-content { line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.omnia .knowledge-link { cursor: pointer; max-width: 100%; }
+.omnia .knowledge-link:hover { border-color: var(--accent-line); color: var(--accent-text); }
+.omnia .knowledge-danger { color: var(--danger); }
+.omnia .knowledge-entry { transition: border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out); }
+.omnia .knowledge-entry--flash { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.omnia .knowledge-receipts { list-style: none; margin: 0; padding: 0; }
+.omnia .knowledge-receipt { padding: var(--sp-3) var(--sp-4); border-top: 1px solid var(--line-1); }
+.omnia .knowledge-receipt:first-child { border-top: 0; }
+.omnia .knowledge-empty-compact { padding: var(--sp-5); }
+
+.omnia .knowledge-form { width: 340px; flex: none; }
+.omnia .knowledge-form__body { border-bottom: 0; }
+.omnia .knowledge-form__note { margin: 0; }
+.omnia .knowledge-form__actions { justify-content: flex-end; }
+
+.omnia .knowledge-skel { display: block; height: 12px; width: 60%; }
+.omnia .knowledge-skel--wide { width: 78%; }
+.omnia .knowledge-skel--short { width: 38%; height: 10px; }
+.omnia .knowledge-icon--danger { color: var(--danger); }
+
+/* Below 1100px the namespace tree becomes a select and the form stacks under the list. */
+@media (max-width: 1100px) {
+  .omnia .knowledge-memory { flex-direction: column; overflow-y: auto; }
+  .omnia .knowledge-ns { display: none; }
+  .omnia .knowledge-ns-select { display: inline-flex; }
+  .omnia .knowledge-list { flex: none; overflow: visible; }
+  .omnia .knowledge-list__inner { padding: var(--sp-4); }
+  .omnia .knowledge-form { width: auto; flex: none; border-left: 0; border-top: 1px solid var(--line-1); overflow: visible; }
+}
+
+/* ---------- Skills and RAG ---------- */
+.omnia .knowledge-page { padding: var(--sp-6) var(--sp-8) var(--sp-8); max-width: 1080px; }
+.omnia .knowledge-search { height: 40px; font-size: var(--fs-lg); padding-left: 34px; }
+.omnia .knowledge-quick { cursor: pointer; }
+.omnia .knowledge-quick:hover { border-color: var(--line-3); color: var(--text-1); }
+.omnia .knowledge-skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: var(--sp-3); }
+.omnia .knowledge-skill__cat { align-self: flex-start; }
+
+.omnia .knowledge-meter { height: 8px; }
+.omnia .knowledge-list-plain { display: flex; flex-direction: column; gap: var(--sp-2); list-style: none; margin: 0; padding: 0; }
+.omnia .knowledge-subquery { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; }
+.omnia .knowledge-subquery p { overflow-wrap: anywhere; }
+.omnia .knowledge-sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: var(--sp-4); align-items: start; }
+.omnia .knowledge-locator { overflow-wrap: anywhere; }
+.omnia .knowledge-unused { border-style: dashed; }
+
+@media (max-width: 760px) {
+  .omnia .knowledge-page { padding: var(--sp-4); }
+}
