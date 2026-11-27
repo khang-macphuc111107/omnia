@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -272,7 +273,7 @@ def call_htmustc_chat(
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         raw = ""
         last_err: Optional[Exception] = None
-        for attempt in range(6):
+        for attempt in range(8):
             try:
                 with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                     raw = resp.read().decode("utf-8", errors="replace")
@@ -280,16 +281,16 @@ def call_htmustc_chat(
                 break
             except urllib.error.HTTPError as exc:
                 last_err = exc
-                if exc.code not in (429, 500, 502, 503, 504) or attempt >= 5:
+                if exc.code not in (429, 500, 502, 503, 504) or attempt >= 7:
                     raise
                 ra = exc.headers.get("Retry-After") if exc.headers else None
-                wait_s = min(30.0, float(ra)) if (ra and str(ra).isdigit()) else min(25.0, 2.0 * (2 ** attempt))
-                time.sleep(wait_s)
+                base_wait = min(35.0, float(ra)) if (ra and str(ra).isdigit()) else min(30.0, 2.0 * (1.7 ** attempt))
+                time.sleep(base_wait * random.uniform(0.75, 1.35))
             except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
                 last_err = exc
-                if attempt >= 5:
+                if attempt >= 7:
                     raise
-                time.sleep(min(20.0, 2.0 * (2 ** attempt)))
+                time.sleep(min(25.0, 2.0 * (1.6 ** attempt)) * random.uniform(0.75, 1.35))
         if last_err is not None:
             raise last_err
         wall_end_ns = time.perf_counter_ns()

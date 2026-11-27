@@ -25,6 +25,8 @@ REPO_CACHE_DIR = Path(r"D:\OmniaData\qa\v5-bench\repo_cache\swe_atlas")
 DEFAULT_JUDGE_MODEL = "gpt-6-luna"
 _REPO_CACHE_LOCK = threading.Lock()
 _REPO_LOCKS: Dict[str, threading.Lock] = {}
+# Bound total simultaneous judge calls across all outer parallel trials so upstream rate limits are respected.
+_GLOBAL_JUDGE_SEM = threading.Semaphore(8)
 
 CriterionJudge = Callable[[str, str, Dict[str, Any]], Dict[str, Any]]
 
@@ -123,7 +125,8 @@ def grade_answer(
     if judge_fn is None and judge_workers > 1 and items:
         def _run_vote(pair: tuple[int, int, Dict[str, Any]]) -> tuple[int, int, Dict[str, Any]]:
             c_idx, v_idx, crit = pair
-            v = default_htmustc_judge(prompt_text, answer_text, crit, judge_model=judge_model)
+            with _GLOBAL_JUDGE_SEM:
+                v = default_htmustc_judge(prompt_text, answer_text, crit, judge_model=judge_model)
             verdict = "YES" if str(v.get("verdict") or "").upper() == "YES" else "NO"
             return c_idx, v_idx, {**v, "verdict": verdict}
 
