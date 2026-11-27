@@ -13,15 +13,21 @@ import type {
   ModelConfigEntry,
   ObservabilitySubTab,
   OpenEditorTab,
+  RagScope,
+  ResearchMode,
+  ResearchProgressState,
+  ResearchSourceRecord,
   RewindPreviewState,
   SessionRecord,
   SmartAlert,
   SteerQueueEntry,
   ThemeId,
+  ThinkMode,
   TopMode,
   WorkbenchTab,
   WorkspaceEntry,
 } from '@/types';
+import type { PreviewDocumentData } from '@/components/common/SourcePreviewModal';
 import { downloadTextFile, maskJson, maskText } from '@/utils/privacy';
 
 // Global Shell state — `topMode` starts on `'chat'` and is NEVER mutated by async startup hydration
@@ -34,7 +40,24 @@ export const [browserChatDrawerOpen, setBrowserChatDrawerOpen] = createSignal<bo
 export const [commandPaletteOpen, setCommandPaletteOpen] = createSignal<boolean>(false);
 export const [btwDrawerOpen, setBtwDrawerOpen] = createSignal<boolean>(false);
 export const [steerDrawerOpen, setSteerDrawerOpen] = createSignal<boolean>(false);
+export const [researchDrawerOpen, setResearchDrawerOpen] = createSignal<boolean>(false);
+export const [focusedCitationId, setFocusedCitationId] = createSignal<string | null>(null);
+export const [activePreviewDoc, setActivePreviewDoc] = createSignal<PreviewDocumentData | null>(null);
 export const [wsConnected, setWsConnected] = createSignal<boolean>(false);
+
+// Default-ON Steer #18-#20 Adaptive Intelligence Toggles
+export const [researchMode, setResearchMode] = createSignal<ResearchMode>('auto');
+export const [thinkMode, setThinkMode] = createSignal<ThinkMode>('auto');
+export const [ragScope, setRagScope] = createSignal<RagScope>('local_global');
+export const [researchSources, setResearchSources] = createStore<ResearchSourceRecord[]>([]);
+export const [researchProgress, setResearchProgress] = createStore<ResearchProgressState>({
+  active: false,
+  stage: 'idle',
+  detail: '',
+  searchedCount: 0,
+  extractedCount: 0,
+});
+export const [lifecycleRefreshSeq, setLifecycleRefreshSeq] = createSignal<number>(0);
 export const [modelPickerTriggerSeq, setModelPickerTriggerSeq] = createSignal<number>(0);
 export const [speedtestTriggerSeq, setSpeedtestTriggerSeq] = createSignal<number>(0);
 export const [dnsBenchTriggerSeq, setDnsBenchTriggerSeq] = createSignal<number>(0);
@@ -292,6 +315,70 @@ export function abortActiveStream(): void {
   }
   setIsStreaming(false);
   void api.stopChat(activeSessionId());
+}
+
+export function openSourcePreview(doc: PreviewDocumentData): void {
+  setActivePreviewDoc(doc);
+}
+
+export async function refreshResearchSources(): Promise<void> {
+  const res = await api.listResearchSources('');
+  if (res.ok) {
+    const raw = (res.data.sources ?? res.data.items ?? []) as Array<Record<string, unknown>>;
+    if (Array.isArray(raw)) {
+      setResearchSources(
+        raw.map((s, idx) => ({
+          citationId: String(s.citationId ?? s.citation_id ?? s.id ?? `S${String(idx + 1).padStart(3, '0')}`),
+          tier: String(s.tier ?? 'local'),
+          status: String(s.status ?? 'extracted'),
+          url: String(s.url ?? s.sourceUrl ?? ''),
+          canonicalUrl: s.canonicalUrl ? String(s.canonicalUrl) : undefined,
+          title: s.title ? String(s.title) : undefined,
+          domain: s.domain ? String(s.domain) : undefined,
+          httpStatus: typeof s.httpStatus === 'number' ? s.httpStatus : null,
+          sha256: s.sha256 ? String(s.sha256) : undefined,
+          excerpt: s.excerpt ? String(s.excerpt) : s.snippet ? String(s.snippet) : undefined,
+          content: s.content ? String(s.content) : undefined,
+          evidenceGrade: s.evidenceGrade ? String(s.evidenceGrade) : s.grade ? String(s.grade) : undefined,
+          blockedReason: s.blockedReason ? String(s.blockedReason) : undefined,
+          observedAtMs: typeof s.observedAtMs === 'number' ? s.observedAtMs : undefined,
+        })),
+      );
+    }
+  }
+}
+
+export function openCitationSource(citationId: string): void {
+  setFocusedCitationId(citationId);
+  setResearchDrawerOpen(true);
+  void refreshResearchSources();
+}
+
+export async function runQuickDeepResearch(query: string, scope: 'web' | 'academic' | 'all' = 'all'): Promise<void> {
+  const clean = query.trim();
+  if (!clean) {
+    setResearchDrawerOpen(true);
+    void refreshResearchSources();
+    return;
+  }
+  setResearchDrawerOpen(true);
+  setResearchProgress({ active: true, stage: 'searching', detail: clean, searchedCount: 0, extractedCount: 0 });
+  const res = await api.runResearchSearch(clean, scope, true, 8);
+  await refreshResearchSources();
+  if (res.ok) {
+    const ledger = (res.data.ledger ?? {}) as Record<string, unknown>;
+    setResearchProgress({
+      active: false,
+      stage: 'complete',
+      detail: `Indexed query "${clean.slice(0, 48)}"`,
+      searchedCount: Number(ledger.searched ?? researchSources.length),
+      extractedCount: Number(ledger.extracted ?? 0),
+    });
+    flashNotice(`Deep Research updated Sources Ledger (${researchSources.length} sources)`);
+  } else {
+    setResearchProgress({ active: false, stage: 'error', detail: res.error.message, searchedCount: 0, extractedCount: 0 });
+    flashNotice(`Research note (${res.error.code}): ${res.error.message}`);
+  }
 }
 
 export async function refreshSteerQueue(): Promise<void> {
@@ -605,6 +692,44 @@ export async function handleSlashCommand(rawPrompt: string): Promise<boolean> {
     await triggerV5Export(fmt);
     return true;
   }
+  if (cmd === '/research') {
+    setComposerDraft('');
+    await runQuickDeepResearch(arg);
+    return true;
+  }
+  if (cmd === '/sources') {
+    setComposerDraft('');
+    setResearchDrawerOpen(true);
+    void refreshResearchSources();
+    return true;
+  }
+  if (cmd === '/rag') {
+    setComposerDraft('');
+    openWorkbench('knowledge');
+    return true;
+  }
+  if (
+    cmd === '/think' ||
+    cmd === '/goal' ||
+    cmd === '/spec' ||
+    cmd === '/blueprint' ||
+    cmd === '/plan' ||
+    cmd === '/todo' ||
+    cmd === '/progress' ||
+    cmd === '/dod' ||
+    cmd === '/handoff' ||
+    cmd === '/learn' ||
+    cmd === '/lessons'
+  ) {
+    setComposerDraft('');
+    openWorkbench('lifecycle');
+    return true;
+  }
+  if (cmd === '/skills') {
+    setComposerDraft('');
+    openWorkbench('knowledge');
+    return true;
+  }
   return false;
 }
 
@@ -631,6 +756,17 @@ export async function enqueueAdditiveSteer(prompt: string, mode: 'steer' | 'queu
 export async function sendComposerMessage(overridePrompt?: string): Promise<void> {
   const prompt = (overridePrompt ?? composerDraft()).trim();
   if (!prompt && attachments.length === 0) return;
+
+  if (!overridePrompt && /^btw:\s*/i.test(prompt)) {
+    const q = prompt.replace(/^btw:\s*/i, '').trim();
+    setComposerDraft('');
+    openQuoteBtw({
+      text: q || messages[messages.length - 1]?.content.slice(0, 280) || 'Current context',
+      sourceLabel: 'Quick btw:',
+      surface: 'chat',
+    });
+    return;
+  }
 
   if (!overridePrompt && (await handleSlashCommand(prompt))) {
     return;
@@ -697,6 +833,9 @@ export async function sendComposerMessage(overridePrompt?: string): Promise<void
         subagent_model: modelConfig.subagentModel,
         subagent_effort: modelConfig.subagentEffort,
         mode: agentRunMode(),
+        research_mode: researchMode(),
+        think_mode: thinkMode(),
+        rag_scope: ragScope(),
         attachments: (userMsg.attachments ?? []).map((a) => ({
           id: a.id,
           name: a.name,
@@ -933,6 +1072,20 @@ export async function hydrateStudioStartup(): Promise<void> {
           };
           setSmartAlerts((prev) => [nextAlert, ...prev.slice(0, 19)]);
         }
+      } else if (msg.channel === 'research' && msg.payload && typeof msg.payload === 'object') {
+        const p = msg.payload as Record<string, unknown>;
+        setResearchProgress({
+          active: msg.event !== 'research_complete' && msg.event !== 'error',
+          stage: String(p.stage ?? msg.event ?? 'research'),
+          detail: String(p.detail ?? p.query ?? ''),
+          searchedCount: Number(p.searched ?? p.searchedCount ?? researchProgress.searchedCount),
+          extractedCount: Number(p.extracted ?? p.extractedCount ?? researchProgress.extractedCount),
+        });
+        if (msg.event === 'research_complete' || msg.event === 'source_ingested') {
+          void refreshResearchSources();
+        }
+      } else if (msg.channel === 'think' || msg.channel === 'lifecycle') {
+        setLifecycleRefreshSeq((n) => n + 1);
       }
     },
     () => {

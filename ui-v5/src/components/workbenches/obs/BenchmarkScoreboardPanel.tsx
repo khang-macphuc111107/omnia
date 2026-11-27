@@ -6,6 +6,23 @@ import { maskJson } from '@/utils/privacy';
 
 type BenchViewTab = 'suite_v5' | 'public_9' | 'models_51' | 'effort_5' | 'microbench' | 'raw';
 
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+function extractPassPct(row: Record<string, unknown>): number {
+  const direct = row.pass_at_1_pct ?? row.passAt1Pct ?? row.passRatePct ?? row.pass_rate_pct;
+  if (direct !== undefined && direct !== null && Number.isFinite(Number(direct))) {
+    return Number(direct);
+  }
+  const ratio = row.passRate ?? row.pass_rate ?? row.pass_at_1 ?? row.passAt1;
+  if (ratio !== undefined && ratio !== null && Number.isFinite(Number(ratio))) {
+    const n = Number(ratio);
+    return n <= 1 ? n * 100 : n;
+  }
+  const solved = Number(row.solved ?? row.passed ?? 0);
+  const runs = Number(row.runs ?? row.total ?? 0);
+  return runs > 0 ? (solved / runs) * 100 : 0;
+}
+
 export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
   const [tab, setTab] = createSignal<BenchViewTab>('suite_v5');
   const [payload, setPayload] = createSignal<Record<string, unknown> | null>(null);
@@ -47,21 +64,26 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
     const p = payload() ?? {};
     const fs = finalScoreboard() ?? {};
     const sv5 = (p.suiteV5 ?? fs.suiteV5 ?? fs.suite_v5 ?? fs.leaderboard ?? fs.harnesses) as unknown;
-    if (Array.isArray(sv5)) return sv5 as Array<Record<string, unknown>>;
-    if (sv5 && typeof sv5 === 'object') {
+    let rows: Array<Record<string, unknown>> = [];
+    if (Array.isArray(sv5)) {
+      rows = sv5 as Array<Record<string, unknown>>;
+    } else if (sv5 && typeof sv5 === 'object') {
       const obj = sv5 as Record<string, unknown>;
-      if (Array.isArray(obj.harnesses)) return obj.harnesses as Array<Record<string, unknown>>;
-      if (Array.isArray(obj.rows)) return obj.rows as Array<Record<string, unknown>>;
-      if (obj.harnesses && typeof obj.harnesses === 'object') {
-        return Object.entries(obj.harnesses as Record<string, unknown>)
+      if (Array.isArray(obj.harnesses)) {
+        rows = obj.harnesses as Array<Record<string, unknown>>;
+      } else if (Array.isArray(obj.rows)) {
+        rows = obj.rows as Array<Record<string, unknown>>;
+      } else if (obj.harnesses && typeof obj.harnesses === 'object') {
+        rows = Object.entries(obj.harnesses as Record<string, unknown>)
+          .filter(([, v]) => v && typeof v === 'object')
+          .map(([harness, v]): Record<string, unknown> => ({ harness, ...(v as Record<string, unknown>) }));
+      } else {
+        rows = Object.entries(obj)
           .filter(([, v]) => v && typeof v === 'object')
           .map(([harness, v]): Record<string, unknown> => ({ harness, ...(v as Record<string, unknown>) }));
       }
-      return Object.entries(obj)
-        .filter(([, v]) => v && typeof v === 'object')
-        .map(([harness, v]): Record<string, unknown> => ({ harness, ...(v as Record<string, unknown>) }));
     }
-    return [];
+    return [...rows].sort((a, b) => extractPassPct(b) - extractPassPct(a));
   });
 
   const publicSuites = createMemo((): Array<Record<string, unknown>> => {
@@ -104,13 +126,26 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
     const p = payload() ?? {};
     const fs = finalScoreboard() ?? {};
     const sw = (p.effortSweep ?? fs.effortSweep ?? fs.effort_sweep) as unknown;
-    if (Array.isArray(sw)) return sw as Array<Record<string, unknown>>;
-    if (sw && typeof sw === 'object') {
-      return Object.entries(sw as Record<string, unknown>)
+    let rows: Array<Record<string, unknown>> = [];
+    if (Array.isArray(sw)) {
+      rows = sw as Array<Record<string, unknown>>;
+    } else if (sw && typeof sw === 'object') {
+      const obj = sw as Record<string, unknown>;
+      const nested =
+        obj.by_effort && typeof obj.by_effort === 'object'
+          ? (obj.by_effort as Record<string, unknown>)
+          : obj.byEffort && typeof obj.byEffort === 'object'
+            ? (obj.byEffort as Record<string, unknown>)
+            : obj;
+      rows = Object.entries(nested)
         .filter(([, v]) => v && typeof v === 'object')
         .map(([effort, v]): Record<string, unknown> => ({ effort, ...(v as Record<string, unknown>) }));
     }
-    return [];
+    return [...rows].sort((a, b) => {
+      const ia = EFFORT_ORDER.indexOf(String(a.effort ?? a.level ?? '').toLowerCase());
+      const ib = EFFORT_ORDER.indexOf(String(b.effort ?? b.level ?? '').toLowerCase());
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
   });
 
   const microbenchRows = createMemo(() => {
@@ -193,25 +228,29 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
           >
             <div class="space-y-2">
               <For each={suiteV5Rows()}>
-                {(row) => {
-                  const pct = Number(row.passRatePct ?? row.pass_rate_pct ?? Number(row.passRate ?? row.pass_rate ?? 0) * 100);
+                {(row, idx) => {
+                  const pct = extractPassPct(row);
+                  const solved = row.solved ?? row.passed;
+                  const runs = row.runs ?? row.total;
+                  const kvPct = row.pooled_kv_cache_hit_pct ?? row.kvCachePct ?? row.kv_cache_pct;
+                  const rssMb = row.peak_rss_mb_median ?? row.rssMb ?? row.rss_mb;
                   const isOmnia = String(row.harness ?? row.name ?? '').toLowerCase().includes('omnia');
                   return (
                     <div class="p-2.5 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] space-y-1 font-mono-num text-[12px]">
                       <div class="flex items-center justify-between gap-2">
                         <span class={isOmnia ? 'font-bold text-[var(--accent-cyan)]' : 'font-semibold text-[var(--ink-primary)]'}>
-                          {String(row.harness ?? row.name ?? 'harness')}
+                          #{idx() + 1} {String(row.harness ?? row.name ?? 'harness')}
                         </span>
                         <span class="text-[var(--ink-secondary)]">
                           <strong>{pct.toFixed(1)}%</strong>
-                          <Show when={row.passed !== undefined && row.total !== undefined}>
-                            {' '}({String(row.passed)}/{String(row.total)})
+                          <Show when={solved !== undefined && runs !== undefined}>
+                            {' '}({String(solved)}/{String(runs)})
                           </Show>
-                          <Show when={row.kvCachePct !== undefined || row.kv_cache_pct !== undefined}>
-                            {' · '}KV {Number(row.kvCachePct ?? row.kv_cache_pct).toFixed(1)}%
+                          <Show when={kvPct !== undefined && kvPct !== null}>
+                            {' · '}KV {Number(kvPct).toFixed(1)}%
                           </Show>
-                          <Show when={row.rssMb !== undefined || row.rss_mb !== undefined}>
-                            {' · '}RSS {Number(row.rssMb ?? row.rss_mb).toFixed(1)} MiB
+                          <Show when={rssMb !== undefined && rssMb !== null}>
+                            {' · '}RSS {Number(rssMb).toFixed(1)} MiB
                           </Show>
                         </span>
                       </div>
@@ -352,7 +391,10 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
             <div class="grid grid-cols-1 md:grid-cols-5 gap-2.5 font-mono-num text-[11.5px]">
               <For each={effortSweepRows()}>
                 {(e) => {
-                  const pct = Number(e.passRatePct ?? e.pass_rate_pct ?? Number(e.passRate ?? 0) * 100);
+                  const pct = extractPassPct(e);
+                  const solved = e.solved ?? e.passed;
+                  const runs = e.runs ?? e.total;
+                  const medianVal = e.median_ttft_ms ?? e.medianTtftMs ?? e.medianMs ?? e.median_ms;
                   return (
                     <div class="p-3 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] space-y-2">
                       <div class="font-bold uppercase text-[var(--accent-amber)]">{String(e.effort ?? e.level)}</div>
@@ -361,7 +403,10 @@ export function BenchmarkScoreboardPanel(props: { refreshSeq: number }) {
                         <div class="h-full bg-[var(--accent-cyan)]" style={{ width: `${Math.min(100, pct)}%` }} />
                       </div>
                       <div class="text-[10.5px] text-[var(--ink-muted)]">
-                        Median: {String(e.medianMs ?? e.median_ms ?? '—')}ms
+                        <Show when={solved !== undefined && runs !== undefined}>
+                          {String(solved)}/{String(runs)} ·{' '}
+                        </Show>
+                        TTFT: {medianVal !== undefined && medianVal !== null ? `${Number(medianVal).toFixed(0)}ms` : '—'}
                       </div>
                     </div>
                   );

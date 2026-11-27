@@ -1,6 +1,7 @@
 import { Show, createMemo } from 'solid-js';
 import {
   Bell,
+  BookMarked,
   Command,
   Cpu,
   Eye,
@@ -22,9 +23,13 @@ import {
   ideChatDrawerOpen,
   openObservabilityTab,
   privacyMask,
+  refreshResearchSources,
+  researchDrawerOpen,
+  researchSources,
   setBrowserChatDrawerOpen,
   setCommandPaletteOpen,
   setIdeChatDrawerOpen,
+  setResearchDrawerOpen,
   setSidebarOpen,
   setSteerDrawerOpen,
   setTopMode,
@@ -161,6 +166,26 @@ export function TopBar() {
             <span class="font-mono-num">{criticalAlertCount()}</span>
           </button>
         </Show>
+
+        <button
+          type="button"
+          data-testid="topbar-research-sources-btn"
+          class="omnia-btn px-2 py-1 text-[11px] shrink-0"
+          classList={{
+            'border-[var(--border-accent)] text-[var(--accent-cyan)]': researchDrawerOpen() || researchSources.length > 0,
+          }}
+          title="Sources Ledger (Searched, Viewed & Extracted Citations)"
+          onClick={() => {
+            const next = !researchDrawerOpen();
+            setResearchDrawerOpen(next);
+            if (next) void refreshResearchSources();
+          }}
+        >
+          <BookMarked class="w-3.5 h-3.5" />
+          <Show when={researchSources.length > 0}>
+            <span class="font-mono-num">{researchSources.length}</span>
+          </Show>
+        </button>
 
         <button
           type="button"

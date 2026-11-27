@@ -301,6 +301,9 @@ export class StudioApiClient {
       subagent_model?: string;
       subagent_effort?: EffortLevel;
       mode: AgentRunMode;
+      research_mode?: 'auto' | 'deep' | 'off';
+      think_mode?: 'auto' | 'deep' | 'off';
+      rag_scope?: 'local_global' | 'local' | 'off';
       attachments?: Array<{ id: string; name: string; sha256: string; placement: string }>;
       token_budget: null;
     },
@@ -313,6 +316,9 @@ export class StudioApiClient {
       body: JSON.stringify({
         ...payload,
         sessionId: payload.session_id,
+        researchMode: payload.research_mode,
+        thinkMode: payload.think_mode,
+        ragScope: payload.rag_scope,
         attachmentIds: (payload.attachments ?? []).map((a) => a.id).filter(Boolean),
       }),
       signal,
@@ -805,6 +811,7 @@ export class StudioApiClient {
     token_estimate: number;
     privacy_boundary: string;
     streaming: boolean;
+    simulate?: boolean;
     trip_provider?: string;
     reset_provider?: string;
   }) {
@@ -816,6 +823,7 @@ export class StudioApiClient {
       token_estimate: payload.token_estimate,
       privacy_boundary: payload.privacy_boundary,
       streaming: payload.streaming,
+      simulate: payload.simulate ?? true,
       tripCandidate: payload.trip_provider,
       resetCandidate: payload.reset_provider,
       trip_provider: payload.trip_provider,
@@ -1085,11 +1093,335 @@ export class StudioApiClient {
     });
   }
 
-  askNotebook(notebookId: string, prompt: string, modelId?: string, effort?: EffortLevel) {
+  askNotebook(
+    notebookId: string,
+    prompt: string,
+    modelId?: string,
+    effort?: EffortLevel,
+    opts?: { preset?: 'explain' | 'verify' | 'summarize' | 'code'; quotes?: Array<{ text: string; sourceLabel?: string }> },
+  ) {
     return this.safeJson<Record<string, unknown>>('/api/notebooks/ask', {
       method: 'POST',
-      body: JSON.stringify({ notebook_id: notebookId, query: prompt, prompt, model_id: modelId, effort }),
+      body: JSON.stringify({
+        notebook_id: notebookId,
+        query: prompt,
+        prompt,
+        model_id: modelId,
+        effort,
+        preset: opts?.preset,
+        quotes: opts?.quotes,
+      }),
     });
+  }
+
+  getNotebookSourceContent(notebookId: string, sourceId: string) {
+    return this.safeText(
+      this.withQuery('/api/notebooks/sources/content', { notebook_id: notebookId, source_id: sourceId }),
+    );
+  }
+
+  // Steer #18-#20 Deep Research, Persistent Local+Global RAG & Sources Ledger
+  getResearchStatus() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/research/status');
+  }
+
+  listResearchSources(tier = '') {
+    return this.safeJson<Record<string, unknown>>(this.withQuery('/api/v5/research/sources', { tier }));
+  }
+
+  runResearchSearch(query: string, scope: 'web' | 'academic' | 'all' = 'all', autoFetch = true, maxResults = 8) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/research/search', {
+      method: 'POST',
+      body: JSON.stringify({ query, scope, autoFetch, maxResults }),
+    });
+  }
+
+  fetchResearchUrls(urls: string[], tier: 'local' | 'global' = 'local', queryOrigin = '') {
+    return this.safeJson<Record<string, unknown>>('/api/v5/research/fetch', {
+      method: 'POST',
+      body: JSON.stringify({ urls, tier, queryOrigin }),
+    });
+  }
+
+  ingestResearchDoc(payload: { url: string; title?: string; content: string; contentType?: string; tier?: 'local' | 'global'; queryOrigin?: string }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/research/ingest', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  queryPersistentRag(query: string, tier: 'local_global' | 'local' | 'global' = 'local_global', topK = 8) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/rag/query', {
+      method: 'POST',
+      body: JSON.stringify({ query, q: query, tier, topK, top_k: topK }),
+    });
+  }
+
+  pinRagSource(citationId: string, targetTier: 'local' | 'global' | 'atelier' = 'global') {
+    return this.safeJson<Record<string, unknown>>('/api/v5/rag/pin', {
+      method: 'POST',
+      body: JSON.stringify({ citationId, targetTier }),
+    });
+  }
+
+  recordResearchClaim(sessionId: string, text: string, citations: string[], grade = 'VERIFIED', notes = '') {
+    return this.safeJson<Record<string, unknown>>('/api/v5/research/claim', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, text, citations, grade, notes }),
+    });
+  }
+
+  extractResearchTable(query: string, columns: string[], resultSetId?: string, topK = 10) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/research/table', {
+      method: 'POST',
+      body: JSON.stringify({ resultSetId, query, columns, topK }),
+    });
+  }
+
+  exportResearchDossier(format: 'markdown' | 'json' = 'markdown', sessionId = '') {
+    return this.safeText(this.withQuery('/api/v5/research/export', { format, session_id: sessionId }));
+  }
+
+  // Steer #18-#20 Deep Think Sessions
+  listThinkSessions() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/think/sessions');
+  }
+
+  startThinkSession(sessionId: string, problem: string, effort: EffortLevel = 'max') {
+    return this.safeJson<Record<string, unknown>>('/api/v5/think/start', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, problem, effort }),
+    });
+  }
+
+  addThinkBranch(thinkId: string, label: string, hypothesis: string, failureModes: string[] = []) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/think/branch', {
+      method: 'POST',
+      body: JSON.stringify({ thinkId, id: thinkId, label, hypothesis, failureModes }),
+    });
+  }
+
+  recordThinkFalsification(thinkId: string, branchLabel: string, checkCommand: string, passed: boolean, evidence: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/think/falsify', {
+      method: 'POST',
+      body: JSON.stringify({ thinkId, id: thinkId, branchLabel, checkCommand, passed, evidence }),
+    });
+  }
+
+  recordThinkRedteam(thinkId: string, criticModel: string, critique: string, resolved: boolean) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/think/redteam', {
+      method: 'POST',
+      body: JSON.stringify({ thinkId, id: thinkId, criticModel, critique, resolved }),
+    });
+  }
+
+  concludeThinkSession(thinkId: string, winner: string, rationale: string, confidence = 0.85) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/think/conclude', {
+      method: 'POST',
+      body: JSON.stringify({ thinkId, id: thinkId, winner, rationale, confidence }),
+    });
+  }
+
+  // Steer #18-#20 12-Artifact Lifecycle OS, Auto-Learn & Hot/Cold Skill Vault + DAG
+  listLifecycleArtifacts() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/artifacts');
+  }
+
+  upsertLifecycleArtifact(payload: {
+    id?: string;
+    kind: string;
+    title: string;
+    status?: string;
+    content: string;
+    owner?: string;
+    projectToDisk?: boolean;
+  }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/upsert', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  linkLifecycleArtifacts(fromId: string, toId: string, relation: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/link', {
+      method: 'POST',
+      body: JSON.stringify({ fromId, toId, relation }),
+    });
+  }
+
+  updateLifecycleTodo(id: string, status: 'pending' | 'in_progress' | 'done' | 'blocked', title?: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/todo', {
+      method: 'POST',
+      body: JSON.stringify({ id, status, title }),
+    });
+  }
+
+  updateLifecycleDod(gateId: string, status: string, evidenceReceipt: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/dod', {
+      method: 'POST',
+      body: JSON.stringify({ gateId, id: gateId, status, evidenceReceipt }),
+    });
+  }
+
+  writeLifecycleHandoff(summary: string, nextStep: string, agentNotes?: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/handoff', {
+      method: 'POST',
+      body: JSON.stringify({ summary, nextStep, agentNotes }),
+    });
+  }
+
+  verifyLifecycleArtifact(content: string, path = 'artifact.md') {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/verify', {
+      method: 'POST',
+      body: JSON.stringify({ content, path }),
+    });
+  }
+
+  getSuperWorkflowState() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/lifecycle/super-state');
+  }
+
+  listLearnLessons() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/learn/lessons');
+  }
+
+  captureLearnLesson(payload: { title: string; lesson: string; scope?: 'project' | 'global'; category?: string; source?: string }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/learn/capture', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  promoteLessonToSkill(lessonId: string, slug: string, triggerDescription: string) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/learn/promote-skill', {
+      method: 'POST',
+      body: JSON.stringify({ lessonId, slug, description: triggerDescription }),
+    });
+  }
+
+  getLearnGapRadar() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/learn/gap-radar');
+  }
+
+  routeSkillsBilingual(query: string, topK = 6) {
+    return this.safeJson<Record<string, unknown>>(this.withQuery('/api/v5/skills/route', { q: query, top_k: topK }));
+  }
+
+  composeSkillDag(query: string) {
+    return this.safeJson<Record<string, unknown>>(this.withQuery('/api/v5/skills/dag', { q: query }));
+  }
+
+  searchSkillVault(query = '', limit = 30) {
+    return this.safeJson<Record<string, unknown>>(this.withQuery('/api/v5/skills/vault', { q: query, limit }));
+  }
+
+  listSkillPipelines() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/skills/pipelines');
+  }
+
+  runSkillDoctor() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/skills/doctor');
+  }
+
+  codifySkill(payload: { slug: string; description: string; body: string; category?: string; dryRun?: boolean }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/skills/codify', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // Steer #19 OmniDrive v3.0 Protocol Studio API
+  listDriveProviders(q = '', category = '') {
+    return this.safeJson<Record<string, unknown>>(this.withQuery('/api/omni-drive/providers', { q, category }));
+  }
+
+  expandDriveBatch(input: string, exportFormat = 'auto') {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/batch-expand', {
+      method: 'POST',
+      body: JSON.stringify({ input, text: input, exportFormat }),
+    });
+  }
+
+  exportDriveEf2(urls: string[]) {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/batch/export-ef2', {
+      method: 'POST',
+      body: JSON.stringify({ urls }),
+    });
+  }
+
+  importDriveEf2(ef2Text: string) {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/batch/import-ef2', {
+      method: 'POST',
+      body: JSON.stringify({ content: ef2Text, ef2: ef2Text }),
+    });
+  }
+
+  getDriveScheduler() {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/scheduler');
+  }
+
+  probeDriveUrl(url: string) {
+    return this.safeJson<Record<string, unknown>>('/api/downloads/probe', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    });
+  }
+
+  verifyDriveIntegrity(path: string, expectedSha256?: string, expectedCrc32c?: string) {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/integrity/verify', {
+      method: 'POST',
+      body: JSON.stringify({ path, expectedSha256, expectedCrc32c }),
+    });
+  }
+
+  inspectDriveJournal(path: string) {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/journal/inspect', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  listDriveHandoffs() {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/handoffs');
+  }
+
+  createDriveHandoff(url: string, reason = 'auth_required') {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/handoffs/create', {
+      method: 'POST',
+      body: JSON.stringify({ url, reason }),
+    });
+  }
+
+  actDriveHandoff(action: 'open' | 'resolve' | 'cancel', ticketId: string) {
+    return this.safeJson<Record<string, unknown>>(`/api/omni-drive/handoffs/${action}`, {
+      method: 'POST',
+      body: JSON.stringify({ ticketId, id: ticketId }),
+    });
+  }
+
+  inspectMediaBox(hex: string) {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/inspect-media', {
+      method: 'POST',
+      body: JSON.stringify({ hex }),
+    });
+  }
+
+  evaluateDriveCookies(url: string, setCookies: string[], sameSiteContext = 'lax') {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/cookies/evaluate', {
+      method: 'POST',
+      body: JSON.stringify({ url, setCookies, sameSiteContext }),
+    });
+  }
+
+  recommendDriveStrategy(payload: { url?: string; fileSizeBytes?: number; supportsRange?: boolean; hasStrongEtag?: boolean; requiresAuth?: boolean }) {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/recommend', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  getDriveAimdStats() {
+    return this.safeJson<Record<string, unknown>>('/api/omni-drive/aimd');
   }
 
   generateArtifact(notebookId: string, kind: string, title?: string, focusPrompt?: string) {

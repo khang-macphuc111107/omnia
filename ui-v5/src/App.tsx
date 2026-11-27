@@ -5,21 +5,26 @@ import { Transcript } from '@/components/chat/Transcript';
 import { BrowserWorkbench } from '@/components/browser/BrowserWorkbench';
 import { IdeWorkbench } from '@/components/ide/IdeWorkbench';
 import { CommandPalette } from '@/components/shell/CommandPalette';
+import { ResearchSourceDrawer } from '@/components/shell/ResearchSourceDrawer';
 import { RewindPreviewModal } from '@/components/shell/RewindPreviewModal';
 import { SessionSidebar } from '@/components/shell/SessionSidebar';
 import { StatusBar } from '@/components/shell/StatusBar';
 import { SteerQueueDrawer } from '@/components/shell/SteerQueueDrawer';
 import { TopBar } from '@/components/shell/TopBar';
+import { SourcePreviewModal } from '@/components/common/SourcePreviewModal';
 import { AtelierView } from '@/components/workbenches/AtelierView';
 import { KnowledgeExtensionsView } from '@/components/workbenches/KnowledgeExtensionsView';
+import { MissionLifecycleView } from '@/components/workbenches/MissionLifecycleView';
 import { ObservabilityView } from '@/components/workbenches/ObservabilityView';
 import { OmniDriveView } from '@/components/workbenches/OmniDriveView';
 import { SwarmView } from '@/components/workbenches/SwarmView';
 import {
+  activePreviewDoc,
   applyTheme,
   commandPaletteOpen,
   hydrateStudioStartup,
   privacyMask,
+  setActivePreviewDoc,
   setCommandPaletteOpen,
   sidebarOpen,
   themePref,
@@ -96,9 +101,13 @@ export function App() {
               <Show when={workbenchTab() === 'knowledge'}>
                 <KnowledgeExtensionsView />
               </Show>
+              <Show when={workbenchTab() === 'lifecycle'}>
+                <MissionLifecycleView />
+              </Show>
             </div>
             <QuoteBtwDrawer />
             <SteerQueueDrawer />
+            <ResearchSourceDrawer />
           </div>
         </Show>
 
@@ -116,6 +125,7 @@ export function App() {
       <StatusBar />
       <CommandPalette />
       <RewindPreviewModal />
+      <SourcePreviewModal doc={activePreviewDoc()} onClose={() => setActivePreviewDoc(null)} />
     </div>
   );
 }

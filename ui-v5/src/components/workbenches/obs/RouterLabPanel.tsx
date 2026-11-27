@@ -67,6 +67,7 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
       token_estimate: tokensEst(),
       privacy_boundary: privacyBoundary(),
       streaming: streaming(),
+      simulate: true,
     });
     if (res.ok) {
       setRouteDecision(res.data);

@@ -13,8 +13,11 @@ import {
   openRewindPreview,
   openWorkbench,
   privacyMask,
+  refreshResearchSources,
+  researchDrawerOpen,
   setCommandPaletteOpen,
   setComposerDraft,
+  setResearchDrawerOpen,
   setSteerDrawerOpen,
   setTopMode,
   steerDrawerOpen,
@@ -69,10 +72,27 @@ export function CommandPalette() {
       { id: 'mode-browser', title: 'Switch to Isolated CDP Browser', group: 'Mode', keywords: 'browser cdp virtual cursor chrome obs remote', shortcut: '3', run: () => setTopMode('browser') },
 
       // Workbenches
+      { id: 'wb-lifecycle', title: 'Open Mission Lifecycle OS (12 Artifacts & DoD)', group: 'Workbench', keywords: 'mission lifecycle goal spec blueprint plan todo progress dod handoff', run: () => openWorkbench('lifecycle') },
       { id: 'wb-atelier', title: 'Open Atelier Notebook Studio', group: 'Workbench', keywords: 'gemini notebook ke nhau artifacts btw citations whisper', run: () => openWorkbench('atelier') },
       { id: 'wb-omnidrive', title: 'Open OmniDrive Pro Downloader', group: 'Workbench', keywords: 'download chunks hls dash ffmpeg drive wal sha256', run: () => openWorkbench('omnidrive') },
       { id: 'wb-swarm', title: 'Open Peer-Mesh Swarm & Graphify', group: 'Workbench', keywords: 'peer mesh graphify traversal ast disjoint paths', run: () => openWorkbench('swarm') },
       { id: 'wb-know', title: 'Open Memory Vault, RAG & MCP/Skills', group: 'Workbench', keywords: 'memory vault erasure rag mcp skills hooks recipes cordis hipporag', run: () => openWorkbench('knowledge') },
+      {
+        id: 'act-sources-drawer',
+        title: 'Toggle Deep Research & Sources Ledger Drawer',
+        group: 'Research',
+        keywords: 'deep research sources ledger searched viewed extracted citations prisma',
+        run: () => {
+          setTopMode('chat');
+          const next = !researchDrawerOpen();
+          setResearchDrawerOpen(next);
+          if (next) void refreshResearchSources();
+        },
+      },
+      { id: 'act-deep-think', title: 'Open Deep Think Falsification & Red-Team Lab', group: 'Research', keywords: 'deep think falsification redteam hypothesis branches', run: () => openWorkbench('lifecycle') },
+      { id: 'act-learn-lessons', title: 'Open Auto-Learn, Lessons & Gap Radar', group: 'Research', keywords: 'learn lessons gap radar crystallize auto-learn', run: () => openWorkbench('lifecycle') },
+      { id: 'act-skill-vault', title: 'Open 1,001-Skill Vault & Bilingual DAG Composer', group: 'Research', keywords: '1001 skill vault bilingual dag bm25 pipelines doctor codify', run: () => openWorkbench('knowledge') },
+      { id: 'act-protocol-studio', title: 'Open Protocol Studio (Batch EF2, Handoff & Media Box)', group: 'Research', keywords: 'batch planner ef2 handoff media box tree cookie jaccard drift', run: () => openWorkbench('omnidrive') },
 
       // Observability Sub-Tabs
       { id: 'obs-telemetry', title: 'Observatory: AI Telemetry & Percentiles', group: 'Observability', keywords: 'telemetry percentiles p50 p95 p99 ttft tpot tps waterfall kv cache alerts', run: () => openObservabilityTab('telemetry') },

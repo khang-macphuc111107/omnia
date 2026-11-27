@@ -434,3 +434,137 @@ body,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ============================================================================
+ * Steer #18-#20 Universal Rich Markdown, IDE Code Cards, Callouts & Citations
+ * Strictly calibrated tokens (>= 4.8:1 WCAG across all 4 themes), zero blur
+ * ============================================================================ */
+.omnia-citation-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  margin: 0 2px;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  vertical-align: baseline;
+  cursor: pointer;
+  border: 1px solid var(--border-accent);
+  background-color: var(--bg-elevated);
+  color: var(--accent-cyan);
+}
+.omnia-citation-chip.omnia-cit-global {
+  border-color: var(--status-emerald);
+  color: var(--status-emerald);
+}
+.omnia-citation-chip:hover {
+  background-color: var(--bg-interactive);
+}
+
+.omnia-math-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  background-color: var(--bg-elevated);
+  color: var(--ink-secondary);
+  border: 1px solid var(--border-subtle);
+}
+.omnia-math-copy-btn:hover {
+  color: var(--accent-cyan);
+  border-color: var(--border-accent);
+}
+
+.omnia-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-rail);
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+.omnia-code-btn,
+.omnia-code-tab {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-elevated);
+  color: var(--ink-secondary);
+}
+.omnia-code-tab.active,
+.omnia-code-btn:hover {
+  border-color: var(--border-accent);
+  color: var(--accent-cyan);
+}
+.omnia-code-card .omnia-code-line {
+  display: block;
+}
+.omnia-code-card.show-lines .omnia-code-line::before {
+  content: attr(data-line);
+  display: inline-block;
+  width: 3ch;
+  margin-right: 12px;
+  text-align: right;
+  color: var(--ink-muted);
+  user-select: none;
+}
+.omnia-code-card.wrap-lines pre,
+.omnia-code-card.wrap-lines code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.omnia-alert {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  background-color: var(--bg-elevated);
+}
+.omnia-alert-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+.omnia-alert-note {
+  border-left-color: var(--accent-cyan);
+}
+.omnia-alert-note .omnia-alert-title {
+  color: var(--accent-cyan);
+}
+.omnia-alert-tip {
+  border-left-color: var(--status-emerald);
+}
+.omnia-alert-tip .omnia-alert-title {
+  color: var(--status-emerald);
+}
+.omnia-alert-important,
+.omnia-alert-warning {
+  border-left-color: var(--accent-amber);
+}
+.omnia-alert-important .omnia-alert-title,
+.omnia-alert-warning .omnia-alert-title {
+  color: var(--accent-amber);
+}
+.omnia-alert-caution {
+  border-left-color: var(--status-coral);
+}
+.omnia-alert-caution .omnia-alert-title {
+  color: var(--status-coral);
+}

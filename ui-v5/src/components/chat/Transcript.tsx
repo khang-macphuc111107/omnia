@@ -2,11 +2,13 @@ import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import { createVirtualizer } from '@tanstack/solid-virtual';
 import {
   AlertTriangle,
+  BookMarked,
   Brain,
   Check,
   ChevronDown,
   ChevronRight,
   Copy,
+  Eye,
   GitFork,
   History,
   Loader2,
@@ -20,17 +22,22 @@ import {
   activeSessionId,
   flashNotice,
   messages,
+  openCitationSource,
   openQuoteBtw,
   openRewindPreview,
+  openSourcePreview,
   privacyMask,
+  refreshResearchSources,
+  researchSources,
   selectAndLoadSession,
   sendComposerMessage,
   sessions,
   setComposerDraft,
+  setResearchDrawerOpen,
   setSessions,
 } from '@/state/studio';
 import type { ChatTurnMessage } from '@/types';
-import { renderRichMarkdown } from '@/utils/markdown';
+import { handleRichMarkdownClick, renderRichMarkdown } from '@/utils/markdown';
 import { maskText } from '@/utils/privacy';
 
 let mermaidModule: typeof import('mermaid').default | null = null;
@@ -75,7 +82,16 @@ function RichMessageBody(props: { content: string; streaming?: boolean }) {
   });
 
   return (
-    <div ref={bodyRef} class="omnia-prose">
+    <div
+      ref={bodyRef}
+      class="omnia-prose"
+      onClick={(e) =>
+        handleRichMarkdownClick(e, {
+          onCitationClick: openCitationSource,
+          onNotify: flashNotice,
+        })
+      }
+    >
       <div innerHTML={html()} />
       <Show when={props.streaming}>
         <span class="inline-block w-2 h-4 ml-0.5 align-middle bg-[var(--accent-cyan)] animate-pulse" />
@@ -84,7 +100,7 @@ function RichMessageBody(props: { content: string; streaming?: boolean }) {
   );
 }
 
-function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
+function TurnRow(props: { msg: ChatTurnMessage; index: number; onJumpToMessage?: (msgId: string) => void }) {
   const [thinkingOpen, setThinkingOpen] = createSignal(false);
   const [toolsOpen, setToolsOpen] = createSignal(true);
   const [copied, setCopied] = createSignal(false);
@@ -142,6 +158,9 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
                 </Show>
                 <Show when={props.msg.mode}>
                   <span class="omnia-badge uppercase">{props.msg.mode}</span>
+                </Show>
+                <Show when={props.msg.epistemicGrade}>
+                  <span class="omnia-badge text-[var(--status-emerald)]">{props.msg.epistemicGrade}</span>
                 </Show>
               </div>
               <div class="flex items-center gap-2 shrink-0">
@@ -256,9 +275,22 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
 
             <RichMessageBody content={props.msg.content} streaming={props.msg.streaming} />
 
+            {/* 6-State Epistemic Receipt Badges */}
+            <Show when={props.msg.sixStateReceipt && Object.keys(props.msg.sixStateReceipt).length > 0}>
+              <div class="mt-2 flex flex-wrap gap-1 text-[10px] font-mono-num">
+                <For each={Object.entries(props.msg.sixStateReceipt!)}>
+                  {([k, v]) => (
+                    <span class="omnia-badge text-[var(--ink-secondary)]">
+                      {k}: {String(v)}
+                    </span>
+                  )}
+                </For>
+              </div>
+            </Show>
+
             {/* Action bar */}
-            <div class="mt-3 pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between gap-2 text-[11px] text-[var(--ink-muted)]">
-              <div class="flex items-center gap-1.5">
+            <div class="mt-3 pt-2 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--ink-muted)]">
+              <div class="flex flex-wrap items-center gap-1.5">
                 <button type="button" class="omnia-btn px-2 py-1 text-[11px]" onClick={() => void handleCopy()}>
                   {copied() ? <Check class="w-3 h-3 text-[var(--status-emerald)]" /> : <Copy class="w-3 h-3" />}
                   <span>{copied() ? 'Copied' : 'Copy'}</span>
@@ -280,9 +312,32 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
                   <History class="w-3 h-3" />
                   <span>/rewind</span>
                 </button>
+                <button
+                  type="button"
+                  class="omnia-btn px-2 py-1 text-[11px]"
+                  onClick={() => {
+                    setResearchDrawerOpen(true);
+                    void refreshResearchSources();
+                  }}
+                >
+                  <BookMarked class="w-3 h-3 text-[var(--accent-cyan)]" />
+                  <span>Sources ({(props.msg.citations ?? []).length || researchSources.length})</span>
+                </button>
               </div>
               <Show when={(props.msg.citations ?? []).length > 0}>
-                <span class="font-mono-num">{props.msg.citations!.length} citations</span>
+                <div class="flex flex-wrap gap-1">
+                  <For each={props.msg.citations!.slice(0, 6)}>
+                    {(cid) => (
+                      <button
+                        type="button"
+                        class="omnia-citation-chip"
+                        onClick={() => openCitationSource(cid)}
+                      >
+                        [{cid}]
+                      </button>
+                    )}
+                  </For>
+                </div>
               </Show>
             </div>
           </div>
@@ -301,6 +356,25 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
               <span>BTW</span>
             </button>
           </div>
+          <Show when={(props.msg.quotes ?? []).length > 0}>
+            <div class="mb-2 space-y-1">
+              <For each={props.msg.quotes}>
+                {(q) => (
+                  <button
+                    type="button"
+                    class="msg-quote-card w-full text-left px-2.5 py-1.5 rounded border-l-2 border-[var(--accent-amber)] bg-[var(--bg-canvas)] text-[11.5px] cursor-pointer hover:border-[var(--accent-cyan)]"
+                    onClick={() => q.originMessageId && props.onJumpToMessage?.(q.originMessageId)}
+                    title={q.originMessageId ? 'Jump to origin message' : 'Quoted excerpt'}
+                  >
+                    <div class="text-[10px] font-mono-num text-[var(--accent-amber)]">
+                      {q.sourceLabel || 'Quoted Passage'}
+                    </div>
+                    <div class="text-[var(--ink-secondary)] line-clamp-2">{maskText(q.text, privacyMask())}</div>
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
           <div class="text-[13.5px] whitespace-pre-wrap text-[var(--ink-primary)]">
             {maskText(props.msg.content, privacyMask())}
           </div>
@@ -308,9 +382,28 @@ function TurnRow(props: { msg: ChatTurnMessage; index: number }) {
             <div class="mt-2 flex flex-wrap gap-1.5">
               <For each={props.msg.attachments}>
                 {(att) => (
-                  <span class="omnia-badge font-mono-num">
-                    {att.name} ({att.encryptedUnresolved ? 'ENCRYPTED_UNRESOLVED' : `${att.sizeBytes}B`})
-                  </span>
+                  <button
+                    type="button"
+                    class="omnia-badge font-mono-num cursor-pointer hover:border-[var(--border-accent)]"
+                    title="Preview attachment in Universal 17-Format Viewer"
+                    onClick={() =>
+                      openSourcePreview({
+                        id: att.id,
+                        name: att.name,
+                        mimeType: att.mimeType,
+                        sizeBytes: att.sizeBytes,
+                        sha256: att.sha256,
+                        content: att.encryptedUnresolved
+                          ? 'ENCRYPTED_UNRESOLVED (0B) — encrypted archive preview skipped safely.'
+                          : `Attachment ${att.name}\nMIME: ${att.mimeType}\nSize: ${att.sizeBytes} bytes\nSHA-256: ${att.sha256}`,
+                      })
+                    }
+                  >
+                    <Eye class="w-3 h-3 text-[var(--accent-cyan)]" />
+                    <span>
+                      {att.name} ({att.encryptedUnresolved ? 'ENCRYPTED_UNRESOLVED' : `${att.sizeBytes}B`})
+                    </span>
+                  </button>
                 )}
               </For>
             </div>
@@ -420,7 +513,14 @@ export function Transcript(props: { compact?: boolean } = {}) {
                         transform: `translateY(${vRow.start}px)`,
                       }}
                     >
-                      <TurnRow msg={msg()!} index={vRow.index} />
+                      <TurnRow
+                        msg={msg()!}
+                        index={vRow.index}
+                        onJumpToMessage={(msgId) => {
+                          const idx = messages.findIndex((x) => x.id === msgId);
+                          if (idx >= 0) virtualizer.scrollToIndex(idx, { align: 'start' });
+                        }}
+                      />
                     </div>
                   </Show>
                 );

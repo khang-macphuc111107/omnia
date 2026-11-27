@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import {
   BookOpen,
   CheckCircle2,
+  Eye,
   FileText,
   Layers,
   MessageSquareQuote,
@@ -14,9 +15,9 @@ import {
   Trash2,
 } from 'lucide-solid';
 import { api } from '@/api/client';
-import { openQuoteBtw, privacyMask } from '@/state/studio';
+import { flashNotice, openCitationSource, openQuoteBtw, openSourcePreview, privacyMask } from '@/state/studio';
 import type { EffortLevel } from '@/types';
-import { renderRichMarkdown } from '@/utils/markdown';
+import { handleRichMarkdownClick, renderRichMarkdown } from '@/utils/markdown';
 import { maskText } from '@/utils/privacy';
 
 const ARTIFACT_KINDS = [
@@ -79,8 +80,10 @@ export function AtelierView() {
   const [shareGateState, setShareGateState] = createSignal<'idle' | 'ok' | 'auth_required' | 'captcha_blocked' | 'error'>('idle');
   const [askPrompt, setAskPrompt] = createSignal('');
   const [effort, setEffort] = createSignal<EffortLevel>('max');
+  const [audioRate, setAudioRate] = createSignal<number>(1);
   const [qaHistory, setQaHistory] = createSignal<Array<{ q: string; a: string; citations?: string[] }>>([]);
   const [statusMsg, setStatusMsg] = createSignal('');
+  let audioElRef: HTMLAudioElement | undefined;
 
   const nbIdOf = (nb: Record<string, unknown>): string => String(nb.notebook_id ?? nb.id ?? '');
 
@@ -203,13 +206,19 @@ export function AtelierView() {
     }
   };
 
-  const handleAsk = async () => {
-    const q = askPrompt().trim();
+  const handleAsk = async (preset?: 'explain' | 'verify' | 'summarize' | 'code') => {
+    const presetPrompts: Record<'explain' | 'verify' | 'summarize' | 'code', string> = {
+      explain: 'Explain the key concepts across all ingested sources with inline citations.',
+      verify: 'Verify factual claims and cross-check consistency across the notebook sources with citations.',
+      summarize: 'Summarize the notebook sources into a concise grounded executive brief with citations.',
+      code: 'Extract concrete implementation patterns and code examples grounded in the notebook sources.',
+    };
+    const q = askPrompt().trim() || (preset ? presetPrompts[preset] : '');
     if (!q) return;
     const nbId = await ensureNotebookId();
     if (!nbId) return;
     setAskPrompt('');
-    const res = await api.askNotebook(nbId, q, undefined, effort());
+    const res = await api.askNotebook(nbId, q, undefined, effort(), preset ? { preset } : undefined);
     if (res.ok) {
       const inner = (res.data.result && typeof res.data.result === 'object' ? res.data.result : res.data) as Record<
         string,
@@ -217,10 +226,33 @@ export function AtelierView() {
       >;
       const answer = String(inner.answer ?? inner.response_markdown ?? JSON.stringify(inner));
       const citations = Array.isArray(inner.citations) ? inner.citations.map(String) : [];
-      setQaHistory([...qaHistory(), { q, a: answer, citations }]);
+      setQaHistory([...qaHistory(), { q: preset ? `[${preset.toUpperCase()}] ${q}` : q, a: answer, citations }]);
     } else {
       setQaHistory([...qaHistory(), { q, a: `Error (${res.error.code}): ${res.error.message}` }]);
     }
+  };
+
+  const handlePreviewSource = async (s: Record<string, unknown>) => {
+    const sid = String(s.source_id ?? s.id ?? '');
+    const title = String(s.title || s.safe_filename || s.filename || sid || 'source.txt');
+    const nbId = activeNbId();
+    let content = String(s.excerpt ?? s.preview ?? '');
+    let mimeType = String(s.mime_type ?? s.mimeType ?? '');
+    if (nbId && sid) {
+      const res = await api.getNotebookSourceContent(nbId, sid);
+      if (res.ok) {
+        content = res.text;
+        mimeType = res.contentType || mimeType;
+      }
+    }
+    openSourcePreview({
+      id: sid,
+      name: title,
+      mimeType,
+      sizeBytes: typeof s.size_bytes === 'number' ? s.size_bytes : undefined,
+      sha256: s.sha256 ? String(s.sha256) : undefined,
+      content: content || `Source "${title}" (${String(s.source_kind ?? s.kind ?? 'document')})`,
+    });
   };
 
   const handleGenerateArtifact = async (kind: string, label: string) => {
@@ -325,16 +357,27 @@ export function AtelierView() {
                           {String(s.source_kind || s.kind || 'document')} · {String(s.chunk_count ?? 1)} chunks
                         </div>
                       </div>
-                      <Show when={sid}>
+                      <div class="flex items-center gap-0.5 shrink-0">
                         <button
                           type="button"
-                          class="p-1 text-[var(--ink-muted)] hover:text-[var(--status-coral)] cursor-pointer"
-                          title="Delete source"
-                          onClick={() => void handleDeleteSource(sid)}
+                          data-testid="atelier-preview-source-btn"
+                          class="p-1 text-[var(--ink-muted)] hover:text-[var(--accent-cyan)] cursor-pointer"
+                          title="Preview source in Universal 17-Format Viewer"
+                          onClick={() => void handlePreviewSource(s)}
                         >
-                          <Trash2 class="w-3 h-3" />
+                          <Eye class="w-3 h-3" />
                         </button>
-                      </Show>
+                        <Show when={sid}>
+                          <button
+                            type="button"
+                            class="p-1 text-[var(--ink-muted)] hover:text-[var(--status-coral)] cursor-pointer"
+                            title="Delete source"
+                            onClick={() => void handleDeleteSource(sid)}
+                          >
+                            <Trash2 class="w-3 h-3" />
+                          </button>
+                        </Show>
+                      </div>
                     </div>
                   );
                 }}
@@ -432,7 +475,16 @@ export function AtelierView() {
               {(turn) => (
                 <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2">
                   <div class="text-[12.5px] font-semibold text-[var(--accent-cyan)]">{turn.q}</div>
-                  <div class="omnia-prose text-[13px]" innerHTML={renderRichMarkdown(maskText(turn.a, privacyMask()))} />
+                  <div
+                    class="omnia-prose text-[13px]"
+                    onClick={(e) =>
+                      handleRichMarkdownClick(e, {
+                        onCitationClick: openCitationSource,
+                        onNotify: flashNotice,
+                      })
+                    }
+                    innerHTML={renderRichMarkdown(maskText(turn.a, privacyMask()))}
+                  />
                   <Show when={(turn.citations ?? []).length > 0}>
                     <div class="flex flex-wrap gap-1 pt-1">
                       <For each={turn.citations}>
@@ -480,21 +532,36 @@ export function AtelierView() {
             </For>
           </div>
 
-          <div class="p-3 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)] flex gap-2">
-            <input
-              type="text"
-              placeholder="Ask across notebook sources with inline citations..."
-              value={askPrompt()}
-              onInput={(e) => setAskPrompt(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void handleAsk();
-              }}
-              class="flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-3 py-1.5 text-[13px] outline-none focus:border-[var(--border-accent)]"
-            />
-            <button type="button" class="omnia-btn omnia-btn-primary text-[12px]" onClick={() => void handleAsk()}>
-              <Send class="w-3.5 h-3.5" />
-              <span>Ask</span>
-            </button>
+          <div class="p-3 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)] space-y-2">
+            <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span class="text-[var(--ink-muted)] font-mono-num">Contextual Ask:</span>
+              {(['explain', 'verify', 'summarize', 'code'] as const).map((preset) => (
+                <button
+                  type="button"
+                  data-testid={`atelier-preset-${preset}`}
+                  class="omnia-btn px-2 py-0.5 text-[11px] capitalize"
+                  onClick={() => void handleAsk(preset)}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+            <div class="flex gap-2">
+              <input
+                type="text"
+                placeholder="Ask across notebook sources with inline citations..."
+                value={askPrompt()}
+                onInput={(e) => setAskPrompt(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleAsk();
+                }}
+                class="flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-3 py-1.5 text-[13px] outline-none focus:border-[var(--border-accent)]"
+              />
+              <button type="button" class="omnia-btn omnia-btn-primary text-[12px]" onClick={() => void handleAsk()}>
+                <Send class="w-3.5 h-3.5" />
+                <span>Ask</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -624,9 +691,58 @@ export function AtelierView() {
                       </div>
                     </Show>
 
-                    <Show when={art().kind !== 'flashcards' && art().kind !== 'slide_deck'}>
+                    <Show when={art().kind === 'audio_overview'}>
+                      <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-1 text-[10.5px] font-mono-num">
+                          <span class="text-[var(--ink-muted)]">Playback Speed</span>
+                          <div class="flex gap-1">
+                            {[1, 1.25, 1.5, 2].map((r) => (
+                              <button
+                                type="button"
+                                class="omnia-btn px-1.5 py-0.5 text-[10px]"
+                                classList={{ 'border-[var(--accent-cyan)] text-[var(--accent-cyan)]': audioRate() === r }}
+                                onClick={() => {
+                                  setAudioRate(r);
+                                  if (audioElRef) audioElRef.playbackRate = r;
+                                }}
+                              >
+                                {r}x
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <Show when={art().audio_url || art().media_url}>
+                          <audio
+                            ref={audioElRef}
+                            src={String(art().audio_url ?? art().media_url ?? '')}
+                            controls
+                            class="w-full"
+                          />
+                        </Show>
+                        <div
+                          class="omnia-prose text-[12px] max-h-56 overflow-y-auto"
+                          onClick={(e) =>
+                            handleRichMarkdownClick(e, {
+                              onCitationClick: openCitationSource,
+                              onNotify: flashNotice,
+                            })
+                          }
+                          innerHTML={renderRichMarkdown(
+                            String(art().content_markdown || art().body || JSON.stringify(art(), null, 2)),
+                          )}
+                        />
+                      </div>
+                    </Show>
+
+                    <Show when={art().kind !== 'flashcards' && art().kind !== 'slide_deck' && art().kind !== 'audio_overview'}>
                       <div
                         class="omnia-prose text-[12px] max-h-60 overflow-y-auto"
+                        onClick={(e) =>
+                          handleRichMarkdownClick(e, {
+                            onCitationClick: openCitationSource,
+                            onNotify: flashNotice,
+                          })
+                        }
                         innerHTML={renderRichMarkdown(
                           String(art().content_markdown || art().body || JSON.stringify(art(), null, 2)),
                         )}

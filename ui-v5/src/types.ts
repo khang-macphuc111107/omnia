@@ -5,12 +5,17 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type WorkbenchTab =
   | 'chat'
+  | 'lifecycle'
   | 'atelier'
   | 'omnidrive'
   | 'swarm'
   | 'observability'
   | 'knowledge'
   | 'benchmarks';
+
+export type ResearchMode = 'auto' | 'deep' | 'off';
+export type ThinkMode = 'auto' | 'deep' | 'off';
+export type RagScope = 'local_global' | 'local' | 'off';
 
 export type ObservabilitySubTab =
   | 'telemetry'
@@ -88,11 +93,39 @@ export interface ChatTurnMessage {
   toolCalls?: ToolCallItem[];
   attachments?: AttachmentItem[];
   citations?: string[];
+  quotes?: Array<{ text: string; sourceLabel?: string; originMessageId?: string }>;
+  epistemicGrade?: string;
+  sixStateReceipt?: Record<string, string>;
   tokensPerSec?: number;
   costUsd?: number;
   kvCacheHitRate?: number;
   streaming?: boolean;
   error?: string;
+}
+
+export interface ResearchSourceRecord {
+  citationId: string;
+  tier: 'local' | 'global' | 'web' | string;
+  status: 'searched' | 'viewed' | 'extracted' | 'blocked' | 'auth_required' | 'failed' | string;
+  url: string;
+  canonicalUrl?: string;
+  title?: string;
+  domain?: string;
+  httpStatus?: number | null;
+  sha256?: string;
+  excerpt?: string;
+  content?: string;
+  evidenceGrade?: string;
+  blockedReason?: string;
+  observedAtMs?: number;
+}
+
+export interface ResearchProgressState {
+  active: boolean;
+  stage: string;
+  detail: string;
+  searchedCount: number;
+  extractedCount: number;
 }
 
 export interface ModelConfigEntry {

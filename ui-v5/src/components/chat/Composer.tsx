@@ -1,8 +1,12 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import {
+  BookMarked,
+  Brain,
   Cpu,
+  Database,
   FilePlus2,
   GitBranch,
+  Globe,
   ListOrdered,
   Paperclip,
   Plus,
@@ -28,26 +32,46 @@ import {
   modelConfig,
   modelPickerTriggerSeq,
   pendingPasteChoice,
+  ragScope,
+  refreshResearchSources,
+  researchMode,
+  researchProgress,
+  researchSources,
   sendComposerMessage,
   setAgentRunMode,
   setAttachments,
   setComposerCaret,
   setComposerDraft,
   setPendingPasteChoice,
+  setRagScope,
+  setResearchDrawerOpen,
+  setResearchMode,
   setSteerDrawerOpen,
+  setThinkMode,
   steerQueue,
+  thinkMode,
   updateDualModelConfig,
 } from '@/state/studio';
-import type { AgentRunMode, AttachmentItem, EffortLevel } from '@/types';
+import type { AgentRunMode, AttachmentItem, EffortLevel, RagScope, ResearchMode, ThinkMode } from '@/types';
 import { detectEncryptedArchive, sha256Hex } from '@/utils/crypto';
 import { LATEX_15_TEMPLATES } from '@/utils/markdown';
 
 const SLASH_COMMANDS = [
+  { cmd: '/research', desc: 'Run Deep Research & open Sources Ledger (Web + Academic)', immediate: false },
+  { cmd: '/sources', desc: 'Open Sources (Searched, Viewed & Extracted) Drawer', immediate: true },
+  { cmd: '/rag', desc: 'Open Persistent Local+Global RAG & Knowledge Vault', immediate: true },
+  { cmd: '/think', desc: 'Open Deep Think Falsification & Red-Team Lab', immediate: true },
+  { cmd: '/goal', desc: 'Open Mission Lifecycle OS (Goal / Spec / Blueprint / Plan)', immediate: true },
+  { cmd: '/todo', desc: 'Open Mission Lifecycle Todo & DoD Gate Matrix', immediate: true },
+  { cmd: '/dod', desc: 'Inspect Definition of Done (DoD) acceptance gates', immediate: true },
+  { cmd: '/handoff', desc: 'Write cross-session Mission Handoff receipt', immediate: true },
+  { cmd: '/learn', desc: 'Capture Auto-Learn lesson or Crystallize to Skill', immediate: true },
+  { cmd: '/skills', desc: 'Open 1,001-Skill Vault & Bilingual VN-EN DAG Composer', immediate: true },
   { cmd: '/rewind', desc: 'Preview atomic BLAKE3 checkpoint diff before rewinding', immediate: true },
   { cmd: '/fork', desc: 'Fork active SQLite session from current turn', immediate: true },
   { cmd: '/compact', desc: 'Trigger Lakeview anchored context compaction', immediate: true },
   { cmd: '/model', desc: 'Configure Main & Subagent model + 5-level effort', immediate: true },
-  { cmd: '/btw', desc: 'Open interactive /btw side-thread drawer', immediate: true },
+  { cmd: '/btw', desc: 'Open interactive /btw side-thread drawer (or type btw: ...)', immediate: true },
   { cmd: '/steer', desc: 'Open Additive Steer Queue Drawer (token_budget: NULL)', immediate: true },
   { cmd: '/swarm', desc: 'Inspect active Peer-Mesh swarm & Graphify graph', immediate: true },
   { cmd: '/obs', desc: 'Open Lab-Grade AI Telemetry & Observatory', immediate: true },
@@ -195,11 +219,53 @@ export function Composer() {
     () => modelCatalog.find((m) => m.spec === modelConfig.subagentModel) ?? modelCatalog[0],
   );
 
+  const isBtwPrefix = createMemo(() => /^btw:\s*/i.test(composerDraft().trim()));
+
+  const cycleResearchMode = () => {
+    const order: ResearchMode[] = ['auto', 'deep', 'off'];
+    setResearchMode(order[(order.indexOf(researchMode()) + 1) % order.length]);
+  };
+
+  const cycleThinkMode = () => {
+    const order: ThinkMode[] = ['auto', 'deep', 'off'];
+    setThinkMode(order[(order.indexOf(thinkMode()) + 1) % order.length]);
+  };
+
+  const cycleRagScope = () => {
+    const order: RagScope[] = ['local_global', 'local', 'off'];
+    setRagScope(order[(order.indexOf(ragScope()) + 1) % order.length]);
+  };
+
   return (
     <section
       data-testid="band-composer"
       class="shrink-0 px-4 pb-3 pt-2 max-w-4xl w-full mx-auto relative"
     >
+      {/* Live Deep Research Multi-Stage Progress Strip */}
+      <Show when={researchProgress.active}>
+        <button
+          type="button"
+          onClick={() => setResearchDrawerOpen(true)}
+          class="w-full mb-2 px-3 py-1.5 rounded border border-[var(--accent-cyan)] bg-[var(--accent-dim)] flex items-center justify-between gap-2 text-[11.5px] cursor-pointer"
+        >
+          <span class="font-semibold text-[var(--accent-cyan)] flex items-center gap-1.5">
+            <Globe class="w-3.5 h-3.5 animate-pulse" />
+            <span>Deep Research: {researchProgress.stage}</span>
+          </span>
+          <span class="font-mono-num text-[var(--ink-secondary)] truncate">
+            {researchProgress.detail || `${researchProgress.searchedCount} searched · ${researchProgress.extractedCount} extracted`}
+          </span>
+        </button>
+      </Show>
+
+      {/* Active btw: Side-Thread Indicator */}
+      <Show when={isBtwPrefix()}>
+        <div class="mb-2 px-3 py-1 rounded border border-[var(--accent-amber)] bg-[var(--accent-amber-dim)] text-[11.5px] font-mono-num text-[var(--accent-amber)] flex items-center justify-between">
+          <span>btw: Quick Side-Thread Mode — Enter opens isolated /btw drawer without polluting main transcript</span>
+          <span class="font-bold">BTW</span>
+        </div>
+      </Show>
+
       {/* Interactive Additive Steer / Queue Strip */}
       <Show when={steerQueue.length > 0}>
         <button
@@ -565,6 +631,63 @@ export function Composer() {
               title="Toggle Attachment Mode (Tray vs Inline-at-Caret)"
             >
               {attachMode() === 'tray' ? <Plus class="w-3 h-3" /> : <FilePlus2 class="w-3 h-3" />}
+            </button>
+
+            {/* Default-ON Adaptive Intelligence Toggles: Research, Deep Think, Persistent RAG & Sources */}
+            <button
+              type="button"
+              data-testid="toggle-research-mode"
+              onClick={cycleResearchMode}
+              class="omnia-btn px-2 py-1 text-[10.5px] font-mono-num"
+              classList={{
+                'border-[var(--accent-cyan)] text-[var(--accent-cyan)] bg-[var(--accent-dim)]': researchMode() !== 'off',
+              }}
+              title="Default-ON Adaptive Deep Research (click to cycle: Auto -> Deep -> Off)"
+            >
+              <Globe class="w-3 h-3" />
+              <span>Res:{researchMode() === 'auto' ? 'Auto' : researchMode() === 'deep' ? 'Deep' : 'Off'}</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="toggle-think-mode"
+              onClick={cycleThinkMode}
+              class="omnia-btn px-2 py-1 text-[10.5px] font-mono-num"
+              classList={{
+                'border-[var(--accent-amber)] text-[var(--accent-amber)] bg-[var(--accent-amber-dim)]': thinkMode() !== 'off',
+              }}
+              title="Default-ON Adaptive Deep Think (click to cycle: Auto -> Deep -> Off)"
+            >
+              <Brain class="w-3 h-3" />
+              <span>Think:{thinkMode() === 'auto' ? 'Auto' : thinkMode() === 'deep' ? 'Deep' : 'Off'}</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="toggle-rag-scope"
+              onClick={cycleRagScope}
+              class="omnia-btn px-2 py-1 text-[10.5px] font-mono-num"
+              classList={{
+                'border-[var(--status-emerald)] text-[var(--status-emerald)]': ragScope() !== 'off',
+              }}
+              title="Default-ON Persistent RAG Scope (Local+Global -> Local -> Off)"
+            >
+              <Database class="w-3 h-3" />
+              <span>RAG:{ragScope() === 'local_global' ? 'L+G' : ragScope() === 'local' ? 'Loc' : 'Off'}</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="composer-sources-btn"
+              onClick={() => {
+                setResearchDrawerOpen(true);
+                void refreshResearchSources();
+              }}
+              class="omnia-btn px-2 py-1 text-[10.5px] font-mono-num"
+              title="Open Sources (Searched, Viewed & Extracted) Drawer"
+            >
+              <BookMarked class="w-3 h-3 text-[var(--accent-cyan)]" />
+              <span>Sources{researchSources.length > 0 ? ` (${researchSources.length})` : ''}</span>
             </button>
           </div>
 
