@@ -11,6 +11,11 @@ from typing import Any, Dict, Iterable, List, Tuple
 _BENCH_DIR = str(Path(__file__).resolve().parent.parent)
 if _BENCH_DIR not in sys.path:
     sys.path.insert(0, _BENCH_DIR)
+_VENV_SITE = Path(r"D:\omnia-bench\.venv\Lib\site-packages")
+if _VENV_SITE.exists() and str(_VENV_SITE) not in sys.path:
+    sys.path.append(str(_VENV_SITE))
+if not __package__:
+    __package__ = "public_suites"
 
 import runner_v5
 

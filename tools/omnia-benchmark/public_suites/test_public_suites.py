@@ -175,6 +175,23 @@ class PublicSuitesOfflineTests(unittest.TestCase):
         self.assertEqual(summ["groups"]["omnia:gpt-6.2-sol"]["pooled_kv_cache_hit_pct"], 80.0)
         self.assertIn("api", summ.get("mcnemar_vs_omnia", {}))
 
+    def test_cli_runs_standalone_from_unrelated_cwd(self):
+        import subprocess
+        import tempfile
+
+        cli_path = BENCH_DIR / "public_suites" / "cli.py"
+        with tempfile.TemporaryDirectory() as td:
+            out_inv = Path(td) / "inv.json"
+            proc = subprocess.run(
+                [sys.executable, "-B", str(cli_path), "inventory", "--out", str(out_inv)],
+                cwd=td,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(out_inv.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
