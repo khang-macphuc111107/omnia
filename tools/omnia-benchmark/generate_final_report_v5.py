@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 import time
 from collections import defaultdict
@@ -25,6 +26,7 @@ BENCH_DIR = Path(__file__).resolve().parent
 if str(BENCH_DIR) not in sys.path:
     sys.path.insert(0, str(BENCH_DIR))
 
+import scorer_v4
 import scorer_v5
 
 DEFAULT_SUITE_V5_DIR = Path(r"D:\OmniaData\qa\v5-bench\suite-v5")
@@ -153,20 +155,20 @@ def _summarize_grouped_records(records: List[Dict[str, Any]], group_fn: Any) -> 
         n = len(items)
         solved = sum(1 for x in items if x.get("passed"))
         pct = round(100.0 * solved / n, 2) if n else 0.0
-        ci = list(scorer_v5.wilson_ci(solved, n))
+        ci = list(scorer_v4.wilson_ci(solved, n))
         mean_score = round(sum(float(x.get("score") or 0.0) for x in items) / n, 4) if n else 0.0
         tot_in = sum(int(x.get("wire_prompt_total") or 0) for x in items)
         tot_cr = sum(int(x.get("wire_cache_read") or 0) for x in items)
         kv_pct = round(100.0 * tot_cr / tot_in, 2) if tot_in > 0 else 0.0
-        ttfts = sorted(float(x["wire_first_ttft_ms"]) for x in items if x.get("wire_first_ttft_ms") is not None)
-        walls = sorted(float(x["wall_s"]) for x in items if x.get("wall_s") is not None)
-        rss = sorted(float(x["peak_rss_mb"]) for x in items if x.get("peak_rss_mb") is not None)
+        ttfts = [float(x["wire_first_ttft_ms"]) for x in items if x.get("wire_first_ttft_ms") is not None]
+        walls = [float(x["wall_s"]) for x in items if x.get("wall_s") is not None]
+        rss = [float(x["peak_rss_mb"]) for x in items if x.get("peak_rss_mb") is not None]
         toks = [int(x["wire_total_tokens"]) for x in items if x.get("wire_total_tokens") is not None and not x.get("wire_requests_missing_usage")]
         tok_per_solved = round(sum(toks) / solved, 1) if (solved > 0 and len(toks) == n) else None
         costs = [scorer_v5.estimate_record_cost_usd(x) for x in items]
         cost_per_solved = round(sum(float(c) for c in costs if c is not None) / solved, 5) if (solved > 0 and all(c is not None for c in costs)) else None
         leaks = sum(len(x.get("non_loopback_sockets") or []) for x in items)
-        med = lambda arr: round(arr[len(arr) // 2], 2) if arr else None
+        med = lambda arr: round(statistics.median(arr), 2) if arr else None
         out[gk] = {
             "runs": n,
             "solved": solved,

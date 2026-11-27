@@ -22,6 +22,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from cleanroom import load_installed_manifest
 import scorer_v4
 
+wilson_ci = scorer_v4.wilson_ci
+mcnemar_exact_p = scorer_v4.mcnemar_exact_p
+
 V5_AXIS_NAMES: Dict[int, str] = {
     **scorer_v4.AXIS_NAMES,
     12: "Long-Horizon Memory & Context Compaction",
