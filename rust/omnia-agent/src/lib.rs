@@ -424,7 +424,7 @@ impl SuperHarnessManager {
                     "contextWindow": endpoint.context_window,
                     "maxTokens": endpoint.max_tokens
                 },
-                "thinkingLevel": req.thinking_level.clone().unwrap_or_else(|| "auto".into()),
+                "thinkingLevel": req.thinking_level.clone().unwrap_or_else(|| "max".into()),
                 "prefixStable": snap.prefix_stable,
                 "estimatedBasePromptTokens": snap.estimated_base_prompt_tokens
             });
@@ -1062,7 +1062,23 @@ mod tests {
         );
         assert_eq!(
             WireApiMode::Auto.resolve_api_kind("gemini-3.8-flash", "openai-completions"),
-            "anthropic-messages"
+            "openai-completions"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("deepseek-v4-pro", "openai-completions"),
+            "openai-completions"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("glm-5", "openai-completions"),
+            "openai-completions"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("kimi-k3", "openai-completions"),
+            "openai-completions"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("qwen3-coder", "openai-completions"),
+            "openai-completions"
         );
         assert_eq!(
             WireApiMode::Auto.resolve_api_kind("gpt-6.2-sol", "openai-completions"),

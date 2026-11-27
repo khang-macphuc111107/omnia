@@ -218,7 +218,8 @@ RUN OPTIONS:
   --base-url, --api-base <url>   Upstream OpenAI/Anthropic/Gemini base URL (env: OMNIA_BASE_URL)
   --api-key <key>                API key (env: OMNIA_API_KEY, HTMUSTC_API_KEY, OPENAI_API_KEY)
   --wire-api <mode>              auto | chat | responses | messages | gemini (default: auto)
-  --thinking <level>             minimal | low | medium | high
+  --effort, --reasoning-effort, --thinking <level>
+                                 auto | none | minimal | low | medium | high | xhigh | max (default: max)
   --output-format <fmt>          stream-json | json | text (default: text)
   --auto-approve                 Run with ApprovalMode::Yolo (non-interactive)
   --approval-mode <mode>         yolo | write | plan | always-ask | always-ask-cached
@@ -255,6 +256,8 @@ fn extract_positional_prompt(args: &[String]) -> Option<String> {
         "--api-base",
         "--api-key",
         "--wire-api",
+        "--effort",
+        "--reasoning-effort",
         "--thinking",
         "--output-format",
         "--approval-mode",
@@ -387,7 +390,7 @@ fn launch_tui_from_args(args: &[String]) -> ExitCode {
     }
 
     let wire_api = arg_value(args, "--wire-api").map(|s| WireApiMode::parse_flag(&s));
-    let thinking = arg_value(args, "--thinking");
+    let thinking = resolve_effort_arg(args);
     let approval_mode = resolve_approval_mode(args).ok().filter(|_| {
         args.iter().any(|a| {
             a == "--auto-approve" || a == "--approval-mode" || a.starts_with("--approval-mode=")
@@ -479,7 +482,7 @@ async fn run_agent_cmd(args: &[String]) -> Result<bool> {
     let wire_api = arg_value(args, "--wire-api")
         .map(|s| WireApiMode::parse_flag(&s))
         .unwrap_or(WireApiMode::Auto);
-    let thinking_level = arg_value(args, "--thinking");
+    let thinking_level = resolve_effort_arg(args);
     let config_dir = arg_value(args, "--config-dir").map(PathBuf::from);
     let max_turns = arg_value(args, "--max-turns")
         .and_then(|s| s.parse::<u32>().ok())
@@ -750,6 +753,29 @@ fn resolve_approval_mode(args: &[String]) -> Result<ApprovalMode> {
     Ok(ApprovalMode::AlwaysAsk)
 }
 
+fn resolve_effort_arg(args: &[String]) -> Option<String> {
+    let raw = arg_value(args, "--effort")
+        .or_else(|| arg_value(args, "--reasoning-effort"))
+        .or_else(|| arg_value(args, "--thinking"))
+        .or_else(|| env::var("OMNIA_EFFORT").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| {
+            env::var("OMNIA_REASONING_EFFORT")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        });
+    match raw {
+        Some(v) => {
+            let trimmed = v.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+                None
+            } else {
+                Some(trimmed.to_ascii_lowercase())
+            }
+        }
+        None => Some("max".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +791,8 @@ mod tests {
             "http://127.0.0.1:4100/v1",
             "--wire-api",
             "messages",
+            "--effort",
+            "xhigh",
             "--output-format",
             "stream-json",
             "--auto-approve",
@@ -777,11 +805,38 @@ mod tests {
         assert_eq!(arg_value(&args, "--workspace").as_deref(), Some(r"D:\tmp\repo"));
         assert_eq!(arg_value(&args, "--model").as_deref(), Some("claude-sonnet-5-5"));
         assert_eq!(arg_value(&args, "--wire-api").as_deref(), Some("messages"));
+        assert_eq!(resolve_effort_arg(&args).as_deref(), Some("xhigh"));
         assert_eq!(
             extract_positional_prompt(&args).as_deref(),
             Some("Fix failing test in ledger.py")
         );
         assert_eq!(resolve_approval_mode(&args).unwrap(), ApprovalMode::Yolo);
+    }
+
+    #[test]
+    fn cli_effort_flag_defaults_to_max_and_supports_aliases_and_auto() {
+        let bare: Vec<String> = vec!["--model".into(), "gpt-6.2-sol".into(), "hi".into()];
+        assert_eq!(resolve_effort_arg(&bare).as_deref(), Some("max"));
+
+        let alias: Vec<String> = vec![
+            "--reasoning-effort".into(),
+            "MEDIUM".into(),
+            "solve task".into(),
+        ];
+        assert_eq!(resolve_effort_arg(&alias).as_deref(), Some("medium"));
+        assert_eq!(
+            extract_positional_prompt(&alias).as_deref(),
+            Some("solve task")
+        );
+
+        let eq_flag: Vec<String> = vec!["--effort=low".into(), "prompt".into()];
+        assert_eq!(resolve_effort_arg(&eq_flag).as_deref(), Some("low"));
+
+        let auto_flag: Vec<String> = vec!["--effort".into(), "auto".into(), "prompt".into()];
+        assert_eq!(resolve_effort_arg(&auto_flag), None);
+
+        let legacy: Vec<String> = vec!["--thinking".into(), "high".into(), "prompt".into()];
+        assert_eq!(resolve_effort_arg(&legacy).as_deref(), Some("high"));
     }
 
     #[test]

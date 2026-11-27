@@ -825,17 +825,29 @@ fn handle_slash_command(
                 state.push_line(TranscriptEntryKind::System, format!("Wire -> {:?}", state.wire_api));
             }
         }
-        "/thinking" => {
+        "/thinking" | "/effort" => {
             if arg.is_empty() {
-                state.push_line(TranscriptEntryKind::System, format!("Thinking: {}", state.thinking.as_deref().unwrap_or("default")));
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!("Effort: {}", state.thinking.as_deref().unwrap_or("max")),
+                );
             } else {
-                state.thinking = if arg.eq_ignore_ascii_case("off") { None } else { Some(arg.to_string()) };
+                state.thinking = if arg.eq_ignore_ascii_case("auto") {
+                    None
+                } else if arg.eq_ignore_ascii_case("off") {
+                    Some("none".to_string())
+                } else {
+                    Some(arg.to_ascii_lowercase())
+                };
                 state.saved.thinking = state.thinking.clone();
                 let _ = save_config(&state.saved);
                 if let Some(ref mut eng) = state.engine {
                     eng.thinking_level = state.thinking.clone();
                 }
-                state.push_line(TranscriptEntryKind::System, format!("Thinking -> {}", state.thinking.as_deref().unwrap_or("off")));
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!("Effort -> {}", state.thinking.as_deref().unwrap_or("auto (max)")),
+                );
             }
         }
         "/mode" => {

@@ -123,20 +123,20 @@ impl WireApiMode {
             Self::Gemini => "google-gemini",
             Self::Auto => {
                 let m = model_id.to_ascii_lowercase();
-                // htmustc wire forensics: Gemini over OpenAI chat/responses loses ~2k tokens of
-                // cached prefix EVERY turn (37/103 breaks), while the same models over Anthropic
-                // `/v1/messages` keep a byte-stable cached prefix (delta ~6 tokens/turn).
-                if m.starts_with("claude")
-                    || m.contains("/claude")
-                    || m.starts_with("gemini")
-                    || m.contains("/gemini")
-                {
+                // Canonical multi-provider wire routing:
+                // - Claude -> Anthropic `/v1/messages`
+                // - OpenAI GPT / o1 / o3 / o4 / Codex (excluding image/OSS models) -> `/v1/responses`
+                // - Explicit provider-configured Anthropic or Google Gemini endpoints honored
+                // - Gemini, DeepSeek, GLM, Kimi, Qwen, Grok, and other OpenAI-compat models -> `/v1/chat/completions`
+                if m.starts_with("claude") || m.contains("/claude") {
                     "anthropic-messages"
                 } else if configured_api == "openai-responses"
                     || configured_api == "openai-responses-ws"
                     || is_openai_responses_family(&m)
                 {
                     "openai-responses"
+                } else if configured_api == "anthropic-messages" {
+                    "anthropic-messages"
                 } else if configured_api == "google-gemini" {
                     "google-gemini"
                 } else {
@@ -151,6 +151,9 @@ impl WireApiMode {
 /// (Codex CLI reached 5/7 + 3/3 Axis 11 on `gpt-6.2-sol` over `/v1/responses`).
 fn is_openai_responses_family(model_lower: &str) -> bool {
     let bare = model_lower.rsplit('/').next().unwrap_or(model_lower);
+    if bare.starts_with("gpt-image") || bare.starts_with("gpt-oss") {
+        return false;
+    }
     bare.starts_with("gpt-")
         || bare.starts_with("o1")
         || bare.starts_with("o3")
@@ -235,6 +238,11 @@ impl StreamBudgetConfig {
             || m.contains("gpt-5-6")
             || m.contains("gemini-4")
             || m.contains("gemini-3")
+            || m.contains("deepseek")
+            || m.contains("kimi-k3")
+            || m.contains("glm-5")
+            || m.contains("qwen3")
+            || m.contains("grok-4")
             || m.contains("o4")
             || m.contains("o3")
             || m.contains("o1")
@@ -389,7 +397,35 @@ fn compute_token_progress_wait_with_phase(
             ),
         });
     }
-    Ok((budget - elapsed).min(rem_turn))
+    let mut wait = (budget - elapsed).min(rem_turn);
+    // Post-first-byte wire-idle guard: once SSE bytes have begun flowing on the socket,
+    // healthy streams deliver chunks or keepalives every ~15-25s. Never allow a single
+    // `stream.next()` await to sleep up to the 240s keepalive ceiling with ZERO wire bytes
+    // (eliminates 145-205s frozen Responses/Anthropic SSE hangs on swe_atlas_qna_aa & v5).
+    if let Some(wire_ts) = last_wire_activity_at {
+        if first_delta_timeout >= Duration::from_secs(60) {
+            let wire_idle_cap = if dialect_label.starts_with("OpenAI Responses") {
+                post_delta_token_timeout.clamp(Duration::from_secs(45), Duration::from_secs(55))
+            } else {
+                post_delta_token_timeout.max(Duration::from_secs(60))
+            };
+            let wire_elapsed = now.saturating_duration_since(wire_ts);
+            if wire_elapsed >= wire_idle_cap {
+                return Err(StreamTurnError::Retryable {
+                    status: None,
+                    retry_after_secs: None,
+                    kind: RetryKind::ChunkStall,
+                    detail: format!(
+                        "{dialect_label} post-first-byte wire-idle stall timeout after {}ms (limit {}ms)",
+                        wire_elapsed.as_millis(),
+                        wire_idle_cap.as_millis()
+                    ),
+                });
+            }
+            wait = wait.min(wire_idle_cap - wire_elapsed);
+        }
+    }
+    Ok(wait)
 }
 
 const PRE_TOOL_PREAMBLE_MAX_BYTES: usize = 512;
@@ -435,7 +471,7 @@ pub fn apply_retry_effort_step_down(
             EffortLevel::None => EffortLevel::None,
         };
     }
-    clamp_effort_for_model(model_id, stepped).or(Some(stepped))
+    clamp_effort_for_model(model_id, stepped)
 }
 
 /// Bound zero-byte HTTP response-header waits (`req.send()`) while retries remain (`>= 90s` left)
@@ -1133,6 +1169,7 @@ pub struct NativeSuperEngine {
     pub stream_budget: StreamBudgetConfig,
     pub supports_reasoning_echo: bool,
     pub supports_prompt_cache_key: bool,
+    pub supports_reasoning_effort: bool,
     pub active_prompt_start_turn: u32,
     pub total_turns: u32,
     pub total_tool_calls: u32,
@@ -1317,6 +1354,7 @@ impl NativeSuperEngine {
             stream_budget: StreamBudgetConfig::from_env(),
             supports_reasoning_echo: true,
             supports_prompt_cache_key: true,
+            supports_reasoning_effort: true,
             active_prompt_start_turn: 1,
             total_turns: 0,
             total_tool_calls: 0,
@@ -1550,13 +1588,18 @@ impl NativeSuperEngine {
         force_low_reasoning: bool,
         escalate_reasoning: bool,
     ) -> Option<EffortLevel> {
+        if !self.supports_reasoning_effort {
+            return None;
+        }
         if force_low_reasoning {
             return clamp_effort_for_model(&self.endpoint.model_id, EffortLevel::Low);
         }
         if let Some(ref raw) = self.thinking_level {
-            if let Ok(parsed) = raw.trim().parse::<EffortLevel>() {
-                return clamp_effort_for_model(&self.endpoint.model_id, parsed)
-                    .or(Some(parsed));
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("auto") {
+                if let Ok(parsed) = trimmed.parse::<EffortLevel>() {
+                    return clamp_effort_for_model(&self.endpoint.model_id, parsed);
+                }
             }
         }
         let spec = effort_spec_for_model(&self.endpoint.model_id);
@@ -3302,6 +3345,7 @@ impl NativeSuperEngine {
                         StreamTurnError::BadStreamOptions => "provider rejected stream_options",
                         StreamTurnError::BadReasoningEcho => "provider rejected reasoning_content",
                         StreamTurnError::BadPromptCacheKey => "provider rejected prompt_cache_key",
+                        StreamTurnError::BadReasoningEffort => "provider rejected reasoning effort",
                     };
                     let scope = classify_upstream_failure(err_status_u16, err_detail);
                     self.reconcile_router_slot(
@@ -3368,23 +3412,34 @@ impl NativeSuperEngine {
                             continue;
                         }
                         StreamTurnError::BadStreamOptions
-                            if include_stream_options && compat_bounces < 4 =>
+                            if include_stream_options && compat_bounces < 5 =>
                         {
                             include_stream_options = false;
                             compat_bounces += 1;
                             continue;
                         }
                         StreamTurnError::BadReasoningEcho
-                            if self.supports_reasoning_echo && compat_bounces < 4 =>
+                            if self.supports_reasoning_echo && compat_bounces < 5 =>
                         {
                             self.supports_reasoning_echo = false;
                             compat_bounces += 1;
                             continue;
                         }
                         StreamTurnError::BadPromptCacheKey
-                            if self.supports_prompt_cache_key && compat_bounces < 4 =>
+                            if self.supports_prompt_cache_key && compat_bounces < 5 =>
                         {
                             self.supports_prompt_cache_key = false;
+                            compat_bounces += 1;
+                            continue;
+                        }
+                        StreamTurnError::BadReasoningEffort
+                            if self.supports_reasoning_effort && compat_bounces < 5 =>
+                        {
+                            tracing::warn!(
+                                "Provider rejected reasoning effort for '{}'; stripping effort and retrying cleanly",
+                                self.endpoint.model_id
+                            );
+                            self.supports_reasoning_effort = false;
                             compat_bounces += 1;
                             continue;
                         }
@@ -3484,6 +3539,9 @@ impl NativeSuperEngine {
                         }
                         StreamTurnError::BadPromptCacheKey => {
                             bail!("provider rejected prompt_cache_key");
+                        }
+                        StreamTurnError::BadReasoningEffort => {
+                            bail!("provider rejected reasoning effort");
                         }
                     }
                 }
@@ -3622,6 +3680,7 @@ impl NativeSuperEngine {
             body["prompt_cache_key"] = Value::String(self.session_key.clone());
         }
 
+        let mut sent_reasoning_effort = false;
         if let Some(effort) =
             self.resolve_effort_for_attempt(force_low_reasoning, escalate_reasoning, attempt_hint)
         {
@@ -3632,16 +3691,9 @@ impl NativeSuperEngine {
                 effort,
                 Some(self.endpoint.max_tokens),
             );
-        } else if force_low_reasoning {
-            body["reasoning_effort"] = Value::String("low".into());
-        } else if let Some(ref tl) = self.thinking_level {
-            let low = tl.trim().to_ascii_lowercase();
-            if matches!(
-                low.as_str(),
-                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-            ) {
-                body["reasoning_effort"] = Value::String(low);
-            }
+            sent_reasoning_effort = body.get("reasoning_effort").is_some()
+                || body.get("reasoning").is_some()
+                || body.get("thinking").is_some();
         }
 
         let client = if force_fresh_socket {
@@ -3711,6 +3763,20 @@ impl NativeSuperEngine {
             let snippet: String = err_body.chars().take(500).collect();
             let low_snip = snippet.to_ascii_lowercase();
             if status == StatusCode::BAD_REQUEST {
+                if sent_reasoning_effort
+                    && (low_snip.contains("reasoning_effort")
+                        || low_snip.contains("reasoning.effort")
+                        || low_snip.contains("unsupported effort")
+                        || low_snip.contains("invalid effort")
+                        || ((low_snip.contains("reasoning") || low_snip.contains("thinking"))
+                            && (low_snip.contains("unsupported")
+                                || low_snip.contains("not supported")
+                                || low_snip.contains("invalid")
+                                || low_snip.contains("unknown")
+                                || low_snip.contains("unrecognized"))))
+                {
+                    return Err(StreamTurnError::BadReasoningEffort);
+                }
                 if low_snip.contains("stream_options") {
                     return Err(StreamTurnError::BadStreamOptions);
                 }
@@ -3728,6 +3794,9 @@ impl NativeSuperEngine {
                 {
                     if sent_prompt_cache_key {
                         return Err(StreamTurnError::BadPromptCacheKey);
+                    }
+                    if sent_reasoning_effort {
+                        return Err(StreamTurnError::BadReasoningEffort);
                     }
                     if sent_reasoning_echo {
                         return Err(StreamTurnError::BadReasoningEcho);
@@ -4281,10 +4350,6 @@ impl NativeSuperEngine {
                 effort,
                 Some(self.endpoint.max_tokens),
             );
-        } else if force_low_reasoning {
-            body["reasoning"] = json!({ "effort": "low" });
-        } else if escalate_reasoning && attempt_hint.slow_step_downs == 0 {
-            body["reasoning"] = json!({ "effort": "high" });
         }
     }
 
@@ -4740,6 +4805,7 @@ impl NativeSuperEngine {
             force_no_tools,
             attempt_hint,
         );
+        let sent_reasoning_effort = body.get("reasoning").is_some();
 
         let client = if force_fresh_socket {
             &self.fresh_http
@@ -4803,6 +4869,21 @@ impl NativeSuperEngine {
         if !status.is_success() {
             let err_body = resp.text().await.unwrap_or_default();
             let snippet: String = err_body.chars().take(400).collect();
+            let low_snip = snippet.to_ascii_lowercase();
+            if status == StatusCode::BAD_REQUEST
+                && sent_reasoning_effort
+                && (low_snip.contains("reasoning.effort")
+                    || low_snip.contains("reasoning_effort")
+                    || low_snip.contains("unsupported effort")
+                    || low_snip.contains("invalid effort")
+                    || (low_snip.contains("reasoning")
+                        && (low_snip.contains("unsupported")
+                            || low_snip.contains("not supported")
+                            || low_snip.contains("invalid")
+                            || low_snip.contains("unknown"))))
+            {
+                return Err(StreamTurnError::BadReasoningEffort);
+            }
             if self.wire_api_mode == WireApiMode::Auto
                 && matches!(
                     status,
@@ -5103,6 +5184,7 @@ impl NativeSuperEngine {
             }
         }
         let is_claude_model = self.endpoint.model_id.to_ascii_lowercase().contains("claude");
+        let mut sent_reasoning_effort = false;
         if is_claude_model {
             if let Some(effort) =
                 self.resolve_effort_for_attempt(force_low_reasoning, escalate_reasoning, attempt_hint)
@@ -5114,6 +5196,8 @@ impl NativeSuperEngine {
                     effort,
                     Some(self.endpoint.max_tokens),
                 );
+                sent_reasoning_effort =
+                    body.get("output_config").is_some() || body.get("thinking").is_some();
             }
         }
 
@@ -5163,6 +5247,21 @@ impl NativeSuperEngine {
                 .and_then(|s| s.trim().parse::<u64>().ok());
             let err_body = resp.text().await.unwrap_or_default();
             let snippet: String = err_body.chars().take(400).collect();
+            let low_snip = snippet.to_ascii_lowercase();
+            if status == StatusCode::BAD_REQUEST
+                && sent_reasoning_effort
+                && (low_snip.contains("output_config")
+                    || low_snip.contains("unsupported effort")
+                    || low_snip.contains("invalid effort")
+                    || ((low_snip.contains("effort") || low_snip.contains("thinking"))
+                        && (low_snip.contains("unsupported")
+                            || low_snip.contains("not supported")
+                            || low_snip.contains("invalid")
+                            || low_snip.contains("unknown")
+                            || low_snip.contains("unrecognized"))))
+            {
+                return Err(StreamTurnError::BadReasoningEffort);
+            }
             let non_claude_auto = self.wire_api_mode == WireApiMode::Auto && !is_claude_model;
             if matches!(
                 status,
@@ -6440,6 +6539,7 @@ enum StreamTurnError {
     BadStreamOptions,
     BadReasoningEcho,
     BadPromptCacheKey,
+    BadReasoningEffort,
     EndpointUnsupported(String),
     Retryable {
         status: Option<StatusCode>,
@@ -8241,7 +8341,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
             "Gemini must echo verbatim thought_signature on tool_calls[0].extra_content.google"
         );
 
-        // 2. Live wire check: Gemini Flash sends default reasoning_effort="medium" + prompt_cache_key + X-Session-Id
+        // 2. Live wire check: Gemini Flash sends default reasoning_effort="high" (max supported) + prompt_cache_key + X-Session-Id
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let captured = Arc::new(Mutex::new(String::new()));
@@ -8271,7 +8371,7 @@ data: [DONE]\n\n";
 
         assert_eq!(sum.status, "completed");
         let raw_req = captured.lock().unwrap().clone();
-        assert!(raw_req.contains("\"reasoning_effort\":\"medium\""));
+        assert!(raw_req.contains("\"reasoning_effort\":\"high\""));
         assert!(
             raw_req.contains("\"prompt_cache_key\""),
             "Gemini must receive session-stable prompt_cache_key"
@@ -8809,7 +8909,7 @@ data: [DONE]\n\n";
     }
 
     #[tokio::test]
-    async fn anthropic_wire_prefix_is_stable_across_turns_and_gemini_auto_routes_to_messages() {
+    async fn anthropic_wire_prefix_is_stable_across_turns_and_auto_routes_all_families() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let reqs_raw = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -8846,8 +8946,53 @@ data: {\"type\":\"message_stop\"}\n\n".to_string();
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.py"), "A = 1\n").unwrap();
         std::fs::write(tmp.join("b.py"), "B = 2\n").unwrap();
+        // Verify WireApiMode::Auto routes every htmustc model family to its canonical endpoint
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("claude-sonnet-5-5", "openai-completions"),
+            "anthropic-messages"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("claude-opus-4-7", "openai-completions"),
+            "anthropic-messages"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("gpt-6.2-sol", "openai-completions"),
+            "openai-responses"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("gpt-5.6-codex", "openai-completions"),
+            "openai-responses"
+        );
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("o3-pro", "openai-completions"),
+            "openai-responses"
+        );
+        for chat_model in [
+            "gemini-3.8-flash",
+            "gemini-4-neon",
+            "gemini-2.5-pro",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "glm-5",
+            "kimi-k3",
+            "qwen3-coder-480b",
+            "grok-4.5",
+            "gpt-image-2",
+            "gpt-oss-120b",
+        ] {
+            assert_eq!(
+                WireApiMode::Auto.resolve_api_kind(chat_model, "openai-completions"),
+                "openai-completions",
+                "model {chat_model} must auto-route to openai-completions"
+            );
+        }
+        assert_eq!(
+            WireApiMode::Auto.resolve_api_kind("gemini-3.8-flash", "anthropic-messages"),
+            "anthropic-messages"
+        );
+
         let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
-        eng.endpoint.model_id = "gemini-3.8-flash".into();
+        eng.endpoint.model_id = "claude-sonnet-5-5".into();
         eng.wire_api_mode = WireApiMode::Auto;
         eng.stream_budget.header_timeout = Duration::from_secs(5);
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
@@ -9164,13 +9309,27 @@ data: [DONE]\n\n";
         std::fs::create_dir_all(&tmp).unwrap();
         let mut eng = make_test_engine(&tmp, "http://127.0.0.1:1/v1".into());
         eng.endpoint.model_id = "gpt-6.2-sol".into();
-        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Medium));
-        assert_eq!(eng.resolve_effort_for_turn(false, true), Some(EffortLevel::High));
+        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Max));
+        assert_eq!(eng.resolve_effort_for_turn(false, true), Some(EffortLevel::Max));
         assert_eq!(eng.resolve_effort_for_turn(true, true), Some(EffortLevel::Low));
+        eng.thinking_level = Some("medium".into());
+        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Medium));
+        eng.thinking_level = Some("auto".into());
+        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Max));
         eng.thinking_level = Some("max".into());
         assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Max));
         eng.endpoint.model_id = "claude-sonnet-5-5".into();
         assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::Max));
+        eng.endpoint.model_id = "gpt-5.5".into();
+        assert_eq!(eng.resolve_effort_for_turn(false, false), Some(EffortLevel::XHigh));
+        for no_effort_model in ["gpt-4o", "deepseek-v4-flash", "kimi-k2", "gpt-image-2"] {
+            eng.endpoint.model_id = no_effort_model.into();
+            assert_eq!(
+                eng.resolve_effort_for_turn(false, false),
+                None,
+                "{no_effort_model} must omit effort even when --effort max is requested"
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -9386,7 +9545,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
 
         let captured = reqs.lock().unwrap().clone();
         assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0]["reasoning"]["effort"], json!("medium"));
+        assert_eq!(captured[0]["reasoning"]["effort"], json!("max"));
         assert_eq!(
             captured[0]["include"],
             json!(["reasoning.encrypted_content"])
@@ -9437,6 +9596,7 @@ data: [DONE]\n\n";
         std::fs::create_dir_all(&tmp).unwrap();
         let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
         eng.endpoint.model_id = "gemini-3.8-flash".into();
+        eng.endpoint.api = "anthropic-messages".into();
         eng.wire_api_mode = WireApiMode::Auto;
         eng.stream_budget.header_timeout = Duration::from_secs(5);
         eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
@@ -9627,7 +9787,8 @@ data: [DONE]\n\n";
         .unwrap();
         assert!(silent_wait <= Duration::from_secs(60));
 
-        // Case B: Active wire keepalive / lifecycle event -> full 240s silent reasoning allowance
+        // Case B: Active wire keepalive / lifecycle event stays alive up to the 240s ceiling
+        // (even past 150s pre-TTFT) while bounding any single `stream.next()` await to <=55s wire-idle.
         let active_wait = compute_token_progress_wait_with_wire(
             now,
             None,
@@ -9638,7 +9799,25 @@ data: [DONE]\n\n";
             "OpenAI Responses SSE",
         )
         .unwrap();
-        assert!(active_wait > Duration::from_secs(200));
+        assert!(
+            active_wait >= Duration::from_secs(50) && active_wait <= Duration::from_secs(56),
+            "active_wait={active_wait:?}"
+        );
+        let deep_keepalive_wait = compute_token_progress_wait_with_wire(
+            now - Duration::from_secs(200),
+            None,
+            Some(now),
+            Duration::from_secs(150),
+            Duration::from_secs(65),
+            deadline,
+            "OpenAI Responses SSE",
+        )
+        .unwrap();
+        assert!(
+            deep_keepalive_wait >= Duration::from_secs(35)
+                && deep_keepalive_wait <= Duration::from_secs(41),
+            "deep_keepalive_wait={deep_keepalive_wait:?}"
+        );
     }
 
     #[test]
@@ -9658,7 +9837,11 @@ data: [DONE]\n\n";
             true,
         )
         .unwrap();
-        assert!(with_wire > Duration::from_secs(100));
+        // Stays alive past 65s delta while keepalives flow, with single-await wire-idle bounded <= 55s
+        assert!(
+            with_wire >= Duration::from_secs(45) && with_wire <= Duration::from_secs(51),
+            "with_wire={with_wire:?}"
+        );
 
         let quiet_reasoning = compute_token_progress_wait_with_phase(
             now - Duration::from_secs(80),
@@ -9914,8 +10097,8 @@ data: [DONE]\n\n";
         .unwrap();
         assert!(!hit_dl);
         assert!(
-            preamble_wait >= Duration::from_secs(75),
-            "active preamble keepalive should allow >=75s left (got {preamble_wait:?})"
+            preamble_wait >= Duration::from_secs(55) && preamble_wait <= Duration::from_secs(61),
+            "active preamble keepalive must stay alive past 65s delta with bounded <=65s wire-idle wait (got {preamble_wait:?})"
         );
 
         // Empty or header-only `tool_use` (`content_block_start` before `input_json_delta`, <=128B args)
@@ -9937,8 +10120,8 @@ data: [DONE]\n\n";
             .unwrap();
             assert!(!tool_dl);
             assert!(
-                tool_wait >= Duration::from_secs(75),
-                "empty/header tool_use keepalive should allow >=75s (arg_len={arg_len}, got {tool_wait:?})"
+                tool_wait >= Duration::from_secs(55) && tool_wait <= Duration::from_secs(61),
+                "empty/header tool_use keepalive must stay alive past 65s delta with bounded <=65s wire-idle wait (arg_len={arg_len}, got {tool_wait:?})"
             );
         }
 
@@ -10020,7 +10203,10 @@ data: [DONE]\n\n";
         )
         .unwrap();
         assert!(!active_dl);
-        assert!(active_wait >= Duration::from_secs(200));
+        assert!(
+            active_wait >= Duration::from_secs(50) && active_wait <= Duration::from_secs(55),
+            "active Responses stream must exceed attempt_deadline while bounding wire-idle <=55s (got {active_wait:?})"
+        );
         let (capped_active_wait, capped_active_dl) = compute_sse_loop_wait(
             now - Duration::from_secs(130),
             Some(now - Duration::from_secs(1)),
@@ -10028,7 +10214,7 @@ data: [DONE]\n\n";
             first_to,
             chunk_to,
             now,
-            now + Duration::from_secs(75),
+            now + Duration::from_secs(30),
             "OpenAI Responses SSE",
             0,
             false,
@@ -10036,7 +10222,36 @@ data: [DONE]\n\n";
         )
         .unwrap();
         assert!(capped_active_dl);
-        assert!(capped_active_wait >= Duration::from_secs(70));
+        assert!(capped_active_wait >= Duration::from_secs(25));
+        // Frozen post-first-byte Responses stream (silent 56s after response.created / reasoning) MUST fail fast!
+        assert!(compute_sse_loop_wait(
+            now - Duration::from_secs(70),
+            None,
+            Some(now - Duration::from_secs(56)),
+            first_to,
+            chunk_to,
+            long_deadline,
+            long_deadline,
+            "OpenAI Responses SSE",
+            0,
+            false,
+            0,
+        )
+        .is_err());
+        assert!(compute_sse_loop_wait(
+            now - Duration::from_secs(70),
+            Some(now - Duration::from_secs(56)),
+            Some(now - Duration::from_secs(56)),
+            first_to,
+            chunk_to,
+            long_deadline,
+            long_deadline,
+            "OpenAI Responses SSE",
+            0,
+            false,
+            0,
+        )
+        .is_err());
         assert!(compute_sse_loop_wait(
             now - Duration::from_secs(130),
             None,
@@ -10242,7 +10457,7 @@ data: {\"type\":\"message_stop\"}\n\n"
             "Attempt 2 must step down further from Attempt 1 effort"
         );
 
-        // 2. OpenAI Responses (`gpt-6.2-sol`): Medium -> Low after TruncatedStream while Prefix-0 stays identical
+        // 2. OpenAI Responses (`gpt-6.2-sol`): Max -> Medium after TruncatedStream while Prefix-0 stays identical
         let resp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let resp_addr = resp_listener.local_addr().unwrap();
         let resp_reqs = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -10288,8 +10503,55 @@ data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\"
         assert_eq!(resp_captured[0]["instructions"], resp_captured[1]["instructions"]);
         assert_eq!(resp_captured[0]["tools"], resp_captured[1]["tools"]);
         assert_eq!(resp_captured[0]["input"], resp_captured[1]["input"]);
-        assert_eq!(resp_captured[0]["reasoning"]["effort"], json!("medium"));
-        assert_eq!(resp_captured[1]["reasoning"]["effort"], json!("low"));
+        assert_eq!(resp_captured[0]["reasoning"]["effort"], json!("max"));
+        assert_eq!(resp_captured[1]["reasoning"]["effort"], json!("medium"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn bad_reasoning_effort_400_auto_strips_effort_and_retries_cleanly() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let reqs = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let reqs_bg = Arc::clone(&reqs);
+        let srv = tokio::spawn(async move {
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let r1 = http_body_json(&read_http_request(&mut s1).await);
+            reqs_bg.lock().unwrap().push(r1);
+            let bad = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n\
+{\"error\":{\"message\":\"Unsupported parameter: reasoning_effort\"}}";
+            let _ = s1.write_all(bad.as_bytes()).await;
+            let _ = s1.shutdown().await;
+
+            let (mut s2, _) = listener.accept().await.unwrap();
+            let r2 = http_body_json(&read_http_request(&mut s2).await);
+            reqs_bg.lock().unwrap().push(r2);
+            let ok = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"EFFORT_STRIPPED_OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":4}}\n\n\
+data: [DONE]\n\n";
+            let _ = s2.write_all(ok.as_bytes()).await;
+            let _ = s2.shutdown().await;
+        });
+
+        let tmp = std::env::temp_dir().join(format!("omni_badeff_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut eng = make_test_engine(&tmp, format!("http://{addr}/v1"));
+        eng.endpoint.model_id = "glm-5".into();
+        eng.thinking_level = Some("max".into());
+        eng.wire_api_mode = WireApiMode::Auto;
+        eng.stream_budget.header_timeout = Duration::from_secs(5);
+        eng.stream_budget.first_delta_timeout = Duration::from_secs(5);
+        assert_eq!(eng.active_wire_dialect(), "openai-completions");
+
+        let sum = eng.run_prompt("ping", 4, 20, None).await.unwrap();
+        srv.await.unwrap();
+        assert_eq!(sum.final_text, "EFFORT_STRIPPED_OK");
+        assert!(!eng.supports_reasoning_effort);
+
+        let captured = reqs.lock().unwrap().clone();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0]["reasoning_effort"], json!("high"));
+        assert!(captured[1].get("reasoning_effort").is_none());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

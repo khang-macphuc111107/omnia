@@ -159,13 +159,56 @@ pub fn normalize_model_family_key(model_id: &str) -> String {
         .unwrap_or(model_id)
         .trim()
         .to_ascii_lowercase();
-    bare.replace('.', "-")
+    let stripped = match bare.find('(') {
+        Some(idx) if idx > 0 => bare[..idx].trim(),
+        _ => bare.as_str(),
+    };
+    let stripped = stripped
+        .strip_suffix("-review")
+        .or_else(|| stripped.strip_suffix("-tiered"))
+        .unwrap_or(stripped);
+    stripped.replace('.', "-")
 }
 
 /// Lookup model effort capabilities matching live verified `htmustc-proxy` calibration.
+/// All reasoning-capable families default to their highest supported effort (`max` -> clamped).
 #[must_use]
 pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
     let key = normalize_model_family_key(model_id);
+    let no_effort = || ModelEffortSpec {
+        mode: EffortWireMode::None,
+        supported: Vec::new(),
+        default_level: None,
+        claude_adaptive: false,
+        min_budget: 0,
+        max_budget: 0,
+    };
+    if matches!(key.as_str(), "" | "grok-4" | "grok-3" | "kimi-k2" | "deepseek") {
+        return no_effort();
+    }
+    if key.starts_with("gpt-image")
+        || key.starts_with("gpt-4")
+        || key.starts_with("gpt-3")
+        || key.starts_with("chatgpt")
+        || key.starts_with("gpt-oss")
+        || key.starts_with("gemini-2-0")
+        || key.starts_with("gemma")
+        || key.starts_with("deepseek-v4-flash")
+        || key.starts_with("deepseek-reasoner")
+        || key.starts_with("deepseek-chat")
+        || key.starts_with("grok-code-fast")
+        || key.starts_with("grok-4-fast")
+        || key.starts_with("grok-2")
+        || key.starts_with("grok-build")
+        || key.starts_with("grok-imagine")
+        || key.starts_with("whisper")
+        || key.starts_with("scribe")
+        || key.starts_with("eleven")
+        || key.starts_with("aura")
+        || key.starts_with("nova")
+    {
+        return no_effort();
+    }
     if key.starts_with("gpt-6") || key.starts_with("gpt-5-6") {
         return ModelEffortSpec {
             mode: EffortWireMode::Levels,
@@ -177,7 +220,7 @@ pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
                 EffortLevel::XHigh,
                 EffortLevel::Max,
             ],
-            default_level: Some(EffortLevel::Medium),
+            default_level: Some(EffortLevel::Max),
             claude_adaptive: false,
             min_budget: 0,
             max_budget: 0,
@@ -193,17 +236,65 @@ pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
                 EffortLevel::High,
                 EffortLevel::XHigh,
             ],
-            default_level: Some(EffortLevel::Medium),
+            default_level: Some(EffortLevel::XHigh),
             claude_adaptive: false,
             min_budget: 0,
             max_budget: 0,
         };
     }
-    if key.starts_with("gpt-5") || key.starts_with("o1") || key.starts_with("o3") || key.starts_with("o4") {
+    if key.starts_with("gpt-5-4")
+        || key.starts_with("gpt-5-3")
+        || key.starts_with("codex-auto-review")
+    {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::XHigh,
+            ],
+            default_level: Some(EffortLevel::XHigh),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("gpt-5-1") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![
+                EffortLevel::None,
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+            ],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("gpt-5") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![
+                EffortLevel::Minimal,
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+            ],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("o1") || key.starts_with("o3") || key.starts_with("o4") {
         return ModelEffortSpec {
             mode: EffortWireMode::Levels,
             supported: vec![EffortLevel::Low, EffortLevel::Medium, EffortLevel::High],
-            default_level: Some(EffortLevel::Medium),
+            default_level: Some(EffortLevel::High),
             claude_adaptive: false,
             min_budget: 0,
             max_budget: 0,
@@ -225,11 +316,7 @@ pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
                 EffortLevel::XHigh,
                 EffortLevel::Max,
             ],
-            default_level: Some(if key.starts_with("claude-opus-4-7") {
-                EffortLevel::XHigh
-            } else {
-                EffortLevel::High
-            }),
+            default_level: Some(EffortLevel::Max),
             claude_adaptive: true,
             min_budget: 1_024,
             max_budget: 128_000,
@@ -244,7 +331,7 @@ pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
                 EffortLevel::High,
                 EffortLevel::Max,
             ],
-            default_level: Some(EffortLevel::High),
+            default_level: Some(EffortLevel::Max),
             claude_adaptive: true,
             min_budget: 1_024,
             max_budget: 128_000,
@@ -263,13 +350,26 @@ pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
                 EffortLevel::High,
                 EffortLevel::XHigh,
             ],
-            default_level: Some(EffortLevel::Medium),
+            default_level: Some(EffortLevel::XHigh),
             claude_adaptive: false,
             min_budget: 1_024,
             max_budget: 128_000,
         };
     }
-    if key.starts_with("gemini-3") {
+    if key.starts_with("claude-3") {
+        return no_effort();
+    }
+    if key.starts_with("gemini-3-1-pro") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![EffortLevel::Low, EffortLevel::Medium, EffortLevel::High],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("gemini-3-1-flash-lite") {
         return ModelEffortSpec {
             mode: EffortWireMode::Levels,
             supported: vec![
@@ -278,10 +378,60 @@ pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
                 EffortLevel::Medium,
                 EffortLevel::High,
             ],
-            default_level: Some(EffortLevel::Medium),
+            default_level: Some(EffortLevel::High),
             claude_adaptive: false,
             min_budget: 0,
             max_budget: 0,
+        };
+    }
+    if key.starts_with("gemini-3-1-flash") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![EffortLevel::Minimal, EffortLevel::High],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("gemini-3-pro") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![EffortLevel::Low, EffortLevel::High],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("gemini-4") || key.starts_with("gemini-3") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![
+                EffortLevel::Minimal,
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+            ],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("gemini-2-5-pro") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Budget,
+            supported: vec![
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::XHigh,
+            ],
+            default_level: Some(EffortLevel::XHigh),
+            claude_adaptive: false,
+            min_budget: 128,
+            max_budget: 32_768,
         };
     }
     if key.starts_with("gemini-2-5") {
@@ -293,20 +443,79 @@ pub fn effort_spec_for_model(model_id: &str) -> ModelEffortSpec {
                 EffortLevel::Medium,
                 EffortLevel::High,
             ],
-            default_level: Some(EffortLevel::Medium),
+            default_level: Some(EffortLevel::High),
             claude_adaptive: false,
             min_budget: 128,
             max_budget: 24_576,
         };
     }
-    ModelEffortSpec {
-        mode: EffortWireMode::None,
-        supported: Vec::new(),
-        default_level: None,
-        claude_adaptive: false,
-        min_budget: 0,
-        max_budget: 0,
+    if key.starts_with("deepseek-v4-pro") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![EffortLevel::None, EffortLevel::Max],
+            default_level: Some(EffortLevel::Max),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
     }
+    if key.starts_with("kimi-k3")
+        || key.starts_with("k3")
+        || key.starts_with("kimi-k2-7")
+        || key.starts_with("kimi-k2-6")
+        || key.starts_with("kimi-k2-5")
+        || key.starts_with("kimi-k2-t")
+    {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Budget,
+            supported: vec![EffortLevel::Low, EffortLevel::Medium, EffortLevel::High],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 1_024,
+            max_budget: 32_000,
+        };
+    }
+    if key.starts_with("grok-4-5") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::XHigh,
+            ],
+            default_level: Some(EffortLevel::XHigh),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("grok-3-mini") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![EffortLevel::Low, EffortLevel::High],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    if key.starts_with("glm-5") || key.starts_with("qwen3") {
+        return ModelEffortSpec {
+            mode: EffortWireMode::Levels,
+            supported: vec![
+                EffortLevel::None,
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+            ],
+            default_level: Some(EffortLevel::High),
+            claude_adaptive: false,
+            min_budget: 0,
+            max_budget: 0,
+        };
+    }
+    no_effort()
 }
 
 /// Clamp `requested` down to the nearest lower supported level on `spec` (preserving exact match).
@@ -513,6 +722,25 @@ mod tests {
         let mut resp = json!({ "model": "gpt-6.2-sol" });
         apply_reasoning_effort_wire(&mut resp, "openai-responses", "gpt-6.2-sol", EffortLevel::Max, None);
         assert_eq!(resp["reasoning"]["effort"], "max");
+
+        // Steer #16: Default effort across reasoning families is max (clamped per model),
+        // and non-reasoning models omit effort parameters cleanly with zero 400 risk.
+        assert_eq!(effort_spec_for_model("gpt-6.2-sol").default_level, Some(EffortLevel::Max));
+        assert_eq!(effort_spec_for_model("claude-sonnet-5-5").default_level, Some(EffortLevel::Max));
+        assert_eq!(effort_spec_for_model("claude-opus-5-5").default_level, Some(EffortLevel::Max));
+        assert_eq!(effort_spec_for_model("deepseek-v4-pro").default_level, Some(EffortLevel::Max));
+        assert_eq!(effort_spec_for_model("gemini-4-carbon").default_level, Some(EffortLevel::High));
+        assert_eq!(effort_spec_for_model("gemini-3.8-flash").default_level, Some(EffortLevel::High));
+        assert_eq!(effort_spec_for_model("kimi-k3.1-pro").default_level, Some(EffortLevel::High));
+        assert_eq!(effort_spec_for_model("glm-5.3").default_level, Some(EffortLevel::High));
+        assert_eq!(effort_spec_for_model("qwen3.8-max").default_level, Some(EffortLevel::High));
+        assert_eq!(effort_spec_for_model("grok-4.5").default_level, Some(EffortLevel::XHigh));
+        for no_eff in ["gpt-4o", "gpt-image-2", "deepseek-v4-flash", "kimi-k2", "whisper-1"] {
+            assert_eq!(effort_spec_for_model(no_eff).default_level, None, "{no_eff}");
+            let mut b = json!({ "model": no_eff });
+            apply_reasoning_effort_wire(&mut b, "openai-completions", no_eff, EffortLevel::Max, None);
+            assert!(b.get("reasoning_effort").is_none(), "{no_eff} must omit reasoning_effort");
+        }
     }
 
     #[test]
