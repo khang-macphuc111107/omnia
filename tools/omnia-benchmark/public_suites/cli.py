@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
+
+_BENCH_DIR = str(Path(__file__).resolve().parent.parent)
+if _BENCH_DIR not in sys.path:
+    sys.path.insert(0, _BENCH_DIR)
 
 import runner_v5
 

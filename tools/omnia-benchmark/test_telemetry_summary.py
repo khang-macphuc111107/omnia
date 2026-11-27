@@ -42,3 +42,17 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(summary["wire_total_http_calls"], 2)
             self.assertEqual(summary["wire_requests"], 1)
             self.assertEqual(summary["wire_total_tokens"], 105)
+
+    def test_close_and_summary_ignores_late_post_stop_records(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            wl = Path(td) / "late.wire.jsonl"
+            state = ProxyState("test", "omnia", "late", log_path=wl)
+            state.record({"seq": state.next_seq(), "is_inference": True, "t_req_start_ns": 1, "prompt_total": 100, "output_tokens": 10, "usage_complete": True})
+            summary = state.close_and_summary()
+            state.record({"seq": state.next_seq(), "is_inference": True, "t_req_start_ns": 2, "prompt_total": 200, "output_tokens": 0, "usage_complete": False})
+            self.assertEqual(summary["wire_requests"], 1)
+            self.assertEqual(len(state.records), 1)
+            self.assertEqual(len(wl.read_text(encoding="utf-8").splitlines()), 1)

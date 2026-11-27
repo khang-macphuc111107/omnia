@@ -38,6 +38,7 @@ def run_smoke_cell(
     timeout_s: int = 120,
     omnia_bin: Optional[Path] = None,
     out_dir: Optional[Path] = None,
+    log_prefix: str = "",
 ) -> Dict[str, Any]:
     runner_v5.validate_harness_and_model(harness, model)
     assert_clean_ancestors()
@@ -51,8 +52,8 @@ def run_smoke_cell(
     rid = f"s0v5-{harness}-{model}"
     ws = Path(tempfile.mkdtemp(prefix=f"s0v5_{harness}_", dir=str(ws_parent)))
     (ws / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8", newline="\n")
-    wire_log = log_dir / f"{harness}_{model}.wire.jsonl"
-    stdout_log = log_dir / f"{harness}_{model}.stdout.jsonl"
+    wire_log = log_dir / f"{log_prefix}{harness}_{model}.wire.jsonl"
+    stdout_log = log_dir / f"{log_prefix}{harness}_{model}.stdout.jsonl"
     wire_log.unlink(missing_ok=True)
 
     api_key = runner_v5.load_htmustc_api_key(model)
@@ -175,6 +176,8 @@ def run_smoke_cell(
             "harness_errors": stream.get("harness_errors", []),
             "stderr_tail": "".join(stderr_lines)[-400:],
             "calc_after": calc_after[:160],
+            "wire_log_path": str(wire_log),
+            "stdout_log_path": str(stdout_log),
         }
     finally:
         try:
@@ -213,10 +216,13 @@ def main() -> int:
         except Exception:
             merged_map = {}
 
+    log_prefix = f"{out_path.stem}__" if out_path.name != "matrix.json" else ""
     for m in args.models:
         for h in args.harnesses:
             print(f"[SMOKE-v5] {h:8s} x {m:18s} ...", end=" ", flush=True)
-            row = run_smoke_cell(h, m, timeout_s=args.timeout_s, omnia_bin=omnia_bin, out_dir=out_path.parent)
+            row = run_smoke_cell(
+                h, m, timeout_s=args.timeout_s, omnia_bin=omnia_bin, out_dir=out_path.parent, log_prefix=log_prefix
+            )
             merged_map[(h, m)] = row
             status = "PASS" if row["passed"] else "FAIL"
             print(

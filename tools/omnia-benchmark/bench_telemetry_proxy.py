@@ -382,6 +382,7 @@ class ProxyState:
     faults_fired: Dict[str, int] = field(default_factory=dict)
     records: List[Dict[str, Any]] = field(default_factory=list)
     mock_turn: int = 0
+    closed: bool = False
 
     def next_seq(self) -> int:
         with self.lock:
@@ -390,11 +391,18 @@ class ProxyState:
 
     def record(self, rec: Dict[str, Any]) -> None:
         with self.lock:
+            if self.closed:
+                return
             self.records.append(rec)
             if self.log_path:
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.log_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    def close_and_summary(self, wall_window_ns: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
+        with self.lock:
+            self.closed = True
+        return self.get_summary(wall_window_ns)
 
     def get_summary(self, wall_window_ns: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
         with self.lock:
@@ -1266,7 +1274,7 @@ class BenchTelemetryProxy:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
-        return self.state.get_summary(wall_window_ns)
+        return self.state.close_and_summary(wall_window_ns)
 
     def __enter__(self) -> "BenchTelemetryProxy":
         self.start()

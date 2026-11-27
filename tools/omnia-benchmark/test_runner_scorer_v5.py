@@ -154,6 +154,19 @@ class RunnerScorerV5Tests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr[-400:])
 
+    def test_get_process_tree_pids_filters_older_pid_reuse_ancestors(self):
+        from unittest.mock import patch
+        import proc_monitor
+
+        children = {100: [200], 200: [300, 999]}
+        names = {100: "codex.exe", 200: "cmd.exe", 300: "python.exe", 999: "telegram.exe"}
+        cts = {100: 5000, 200: 5100, 300: 5200, 999: 1000}
+        with patch.object(proc_monitor, "_snapshot_processes", return_value=(children, names)):
+            with patch.object(proc_monitor, "_process_creation_ticks", side_effect=lambda p: cts.get(p)):
+                pids, _ = proc_monitor.get_process_tree_pids(100)
+        self.assertEqual(pids, {100, 200, 300})
+        self.assertNotIn(999, pids)
+
 
 if __name__ == "__main__":
     unittest.main()

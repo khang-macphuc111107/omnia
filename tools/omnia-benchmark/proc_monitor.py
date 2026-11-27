@@ -267,8 +267,25 @@ def _snapshot_processes() -> Tuple[Dict[int, List[int]], Dict[int, str]]:
     return children, names
 
 
+def _process_creation_ticks(pid: int) -> Optional[int]:
+    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        ct, et, kt, ut = FILETIME(), FILETIME(), FILETIME(), FILETIME()
+        if _kernel32.GetProcessTimes(
+            handle, ctypes.byref(ct), ctypes.byref(et), ctypes.byref(kt), ctypes.byref(ut)
+        ):
+            return (int(ct.dwHighDateTime) << 32) | int(ct.dwLowDateTime)
+        return None
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
 def get_process_tree_pids(root_pid: int) -> Tuple[Set[int], Dict[int, str]]:
     children, names = _snapshot_processes()
+    root_ct = _process_creation_ticks(root_pid)
+    ct_cache: Dict[int, Optional[int]] = {root_pid: root_ct}
     found: Set[int] = set()
     stack = [root_pid]
     while stack:
@@ -276,9 +293,20 @@ def get_process_tree_pids(root_pid: int) -> Tuple[Set[int], Dict[int, str]]:
         if pid in found:
             continue
         found.add(pid)
+        if pid not in ct_cache:
+            ct_cache[pid] = _process_creation_ticks(pid)
+        min_ct = ct_cache[pid] if ct_cache[pid] is not None else root_ct
         for child in children.get(pid, ()):
-            if child not in found:
-                stack.append(child)
+            if child in found:
+                continue
+            if min_ct is not None:
+                if child not in ct_cache:
+                    ct_cache[child] = _process_creation_ticks(child)
+                child_ct = ct_cache[child]
+                # Guard against Windows Toolhelp32 th32ParentProcessID reuse by exited ancestors.
+                if child_ct is not None and child_ct < min_ct:
+                    continue
+            stack.append(child)
     return found, names
 
 
