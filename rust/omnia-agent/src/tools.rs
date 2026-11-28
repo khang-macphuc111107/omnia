@@ -87,6 +87,206 @@ pub struct ToolExecOutput {
     pub duration_ms: u64,
 }
 
+/// Deferred 18-crate Omnia capability tools registered in `DeferredToolRegistry` (zero Token-0
+/// prompt bloat; discoverable via `discover_tools` and callable via `invoke_extension_tool` or
+/// direct dispatch). When compiled with `--features computer-use`, also exposes all 21 pure-Rust
+/// `omnia-computer` desktop/background-window tools under the `omnia_computer_*` namespace.
+#[must_use]
+pub fn builtin_deferred_18crate_tools() -> Vec<ToolSpec> {
+    let mut specs = vec![
+        ToolSpec {
+            name: "omnia_notebook_query".into(),
+            description: "Query Omnia Atelier Notebook / local ResearchVault grounded RAG sources with inline [S###]/[G###] citations.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Question or retrieval query" },
+                    "top_k": { "type": "integer", "description": "Maximum grounded chunks (1..=20, default 6)" },
+                    "tier": { "type": "string", "enum": ["all", "local", "global"] }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "omnia_downloader_enqueue".into(),
+            description: "Validate an HTTP(S) URL (SSRF-safe, DRM-free) and plan a 1-128 stream OmniDrive Pro chunked byte-range download outside the workspace.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Public HTTP(S) URL to validate/plan" },
+                    "content_length_bytes": { "type": "integer", "description": "Known byte length for range planning (optional)" },
+                    "streams": { "type": "integer", "description": "Concurrent streams 1..=128 (default 8)" },
+                    "min_chunk_bytes": { "type": "integer", "description": "Minimum bytes per chunk (default 262144)" },
+                    "staging_dir": { "type": "string", "description": "External staging directory outside workspace" },
+                    "enqueue": { "type": "boolean", "description": "Forward to live host/Studio downloader when extension_handler is registered" }
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "omnia_browser_action".into(),
+            description: "Drive Omnia's isolated WebSocket CDP headless/headed browser (launch, navigate, click, type, eval, screenshot, close; never touches live Thorium).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["launch", "navigate", "click", "type", "eval", "screenshot", "close"] },
+                    "session_id": { "type": "string" },
+                    "url": { "type": "string" },
+                    "headless": { "type": "boolean" },
+                    "selector": { "type": "string" },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "text": { "type": "string" },
+                    "expression": { "type": "string" }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "omnia_net_lab".into(),
+            description: "Run pure-Rust Pro Network Lab diagnostics: NIC/Wi-Fi/VPN/NAT/STUN identity, RFC 1035 DNS benchmark & leak check, or proxy/PAC/TLS waterfall.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["identity", "dns", "proxy_tls", "snapshot"] },
+                    "probe_public_ip": { "type": "boolean", "description": "Probe public IP/GeoIP/STUN (default false for fast offline-safe local check)" },
+                    "run_benchmark": { "type": "boolean", "description": "Run active UDP DNS benchmark (default false)" },
+                    "query_domain": { "type": "string" },
+                    "force": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "omnia_hardware_snapshot".into(),
+            description: "Collect zero-subprocess host hardware profile (RAM/VRAM/CPU tier) or live system snapshot (CPU%, disks, omnia-* RSS, listening TCP ports).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": { "type": "string", "enum": ["profile", "snapshot"] }
+                },
+                "additionalProperties": false
+            }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "omnia_super_engine".into(),
+            description: "Drive Omnia's executable unified /super-plan & /super-run orchestrator (status, capabilities, plan, run, cancel, steer, record_audit, complete; lossless .agents/super/engine_state.json).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["status", "capabilities", "plan", "run", "cancel", "steer", "record_audit", "complete"] },
+                    "goal": { "type": "string" },
+                    "scaffold_artifacts": { "type": "boolean" },
+                    "text": { "type": "string" },
+                    "reason": { "type": "string" },
+                    "reviewer": { "type": "string" },
+                    "commit_sha": { "type": "string" },
+                    "tree_sha": { "type": "string" },
+                    "findings": { "type": "integer" },
+                    "summary": { "type": "string" },
+                    "sync_lessons": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "omnia_learn_sync".into(),
+            description: "Run 3-way atomic global /learn lesson sync across Antigravity, OmniaData, and Codex (with secret redaction and deduplication).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "lesson": { "type": "string", "description": "Optional markdown lesson line to append to pending-global-lessons.md before syncing" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "omnia_proceed_policy".into(),
+            description: "Read or update /auto-proceed policy (off | standard | full) in .agents/super/engine_state.json and audit log .agents/super/proceed-decisions.jsonl.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["status", "set"] },
+                    "policy": { "type": "string", "enum": ["off", "standard", "full"] },
+                    "reason": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "omnia_boost_escalate".into(),
+            description: "Evaluate 2-strike RCA -> /boost cross-pool model & EffortLevel::Max escalation policy.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "current_model": { "type": "string" },
+                    "strikes": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "omnia_arena_run".into(),
+            description: "Inspect opt-in Test-Time Scaling / Multi-Model Arena status or run deterministic source slop scan.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": { "type": "string", "enum": ["status", "slop_scan"] },
+                    "language": { "type": "string", "enum": ["rust", "python", "typescript"] },
+                    "source": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+            read_only: false,
+        },
+    ];
+
+    #[cfg(feature = "computer-use")]
+    {
+        let cu = omnia_computer::computer_tools(omnia_computer::ComputerConfig::default());
+        for s in cu.specs() {
+            specs.push(ToolSpec {
+                name: format!("omnia_{}", s.name),
+                description: s.description,
+                parameters: s.input_schema,
+                read_only: s.effect == omnia_computer::ToolEffect::ReadOnly,
+            });
+        }
+    }
+
+    #[cfg(not(feature = "computer-use"))]
+    {
+        specs.push(ToolSpec {
+            name: "omnia_computer_dispatch".into(),
+            description: "Bridge to Omnia pure-Rust Windows computer-use tools (21 foreground UIA + background window tools; compile with --features computer-use or route via Studio /api/v5/computer/dispatch).".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "tool": { "type": "string", "description": "Computer tool name, e.g. computer_windows or omnia_computer_snapshot" },
+                    "arguments": { "type": "object", "additionalProperties": true }
+                },
+                "required": ["tool"],
+                "additionalProperties": false
+            }),
+            read_only: false,
+        });
+    }
+
+    specs
+}
+
 /// Weak-referenced canonical per-file async mutex preventing concurrent overlapping edits
 /// to the same file (including case-aliased paths on Windows) with deadlock-free sorted multi-lock.
 #[derive(Default)]
@@ -250,6 +450,9 @@ pub struct ToolRuntime {
     pub artifact_os: Arc<Mutex<Option<Arc<omnia_harness::artifact_os::ArtifactOs>>>>,
     /// Lazily loaded Bilingual SkillRegistry + 1,001-entry Zero-Bloat Cold Vault.
     pub skill_registry: Arc<Mutex<Option<Arc<omnia_harness::skill_registry::SkillRegistry>>>>,
+    /// Lazily initialized pure-Rust Windows computer-use dispatcher (only when `computer-use` feature is enabled).
+    #[cfg(feature = "computer-use")]
+    pub computer_tools: Arc<Mutex<Option<omnia_computer::ComputerTools>>>,
     /// Explicit per-tool handlers registered via `register_deferred_tool`.
     pub deferred_handlers: Arc<Mutex<HashMap<String, ExtensionToolHandler>>>,
     /// Dynamic read-only flag overrides for deferred tools.
@@ -313,6 +516,12 @@ impl ToolRuntime {
             deferred.register(spec);
         }
         let mut ro_overrides = HashSet::new();
+        for spec in builtin_deferred_18crate_tools() {
+            if spec.read_only {
+                ro_overrides.insert(spec.name.clone());
+            }
+            deferred.register(spec);
+        }
         for (tool_name, def) in dynamic_plugins.active_tools() {
             if def.read_only {
                 ro_overrides.insert(tool_name.clone());
@@ -350,6 +559,8 @@ impl ToolRuntime {
             deep_think: Arc::new(Mutex::new(None)),
             artifact_os: Arc::new(Mutex::new(None)),
             skill_registry: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "computer-use")]
+            computer_tools: Arc::new(Mutex::new(None)),
             workspace_root: clean_root,
             approval_mode,
             workspace_trusted,
@@ -408,6 +619,18 @@ impl ToolRuntime {
                 | "advisor_check"
                 | "omni_kanban_list"
                 | "omni_kb_search"
+                | "omnia_notebook_query"
+                | "omnia_net_lab"
+                | "omnia_hardware_snapshot"
+                | "omnia_computer_windows"
+                | "omnia_computer_snapshot"
+                | "omnia_computer_screenshot"
+                | "omnia_computer_ocr"
+                | "omnia_computer_find_text"
+                | "omnia_computer_window_list"
+                | "omnia_computer_window_screenshot"
+                | "omnia_computer_window_ocr"
+                | "omnia_computer_window_find_text"
         )
     }
 
@@ -769,7 +992,21 @@ impl ToolRuntime {
             }
             "swarm_register" | "swarm_message" | "swarm_read" | "auto_parallel_plan"
             | "advisor_check" => dispatch_swarm_tool_json(&self.swarm, tool_name, args),
-            "test_scale_run" => dispatch_test_scale_tool_json(&self.tts_config, args),
+            "test_scale_run" | "omnia_arena_run" => {
+                dispatch_test_scale_tool_json(&self.tts_config, args)
+            }
+            "omnia_notebook_query" => self.exec_omnia_notebook_query(args).await,
+            "omnia_downloader_enqueue" => self.exec_omnia_downloader_enqueue(args).await,
+            "omnia_browser_action" => self.exec_browser(args).await,
+            "omnia_net_lab" => self.exec_omnia_net_lab(args).await,
+            "omnia_hardware_snapshot" => self.exec_omnia_hardware_snapshot(args).await,
+            "omnia_super_engine" => self.exec_omnia_super_engine(args).await,
+            "omnia_learn_sync" => self.exec_omnia_learn_sync(args).await,
+            "omnia_proceed_policy" => self.exec_omnia_proceed_policy(args).await,
+            "omnia_boost_escalate" => self.exec_omnia_boost_escalate(args).await,
+            name if name == "omnia_computer_dispatch" || name.starts_with("omnia_computer_") => {
+                self.exec_omnia_computer_tool(name, args).await
+            }
             other => {
                 let handler_opt = self.deferred_handlers.lock().unwrap().get(other).cloned();
                 if let Some(h) = handler_opt {
@@ -1717,7 +1954,18 @@ impl ToolRuntime {
                 | "auto_parallel_plan"
                 | "advisor_check"
                 | "test_scale_run"
-        );
+                | "omnia_notebook_query"
+                | "omnia_downloader_enqueue"
+                | "omnia_browser_action"
+                | "omnia_net_lab"
+                | "omnia_hardware_snapshot"
+                | "omnia_super_engine"
+                | "omnia_learn_sync"
+                | "omnia_proceed_policy"
+                | "omnia_boost_escalate"
+                | "omnia_arena_run"
+        ) || name == "omnia_computer_dispatch"
+            || name.starts_with("omnia_computer_");
         if known_builtin {
             return self.dispatch_leaf_tool(name, &ext_args).await;
         }
@@ -3376,6 +3624,9 @@ impl ToolRuntime {
             .await?;
         match action {
             "list" => Ok(serde_json::to_string_pretty(&self.mcp_manager.list_servers())?),
+            "discover" => Ok(serde_json::to_string_pretty(
+                &self.mcp_manager.discover_configs(),
+            )?),
             "connect" => {
                 let mut cfg_val = args
                     .get("config")
@@ -3603,6 +3854,533 @@ impl ToolRuntime {
             _ => {}
         }
         run_res.map(|s| self.sanitize_and_track_taint(&s, tool_name))
+    }
+
+    async fn exec_omnia_notebook_query(&self, args: &Value) -> Result<String> {
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .context("omnia_notebook_query requires non-empty string parameter 'query'")?;
+        self.authorize("read", query).await?;
+        let top_k = args
+            .get("top_k")
+            .and_then(Value::as_u64)
+            .unwrap_or(6)
+            .clamp(1, 20) as usize;
+        let tier_filter = match args
+            .get("tier")
+            .and_then(Value::as_str)
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("local") => Some(omnia_harness::research_vault::VaultTier::Local),
+            Some("global") => Some(omnia_harness::research_vault::VaultTier::Global),
+            _ => None,
+        };
+        let vault = self.get_or_open_research_vault()?;
+        let hits = vault
+            .query_rag(query, tier_filter, top_k)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let ledger = vault
+            .sources_ledger(tier_filter)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let serialized = serde_json::to_string_pretty(&json!({
+            "ok": true,
+            "query": query,
+            "hitCount": hits.len(),
+            "hits": hits,
+            "citedIds": ledger.cited_ids,
+            "totalExtracted": ledger.total_extracted,
+        }))?;
+        Ok(bound_head_tail_chars(&serialized, 15_500))
+    }
+
+    async fn exec_omnia_downloader_enqueue(&self, args: &Value) -> Result<String> {
+        let url = args
+            .get("url")
+            .and_then(Value::as_str)
+            .context("omnia_downloader_enqueue requires string parameter 'url'")?;
+        self.authorize("extension", url).await?;
+        let validated = omnia_workspace_ops::range_downloader::validate_download_url(url)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if args.get("enqueue").and_then(Value::as_bool).unwrap_or(false) {
+            if let Some(ref handler) = self.extension_handler {
+                return handler("omnia_downloader_enqueue".to_string(), args.clone()).await;
+            }
+        }
+        let mut payload = json!({
+            "ok": true,
+            "drmSupported": false,
+            "validatedUrl": {
+                "sanitizedUrl": validated.sanitized_url,
+                "scheme": validated.scheme,
+                "host": validated.host,
+                "port": validated.port,
+                "isLoopback": validated.is_loopback,
+                "scrubbedQueryKeys": validated.scrubbed_query_keys,
+            }
+        });
+        if let Some(len) = args.get("content_length_bytes").and_then(Value::as_u64) {
+            let streams = args
+                .get("streams")
+                .and_then(Value::as_u64)
+                .unwrap_or(8)
+                .clamp(1, 128) as usize;
+            let min_chunk = args
+                .get("min_chunk_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(262_144)
+                .max(1);
+            let staging_dir = args
+                .get("staging_dir")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    if cfg!(test) {
+                        std::env::temp_dir().join("omnia-downloads-staging-test")
+                    } else {
+                        crate::agent_store::default_omnia_data_dir().join("downloads")
+                    }
+                });
+            let plan = omnia_workspace_ops::range_downloader::plan_range_download(
+                url,
+                len,
+                streams,
+                min_chunk,
+                &staging_dir,
+                &self.workspace_root,
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let segs: Vec<Value> = plan
+                .segments
+                .iter()
+                .map(|s| {
+                    json!({
+                        "segmentId": s.segment_id,
+                        "startByte": s.start_byte,
+                        "endByte": s.end_byte,
+                        "lengthBytes": s.len(),
+                    })
+                })
+                .collect();
+            payload["plan"] = json!({
+                "sanitizedUrl": plan.sanitized_url,
+                "stagingDir": plan.staging_dir.to_string_lossy().replace('\\', "/"),
+                "contentLengthBytes": plan.content_length_bytes,
+                "requestedStreams": plan.requested_streams,
+                "plannedStreams": plan.planned_streams,
+                "minChunkBytes": plan.min_chunk_bytes,
+                "segments": segs,
+            });
+        }
+        Ok(serde_json::to_string_pretty(&payload)?)
+    }
+
+    async fn exec_omnia_net_lab(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("identity")
+            .to_owned();
+        self.authorize("read", &format!("omnia_net_lab:{action}"))
+            .await?;
+        let probe_public_ip = args
+            .get("probe_public_ip")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let run_benchmark = args
+            .get("run_benchmark")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        let query_domain = args
+            .get("query_domain")
+            .and_then(Value::as_str)
+            .unwrap_or("example.com")
+            .to_owned();
+        let serialized = tokio::task::spawn_blocking(move || -> Result<String> {
+            match action.as_str() {
+                "identity" => {
+                    let opts = omnia_workspace_ops::net_diag::NetDiagOptions {
+                        probe_public_ip,
+                        force_refresh: force,
+                        ..Default::default()
+                    };
+                    let rep = omnia_workspace_ops::net_diag::inspect_network_identity(&opts);
+                    Ok(serde_json::to_string_pretty(&rep)?)
+                }
+                "dns" => {
+                    let opts = omnia_workspace_ops::net_diag::DnsBenchOptions {
+                        query_domain,
+                        run_benchmark,
+                        ..Default::default()
+                    };
+                    let rep = omnia_workspace_ops::net_diag::inspect_dns_and_benchmark(&opts);
+                    Ok(serde_json::to_string_pretty(&rep)?)
+                }
+                "proxy_tls" => {
+                    let rep =
+                        omnia_workspace_ops::net_diag::inspect_proxy_tls_and_endpoints(&[], force);
+                    Ok(serde_json::to_string_pretty(&rep)?)
+                }
+                "snapshot" => {
+                    let id_opts = omnia_workspace_ops::net_diag::NetDiagOptions {
+                        probe_public_ip,
+                        force_refresh: force,
+                        ..Default::default()
+                    };
+                    let identity = omnia_workspace_ops::net_diag::inspect_network_identity(&id_opts);
+                    let dns_opts = omnia_workspace_ops::net_diag::DnsBenchOptions {
+                        query_domain,
+                        run_benchmark,
+                        ..Default::default()
+                    };
+                    let dns = omnia_workspace_ops::net_diag::inspect_dns_and_benchmark(&dns_opts);
+                    Ok(serde_json::to_string_pretty(&json!({
+                        "ok": true,
+                        "identity": identity,
+                        "dns": dns,
+                    }))?)
+                }
+                other => bail!("unsupported omnia_net_lab action `{other}`"),
+            }
+        })
+        .await??;
+        Ok(bound_head_tail_chars(&serialized, 15_500))
+    }
+
+    async fn exec_omnia_hardware_snapshot(&self, args: &Value) -> Result<String> {
+        let mode = args
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("profile")
+            .to_owned();
+        self.authorize("read", &format!("omnia_hardware_snapshot:{mode}"))
+            .await?;
+        let serialized = tokio::task::spawn_blocking(move || -> Result<String> {
+            match mode.as_str() {
+                "profile" => Ok(serde_json::to_string_pretty(
+                    &omnia_workspace_ops::hardware::detect_hardware_profile(),
+                )?),
+                "snapshot" => Ok(serde_json::to_string_pretty(
+                    &omnia_workspace_ops::hardware::collect_host_system_snapshot(),
+                )?),
+                other => bail!("unsupported omnia_hardware_snapshot mode `{other}`"),
+            }
+        })
+        .await??;
+        Ok(bound_head_tail_chars(&serialized, 15_500))
+    }
+
+    async fn exec_omnia_super_engine(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("status");
+        self.authorize("extension", &format!("omnia_super_engine:{action}"))
+            .await?;
+        let mut orch =
+            crate::super_orchestrator::SuperOrchestrator::from_workspace_state(&self.workspace_root);
+        let mut value: Value = match action {
+            "status" => orch.status_json(),
+            "capabilities" => {
+                crate::super_orchestrator::build_unified_capability_registry(&self.workspace_root)
+            }
+            "plan" => {
+                let goal = args.get("goal").and_then(Value::as_str).unwrap_or("");
+                let scaffold = args
+                    .get("scaffold_artifacts")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                serde_json::to_value(orch.activate_super_plan(goal, scaffold)?)?
+            }
+            "run" => {
+                let goal = args.get("goal").and_then(Value::as_str).unwrap_or("");
+                let scaffold = args
+                    .get("scaffold_artifacts")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                serde_json::to_value(orch.activate_super_run(goal, scaffold)?)?
+            }
+            "cancel" => {
+                let reason = args
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("cancelled via omnia_super_engine");
+                serde_json::to_value(orch.cancel(reason)?)?
+            }
+            "steer" => {
+                let text = args
+                    .get("text")
+                    .or_else(|| args.get("goal"))
+                    .and_then(Value::as_str)
+                    .context("omnia_super_engine steer requires 'text'")?;
+                orch.enqueue_additive_steer(text)?
+            }
+            "record_audit" => {
+                let reviewer = args
+                    .get("reviewer")
+                    .and_then(Value::as_str)
+                    .unwrap_or("verifier");
+                let commit_sha = args
+                    .get("commit_sha")
+                    .and_then(Value::as_str)
+                    .unwrap_or("HEAD");
+                let tree_sha = args
+                    .get("tree_sha")
+                    .and_then(Value::as_str)
+                    .unwrap_or("TREE");
+                let findings = args.get("findings").and_then(Value::as_u64).unwrap_or(0) as usize;
+                serde_json::to_value(orch.record_audit_round(
+                    reviewer, commit_sha, tree_sha, findings,
+                )?)?
+            }
+            "complete" => {
+                let summary = args
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or("completed");
+                let sync_lessons = args
+                    .get("sync_lessons")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                serde_json::to_value(orch.finalize_complete(summary, sync_lessons)?)?
+            }
+            other => bail!("unsupported omnia_super_engine action `{other}`"),
+        };
+        let pretty = serde_json::to_string_pretty(&value)?;
+        if pretty.chars().count() <= 15_500 {
+            return Ok(pretty);
+        }
+        let compact = serde_json::to_string(&value)?;
+        if compact.chars().count() <= 15_500 {
+            return Ok(compact);
+        }
+        if let Some(obj) = value.as_object_mut() {
+            if let Some(caps) = obj
+                .get_mut("capabilitiesSummary")
+                .and_then(Value::as_object_mut)
+            {
+                if let Some(dt) = caps.get_mut("deferredTools").and_then(Value::as_array_mut) {
+                    dt.truncate(8);
+                }
+                if let Some(sk) = caps.get_mut("skills").and_then(Value::as_object_mut) {
+                    if let Some(ps) = sk.get_mut("pluginSkills").and_then(Value::as_array_mut) {
+                        ps.truncate(8);
+                    }
+                }
+            }
+            if let Some(dt) = obj.get_mut("deferredTools").and_then(Value::as_array_mut) {
+                dt.truncate(12);
+            }
+            if let Some(sk) = obj.get_mut("skills").and_then(Value::as_object_mut) {
+                if let Some(ps) = sk.get_mut("pluginSkills").and_then(Value::as_array_mut) {
+                    ps.truncate(12);
+                }
+            }
+            obj.insert("compactedForTokenCeiling".to_string(), json!(true));
+        }
+        let mut compacted = serde_json::to_string(&value)?;
+        if compacted.chars().count() > 15_500 {
+            if let Some(obj) = value.as_object_mut() {
+                if let Some(caps) = obj
+                    .get_mut("capabilitiesSummary")
+                    .and_then(Value::as_object_mut)
+                {
+                    caps.remove("deferredTools");
+                    caps.remove("plugins");
+                    if let Some(sk) = caps.get_mut("skills").and_then(Value::as_object_mut) {
+                        sk.remove("pluginSkills");
+                    }
+                }
+                if let Some(tail) = obj
+                    .get("dynamicTailHydration")
+                    .and_then(Value::as_str)
+                    .map(|s| bound_head_tail_chars(s, 3_000))
+                {
+                    obj.insert("dynamicTailHydration".to_string(), Value::String(tail));
+                }
+                obj.remove("deferredTools");
+                if let Some(sk) = obj.get_mut("skills").and_then(Value::as_object_mut) {
+                    sk.remove("pluginSkills");
+                }
+            }
+            compacted = serde_json::to_string(&value)?;
+        }
+        Ok(compacted)
+    }
+
+    async fn exec_omnia_learn_sync(&self, args: &Value) -> Result<String> {
+        self.authorize("extension", "omnia_learn_sync").await?;
+        if let Some(lesson) = args
+            .get("lesson")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if self.workspace_trusted {
+                let pending = self
+                    .workspace_root
+                    .join(".agents")
+                    .join("memory")
+                    .join("pending-global-lessons.md");
+                if let Some(parent) = pending.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let mut existing = fs::read_to_string(&pending).unwrap_or_default();
+                if !existing.is_empty() && !existing.ends_with('\n') {
+                    existing.push('\n');
+                }
+                existing.push_str("- ");
+                existing.push_str(&lesson.replace("\r\n", "\n"));
+                existing.push('\n');
+                atomic_write_bom_free(&pending, &existing, false)?;
+            }
+        }
+        let report = omnia_harness::artifact_os::sync_global_lessons(&self.workspace_root)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(serde_json::to_string_pretty(&report)?)
+    }
+
+    async fn exec_omnia_proceed_policy(&self, args: &Value) -> Result<String> {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("status");
+        self.authorize("extension", &format!("omnia_proceed_policy:{action}"))
+            .await?;
+        let mut orch =
+            crate::super_orchestrator::SuperOrchestrator::from_workspace_state(&self.workspace_root);
+        let out = match action {
+            "status" => json!({
+                "ok": true,
+                "autoProceed": orch.auto_proceed().as_str(),
+                "allowsInteractiveQuestions": orch.auto_proceed().allows_interactive_questions(),
+                "autoAcceptsRecommended": orch.auto_proceed().auto_accepts_recommended(),
+            }),
+            "set" => {
+                let raw = args
+                    .get("policy")
+                    .and_then(Value::as_str)
+                    .context("omnia_proceed_policy set requires string parameter 'policy'")?;
+                let pol = crate::super_orchestrator::AutoProceedPolicy::parse(raw);
+                let reason = args
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("updated via omnia_proceed_policy");
+                orch.set_auto_proceed(pol, reason)?
+            }
+            other => bail!("unsupported omnia_proceed_policy action `{other}`"),
+        };
+        Ok(serde_json::to_string_pretty(&out)?)
+    }
+
+    async fn exec_omnia_boost_escalate(&self, args: &Value) -> Result<String> {
+        self.authorize("extension", "omnia_boost_escalate").await?;
+        let mut orch =
+            crate::super_orchestrator::SuperOrchestrator::from_workspace_state(&self.workspace_root);
+        if let Some(strikes) = args.get("strikes").and_then(Value::as_u64) {
+            orch.set_consecutive_failures(strikes.min(u64::from(u32::MAX)) as u32);
+        }
+        let model = args
+            .get("current_model")
+            .and_then(Value::as_str)
+            .unwrap_or("claude-sonnet-5-5");
+        let dec = orch.evaluate_boost_escalation(model, None);
+        Ok(serde_json::to_string_pretty(&dec)?)
+    }
+
+    async fn exec_omnia_computer_tool(&self, tool_name: &str, args: &Value) -> Result<String> {
+        if Self::is_read_only_tool(tool_name) {
+            self.authorize("read", tool_name).await?;
+        } else {
+            self.authorize("extension", tool_name).await?;
+        }
+
+        #[cfg(feature = "computer-use")]
+        {
+            let cu = {
+                let mut slot = self.computer_tools.lock().unwrap();
+                slot.get_or_insert_with(|| {
+                    omnia_computer::ComputerTools::new(omnia_computer::ComputerConfig::default())
+                })
+                .clone()
+            };
+            let (inner_name, inner_args) = if tool_name == "omnia_computer_dispatch" {
+                let raw_t = args
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .context("omnia_computer_dispatch requires string parameter 'tool'")?;
+                let normalized = raw_t.strip_prefix("omnia_").unwrap_or(raw_t).to_owned();
+                let inner_a = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                (normalized, inner_a)
+            } else {
+                (
+                    tool_name
+                        .strip_prefix("omnia_")
+                        .unwrap_or(tool_name)
+                        .to_owned(),
+                    args.clone(),
+                )
+            };
+            let ctx = omnia_computer::ToolContext::default();
+            if self.cancel_flag.load(Ordering::Relaxed) {
+                ctx.cancel.cancel();
+            }
+            let out = cu
+                .call(&inner_name, &ctx, inner_args)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if out.is_error {
+                let msg = out
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        omnia_computer::ContentBlock::Text { text } => Some(text.as_str()),
+                        omnia_computer::ContentBlock::Image { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                bail!("{msg}");
+            }
+            let blocks: Vec<Value> = out
+                .content
+                .into_iter()
+                .map(|b| match b {
+                    omnia_computer::ContentBlock::Text { text } => json!({
+                        "type": "text",
+                        "text": text,
+                    }),
+                    omnia_computer::ContentBlock::Image { media_type, data } => json!({
+                        "type": "image",
+                        "mediaType": media_type,
+                        "bytesBase64Len": data.len(),
+                        "data": data,
+                    }),
+                })
+                .collect();
+            Ok(serde_json::to_string_pretty(&json!({
+                "ok": true,
+                "tool": tool_name,
+                "content": blocks,
+            }))?)
+        }
+
+        #[cfg(not(feature = "computer-use"))]
+        {
+            if let Some(ref handler) = self.extension_handler {
+                return handler(tool_name.to_string(), args.clone()).await;
+            }
+            Ok(serde_json::to_string_pretty(&json!({
+                "ok": false,
+                "featureEnabled": false,
+                "crate": "omnia-computer",
+                "tool": tool_name,
+                "hint": "Enable Cargo feature `omnia-agent/computer-use` or dispatch via Studio POST /api/v5/computer/dispatch.",
+            }))?)
+        }
     }
 
     async fn exec_host_tool(&self, tool_name: &str, args: &Value) -> Result<String> {
@@ -5564,6 +6342,141 @@ mod tests {
             .await;
         assert!(!pipes.is_error, "omni_skills pipelines failed: {}", pipes.content);
         assert!(pipes.content.contains("omnia-deep-research"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn steer27b_18crate_deferred_tools_discover_and_execute_with_zero_prefix_bloat() {
+        let tmp = std::env::temp_dir().join(format!("omni_s27b_tools_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(tmp.join(".agents/super")).unwrap();
+        let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Yolo,
+            true,
+            PermissionsEngine::default_rules(),
+            graph,
+            ctx,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        // 1. Token-0 Prefix-0 invariant: 7 core + 3 meta-tools = 10 (11 with `load_skill`), while 18-crate tools live deferred.
+        let plugins = crate::plugin::PluginRegistry::with_default_pillars();
+        let active_no_skills = plugins.active_tools_with_deferred(false, !rt.deferred_tools.is_empty());
+        assert_eq!(active_no_skills.len(), 10, "Token-0 tool cap violated: {}", active_no_skills.len());
+        let active_with_skills = plugins.active_tools_with_deferred(true, !rt.deferred_tools.is_empty());
+        assert_eq!(active_with_skills.len(), 11, "Token-0 tool cap with load_skill violated: {}", active_with_skills.len());
+        for expected in [
+            "omnia_notebook_query",
+            "omnia_downloader_enqueue",
+            "omnia_browser_action",
+            "omnia_net_lab",
+            "omnia_hardware_snapshot",
+            "omnia_super_engine",
+            "omnia_learn_sync",
+            "omnia_proceed_policy",
+            "omnia_boost_escalate",
+            "omnia_arena_run",
+        ] {
+            assert!(
+                rt.deferred_tools.get(expected).is_some(),
+                "expected 18-crate deferred tool `{expected}` to be registered"
+            );
+        }
+
+        // 2. discover_tools surfaces 18-crate capabilities cleanly.
+        let disc = rt
+            .execute(
+                "discover_tools",
+                &json!({ "query": "omnia_super_engine super-plan super-run", "limit": 5 }),
+            )
+            .await;
+        assert!(!disc.is_error && disc.content.contains("omnia_super_engine"), "{}", disc.content);
+
+        // 3. omnia_super_engine plan -> run -> status preserves tokenBudget: null & lossless state.
+        let plan = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "omnia_super_engine",
+                    "arguments": {
+                        "action": "plan",
+                        "goal": "Ship unified super workflow",
+                        "scaffold_artifacts": false
+                    }
+                }),
+            )
+            .await;
+        assert!(!plan.is_error, "omnia_super_engine plan failed: {}", plan.content);
+        let plan_v: Value = serde_json::from_str(&plan.content).unwrap();
+        assert_eq!(plan_v["mode"], "super_plan");
+        assert_eq!(plan_v["autoProceed"], "off");
+        assert!(plan_v["tokenBudget"].is_null());
+
+        let proc_set = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "omnia_proceed_policy",
+                    "arguments": { "action": "set", "policy": "full", "reason": "unit test" }
+                }),
+            )
+            .await;
+        assert!(!proc_set.is_error, "omnia_proceed_policy failed: {}", proc_set.content);
+        assert!(proc_set.content.contains("\"autoProceed\": \"full\""));
+
+        // 4. omnia_boost_escalate triggers 2-strike RCA -> Architect / max effort.
+        let boost = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "omnia_boost_escalate",
+                    "arguments": { "current_model": "claude-sonnet-5-5", "strikes": 2 }
+                }),
+            )
+            .await;
+        assert!(!boost.is_error, "omnia_boost_escalate failed: {}", boost.content);
+        let boost_v: Value = serde_json::from_str(&boost.content).unwrap();
+        assert_eq!(boost_v["shouldEscalate"], true);
+        assert_eq!(boost_v["recommendedEffort"], "max");
+
+        // 5. omnia_downloader_enqueue validates public URL + plans ranges with drmSupported: false.
+        let dl = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({
+                    "name": "omnia_downloader_enqueue",
+                    "arguments": {
+                        "url": "https://example.org/release.bin",
+                        "content_length_bytes": 4194304,
+                        "streams": 4
+                    }
+                }),
+            )
+            .await;
+        assert!(!dl.is_error, "omnia_downloader_enqueue failed: {}", dl.content);
+        let dl_v: Value = serde_json::from_str(&dl.content).unwrap();
+        assert_eq!(dl_v["drmSupported"], false);
+        assert_eq!(dl_v["plan"]["plannedStreams"], 4);
+
+        // 6. omnia_hardware_snapshot profile succeeds with zero subprocesses.
+        let hw = rt
+            .execute(
+                "invoke_extension_tool",
+                &json!({ "name": "omnia_hardware_snapshot", "arguments": { "mode": "profile" } }),
+            )
+            .await;
+        assert!(!hw.is_error && hw.content.contains("logical_cpus"), "{}", hw.content);
+
+        // 7. mcp_manage action="discover" runs safely without reading OAuth/cookies.
+        let mcp_disc = rt
+            .execute("mcp_manage", &json!({ "action": "discover" }))
+            .await;
+        assert!(!mcp_disc.is_error && mcp_disc.content.contains("servers"), "{}", mcp_disc.content);
 
         let _ = fs::remove_dir_all(&tmp);
     }

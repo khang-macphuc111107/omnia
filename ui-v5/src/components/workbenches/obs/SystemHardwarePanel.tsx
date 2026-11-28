@@ -13,6 +13,7 @@ import {
   XCircle,
 } from 'lucide-solid';
 import { api } from '@/api/client';
+import { type ComputerStatusResponse, type SuperStatusResponse, studioV5 } from '@/lib/studio';
 import { privacyMask } from '@/state/studio';
 import { maskText } from '@/utils/privacy';
 import { formatBytes } from '@/utils/stats';
@@ -105,6 +106,8 @@ function normalizeCapabilities(rawList: unknown, checkedAtIso: string): Capabili
 export function SystemHardwarePanel(props: { refreshSeq: number }) {
   const [snapshot, setSnapshot] = createSignal<Record<string, unknown> | null>(null);
   const [nvidia, setNvidia] = createSignal<Record<string, unknown> | null>(null);
+  const [computerStatus, setComputerStatus] = createSignal<ComputerStatusResponse | null>(null);
+  const [superStatus, setSuperStatus] = createSignal<SuperStatusResponse | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [note, setNote] = createSignal('');
 
@@ -201,9 +204,11 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
 
   const loadSystem = async () => {
     setLoading(true);
-    const [sysRes, nvRes] = await Promise.all([
+    const [sysRes, nvRes, compRes, supRes] = await Promise.all([
       api.getSystemSnapshot(privacyMask()),
       api.getNvidiaHardware(),
+      studioV5.getComputerStatus(),
+      studioV5.getSuperStatus(),
       probeCapabilitiesAndHealth(),
     ]);
     if (sysRes.ok) {
@@ -213,6 +218,8 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
       setNote(`Host snapshot note (${sysRes.error.code}): ${sysRes.error.message}`);
     }
     if (nvRes.ok) setNvidia(nvRes.data);
+    if (compRes.ok) setComputerStatus(compRes.data);
+    if (supRes.ok) setSuperStatus(supRes.data);
     setLoading(false);
   };
 
@@ -509,6 +516,54 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
           </Show>
         </div>
       </section>
+
+      {/* Native Computer Use (omnia-computer · 21 tools) & Super Engine Bridge */}
+      <Show when={computerStatus() || superStatus()}>
+        <div
+          data-testid="system-computer-super-bridge"
+          class="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11.5px] font-mono-num"
+        >
+          <div class="omnia-surface-panel rounded-lg p-3 space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-semibold text-[var(--ink-primary)]">Native Computer Use (omnia-computer)</span>
+              <span
+                class="omnia-badge text-[10px]"
+                classList={{
+                  'text-[var(--status-emerald)]': Boolean(computerStatus()?.available ?? computerStatus()?.ok),
+                  'text-[var(--accent-amber)]': !Boolean(computerStatus()?.available ?? computerStatus()?.ok),
+                }}
+              >
+                {computerStatus()?.killSwitchEngaged
+                  ? 'KILL-SWITCH'
+                  : computerStatus()?.unrestrictedDefault
+                    ? 'YOLO DEFAULT'
+                    : String(computerStatus()?.policy ?? 'READY')}
+              </span>
+            </div>
+            <div class="text-[var(--ink-secondary)]">
+              Tools: <strong>{String(computerStatus()?.toolCount ?? (Array.isArray(computerStatus()?.tools) ? computerStatus()!.tools!.length : 21))}</strong> · UIA:{' '}
+              {computerStatus()?.uiaReady === false ? 'off' : 'ready'} · OCR:{' '}
+              {computerStatus()?.ocrReady === false ? 'off' : 'ready'} · DPI:{' '}
+              {computerStatus()?.dpiAware === false ? 'std' : 'per-monitor v2'}
+            </div>
+          </div>
+
+          <div class="omnia-surface-panel rounded-lg p-3 space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-semibold text-[var(--ink-primary)]">Unified Super Engine (/super-plan &amp; /super-run)</span>
+              <span class="omnia-badge text-[10px] text-[var(--accent-cyan)]">
+                {String(superStatus()?.mode ?? 'idle').toUpperCase()}
+              </span>
+            </div>
+            <div class="text-[var(--ink-secondary)]">
+              Auto-Proceed: <strong>{String(superStatus()?.autoProceed ?? superStatus()?.auto_proceed ?? 'off')}</strong> ·
+              Goal Persist: <strong>{superStatus()?.goalPersistence ?? superStatus()?.goal_persistence ? 'ON' : 'OFF'}</strong> ·
+              Audit Streak: <strong>{String(superStatus()?.auditStreak ?? superStatus()?.audit_streak ?? 0)}</strong> ·
+              Budget: <strong>{superStatus()?.tokenBudget === null || superStatus()?.tokenBudget === undefined ? 'NULL' : String(superStatus()?.tokenBudget)}</strong>
+            </div>
+          </div>
+        </div>
+      </Show>
 
       <Show when={note()}>
         <div class="px-3 py-1.5 rounded border border-[var(--accent-amber)] bg-[var(--accent-amber-dim)] text-[11.5px] font-mono-num text-[var(--accent-amber)]">

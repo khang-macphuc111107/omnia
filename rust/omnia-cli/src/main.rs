@@ -243,6 +243,9 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "super-plan" => run_super_workflow_cmd("super_plan", &args[1..]),
+        "super-run" => run_super_workflow_cmd("super_run", &args[1..]),
+        "super" => run_super_dispatch_cmd(&args[1..]),
         "arena" => match run_arena_cmd(&args[1..]) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -299,9 +302,12 @@ USAGE:
   omnia --acp [--model <id>] [--base-url <url>] [--api-key <key>]
   omnia --acp-http [--host <ip>] [--port <n>] [--secret <key>]
   omnia --mcp [--workspace <dir>]
+  omnia super-plan [prompt...] [--cwd <dir>] [--json] [--dry-run]
+  omnia super-run [prompt...] [--cwd <dir>] [--json] [--dry-run]
+  omnia super <plan|run|capabilities|status|audit|complete> [--cwd <dir>] [--json]
   omnia rewind --workspace <dir> --turn <n> [--session <id>] [--preview]
-  omnia net [--dns] [--proxy] [--all] [--offline] [--json] [--privacy-mask]
-  omnia speedtest [--quick | --standard] [--url <override>] [--json] [--privacy-mask]
+  omnia net [--dns] [--proxy] [--all] [--full|--exhaustive] [--single-stream] [--radar] [--trace <host>] [--custom-dns <ip>] [--custom-host <host>] [--monitor] [--offline] [--json] [--privacy-mask]
+  omnia speedtest [--quick | --standard | --exhaustive | --full] [--single-stream] [--url <override>] [--json] [--privacy-mask]
   omnia research <query> [--workspace <dir>] [--scope web|academic|all] [--site <dom>] [--fetch] [--export <path>] [--json]
   omnia think <start|branch|falsify|redteam|conclude|list> [--workspace <dir>] [--json] ...
   omnia rag <query|sources|ingest|pin|export> [--workspace <dir>] [--tier local|global|both] [--json] ...
@@ -401,6 +407,18 @@ fn extract_positional_prompt(args: &[String]) -> Option<String> {
         "--cause",
         "--invariant",
         "--verify",
+        "--trace",
+        "--custom-dns",
+        "--custom-host",
+        "--timeout-ms",
+        "--monitor-samples",
+        "--interval-ms",
+        "--reviewer",
+        "--sha",
+        "--findings",
+        "--notes",
+        "--status",
+        "--reason",
     ];
     let mut i = 0;
     let mut positionals = Vec::new();
@@ -894,6 +912,73 @@ fn run_rewind_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NetCliFlags {
+    offline: bool,
+    run_dns: bool,
+    run_proxy: bool,
+    full_exhaustive: bool,
+    single_stream: bool,
+    radar: bool,
+    trace_host: Option<String>,
+    custom_dns: Option<String>,
+    custom_host: Option<String>,
+    monitor: bool,
+    monitor_samples: usize,
+    monitor_interval_ms: u64,
+    json_out: bool,
+    privacy_mask: bool,
+    timeout_ms: u64,
+}
+
+fn parse_net_cli_flags(args: &[String]) -> NetCliFlags {
+    let offline = args.iter().any(|a| a == "--offline");
+    let full_exhaustive = args.iter().any(|a| a == "--full" || a == "--exhaustive");
+    let all = full_exhaustive || args.iter().any(|a| a == "--all");
+    let custom_dns = arg_value(args, "--custom-dns");
+    let custom_host = arg_value(args, "--custom-host");
+    let run_dns = all || custom_dns.is_some() || args.iter().any(|a| a == "--dns");
+    let run_proxy = all || custom_host.is_some() || args.iter().any(|a| a == "--proxy");
+    let single_stream = args.iter().any(|a| a == "--single-stream");
+    let radar = full_exhaustive || args.iter().any(|a| a == "--radar");
+    let trace_host = arg_value(args, "--trace");
+    let monitor = args.iter().any(|a| a == "--monitor");
+    let monitor_samples = arg_value(args, "--monitor-samples")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(5)
+        .clamp(1, 60);
+    let monitor_interval_ms = arg_value(args, "--interval-ms")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(500)
+        .clamp(100, 5_000);
+    let json_out = args.iter().any(|a| a == "--json");
+    let privacy_mask = args.iter().any(|a| a == "--privacy-mask")
+        || env::var("OMNIA_PRIVACY_MASK")
+            .ok()
+            .is_some_and(|v| matches!(v.trim(), "1" | "true" | "on"));
+    let timeout_ms = arg_value(args, "--timeout-ms")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(2_500);
+    NetCliFlags {
+        offline,
+        run_dns,
+        run_proxy,
+        full_exhaustive,
+        single_stream,
+        radar,
+        trace_host,
+        custom_dns,
+        custom_host,
+        monitor,
+        monitor_samples,
+        monitor_interval_ms,
+        json_out,
+        privacy_mask,
+        timeout_ms,
+    }
+}
+
+#[allow(dead_code)]
 fn build_net_report_json(
     offline: bool,
     run_dns: bool,
@@ -901,31 +986,130 @@ fn build_net_report_json(
     timeout_ms: u64,
     privacy_mask: bool,
 ) -> serde_json::Value {
+    let flags = NetCliFlags {
+        offline,
+        run_dns,
+        run_proxy,
+        full_exhaustive: false,
+        single_stream: false,
+        radar: false,
+        trace_host: None,
+        custom_dns: None,
+        custom_host: None,
+        monitor: false,
+        monitor_samples: 0,
+        monitor_interval_ms: 500,
+        json_out: true,
+        privacy_mask,
+        timeout_ms,
+    };
+    build_net_report_json_with_flags(&flags)
+}
+
+fn build_net_report_json_with_flags(flags: &NetCliFlags) -> serde_json::Value {
     let identity = inspect_network_identity(&NetDiagOptions {
-        probe_public_ip: !offline,
-        timeout_ms: timeout_ms.clamp(500, 6_000),
+        probe_public_ip: !flags.offline,
+        timeout_ms: flags.timeout_ms.clamp(500, 6_000),
         force_refresh: true,
     });
     let dns = inspect_dns_and_benchmark(&DnsBenchOptions {
-        run_benchmark: !offline && run_dns,
+        run_benchmark: !flags.offline && flags.run_dns,
         public_ipv4_hint: identity.public_ipv4.clone(),
+        custom_dns_ip: flags.custom_dns.clone(),
         ..DnsBenchOptions::default()
     });
-    let targets = if !offline && run_proxy {
+    let custom_dns_result = if !flags.offline {
+        flags.custom_dns.as_deref().map(|ip| {
+            super_cmds::probe_custom_dns_resolver(ip, "example.com", 4, flags.timeout_ms)
+                .unwrap_or_else(|e| json!({ "ok": false, "server": ip, "error": e.to_string() }))
+        })
+    } else {
+        None
+    };
+
+    let mut targets = if !flags.offline && flags.run_proxy {
         default_upstream_targets()
     } else {
         Vec::new()
     };
-    let proxy_tls = inspect_proxy_tls_and_endpoints(&targets, !offline && run_proxy);
+    let mut custom_host_error: Option<String> = None;
+    if !flags.offline {
+        if let Some(ref host) = flags.custom_host {
+            match super_cmds::build_custom_endpoint_target(host) {
+                Ok(ep) => targets.push(ep),
+                Err(e) => custom_host_error = Some(e.to_string()),
+            }
+        }
+    }
+    let proxy_tls =
+        inspect_proxy_tls_and_endpoints(&targets, !flags.offline && !targets.is_empty());
+    let radar = if !flags.offline && flags.radar {
+        Some(super_cmds::run_global_radar_snapshot(flags.timeout_ms))
+    } else {
+        None
+    };
+    let traceroute = if !flags.offline {
+        flags.trace_host.as_deref().map(|host| {
+            super_cmds::run_bounded_traceroute_cli(host, 12)
+                .unwrap_or_else(|e| json!({ "ok": false, "target": host, "error": e.to_string() }))
+        })
+    } else {
+        None
+    };
+    let monitor = if flags.monitor && flags.monitor_samples > 0 {
+        let mon_target = flags
+            .custom_host
+            .as_deref()
+            .or(flags.trace_host.as_deref())
+            .unwrap_or("1.1.1.1");
+        let mut samples = Vec::with_capacity(flags.monitor_samples);
+        for i in 0..flags.monitor_samples {
+            samples.push(super_cmds::sample_passive_monitor_point(
+                mon_target,
+                flags.timeout_ms.min(1_500),
+            ));
+            if i + 1 < flags.monitor_samples {
+                std::thread::sleep(std::time::Duration::from_millis(flags.monitor_interval_ms));
+            }
+        }
+        Some(json!({
+            "target": mon_target,
+            "sampleCount": samples.len(),
+            "intervalMs": flags.monitor_interval_ms,
+            "samples": samples,
+        }))
+    } else {
+        None
+    };
+    let speedtest = if !flags.offline && flags.full_exhaustive {
+        let mut cfg = SpeedtestConfig::for_profile("exhaustive");
+        if flags.single_stream {
+            cfg.stream_mode = "single".to_string();
+            cfg.multi_streams = 1;
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let run_id = format!("cli-net-st-{}", &omnia_core::uuid_v4()[..8]);
+        Some(run_speedtest_streaming(&run_id, &cfg, cancel, |_| {}))
+    } else {
+        None
+    };
     let host = collect_host_system_snapshot();
     let payload = json!({
-        "privacyMasked": privacy_mask,
+        "privacyMasked": flags.privacy_mask,
+        "profile": if flags.full_exhaustive { "exhaustive" } else { "standard" },
+        "streamMode": if flags.single_stream { "single" } else { "multi" },
         "identity": identity,
         "dns": dns,
+        "customDns": custom_dns_result,
+        "customHostError": custom_host_error,
         "proxyTls": proxy_tls,
+        "radar": radar,
+        "traceroute": traceroute,
+        "monitor": monitor,
+        "speedtest": speedtest,
         "host": host,
     });
-    if privacy_mask {
+    if flags.privacy_mask {
         PrivacyMask::mask_json(&payload)
     } else {
         payload
@@ -935,25 +1119,13 @@ fn build_net_report_json(
 fn run_net_cmd(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Usage: omnia net [--dns] [--proxy] [--all] [--offline] [--json] [--privacy-mask] [--timeout-ms <ms>]"
+            "Usage: omnia net [--dns] [--proxy] [--all] [--full|--exhaustive] [--single-stream] [--radar] [--trace <host>] [--custom-dns <ip>] [--custom-host <host>] [--monitor] [--monitor-samples <n>] [--offline] [--json] [--privacy-mask] [--timeout-ms <ms>]"
         );
         return Ok(());
     }
-    let offline = args.iter().any(|a| a == "--offline");
-    let all = args.iter().any(|a| a == "--all");
-    let run_dns = all || args.iter().any(|a| a == "--dns");
-    let run_proxy = all || args.iter().any(|a| a == "--proxy");
-    let json_out = args.iter().any(|a| a == "--json");
-    let privacy_mask = args.iter().any(|a| a == "--privacy-mask")
-        || env::var("OMNIA_PRIVACY_MASK")
-            .ok()
-            .is_some_and(|v| matches!(v.trim(), "1" | "true" | "on"));
-    let timeout_ms = arg_value(args, "--timeout-ms")
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(2_500);
-
-    let report = build_net_report_json(offline, run_dns, run_proxy, timeout_ms, privacy_mask);
-    if json_out {
+    let flags = parse_net_cli_flags(args);
+    let report = build_net_report_json_with_flags(&flags);
+    if flags.json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
@@ -963,9 +1135,11 @@ fn run_net_cmd(args: &[String]) -> Result<()> {
     let host = &report["host"];
     let mut lines = Vec::new();
     lines.push(format!(
-        "Omnia Network Observatory [{}] (privacy_mask={})",
+        "Omnia Network Observatory [{}] (profile={} stream={} privacy_mask={})",
         id["provenance"].as_str().unwrap_or("UNAVAILABLE"),
-        privacy_mask
+        report["profile"].as_str().unwrap_or("standard"),
+        report["streamMode"].as_str().unwrap_or("multi"),
+        flags.privacy_mask
     ));
     lines.push(format!(
         "  Public IPv4 : {} | IPv6: {} | NAT: {} | VPN: {}",
@@ -981,6 +1155,19 @@ fn run_net_cmd(args: &[String]) -> Result<()> {
             geo["isp"].as_str().unwrap_or("-"),
             geo["city"].as_str().unwrap_or("-"),
             geo["country"].as_str().unwrap_or("-")
+        ));
+    }
+    if let Some(wifi) = id.get("wifi").filter(|w| !w.is_null()) {
+        lines.push(format!(
+            "  Wi-Fi RF    : {} ({}%{} | PHY {} | {} ch:{})",
+            wifi["ssid"].as_str().unwrap_or("-"),
+            wifi["signalPct"].as_u64().unwrap_or(0),
+            wifi["rssiDbm"]
+                .as_i64()
+                .map_or_else(String::new, |r| format!(" / {r} dBm")),
+            wifi["radioPhy"].as_str().unwrap_or("-"),
+            wifi["band"].as_str().unwrap_or("-"),
+            wifi["channel"].as_u64().map_or_else(|| "-".into(), |c| c.to_string()),
         ));
     }
     let adapters = id["adapters"].as_array().map_or(0, Vec::len);
@@ -1019,6 +1206,15 @@ fn run_net_cmd(args: &[String]) -> Result<()> {
             }
         }
     }
+    if let Some(cd) = report.get("customDns").filter(|v| !v.is_null()) {
+        lines.push(format!(
+            "    custom DNS   ({:<14}): status={} p50={}ms ip={}",
+            cd["server"].as_str().unwrap_or("-"),
+            cd["status"].as_str().unwrap_or("ERR"),
+            cd["p50Ms"].as_f64().map_or_else(|| "-".into(), |m| format!("{m:.1}")),
+            cd["resolvedIp"].as_str().unwrap_or("-")
+        ));
+    }
     if let Some(endpoints) = report["proxyTls"]["endpoints"].as_array() {
         for ep in endpoints {
             lines.push(format!(
@@ -1031,6 +1227,58 @@ fn run_net_cmd(args: &[String]) -> Result<()> {
                 ep["ttfbMs"].as_f64().unwrap_or(0.0)
             ));
         }
+    }
+    if let Some(radar) = report.get("radar").filter(|v| !v.is_null()) {
+        lines.push(format!(
+            "  Global Radar: fastest={} ({}ms)",
+            radar["fastestRegion"].as_str().unwrap_or("-"),
+            radar["fastestRttMs"]
+                .as_f64()
+                .map_or_else(|| "-".into(), |m| format!("{m:.1}"))
+        ));
+        if let Some(regions) = radar["regions"].as_array() {
+            for r in regions {
+                lines.push(format!(
+                    "    region {:<10} : {:<8} {}ms",
+                    r["region"].as_str().unwrap_or("-"),
+                    r["status"].as_str().unwrap_or("-"),
+                    r["rttMs"].as_f64().map_or_else(|| "-".into(), |m| format!("{m:.1}"))
+                ));
+            }
+        }
+    }
+    if let Some(tr) = report.get("traceroute").filter(|v| !v.is_null()) {
+        lines.push(format!(
+            "  Traceroute  : {} ({} hops)",
+            tr["target"].as_str().unwrap_or("-"),
+            tr["hopCount"].as_u64().unwrap_or(0)
+        ));
+        if let Some(hops) = tr["hops"].as_array() {
+            for h in hops.iter().take(12) {
+                lines.push(format!(
+                    "    hop {:>2}: {:<16} {}ms ({})",
+                    h["hop"].as_u64().unwrap_or(0),
+                    h["ip"].as_str().unwrap_or("*"),
+                    h["avgMs"].as_f64().map_or_else(|| "-".into(), |m| format!("{m:.1}")),
+                    h["status"].as_str().unwrap_or("-")
+                ));
+            }
+        }
+    }
+    if let Some(mon) = report.get("monitor").filter(|v| !v.is_null()) {
+        lines.push(format!(
+            "  Monitor     : {} sample(s) -> {}",
+            mon["sampleCount"].as_u64().unwrap_or(0),
+            mon["target"].as_str().unwrap_or("-")
+        ));
+    }
+    if let Some(st) = report.get("speedtest").filter(|v| !v.is_null()) {
+        lines.push(format!(
+            "  Speedtest   : DL {:.2} Mbps | UL {:.2} Mbps | Bufferbloat {}",
+            st["downloadMbps"].as_f64().unwrap_or(0.0),
+            st["uploadMbps"].as_f64().unwrap_or(0.0),
+            st["bufferbloatGrade"].as_str().unwrap_or("-")
+        ));
     }
     let ram_tot_gb =
         host["hardware"]["total_ram_bytes"].as_u64().unwrap_or(0) as f64 / 1_073_741_824.0;
@@ -1047,7 +1295,7 @@ fn run_net_cmd(args: &[String]) -> Result<()> {
         host["listeningPorts"].as_array().map_or(0, Vec::len)
     ));
     let out = lines.join("\n");
-    if privacy_mask {
+    if flags.privacy_mask {
         println!("{}", PrivacyMask::mask_text(&out));
     } else {
         println!("{out}");
@@ -1056,12 +1304,23 @@ fn run_net_cmd(args: &[String]) -> Result<()> {
 }
 
 fn parse_speedtest_config(args: &[String]) -> SpeedtestConfig {
-    let profile = if args.iter().any(|a| a == "--quick") {
+    let profile = if args.iter().any(|a| a == "--exhaustive" || a == "--full") {
+        "exhaustive"
+    } else if args.iter().any(|a| a == "--quick") {
         "quick"
     } else {
         "standard"
     };
     let mut cfg = SpeedtestConfig::for_profile(profile);
+    if profile == "exhaustive" && !cfg.profile.eq_ignore_ascii_case("exhaustive") {
+        cfg.profile = "exhaustive".to_string();
+        cfg.unloaded_samples = 24;
+        cfg.phase_duration_ms = 6_000;
+    }
+    if args.iter().any(|a| a == "--single-stream") {
+        cfg.stream_mode = "single".to_string();
+        cfg.multi_streams = 1;
+    }
     if let Some(url) = arg_value(args, "--url") {
         cfg.base_url_override = Some(url);
     }
@@ -1071,7 +1330,7 @@ fn parse_speedtest_config(args: &[String]) -> SpeedtestConfig {
 fn run_speedtest_cmd(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Usage: omnia speedtest [--quick | --standard] [--url <override>] [--json] [--privacy-mask]"
+            "Usage: omnia speedtest [--quick | --standard | --exhaustive | --full] [--single-stream] [--url <override>] [--json] [--privacy-mask]"
         );
         return Ok(());
     }
@@ -1666,7 +1925,7 @@ fn run_skills_cmd(args: &[String]) -> Result<()> {
 fn run_mcp_cmd(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Usage: omnia --mcp [--workspace <dir>]\n\nStarts the lightweight stdio JSON-RPC 2.0 MCP server exposing:\n  - omni_search_skills\n  - omni_load_skill (< 15.5 KB safe ceiling)\n  - graphify_query\n  - rag_search"
+            "Usage: omnia --mcp [--workspace <dir>]\n\nStarts the global-ready stdio JSON-RPC 2.0 MCP server (2025-11-25..2024-11-05, roots/list, per-call cwd) exposing 8 compact tools:\n  - omni_search_skills\n  - omni_load_skill (< 15.5 KB safe ceiling)\n  - graphify_query\n  - rag_search\n  - omnia_super_engine\n  - omnia_deep_think\n  - omnia_net_lab\n  - omnia_studio_bridge"
         );
         return Ok(());
     }
@@ -1882,6 +2141,315 @@ fn run_proceed_cmd(args: &[String]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn build_super_forward_args(
+    mode: &str,
+    workspace: &std::path::Path,
+    orig_args: &[String],
+    augmented_prompt: &str,
+) -> Vec<String> {
+    const PASSTHROUGH_VALUE_FLAGS: &[&str] = &[
+        "--model",
+        "--base-url",
+        "--api-base",
+        "--api-key",
+        "--wire-api",
+        "--effort",
+        "--reasoning-effort",
+        "--thinking",
+        "--output-format",
+        "--approval-mode",
+        "--max-turns",
+        "--timeout-secs",
+        "--timeout",
+        "--config-dir",
+        "--trajectory",
+        "--out",
+        "--research",
+        "--think",
+        "--proactive-lifecycle",
+    ];
+    let mut forwarded = vec!["--workspace".to_string(), workspace.display().to_string()];
+    for &flag in PASSTHROUGH_VALUE_FLAGS {
+        if let Some(v) = arg_value(orig_args, flag) {
+            forwarded.push(flag.to_string());
+            forwarded.push(v);
+        }
+    }
+    let has_output_format = arg_value(orig_args, "--output-format").is_some();
+    if !has_output_format && orig_args.iter().any(|a| a == "--json") {
+        forwarded.push("--output-format".to_string());
+        forwarded.push("json".to_string());
+    }
+    if orig_args.iter().any(|a| a == "--sandbox") {
+        forwarded.push("--sandbox".to_string());
+    } else if mode.eq_ignore_ascii_case("super_run")
+        && arg_value(orig_args, "--approval-mode").is_none()
+    {
+        forwarded.push("--auto-approve".to_string());
+    }
+    forwarded.push("--prompt".to_string());
+    forwarded.push(augmented_prompt.to_string());
+    forwarded
+}
+
+fn run_super_workflow_cmd(mode: &str, args: &[String]) -> ExitCode {
+    let is_run = mode.eq_ignore_ascii_case("super_run");
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        if is_run {
+            println!(
+                "Usage: omnia super-run [prompt...] [--cwd <dir>] [--model <id>] [--json] [--dry-run]\n\nActivates super_run (autoProceed=full, goalPersistence=true, ApprovalMode::Yolo, tokenBudget=null), appends additive steers, runs the prompt when supplied, and syncs global /learn lessons."
+            );
+        } else {
+            println!(
+                "Usage: omnia super-plan [prompt...] [--cwd <dir>] [--model <id>] [--json] [--dry-run]\n\nActivates super_plan (autoProceed=off, goalPersistence=false, tokenBudget=null), scaffolds ArtifactOs, prints Unified Capability Registry, and runs the prompt when supplied."
+            );
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let workspace = resolve_workspace_arg(args);
+    let json_out = args.iter().any(|a| a == "--json");
+    let dry_run = args.iter().any(|a| a == "--dry-run" || a == "--no-run");
+    let prompt_opt = if let Some(pf) = arg_value(args, "--prompt-file") {
+        match fs::read_to_string(&pf) {
+            Ok(s) if !s.trim().is_empty() => Some(s),
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!(
+                    "omnia {} error reading --prompt-file: {}",
+                    mode,
+                    redact_secrets(&e.to_string())
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        arg_value(args, "--prompt")
+            .or_else(|| extract_positional_prompt(args))
+            .filter(|s| !s.trim().is_empty())
+    };
+
+    let os_opt = open_cli_artifact_os(&workspace).ok();
+    let activation = if is_run {
+        super_cmds::activate_super_run(&workspace, prompt_opt.as_deref(), os_opt.as_ref())
+    } else {
+        super_cmds::activate_super_plan(&workspace, prompt_opt.as_deref(), os_opt.as_ref())
+    };
+
+    let (state, state_path, caps) = match activation {
+        Ok(triple) => triple,
+        Err(e) => {
+            eprintln!("omnia {} error: {}", mode, redact_secrets(&format!("{e:#}")));
+            return ExitCode::FAILURE;
+        }
+    };
+    let manifest = super_cmds::format_super_capability_manifest(&caps, mode);
+
+    if prompt_opt.is_none() || dry_run {
+        let payload = json!({
+            "ok": true,
+            "workflow": if is_run { "/super-run" } else { "/super-plan" },
+            "executedPrompt": false,
+            "statePath": state_path.display().to_string(),
+            "state": state,
+            "manifest": manifest,
+            "capabilities": caps,
+        });
+        if json_out {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into())
+            );
+        } else {
+            println!(
+                "Omnia {} Activated | mode={} | autoProceed={} | goalPersistence={} | tokenBudget=null",
+                if is_run { "Super-Run" } else { "Super-Plan" },
+                state.mode,
+                state.auto_proceed.as_str(),
+                state.goal_persistence
+            );
+            println!("  State File  : {}", state_path.display());
+            if let Some(ref g) = state.active_goal {
+                println!("  Active Goal : {g}");
+            }
+            println!("{manifest}");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let raw_prompt = prompt_opt.unwrap_or_default();
+    let augmented = format!("{raw_prompt}\n\n{manifest}");
+    let forwarded = build_super_forward_args(mode, &workspace, args, &augmented);
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("omnia runtime error: {}", redact_secrets(&format!("{e:#}")));
+            return ExitCode::FAILURE;
+        }
+    };
+    let run_res = rt.block_on(run_agent_cmd(&forwarded));
+    if is_run {
+        if let Some(ref aos) = os_opt {
+            let global_path = super_cmds::global_lessons_path();
+            let cross = super_cmds::discover_cross_host_lessons_path();
+            let _ =
+                super_cmds::sync_lessons_to_paths(aos, &workspace, &global_path, cross.as_deref());
+        }
+    }
+    match run_res {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("omnia {} error: {}", mode, redact_secrets(&format!("{e:#}")));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_super_dispatch_cmd(args: &[String]) -> ExitCode {
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia super <plan|run|capabilities|status|audit|complete> [--cwd <dir>] [--json]"
+        );
+        return ExitCode::SUCCESS;
+    }
+    let sub = args[0].as_str();
+    let rest = &args[1..];
+    match sub {
+        "plan" => run_super_workflow_cmd("super_plan", rest),
+        "run" => run_super_workflow_cmd("super_run", rest),
+        "capabilities" | "caps" => {
+            let workspace = resolve_workspace_arg(rest);
+            let json_out = rest.iter().any(|a| a == "--json");
+            let caps = super_cmds::build_cli_unified_capabilities(&workspace);
+            if json_out {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&caps).unwrap_or_else(|_| "{}".into())
+                );
+            } else {
+                println!(
+                    "Omnia Unified Capabilities v{} ({} crates)",
+                    caps["version"].as_str().unwrap_or("-"),
+                    caps["crates"]["count"].as_u64().unwrap_or(18)
+                );
+                println!(
+                    "  Skills      : {} active / {} Cold Vault (startup ~{} tok)",
+                    caps["skills"]["activeCount"].as_u64().unwrap_or(0),
+                    caps["skills"]["coldVaultCount"].as_u64().unwrap_or(0),
+                    caps["skills"]["startupTokensEst"].as_u64().unwrap_or(0)
+                );
+                println!(
+                    "  MCP Tools   : {} | Plugins: {} | Local MCP configs: {} | agy-fast: {}",
+                    caps["mcpTools"].as_array().map_or(0, Vec::len),
+                    caps["plugins"]["count"].as_u64().unwrap_or(0),
+                    caps["mcpServers"].as_array().map_or(0, Vec::len),
+                    caps["agyFastBridge"]["detected"].as_bool().unwrap_or(false)
+                );
+                println!(
+                    "  Workflows   : /super-plan, /super-run | Approval: yolo | Token Budget: null"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        "status" => {
+            let workspace = resolve_workspace_arg(rest);
+            let json_out = rest.iter().any(|a| a == "--json");
+            let state = super_cmds::read_engine_state(&workspace);
+            let path = super_cmds::engine_state_path(&workspace);
+            let payload = json!({
+                "ok": true,
+                "path": path.display().to_string(),
+                "exists": path.is_file(),
+                "state": state,
+            });
+            if json_out {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into())
+                );
+            } else {
+                println!(
+                    "Omnia Super Status | mode={} | autoProceed={} | goalPersistence={} | auditStreak={}/3 | tokenBudget=null",
+                    state.mode,
+                    state.auto_proceed.as_str(),
+                    state.goal_persistence,
+                    state.audit_streak
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        "audit" => {
+            let workspace = resolve_workspace_arg(rest);
+            let reviewer = arg_value(rest, "--reviewer").unwrap_or_else(|| "cli-verifier".into());
+            let sha = arg_value(rest, "--sha")
+                .or_else(|| extract_positional_prompt(rest))
+                .unwrap_or_default();
+            let findings = arg_value(rest, "--findings")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            let notes = arg_value(rest, "--notes").unwrap_or_default();
+            match super_cmds::record_super_audit(&workspace, &reviewer, &sha, findings, &notes) {
+                Ok(rep) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&rep).unwrap_or_else(|_| "{}".into())
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("omnia super audit error: {}", redact_secrets(&format!("{e:#}")));
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "complete" => {
+            let workspace = resolve_workspace_arg(rest);
+            let status = arg_value(rest, "--status").unwrap_or_else(|| "completed".into());
+            let reason = arg_value(rest, "--reason")
+                .or_else(|| extract_positional_prompt(rest))
+                .unwrap_or_default();
+            let force = rest.iter().any(|a| a == "--force");
+            let os_opt = open_cli_artifact_os(&workspace).ok();
+            match super_cmds::complete_super_workflow(
+                &workspace,
+                &status,
+                &reason,
+                force,
+                os_opt.as_ref(),
+            ) {
+                Ok(rep) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&rep).unwrap_or_else(|_| "{}".into())
+                    );
+                    if rep["ok"].as_bool().unwrap_or(false) {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "omnia super complete error: {}",
+                        redact_secrets(&format!("{e:#}"))
+                    );
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        other => {
+            eprintln!(
+                "Unknown omnia super subcommand `{other}` (expected: plan|run|capabilities|status|audit|complete)."
+            );
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn parse_cli_arena_models(raw: Option<&str>) -> Result<Vec<String>> {
@@ -2455,5 +3023,62 @@ mod tests {
         assert!(!sy_trusted);
         assert_eq!(sy_rules.len(), PermissionsEngine::strict_safety_rules().len());
         assert!(sy_on);
+    }
+
+    #[test]
+    fn cli_steer27b_28b_super_and_network_flags_parse_cleanly() {
+        let net_args: Vec<String> = vec![
+            "--full",
+            "--single-stream",
+            "--radar",
+            "--trace",
+            "1.1.1.1",
+            "--custom-dns",
+            "9.9.9.9",
+            "--custom-host",
+            "example.com",
+            "--monitor",
+            "--monitor-samples",
+            "3",
+            "--json",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let nf = parse_net_cli_flags(&net_args);
+        assert!(nf.full_exhaustive);
+        assert!(nf.single_stream);
+        assert!(nf.radar);
+        assert_eq!(nf.trace_host.as_deref(), Some("1.1.1.1"));
+        assert_eq!(nf.custom_dns.as_deref(), Some("9.9.9.9"));
+        assert_eq!(nf.custom_host.as_deref(), Some("example.com"));
+        assert!(nf.monitor);
+        assert_eq!(nf.monitor_samples, 3);
+        assert!(nf.json_out);
+
+        let st_args: Vec<String> = vec!["--exhaustive".into(), "--single-stream".into()];
+        let st_cfg = parse_speedtest_config(&st_args);
+        assert_eq!(st_cfg.profile, "exhaustive");
+        assert_eq!(st_cfg.multi_streams, 1);
+
+        let sp_args: Vec<String> = vec![
+            "--cwd".into(),
+            r"D:\tmp\proj".into(),
+            "--json".into(),
+            "Design Steer 27B".into(),
+        ];
+        assert_eq!(
+            extract_positional_prompt(&sp_args).as_deref(),
+            Some("Design Steer 27B")
+        );
+        let fwd = build_super_forward_args(
+            "super_run",
+            std::path::Path::new(r"D:\tmp\proj"),
+            &sp_args,
+            "Design Steer 27B\n\n[MANIFEST]",
+        );
+        assert!(fwd.contains(&"--auto-approve".to_string()));
+        assert!(fwd.contains(&"json".to_string()));
+        assert!(fwd.iter().any(|s| s.contains("[MANIFEST]")));
     }
 }

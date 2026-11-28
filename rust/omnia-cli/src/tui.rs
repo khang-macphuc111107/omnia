@@ -43,7 +43,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table, Tabs, Wrap,
+};
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -348,6 +350,91 @@ impl DrawerTab {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum NetworkSubtab {
+    #[default]
+    IdentityWifi,
+    DnsLab,
+    ProxyTls,
+    SpeedRadarMonitor,
+}
+
+impl NetworkSubtab {
+    const fn next(self) -> Self {
+        match self {
+            Self::IdentityWifi => Self::DnsLab,
+            Self::DnsLab => Self::ProxyTls,
+            Self::ProxyTls => Self::SpeedRadarMonitor,
+            Self::SpeedRadarMonitor => Self::IdentityWifi,
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::IdentityWifi => 0,
+            Self::DnsLab => 1,
+            Self::ProxyTls => 2,
+            Self::SpeedRadarMonitor => 3,
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "id" | "identity" | "wifi" | "rf" | "nic" => Some(Self::IdentityWifi),
+            "2" | "dns" | "dnslab" => Some(Self::DnsLab),
+            "3" | "proxy" | "tls" | "waterfall" => Some(Self::ProxyTls),
+            "4" | "speed" | "speedtest" | "radar" | "trace" | "monitor" => {
+                Some(Self::SpeedRadarMonitor)
+            }
+            _ => None,
+        }
+    }
+
+    const fn titles() -> [&'static str; 4] {
+        [
+            "[1] ID & Wi-Fi",
+            "[2] DNS Lab",
+            "[3] Proxy & TLS",
+            "[4] Speed/Radar",
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SpeedtestProfileChoice {
+    #[default]
+    Quick,
+    Standard,
+    Exhaustive,
+}
+
+impl SpeedtestProfileChoice {
+    const fn next(self) -> Self {
+        match self {
+            Self::Quick => Self::Standard,
+            Self::Standard => Self::Exhaustive,
+            Self::Exhaustive => Self::Quick,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Standard => "standard",
+            Self::Exhaustive => "exhaustive",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "quick" | "fast" => Some(Self::Quick),
+            "standard" | "std" => Some(Self::Standard),
+            "exhaustive" | "full" | "deep" => Some(Self::Exhaustive),
+            _ => None,
+        }
+    }
+}
+
 pub struct TuiLaunchOptions {
     pub workspace: PathBuf,
     pub model: Option<String>,
@@ -436,13 +523,13 @@ const SLASH_DEFS: &[SlashDef] = &[
     },
     SlashDef {
         cmd: "/net",
-        usage: "/net [dns|proxy|offline]",
-        desc: "Inspect IP/NICs/VPN/NAT, DNS benchmark & proxy/TLS waterfall",
+        usage: "/net [tab 1..4|dns|proxy|radar|trace <h>|monitor|custom-dns <ip>|custom-host <h>|offline]",
+        desc: "Interactive 4-subtab Network Cockpit (ID/Wi-Fi, DNS Lab, Proxy/TLS, Radar/Trace/Monitor)",
     },
     SlashDef {
         cmd: "/speedtest",
-        usage: "/speedtest [quick|standard|cancel]",
-        desc: "Run live cancellable speedtest & bufferbloat A+..F probe",
+        usage: "/speedtest [quick|standard|exhaustive] [single|multi] [cancel]",
+        desc: "Run live cancellable speedtest & bufferbloat A+..F probe (multi or single stream)",
     },
     SlashDef {
         cmd: "/router",
@@ -506,17 +593,17 @@ const SLASH_DEFS: &[SlashDef] = &[
     },
     SlashDef {
         cmd: "/super-plan",
-        usage: "/super-plan [goal]",
-        desc: "Activate super-plan workflow in .agents/super/engine_state.json",
+        usage: "/super-plan [prompt]",
+        desc: "Activate super-plan (autoProceed=off, ArtifactOs, capabilities) & dispatch prompt",
     },
     SlashDef {
         cmd: "/super-run",
-        usage: "/super-run [goal]",
-        desc: "Activate super-run workflow in .agents/super/engine_state.json",
+        usage: "/super-run [prompt]",
+        desc: "Activate super-run (autoProceed=full, goalPersistence=true, YOLO) & dispatch prompt",
     },
     SlashDef {
         cmd: "/auto-proceed",
-        usage: "/auto-proceed [status|on|off|recommended-only|full]",
+        usage: "/auto-proceed [status|on|off|standard|recommended-only|full]",
         desc: "View or toggle auto-proceed mode in .agents/super/engine_state.json",
     },
     SlashDef {
@@ -746,6 +833,10 @@ enum UiAsyncEvent {
     },
     SpeedtestProgress(SpeedtestProgressEvent),
     SpeedtestFinished(Box<SpeedtestResult>),
+    NetworkRadarCompleted(Value),
+    NetworkTracerouteCompleted(Value),
+    NetworkMonitorSample(Value),
+    NetworkCustomDnsCompleted(Value),
     ResearchCompleted {
         query: String,
         transcript_lines: Vec<String>,
@@ -789,6 +880,8 @@ struct TuiAppState {
     approval_mode: ApprovalMode,
     sandbox: bool,
     auto_proceed: crate::super_cmds::AutoProceedMode,
+    super_mode: String,
+    goal_persistence: bool,
     saved: CliSavedConfig,
     max_turns: u32,
     timeout_secs: u64,
@@ -826,6 +919,24 @@ struct TuiAppState {
     privacy_mask: bool,
     drawer_tab: DrawerTab,
     drawer_lines: Vec<String>,
+    net_subtab: NetworkSubtab,
+    net_speedtest_profile: SpeedtestProfileChoice,
+    net_single_stream: bool,
+    net_monitor_active: bool,
+    net_monitor_cancel: Arc<AtomicBool>,
+    net_monitor_target: String,
+    net_identity: Option<Value>,
+    net_dns: Option<Value>,
+    net_custom_dns: Option<Value>,
+    net_proxy_tls: Option<Value>,
+    net_host: Option<Value>,
+    net_speedtest_result: Option<Value>,
+    net_speedtest_waveform: Vec<u64>,
+    net_speedtest_pct: u16,
+    net_speedtest_phase: String,
+    net_radar: Option<Value>,
+    net_traceroute: Option<Value>,
+    net_monitor_rtts: Vec<u64>,
     speedtest_running: bool,
     speedtest_cancel: Arc<AtomicBool>,
     last_speedtest_progress: Option<String>,
@@ -1112,6 +1223,29 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
         Span::styled("| ", Style::default().fg(border_col)),
         key_badge,
     ];
+    if state.super_mode == "super_plan" {
+        header_spans.push(Span::styled(" | ", Style::default().fg(border_col)));
+        header_spans.push(Span::styled(
+            " SUPER:PLAN ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if state.super_mode == "super_run" {
+        header_spans.push(Span::styled(" | ", Style::default().fg(border_col)));
+        header_spans.push(Span::styled(
+            if state.goal_persistence {
+                " SUPER:RUN(GOAL) "
+            } else {
+                " SUPER:RUN "
+            },
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if state.privacy_mask {
         header_spans.push(Span::styled(" | ", Style::default().fg(border_col)));
         header_spans.push(Span::styled(
@@ -1204,34 +1338,38 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
     frame.render_widget(transcript_widget, transcript_area);
 
     if let Some(d_area) = drawer_area_opt {
-        let drawer_fg = state.theme.drawer_fg();
-        let d_lines: Vec<Line> = build_drawer_lines(state)
-            .into_iter()
-            .map(|l| {
-                let masked = state.mask_if_enabled(&l);
-                let style = if masked.starts_with("=== ") || masked.starts_with("--- ") {
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
-                } else if masked.contains("[BLOCKED_BY_CHALLENGE]")
-                    || masked.contains("[AUTH_REQUIRED]")
-                    || masked.contains("[ERR]")
-                    || masked.contains("strike_")
-                {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(drawer_fg)
-                };
-                Line::from(Span::styled(masked, style))
-            })
-            .collect();
-        let drawer_widget = Paragraph::new(d_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(accent))
-                    .title(format!(" Cockpit: {} [F4 next · Esc close] ", state.drawer_tab.title())),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(drawer_widget, d_area);
+        if state.drawer_tab == DrawerTab::Network {
+            render_network_cockpit_drawer(frame, d_area, state);
+        } else {
+            let drawer_fg = state.theme.drawer_fg();
+            let d_lines: Vec<Line> = build_drawer_lines(state)
+                .into_iter()
+                .map(|l| {
+                    let masked = state.mask_if_enabled(&l);
+                    let style = if masked.starts_with("=== ") || masked.starts_with("--- ") {
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                    } else if masked.contains("[BLOCKED_BY_CHALLENGE]")
+                        || masked.contains("[AUTH_REQUIRED]")
+                        || masked.contains("[ERR]")
+                        || masked.contains("strike_")
+                    {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(drawer_fg)
+                    };
+                    Line::from(Span::styled(masked, style))
+                })
+                .collect();
+            let drawer_widget = Paragraph::new(d_lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(accent))
+                        .title(format!(" Cockpit: {} [F4 next · Esc close] ", state.drawer_tab.title())),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(drawer_widget, d_area);
+        }
     }
 
     // 3. Band Composer with Observe-Only Smart Prompt Preflight
@@ -1437,6 +1575,599 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
                 ),
             modal,
         );
+    }
+}
+
+fn render_network_cockpit_drawer(frame: &mut ratatui::Frame, area: Rect, state: &TuiAppState) {
+    let accent = state.theme.accent();
+    let border_col = state.theme.border();
+    let fg = state.theme.drawer_fg();
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(" Network Cockpit [Alt+1-4/F6 tab · F7 prof · F8 str · F9 go · F10 mon] ");
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    if inner.height < 5 || inner.width < 20 {
+        return;
+    }
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(4)])
+        .split(inner);
+
+    let tab_titles: Vec<Line> = NetworkSubtab::titles()
+        .iter()
+        .map(|t| Line::from(*t))
+        .collect();
+    let tabs = Tabs::new(tab_titles)
+        .select(state.net_subtab.index())
+        .style(Style::default().fg(fg))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .divider(" ");
+    frame.render_widget(tabs, layout[0]);
+
+    let body = layout[1];
+    match state.net_subtab {
+        NetworkSubtab::IdentityWifi => {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(5),
+                    Constraint::Length(3),
+                    Constraint::Min(4),
+                ])
+                .split(body);
+
+            let summary_lines: Vec<Line> = if let Some(ref id) = state.net_identity {
+                let pub4 = state.mask_if_enabled(id["publicIpv4"].as_str().unwrap_or("unavailable"));
+                let pub6 = state.mask_if_enabled(id["publicIpv6"].as_str().unwrap_or("unavailable"));
+                let geo_str = id.get("geo").filter(|g| !g.is_null()).map_or_else(
+                    || "-".to_string(),
+                    |g| {
+                        state.mask_if_enabled(&format!(
+                            "{} {} ({}, {})",
+                            g["asn"].as_str().unwrap_or("-"),
+                            g["isp"].as_str().unwrap_or("-"),
+                            g["city"].as_str().unwrap_or("-"),
+                            g["country"].as_str().unwrap_or("-")
+                        ))
+                    },
+                );
+                let split_t = id["splitTunnelMode"].as_str().unwrap_or("-");
+                let cgnat = id["localIpClass"].as_str().unwrap_or("-");
+                let fp = id["fingerprintSha256"]
+                    .as_str()
+                    .map_or("-", |s| &s[..s.len().min(14)]);
+                let host_note = state.net_host.as_ref().map_or_else(
+                    || "F9 refresh (/net)".to_string(),
+                    |h| {
+                        format!(
+                            "CPU {:.0}% | RSS {:.0}MiB | {} ports",
+                            h["cpuLoadPct"].as_f64().unwrap_or(0.0),
+                            h["totalOmniaRssBytes"].as_u64().unwrap_or(0) as f64 / (1024.0 * 1024.0),
+                            h["listeningPorts"].as_array().map_or(0, Vec::len)
+                        )
+                    },
+                );
+                vec![
+                    Line::from(format!(
+                        "Prov: {} | IPv4: {} | IPv6: {}",
+                        id["provenance"].as_str().unwrap_or("UNAVAILABLE"),
+                        pub4,
+                        pub6
+                    )),
+                    Line::from(format!("Geo : {geo_str}")),
+                    Line::from(format!(
+                        "NAT : {} | VPN: {} | Split: {} | Class: {}",
+                        id["natClassification"].as_str().unwrap_or("unknown"),
+                        id["vpnActive"].as_bool().unwrap_or(false),
+                        split_t,
+                        cgnat
+                    )),
+                    Line::from(format!("FP  : {fp} | {host_note}")),
+                ]
+            } else {
+                vec![
+                    Line::from("No live identity snapshot yet."),
+                    Line::from("Press F9 or run `/net` to probe IPv4/IPv6, Wi-Fi RF, VPN & NICs."),
+                ]
+            };
+            frame.render_widget(
+                Paragraph::new(summary_lines)
+                    .style(Style::default().fg(fg))
+                    .wrap(Wrap { trim: true }),
+                parts[0],
+            );
+
+            let (wifi_pct, wifi_label) = state
+                .net_identity
+                .as_ref()
+                .and_then(|id| id.get("wifi"))
+                .filter(|w| !w.is_null())
+                .map_or_else(
+                    || (0u16, "Wi-Fi RF: none / Ethernet".to_string()),
+                    |w| {
+                        let pct = w["signalPct"].as_u64().unwrap_or(0).min(100) as u16;
+                        let ssid = state.mask_if_enabled(w["ssid"].as_str().unwrap_or("-"));
+                        let rssi = w["rssiDbm"]
+                            .as_i64()
+                            .map_or_else(String::new, |r| format!(" {r}dBm"));
+                        let phy = w["radioPhy"].as_str().unwrap_or("");
+                        let band = w["band"].as_str().unwrap_or("");
+                        (
+                            pct,
+                            format!(
+                                "Wi-Fi {ssid} {pct}%{rssi} {phy} {band} RX:{} TX:{} Mbps",
+                                w["rxMbps"].as_u64().unwrap_or(0),
+                                w["txMbps"].as_u64().unwrap_or(0)
+                            ),
+                        )
+                    },
+                );
+            let wifi_gauge = Gauge::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(border_col))
+                        .title(" Wi-Fi RF Signal "),
+                )
+                .gauge_style(Style::default().fg(accent))
+                .percent(wifi_pct)
+                .label(wifi_label);
+            frame.render_widget(wifi_gauge, parts[1]);
+
+            let rows: Vec<Row> = state
+                .net_identity
+                .as_ref()
+                .and_then(|id| id["adapters"].as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .take(8)
+                        .map(|a| {
+                            let name = state.mask_if_enabled(a["name"].as_str().unwrap_or("-"));
+                            let st = a["status"].as_str().unwrap_or("-");
+                            let ip4 = a["ipv4Cidrs"]
+                                .as_array()
+                                .and_then(|v| v.first())
+                                .and_then(Value::as_str)
+                                .map(|s| state.mask_if_enabled(s))
+                                .unwrap_or_else(|| "-".into());
+                            let speed = a["linkSpeedMbps"]
+                                .as_u64()
+                                .map_or_else(|| "-".into(), |m| format!("{m}M"));
+                            Row::new(vec![
+                                truncate_chars(&name, 14),
+                                st.to_string(),
+                                truncate_chars(&ip4, 16),
+                                speed,
+                            ])
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Percentage(32),
+                    Constraint::Percentage(16),
+                    Constraint::Percentage(36),
+                    Constraint::Percentage(16),
+                ],
+            )
+            .header(
+                Row::new(vec!["NIC", "State", "IPv4", "Link"])
+                    .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            )
+            .style(Style::default().fg(fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_col))
+                    .title(" Adapters "),
+            );
+            frame.render_widget(table, parts[2]);
+        }
+        NetworkSubtab::DnsLab => {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(4),
+                    Constraint::Min(5),
+                    Constraint::Length(4),
+                ])
+                .split(body);
+
+            let header_lines: Vec<Line> = if let Some(ref dns) = state.net_dns {
+                let sys: Vec<String> = dns["systemDnsServers"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(|s| state.mask_if_enabled(s))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let hijack = dns["nxdomainHijack"]["hijacked"].as_bool().unwrap_or(false);
+                vec![
+                    Line::from(format!(
+                        "Sys DNS : {}",
+                        if sys.is_empty() { "none".into() } else { sys.join(", ") }
+                    )),
+                    Line::from(format!(
+                        "Fastest : {} | Leak: {} | Hijack: {}",
+                        dns["fastestResolver"].as_str().unwrap_or("-"),
+                        dns["leakStatus"].as_str().unwrap_or("unverified"),
+                        if hijack { "SUSPECTED" } else { "clean" }
+                    )),
+                    Line::from(format!(
+                        "Hosts   : {} overrides | `/net custom-dns <ip>` to bench",
+                        dns["hostsOverrideCount"].as_u64().unwrap_or(0)
+                    )),
+                ]
+            } else {
+                vec![
+                    Line::from("No DNS benchmark snapshot yet."),
+                    Line::from("Press F9 or run `/net dns` or `/net custom-dns 9.9.9.9`."),
+                ]
+            };
+            frame.render_widget(
+                Paragraph::new(header_lines)
+                    .style(Style::default().fg(fg))
+                    .wrap(Wrap { trim: true }),
+                parts[0],
+            );
+
+            let mut rows: Vec<Row> = Vec::new();
+            let mut spark_vals: Vec<u64> = Vec::new();
+            if let Some(resolvers) = state
+                .net_dns
+                .as_ref()
+                .and_then(|d| d["resolvers"].as_array())
+            {
+                for r in resolvers.iter().take(8) {
+                    let p50 = r["p50Ms"].as_f64();
+                    if let Some(ms) = p50 {
+                        spark_vals.push((ms * 10.0).round().max(1.0) as u64);
+                    }
+                    rows.push(Row::new(vec![
+                        truncate_chars(r["name"].as_str().unwrap_or("-"), 11),
+                        state.mask_if_enabled(r["server"].as_str().unwrap_or("-")),
+                        p50.map_or_else(|| "-".into(), |m| format!("{m:.1}")),
+                        r["p95Ms"]
+                            .as_f64()
+                            .map_or_else(|| "-".into(), |m| format!("{m:.1}")),
+                        format!("{:.0}%", r["failureRatePct"].as_f64().unwrap_or(0.0)),
+                    ]));
+                }
+            }
+            if let Some(ref cd) = state.net_custom_dns {
+                let p50 = cd["p50Ms"].as_f64();
+                if let Some(ms) = p50 {
+                    spark_vals.push((ms * 10.0).round().max(1.0) as u64);
+                }
+                rows.push(Row::new(vec![
+                    "Custom".into(),
+                    state.mask_if_enabled(cd["server"].as_str().unwrap_or("-")),
+                    p50.map_or_else(|| "-".into(), |m| format!("{m:.1}")),
+                    cd["p95Ms"]
+                        .as_f64()
+                        .map_or_else(|| "-".into(), |m| format!("{m:.1}")),
+                    format!("{:.0}%", cd["failureRatePct"].as_f64().unwrap_or(0.0)),
+                ]));
+            }
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Percentage(24),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(16),
+                ],
+            )
+            .header(
+                Row::new(vec!["Resolver", "Server", "p50ms", "p95ms", "Loss"])
+                    .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            )
+            .style(Style::default().fg(fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_col))
+                    .title(" DNS Benchmark "),
+            );
+            frame.render_widget(table, parts[1]);
+
+            let spark = Sparkline::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(border_col))
+                        .title(" Resolver p50 Profile (0.1ms units) "),
+                )
+                .data(&spark_vals)
+                .style(Style::default().fg(accent));
+            frame.render_widget(spark, parts[2]);
+        }
+        NetworkSubtab::ProxyTls => {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(4), Constraint::Min(6)])
+                .split(body);
+
+            let header_lines: Vec<Line> = if let Some(ref pt) = state.net_proxy_tls {
+                let env_cnt = pt["envProxies"].as_array().map_or(0, Vec::len);
+                let local_cnt = pt["localProxyPorts"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter(|p| p["listening"].as_bool().unwrap_or(false))
+                            .count()
+                    })
+                    .unwrap_or(0);
+                let pac = pt["systemProxy"]["pacUrl"]
+                    .as_str()
+                    .map(|s| state.mask_if_enabled(s))
+                    .unwrap_or_else(|| "none".into());
+                let mitm = pt["mitmWarning"].as_str().unwrap_or("none");
+                vec![
+                    Line::from(format!(
+                        "Env Proxies: {env_cnt} | Local Listeners: {local_cnt} | PAC: {}",
+                        truncate_chars(&pac, 22)
+                    )),
+                    Line::from(format!("MITM Alert : {}", truncate_chars(mitm, 40))),
+                    Line::from("Run `/net custom-host <host>` to probe custom TLS waterfall."),
+                ]
+            } else {
+                vec![
+                    Line::from("No Proxy/TLS waterfall snapshot yet."),
+                    Line::from("Press F9 or run `/net proxy` to inspect endpoints & TLS chains."),
+                ]
+            };
+            frame.render_widget(
+                Paragraph::new(header_lines)
+                    .style(Style::default().fg(fg))
+                    .wrap(Wrap { trim: true }),
+                parts[0],
+            );
+
+            let rows: Vec<Row> = state
+                .net_proxy_tls
+                .as_ref()
+                .and_then(|pt| pt["endpoints"].as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .take(10)
+                        .map(|ep| {
+                            let label = state.mask_if_enabled(ep["label"].as_str().unwrap_or("-"));
+                            let code = ep["httpStatus"]
+                                .as_u64()
+                                .map_or_else(|| "-".into(), |c| c.to_string());
+                            let dns_ms = ep["dnsMs"]
+                                .as_f64()
+                                .map_or_else(|| "-".into(), |m| format!("{m:.0}"));
+                            let tls_ms = ep["tlsMs"]
+                                .as_f64()
+                                .map_or_else(|| "-".into(), |m| format!("{m:.0}"));
+                            let ttfb_ms = ep["ttfbMs"]
+                                .as_f64()
+                                .map_or_else(|| "-".into(), |m| format!("{m:.0}"));
+                            let tls_v = if ep["mitmCaSuspected"].as_bool().unwrap_or(false) {
+                                "MITM!".to_string()
+                            } else {
+                                ep["tlsVersion"].as_str().unwrap_or("-").to_string()
+                            };
+                            Row::new(vec![
+                                truncate_chars(&label, 13),
+                                code,
+                                dns_ms,
+                                tls_ms,
+                                ttfb_ms,
+                                truncate_chars(&tls_v, 8),
+                            ])
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(12),
+                    Constraint::Percentage(12),
+                    Constraint::Percentage(12),
+                    Constraint::Percentage(14),
+                    Constraint::Percentage(20),
+                ],
+            )
+            .header(
+                Row::new(vec!["Endpoint", "HTTP", "DNS", "TLS", "TTFB", "Proto"])
+                    .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            )
+            .style(Style::default().fg(fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_col))
+                    .title(" Upstream Waterfall (ms) "),
+            );
+            frame.render_widget(table, parts[1]);
+        }
+        NetworkSubtab::SpeedRadarMonitor => {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2),
+                    Constraint::Length(3),
+                    Constraint::Length(4),
+                    Constraint::Min(5),
+                ])
+                .split(body);
+
+            let stream_lbl = if state.net_single_stream {
+                "Single 1x"
+            } else {
+                "Multi 4x"
+            };
+            let mon_lbl = if state.net_monitor_active { "ON" } else { "OFF" };
+            let controls = Paragraph::new(vec![
+                Line::from(format!(
+                    "Prof[F7]:{} | Str[F8]:{} | Go[F9] | Mon[F10]:{}",
+                    state.net_speedtest_profile.as_str(),
+                    stream_lbl,
+                    mon_lbl
+                )),
+                Line::from("Cmds: /speedtest | /net radar | /net trace <h> | /net monitor"),
+            ])
+            .style(Style::default().fg(accent));
+            frame.render_widget(controls, parts[0]);
+
+            let (gauge_pct, gauge_lbl) = if state.speedtest_running {
+                (
+                    state.net_speedtest_pct.min(100),
+                    format!(
+                        "{}% {} {}",
+                        state.net_speedtest_pct,
+                        state.net_speedtest_phase,
+                        state.last_speedtest_progress.as_deref().unwrap_or("")
+                    ),
+                )
+            } else if let Some(ref st) = state.net_speedtest_result {
+                let dl = st["downloadMbps"].as_f64().unwrap_or(0.0);
+                let ul = st["uploadMbps"].as_f64().unwrap_or(0.0);
+                let grade = st["bufferbloatGrade"].as_str().unwrap_or("-");
+                let rtt = st["unloaded"]["p50Ms"].as_f64().unwrap_or(0.0);
+                let pct = ((dl / 5.0).round() as u16).clamp(1, 100);
+                (
+                    pct,
+                    format!("DL {dl:.1} | UL {ul:.1} Mbps | RTT {rtt:.1}ms | Bloat {grade}"),
+                )
+            } else {
+                (0, "Press F9 or run `/speedtest` (Quick/Standard/Exhaustive)".into())
+            };
+            let st_gauge = Gauge::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(border_col))
+                        .title(" Speedtest & Bufferbloat "),
+                )
+                .gauge_style(Style::default().fg(accent))
+                .percent(gauge_pct)
+                .label(gauge_lbl);
+            frame.render_widget(st_gauge, parts[1]);
+
+            let (spark_title, spark_data): (&str, &[u64]) = if state.net_monitor_active
+                || (state.net_speedtest_waveform.is_empty() && !state.net_monitor_rtts.is_empty())
+            {
+                (
+                    " Passive Monitor RTT Sparkline (0.1ms · 120-ring) ",
+                    &state.net_monitor_rtts,
+                )
+            } else {
+                (
+                    " Speedtest Throughput Waveform (0.1 Mbps) ",
+                    &state.net_speedtest_waveform,
+                )
+            };
+            let spark = Sparkline::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(border_col))
+                        .title(spark_title),
+                )
+                .data(spark_data)
+                .style(Style::default().fg(accent));
+            frame.render_widget(spark, parts[2]);
+
+            let (tbl_title, rows): (String, Vec<Row>) = if let Some(ref tr) = state.net_traceroute {
+                let tgt = state.mask_if_enabled(tr["target"].as_str().unwrap_or("-"));
+                let hop_rows = tr["hops"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .take(12)
+                            .map(|h| {
+                                Row::new(vec![
+                                    format!("#{}", h["hop"].as_u64().unwrap_or(0)),
+                                    state.mask_if_enabled(h["ip"].as_str().unwrap_or("*")),
+                                    h["avgMs"]
+                                        .as_f64()
+                                        .map_or_else(|| "-".into(), |m| format!("{m:.1}ms")),
+                                    h["status"].as_str().unwrap_or("-").to_string(),
+                                ])
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (format!(" Traceroute: {tgt} "), hop_rows)
+            } else if let Some(ref radar) = state.net_radar {
+                let reg_rows = radar["regions"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|r| {
+                                Row::new(vec![
+                                    r["region"].as_str().unwrap_or("-").to_string(),
+                                    state.mask_if_enabled(
+                                        r["resolvedIp"]
+                                            .as_str()
+                                            .or_else(|| r["host"].as_str())
+                                            .unwrap_or("-"),
+                                    ),
+                                    r["rttMs"]
+                                        .as_f64()
+                                        .map_or_else(|| "-".into(), |m| format!("{m:.1}ms")),
+                                    r["status"].as_str().unwrap_or("-").to_string(),
+                                ])
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (
+                    format!(
+                        " 6-Region Radar (best: {}) ",
+                        radar["fastestRegion"].as_str().unwrap_or("-")
+                    ),
+                    reg_rows,
+                )
+            } else {
+                (
+                    " Radar / Traceroute (run `/net radar` or `/net trace 1.1.1.1`) ".into(),
+                    Vec::new(),
+                )
+            };
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Percentage(24),
+                    Constraint::Percentage(38),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(18),
+                ],
+            )
+            .header(
+                Row::new(vec!["Region/Hop", "Host/IP", "RTT", "Status"])
+                    .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            )
+            .style(Style::default().fg(fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_col))
+                    .title(tbl_title),
+            );
+            frame.render_widget(table, parts[3]);
+        }
     }
 }
 
@@ -1775,7 +2506,10 @@ fn handle_slash_command(
             let candidate = PathBuf::from(arg);
             if candidate.is_dir() {
                 state.workspace = sanitize_windows_path(&candidate);
-                state.auto_proceed = crate::super_cmds::read_engine_state(&state.workspace).auto_proceed;
+                let eng_st = crate::super_cmds::read_engine_state(&state.workspace);
+                state.auto_proceed = eng_st.auto_proceed;
+                state.super_mode = eng_st.mode;
+                state.goal_persistence = eng_st.goal_persistence;
                 let eng = build_engine(
                     &state.workspace,
                     &state.model,
@@ -1930,70 +2664,134 @@ fn handle_slash_command(
         }
         "/net" => {
             state.drawer_tab = DrawerTab::Network;
-            let offline = arg.contains("offline");
-            let run_dns = !offline && (arg.is_empty() || arg.contains("dns"));
-            let run_proxy = !offline && (arg.is_empty() || arg.contains("proxy"));
-            state.last_net_summary = vec!["Probing network identity, DNS, and proxy/TLS...".into()];
-            state.push_line(TranscriptEntryKind::System, "Running native Rust network diagnostics...");
-            let tx_net = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let identity = inspect_network_identity(&NetDiagOptions {
-                    probe_public_ip: !offline,
-                    timeout_ms: 2_500,
-                    force_refresh: true,
-                });
-                let dns = inspect_dns_and_benchmark(&DnsBenchOptions {
-                    run_benchmark: run_dns,
-                    public_ipv4_hint: identity.public_ipv4.clone(),
-                    ..DnsBenchOptions::default()
-                });
-                let targets = if run_proxy {
-                    default_upstream_targets()
+            let tokens: Vec<&str> = arg.split_whitespace().collect();
+            if tokens.first().is_some_and(|t| t.eq_ignore_ascii_case("tab")) {
+                if let Some(sub) = tokens.get(1).and_then(|s| NetworkSubtab::parse(s)) {
+                    state.net_subtab = sub;
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!("Network Cockpit -> {}", NetworkSubtab::titles()[sub.index()]),
+                    );
                 } else {
-                    Vec::new()
-                };
-                let proxy_tls = inspect_proxy_tls_and_endpoints(&targets, run_proxy);
-                let host = collect_host_system_snapshot();
-                let _ = tx_net.send(UiAsyncEvent::NetworkSnapshot {
-                    identity: Box::new(identity),
-                    dns: Box::new(dns),
-                    proxy_tls: Box::new(proxy_tls),
-                    host: Box::new(host),
-                });
-            });
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        "Usage: /net tab <1|2|3|4|wifi|dns|proxy|speed>",
+                    );
+                }
+            } else if tokens.first().is_some_and(|t| t.eq_ignore_ascii_case("radar")) {
+                state.net_subtab = NetworkSubtab::SpeedRadarMonitor;
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    "Running 6-region global latency radar...",
+                );
+                spawn_tui_radar(tx);
+            } else if tokens
+                .first()
+                .is_some_and(|t| t.eq_ignore_ascii_case("trace") || t.eq_ignore_ascii_case("traceroute"))
+            {
+                let host = tokens.get(1).copied().unwrap_or("1.1.1.1").to_string();
+                state.net_subtab = NetworkSubtab::SpeedRadarMonitor;
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!("Running bounded 12-hop traceroute to `{host}`..."),
+                );
+                spawn_tui_traceroute(tx, host);
+            } else if tokens.first().is_some_and(|t| t.eq_ignore_ascii_case("monitor")) {
+                state.net_subtab = NetworkSubtab::SpeedRadarMonitor;
+                let sub_arg = tokens.get(1).copied();
+                toggle_tui_passive_monitor(state, tx, sub_arg);
+            } else if tokens
+                .first()
+                .is_some_and(|t| t.eq_ignore_ascii_case("custom-dns"))
+            {
+                if let Some(ip) = tokens.get(1).copied() {
+                    state.net_subtab = NetworkSubtab::DnsLab;
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!("Benchmarking custom DNS resolver `{ip}`..."),
+                    );
+                    let ip_owned = ip.to_string();
+                    let tx_dns = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let res = crate::super_cmds::probe_custom_dns_resolver(
+                            &ip_owned,
+                            "example.com",
+                            4,
+                            1_500,
+                        )
+                        .unwrap_or_else(|e| {
+                            json!({ "ok": false, "server": ip_owned, "error": e.to_string() })
+                        });
+                        let _ = tx_dns.send(UiAsyncEvent::NetworkCustomDnsCompleted(res));
+                    });
+                } else {
+                    state.push_line(TranscriptEntryKind::System, "Usage: /net custom-dns <ip>");
+                }
+            } else if tokens
+                .first()
+                .is_some_and(|t| t.eq_ignore_ascii_case("custom-host"))
+            {
+                if let Some(host) = tokens.get(1).copied() {
+                    state.net_subtab = NetworkSubtab::ProxyTls;
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!("Probing custom TLS/HTTPS waterfall for `{host}`..."),
+                    );
+                    spawn_tui_net_probe(tx, false, false, true, Some(host.to_string()));
+                } else {
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        "Usage: /net custom-host <hostname>",
+                    );
+                }
+            } else {
+                let offline = arg.contains("offline");
+                let run_dns = !offline && (arg.is_empty() || arg.contains("dns"));
+                let run_proxy = !offline && (arg.is_empty() || arg.contains("proxy"));
+                if arg.contains("dns") && !arg.contains("proxy") {
+                    state.net_subtab = NetworkSubtab::DnsLab;
+                } else if arg.contains("proxy") && !arg.contains("dns") {
+                    state.net_subtab = NetworkSubtab::ProxyTls;
+                }
+                state.last_net_summary =
+                    vec!["Probing network identity, Wi-Fi RF, DNS & proxy/TLS...".into()];
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    "Running native Rust network diagnostics...",
+                );
+                spawn_tui_net_probe(tx, offline, run_dns, run_proxy, None);
+            }
         }
         "/speedtest" => {
             if arg.eq_ignore_ascii_case("cancel") || arg.eq_ignore_ascii_case("stop") {
                 state.speedtest_cancel.store(true, Ordering::SeqCst);
                 state.push_line(TranscriptEntryKind::System, "Cancelling active speedtest...");
             } else if state.speedtest_running {
-                state.push_line(TranscriptEntryKind::System, "Speedtest already running. Run `/speedtest cancel` to stop.");
-            } else {
-                let profile = if arg.eq_ignore_ascii_case("standard") {
-                    "standard"
-                } else {
-                    "quick"
-                };
-                state.speedtest_running = true;
-                state.speedtest_cancel.store(false, Ordering::SeqCst);
-                state.drawer_tab = DrawerTab::Network;
-                state.last_speedtest_progress = Some("ST:init".into());
-                state.last_speedtest_summary = vec![format!("Running {profile} speedtest & bufferbloat probe...")];
                 state.push_line(
                     TranscriptEntryKind::System,
-                    format!("Starting on-demand {profile} speedtest (run `/speedtest cancel` to abort)..."),
+                    "Speedtest already running. Run `/speedtest cancel` to stop.",
                 );
-                let tx_st = tx.clone();
-                let cancel = Arc::clone(&state.speedtest_cancel);
-                let cfg = SpeedtestConfig::for_profile(profile);
-                tokio::task::spawn_blocking(move || {
-                    let run_id = format!("tui-st-{}", uuid_like_id());
-                    let tx_prog = tx_st.clone();
-                    let res = run_speedtest_streaming(&run_id, &cfg, cancel, move |ev| {
-                        let _ = tx_prog.send(UiAsyncEvent::SpeedtestProgress(ev));
-                    });
-                    let _ = tx_st.send(UiAsyncEvent::SpeedtestFinished(Box::new(res)));
-                });
+            } else {
+                for tok in arg.split_whitespace() {
+                    if let Some(p) = SpeedtestProfileChoice::parse(tok) {
+                        state.net_speedtest_profile = p;
+                    } else if tok.eq_ignore_ascii_case("single")
+                        || tok.eq_ignore_ascii_case("single-stream")
+                        || tok.eq_ignore_ascii_case("--single-stream")
+                    {
+                        state.net_single_stream = true;
+                    } else if tok.eq_ignore_ascii_case("multi")
+                        || tok.eq_ignore_ascii_case("multi-stream")
+                    {
+                        state.net_single_stream = false;
+                    }
+                }
+                spawn_tui_speedtest(
+                    state,
+                    tx,
+                    state.net_speedtest_profile,
+                    state.net_single_stream,
+                );
             }
         }
         "/router" => {
@@ -2419,10 +3217,58 @@ fn handle_slash_command(
                 "super_run"
             };
             let os_opt = open_artifact_os(&state.workspace).ok();
-            let lines = execute_super_mode_command(&state.workspace, mode, arg, os_opt.as_ref());
-            state.last_lifecycle_summary = lines.clone();
-            for l in lines.into_iter().take(18) {
-                state.push_line(TranscriptEntryKind::System, l);
+            let goal_opt = (!arg.is_empty()).then_some(arg);
+            let activation = if mode == "super_run" {
+                crate::super_cmds::activate_super_run(&state.workspace, goal_opt, os_opt.as_ref())
+            } else {
+                crate::super_cmds::activate_super_plan(&state.workspace, goal_opt, os_opt.as_ref())
+            };
+            match activation {
+                Ok((st, path, caps)) => {
+                    state.super_mode = st.mode.clone();
+                    state.auto_proceed = st.auto_proceed;
+                    state.goal_persistence = st.goal_persistence;
+                    if mode == "super_run" && !state.sandbox {
+                        state.approval_mode = ApprovalMode::Yolo;
+                        if let Some(ref mut eng) = state.engine {
+                            eng.tool_runtime.approval_mode = ApprovalMode::Yolo;
+                            eng.tool_runtime.workspace_trusted = true;
+                        }
+                    }
+                    let lines = format_super_workflow_banner(&st, &path, &caps);
+                    state.last_lifecycle_summary = lines.clone();
+                    for l in lines.iter().take(18) {
+                        state.push_line(TranscriptEntryKind::System, l.clone());
+                    }
+                    if !arg.is_empty() {
+                        if state.running {
+                            state.push_line(
+                                TranscriptEntryKind::System,
+                                "Steer persisted in engine_state.json; current stream still active.",
+                            );
+                        } else {
+                            let effective = build_super_turn_prompt(
+                                arg,
+                                mode,
+                                &caps,
+                                state.focus_mode,
+                                state.active_persona.as_deref(),
+                            );
+                            dispatch_prompt_turn(
+                                state,
+                                tx,
+                                &format!("[{cmd}] {arg}"),
+                                effective,
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!("Failed to activate {cmd}: {e}"),
+                    );
+                }
             }
         }
         "/auto-proceed" => {
@@ -3891,6 +4737,48 @@ fn execute_handoff_command(os: &ArtifactOs, workspace: &Path, arg: &str) -> Vec<
     }
 }
 
+fn format_super_workflow_banner(
+    st: &crate::super_cmds::SuperEngineState,
+    path: &Path,
+    caps: &Value,
+) -> Vec<String> {
+    let mut out = vec![
+        format!("=== Super Workflow Active: {} ===", st.mode),
+        format!(
+            "  autoProceed={} (enabled={}) | goalPersistence={} | tokenBudget=null",
+            st.auto_proceed.as_str(),
+            st.auto_proceed_enabled,
+            st.goal_persistence
+        ),
+        format!(
+            "  capabilities: {} crates | {} active + {} Cold Vault skills | {} MCP tools | agy-fast={}",
+            caps["crates"]["count"].as_u64().unwrap_or(18),
+            caps["skills"]["activeCount"].as_u64().unwrap_or(0),
+            caps["skills"]["coldVaultCount"].as_u64().unwrap_or(0),
+            caps["mcpTools"].as_array().map_or(8, Vec::len),
+            caps["agyFastBridge"]["detected"].as_bool().unwrap_or(false)
+        ),
+        format!("  auditStreak={}/3 | stateFile={}", st.audit_streak, path.display()),
+    ];
+    if let Some(ref g) = st.active_goal {
+        out.push(format!("  activeGoal={}", truncate_chars(g, 80)));
+    }
+    out
+}
+
+fn build_super_turn_prompt(
+    user_prompt: &str,
+    mode: &str,
+    caps: &Value,
+    focus: TuiFocusMode,
+    persona: Option<&str>,
+) -> String {
+    let base = compose_prompt_with_focus_and_persona(user_prompt, focus, persona);
+    let manifest = crate::super_cmds::format_super_capability_manifest(caps, mode);
+    format!("{base}\n\n{manifest}")
+}
+
+#[allow(dead_code)]
 fn execute_super_mode_command(
     workspace: &Path,
     mode: &str,
@@ -3899,24 +4787,252 @@ fn execute_super_mode_command(
 ) -> Vec<String> {
     let goal = arg.trim();
     let goal_opt = if goal.is_empty() { None } else { Some(goal) };
-    match crate::super_cmds::set_super_workflow_mode(workspace, mode, goal_opt, os) {
-        Ok((st, path)) => {
-            let mut out = vec![
-                format!("=== Super Workflow Mode: {} ===", st.mode),
-                format!(
-                    "  autoProceed={} (enabled={}) | tokenBudget=null",
-                    st.auto_proceed.as_str(),
-                    st.auto_proceed_enabled
-                ),
-                format!("  stateFile={}", path.display()),
-            ];
-            if let Some(ref g) = st.active_goal {
-                out.push(format!("  activeGoal={}", truncate_chars(g, 80)));
-            }
-            out
-        }
+    let res = if mode.eq_ignore_ascii_case("super_run") {
+        crate::super_cmds::activate_super_run(workspace, goal_opt, os)
+    } else if mode.eq_ignore_ascii_case("super_plan") {
+        crate::super_cmds::activate_super_plan(workspace, goal_opt, os)
+    } else {
+        crate::super_cmds::set_super_workflow_mode(workspace, mode, goal_opt, os).map(|(st, p)| {
+            let caps = crate::super_cmds::build_cli_unified_capabilities(workspace);
+            (st, p, caps)
+        })
+    };
+    match res {
+        Ok((st, path, caps)) => format_super_workflow_banner(&st, &path, &caps),
         Err(e) => vec![format!("Failed to persist super mode `{mode}`: {e}")],
     }
+}
+
+fn dispatch_prompt_turn(
+    state: &mut TuiAppState,
+    tx: &mpsc::UnboundedSender<UiAsyncEvent>,
+    display_prompt: &str,
+    effective_prompt: String,
+) {
+    if state.api_key.as_deref().is_none_or(|k| k.trim().is_empty()) {
+        state.push_line(
+            TranscriptEntryKind::System,
+            "No API key configured. Run `/key <your-key>` or set HTMUSTC_API_KEY.",
+        );
+        return;
+    }
+    state.push_line(TranscriptEntryKind::User, display_prompt);
+    state.running = true;
+    state.cancel_flag.store(false, Ordering::SeqCst);
+    let Some(mut eng) = state.engine.take() else {
+        state.running = false;
+        return;
+    };
+    let tx_clone = tx.clone();
+    let max_turns = state.max_turns;
+    let timeout_secs = state.timeout_secs;
+    let t0 = Instant::now();
+    tokio::spawn(async move {
+        let sink_tx = tx_clone.clone();
+        let sink: HarnessEventSink = Arc::new(move |ev| {
+            let _ = sink_tx.send(UiAsyncEvent::Harness(ev));
+        });
+        let res = eng
+            .run_prompt(&effective_prompt, max_turns, timeout_secs, Some(sink))
+            .await;
+        let cs = eng.cache_guard.snapshot();
+        let turns = eng.total_turns;
+        let cost_usd = eng.total_cost_usd;
+        let kv_savings_usd = eng.total_kv_savings_usd;
+        let event = match res {
+            Ok(summary) => {
+                let tps = if summary.active_decode_ms > 0 {
+                    (cs.output_tokens as f64) / (summary.active_decode_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+                UiAsyncEvent::TurnFinished {
+                    engine: Box::new(eng),
+                    elapsed_secs: t0.elapsed().as_secs_f64(),
+                    turns: summary.turns,
+                    kv_pct: cs.cache_hit_pct,
+                    tps,
+                    final_text: summary.final_text,
+                    cost_usd,
+                    kv_savings_usd,
+                    err: None,
+                }
+            }
+            Err(e) => UiAsyncEvent::TurnFinished {
+                engine: Box::new(eng),
+                elapsed_secs: t0.elapsed().as_secs_f64(),
+                turns,
+                kv_pct: cs.cache_hit_pct,
+                tps: 0.0,
+                final_text: String::new(),
+                cost_usd,
+                kv_savings_usd,
+                err: Some(format!("{e:#}")),
+            },
+        };
+        let _ = tx_clone.send(event);
+    });
+}
+
+fn spawn_tui_net_probe(
+    tx: &mpsc::UnboundedSender<UiAsyncEvent>,
+    offline: bool,
+    run_dns: bool,
+    run_proxy: bool,
+    custom_host: Option<String>,
+) {
+    let tx_net = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let identity = inspect_network_identity(&NetDiagOptions {
+            probe_public_ip: !offline,
+            timeout_ms: 2_500,
+            force_refresh: true,
+        });
+        let dns = inspect_dns_and_benchmark(&DnsBenchOptions {
+            run_benchmark: run_dns,
+            public_ipv4_hint: identity.public_ipv4.clone(),
+            ..DnsBenchOptions::default()
+        });
+        let mut targets = if run_proxy {
+            default_upstream_targets()
+        } else {
+            Vec::new()
+        };
+        if let Some(ref h) = custom_host {
+            if let Ok(ep) = crate::super_cmds::build_custom_endpoint_target(h) {
+                targets.push(ep);
+            }
+        }
+        let proxy_tls = inspect_proxy_tls_and_endpoints(&targets, !offline && !targets.is_empty());
+        let host = collect_host_system_snapshot();
+        let _ = tx_net.send(UiAsyncEvent::NetworkSnapshot {
+            identity: Box::new(identity),
+            dns: Box::new(dns),
+            proxy_tls: Box::new(proxy_tls),
+            host: Box::new(host),
+        });
+    });
+}
+
+fn spawn_tui_speedtest(
+    state: &mut TuiAppState,
+    tx: &mpsc::UnboundedSender<UiAsyncEvent>,
+    profile: SpeedtestProfileChoice,
+    single_stream: bool,
+) {
+    state.speedtest_running = true;
+    state.speedtest_cancel.store(false, Ordering::SeqCst);
+    state.drawer_tab = DrawerTab::Network;
+    state.net_subtab = NetworkSubtab::SpeedRadarMonitor;
+    state.net_speedtest_waveform.clear();
+    state.net_speedtest_pct = 0;
+    state.net_speedtest_phase = "init".into();
+    state.last_speedtest_progress = Some("ST:init".into());
+    let stream_lbl = if single_stream { "single" } else { "multi" };
+    state.last_speedtest_summary = vec![format!(
+        "Running {} ({}) speedtest & bufferbloat probe...",
+        profile.as_str(),
+        stream_lbl
+    )];
+    state.push_line(
+        TranscriptEntryKind::System,
+        format!(
+            "Starting {} ({}) speedtest (run `/speedtest cancel` or press F9 to abort)...",
+            profile.as_str(),
+            stream_lbl
+        ),
+    );
+    let tx_st = tx.clone();
+    let cancel = Arc::clone(&state.speedtest_cancel);
+    let mut cfg = SpeedtestConfig::for_profile(profile.as_str());
+    if profile == SpeedtestProfileChoice::Exhaustive
+        && !cfg.profile.eq_ignore_ascii_case("exhaustive")
+    {
+        cfg.profile = "exhaustive".to_string();
+        cfg.unloaded_samples = 24;
+        cfg.phase_duration_ms = 6_000;
+    }
+    if single_stream {
+        cfg.stream_mode = "single".to_string();
+        cfg.multi_streams = 1;
+    }
+    tokio::task::spawn_blocking(move || {
+        let run_id = format!("tui-st-{}", uuid_like_id());
+        let tx_prog = tx_st.clone();
+        let res = run_speedtest_streaming(&run_id, &cfg, cancel, move |ev| {
+            let _ = tx_prog.send(UiAsyncEvent::SpeedtestProgress(ev));
+        });
+        let _ = tx_st.send(UiAsyncEvent::SpeedtestFinished(Box::new(res)));
+    });
+}
+
+fn spawn_tui_radar(tx: &mpsc::UnboundedSender<UiAsyncEvent>) {
+    let tx_r = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let rep = crate::super_cmds::run_global_radar_snapshot(2_000);
+        let _ = tx_r.send(UiAsyncEvent::NetworkRadarCompleted(rep));
+    });
+}
+
+fn spawn_tui_traceroute(tx: &mpsc::UnboundedSender<UiAsyncEvent>, host: String) {
+    let tx_t = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let rep = crate::super_cmds::run_bounded_traceroute_cli(&host, 12)
+            .unwrap_or_else(|e| json!({ "ok": false, "target": host, "hops": [], "error": e.to_string() }));
+        let _ = tx_t.send(UiAsyncEvent::NetworkTracerouteCompleted(rep));
+    });
+}
+
+fn toggle_tui_passive_monitor(
+    state: &mut TuiAppState,
+    tx: &mpsc::UnboundedSender<UiAsyncEvent>,
+    arg_opt: Option<&str>,
+) {
+    let force_stop = arg_opt.is_some_and(|a| a.eq_ignore_ascii_case("stop") || a.eq_ignore_ascii_case("off"));
+    let force_start = arg_opt.is_some_and(|a| a.eq_ignore_ascii_case("start") || a.eq_ignore_ascii_case("on"));
+    if let Some(a) = arg_opt.filter(|s| {
+        !s.eq_ignore_ascii_case("stop")
+            && !s.eq_ignore_ascii_case("off")
+            && !s.eq_ignore_ascii_case("start")
+            && !s.eq_ignore_ascii_case("on")
+    }) {
+        state.net_monitor_target = a.to_string();
+    }
+
+    if state.net_monitor_active && !force_start {
+        state.net_monitor_cancel.store(true, Ordering::SeqCst);
+        state.net_monitor_active = false;
+        state.push_line(TranscriptEntryKind::System, "Passive network monitor stopped.");
+        return;
+    }
+    if force_stop {
+        state.net_monitor_cancel.store(true, Ordering::SeqCst);
+        state.net_monitor_active = false;
+        return;
+    }
+    state.net_monitor_active = true;
+    state.net_monitor_cancel.store(false, Ordering::SeqCst);
+    let cancel = Arc::clone(&state.net_monitor_cancel);
+    let target = state.net_monitor_target.clone();
+    let tx_m = tx.clone();
+    state.push_line(
+        TranscriptEntryKind::System,
+        format!("Passive network monitor started (-> `{target}`, 120-sample ring; F10 or `/net monitor stop` to stop)."),
+    );
+    tokio::task::spawn_blocking(move || {
+        while !cancel.load(Ordering::SeqCst) {
+            let sample = crate::super_cmds::sample_passive_monitor_point(&target, 1_200);
+            if tx_m.send(UiAsyncEvent::NetworkMonitorSample(sample)).is_err() {
+                break;
+            }
+            for _ in 0..15 {
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    });
 }
 
 fn execute_auto_proceed_command(
@@ -4427,7 +5543,10 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         Arc::clone(&cancel_flag),
         Some(tx.clone()),
     )?;
-    let init_auto_proceed = crate::super_cmds::read_engine_state(&workspace).auto_proceed;
+    let init_super_state = crate::super_cmds::read_engine_state(&workspace);
+    let init_auto_proceed = init_super_state.auto_proceed;
+    let init_super_mode = init_super_state.mode;
+    let init_goal_persistence = init_super_state.goal_persistence;
 
     let init_theme = saved
         .theme
@@ -4455,6 +5574,8 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         approval_mode,
         sandbox: opts.sandbox,
         auto_proceed: init_auto_proceed,
+        super_mode: init_super_mode,
+        goal_persistence: init_goal_persistence,
         saved,
         max_turns: opts.max_turns,
         timeout_secs: opts.timeout_secs,
@@ -4499,6 +5620,24 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         privacy_mask: init_privacy_mask,
         drawer_tab: DrawerTab::Closed,
         drawer_lines: Vec::new(),
+        net_subtab: NetworkSubtab::IdentityWifi,
+        net_speedtest_profile: SpeedtestProfileChoice::Quick,
+        net_single_stream: false,
+        net_monitor_active: false,
+        net_monitor_cancel: Arc::new(AtomicBool::new(false)),
+        net_monitor_target: "1.1.1.1".to_string(),
+        net_identity: None,
+        net_dns: None,
+        net_custom_dns: None,
+        net_proxy_tls: None,
+        net_host: None,
+        net_speedtest_result: None,
+        net_speedtest_waveform: Vec::new(),
+        net_speedtest_pct: 0,
+        net_speedtest_phase: String::new(),
+        net_radar: None,
+        net_traceroute: None,
+        net_monitor_rtts: Vec::new(),
         speedtest_running: false,
         speedtest_cancel: Arc::new(AtomicBool::new(false)),
         last_speedtest_progress: None,
@@ -4640,6 +5779,10 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                     proxy_tls,
                     host,
                 } => {
+                    state.net_identity = serde_json::to_value(identity.as_ref()).ok();
+                    state.net_dns = serde_json::to_value(dns.as_ref()).ok();
+                    state.net_proxy_tls = serde_json::to_value(proxy_tls.as_ref()).ok();
+                    state.net_host = serde_json::to_value(host.as_ref()).ok();
                     let mut lines = vec![
                         format!("Provenance  : {}", identity.provenance.as_str()),
                         format!(
@@ -4696,6 +5839,15 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                     }
                 }
                 UiAsyncEvent::SpeedtestProgress(ev) => {
+                    state.net_speedtest_pct = u16::from(ev.progress_pct).min(100);
+                    state.net_speedtest_phase = ev.phase.clone();
+                    if let Some(m) = ev.current_mbps.filter(|v| v.is_finite() && *v >= 0.0) {
+                        state.net_speedtest_waveform.push((m * 10.0).round() as u64);
+                        if state.net_speedtest_waveform.len() > 120 {
+                            let drain = state.net_speedtest_waveform.len() - 120;
+                            state.net_speedtest_waveform.drain(..drain);
+                        }
+                    }
                     let badge = match (ev.current_mbps, ev.current_rtt_ms) {
                         (Some(m), _) => format!("ST:{:>2}% {:.1}Mbps", ev.progress_pct, m),
                         (None, Some(r)) => format!("ST:{:>2}% {:.0}ms", ev.progress_pct, r),
@@ -4710,15 +5862,27 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                 UiAsyncEvent::SpeedtestFinished(res) => {
                     state.speedtest_running = false;
                     state.last_speedtest_progress = None;
+                    state.net_speedtest_pct = 100;
+                    state.net_speedtest_phase = "done".into();
+                    if state.net_speedtest_waveform.is_empty() && !res.waveform.is_empty() {
+                        state.net_speedtest_waveform = res
+                            .waveform
+                            .iter()
+                            .take(120)
+                            .map(|w| (w.mbps.max(0.0) * 10.0).round() as u64)
+                            .collect();
+                    }
+                    state.net_speedtest_result = serde_json::to_value(res.as_ref()).ok();
                     let lines = vec![
                         format!(
-                            "Speedtest [{}] ({}ms, cancelled={})",
+                            "Speedtest [{}] ({} | {}ms, cancelled={})",
                             res.provenance.as_str(),
+                            res.profile,
                             res.duration_ms,
                             res.cancelled
                         ),
                         format!(
-                            "  DL: {:.1} Mbps (1x {:.1} / 4x {:.1}) | UL: {:.1} Mbps",
+                            "  DL: {:.1} Mbps (1x {:.1} / multi {:.1}) | UL: {:.1} Mbps",
                             res.download_mbps,
                             res.single_stream_dl_mbps,
                             res.multi_stream_dl_mbps,
@@ -4749,6 +5913,43 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                     for l in lines {
                         state.push_line(TranscriptEntryKind::System, l);
                     }
+                }
+                UiAsyncEvent::NetworkRadarCompleted(rep) => {
+                    state.net_traceroute = None;
+                    let best = rep["fastestRegion"].as_str().unwrap_or("-");
+                    let best_ms = rep["fastestRttMs"]
+                        .as_f64()
+                        .map_or_else(|| "-".into(), |m| format!("{m:.1}ms"));
+                    let msg = format!("Global 6-Region Radar complete | fastest: {best} ({best_ms})");
+                    state.net_radar = Some(rep);
+                    state.push_line(TranscriptEntryKind::System, msg);
+                }
+                UiAsyncEvent::NetworkTracerouteCompleted(rep) => {
+                    let tgt = rep["target"].as_str().unwrap_or("-");
+                    let cnt = rep["hopCount"].as_u64().unwrap_or(0);
+                    let msg = format!("Traceroute complete -> `{tgt}` ({cnt} hop(s))");
+                    state.net_traceroute = Some(rep);
+                    state.push_line(TranscriptEntryKind::System, msg);
+                }
+                UiAsyncEvent::NetworkMonitorSample(sample) => {
+                    if let Some(rtt) = sample["rttMs"].as_f64().filter(|v| v.is_finite() && *v >= 0.0) {
+                        state.net_monitor_rtts.push((rtt * 10.0).round().max(1.0) as u64);
+                    } else {
+                        state.net_monitor_rtts.push(0);
+                    }
+                    if state.net_monitor_rtts.len() > 120 {
+                        let drain = state.net_monitor_rtts.len() - 120;
+                        state.net_monitor_rtts.drain(..drain);
+                    }
+                }
+                UiAsyncEvent::NetworkCustomDnsCompleted(rep) => {
+                    let srv = rep["server"].as_str().unwrap_or("-");
+                    let p50 = rep["p50Ms"]
+                        .as_f64()
+                        .map_or_else(|| "err".into(), |m| format!("{m:.1}ms"));
+                    let msg = format!("Custom DNS `{srv}` benchmarked -> p50={p50}");
+                    state.net_custom_dns = Some(rep);
+                    state.push_line(TranscriptEntryKind::System, msg);
                 }
                 UiAsyncEvent::ResearchCompleted {
                     query,
@@ -4834,6 +6035,7 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                             && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
                         {
                             state.cancel_flag.store(true, Ordering::SeqCst);
+                            state.net_monitor_cancel.store(true, Ordering::SeqCst);
                             should_exit = true;
                             break;
                         }
@@ -4874,6 +6076,87 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                 state.privacy_mask = !state.privacy_mask;
                                 state.saved.privacy_mask = Some(state.privacy_mask);
                                 let _ = save_config(&state.saved);
+                            }
+                            KeyEvent {
+                                code: KeyCode::F(6),
+                                ..
+                            } if state.drawer_tab == DrawerTab::Network => {
+                                state.net_subtab = state.net_subtab.next();
+                            }
+                            KeyEvent {
+                                code: KeyCode::F(7),
+                                ..
+                            } if state.drawer_tab == DrawerTab::Network => {
+                                state.net_speedtest_profile = state.net_speedtest_profile.next();
+                                state.push_line(
+                                    TranscriptEntryKind::System,
+                                    format!(
+                                        "Speedtest profile -> {}",
+                                        state.net_speedtest_profile.as_str()
+                                    ),
+                                );
+                            }
+                            KeyEvent {
+                                code: KeyCode::F(8),
+                                ..
+                            } if state.drawer_tab == DrawerTab::Network => {
+                                state.net_single_stream = !state.net_single_stream;
+                                state.push_line(
+                                    TranscriptEntryKind::System,
+                                    format!(
+                                        "Speedtest stream mode -> {}",
+                                        if state.net_single_stream {
+                                            "single (1x)"
+                                        } else {
+                                            "multi (4x)"
+                                        }
+                                    ),
+                                );
+                            }
+                            KeyEvent {
+                                code: KeyCode::F(9),
+                                modifiers,
+                                ..
+                            } if state.drawer_tab == DrawerTab::Network => {
+                                if modifiers.contains(KeyModifiers::SHIFT) {
+                                    state.net_subtab = NetworkSubtab::SpeedRadarMonitor;
+                                    spawn_tui_radar(&tx);
+                                } else if state.net_subtab == NetworkSubtab::SpeedRadarMonitor {
+                                    if state.speedtest_running {
+                                        state.speedtest_cancel.store(true, Ordering::SeqCst);
+                                        state.push_line(
+                                            TranscriptEntryKind::System,
+                                            "Cancelling active speedtest...",
+                                        );
+                                    } else {
+                                        let profile = state.net_speedtest_profile;
+                                        let single = state.net_single_stream;
+                                        spawn_tui_speedtest(&mut state, &tx, profile, single);
+                                    }
+                                } else {
+                                    spawn_tui_net_probe(&tx, false, true, true, None);
+                                }
+                            }
+                            KeyEvent {
+                                code: KeyCode::F(10),
+                                ..
+                            } if state.drawer_tab == DrawerTab::Network => {
+                                state.net_subtab = NetworkSubtab::SpeedRadarMonitor;
+                                toggle_tui_passive_monitor(&mut state, &tx, None);
+                            }
+                            KeyEvent {
+                                code: KeyCode::Char(c @ '1'..='4'),
+                                modifiers,
+                                ..
+                            } if state.drawer_tab == DrawerTab::Network
+                                && modifiers.contains(KeyModifiers::ALT) =>
+                            {
+                                state.net_subtab = match c {
+                                    '1' => NetworkSubtab::IdentityWifi,
+                                    '2' => NetworkSubtab::DnsLab,
+                                    '3' => NetworkSubtab::ProxyTls,
+                                    _ => NetworkSubtab::SpeedRadarMonitor,
+                                };
                             }
                             KeyEvent {
                                 code: KeyCode::Esc,
@@ -4951,78 +6234,12 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                     }
                                     continue;
                                 }
-                                if state.api_key.as_deref().is_none_or(|k| k.trim().is_empty()) {
-                                    state.push_line(
-                                        TranscriptEntryKind::System,
-                                        "No API key configured. Run `/key <your-key>` or set HTMUSTC_API_KEY.",
-                                    );
-                                    if !event::poll(Duration::ZERO)? {
-                                        break;
-                                    }
-                                    continue;
-                                }
-                                state.push_line(TranscriptEntryKind::User, &submitted);
-                                state.running = true;
-                                state.cancel_flag.store(false, Ordering::SeqCst);
-                                let Some(mut eng) = state.engine.take() else {
-                                    state.running = false;
-                                    if !event::poll(Duration::ZERO)? {
-                                        break;
-                                    }
-                                    continue;
-                                };
-                                let tx_clone = tx.clone();
-                                let max_turns = state.max_turns;
-                                let timeout_secs = state.timeout_secs;
                                 let effective_prompt = compose_prompt_with_focus_and_persona(
                                     &submitted,
                                     state.focus_mode,
                                     state.active_persona.as_deref(),
                                 );
-                                let t0 = Instant::now();
-                                tokio::spawn(async move {
-                                    let sink_tx = tx_clone.clone();
-                                    let sink: HarnessEventSink = Arc::new(move |ev| {
-                                        let _ = sink_tx.send(UiAsyncEvent::Harness(ev));
-                                    });
-                                    let res = eng.run_prompt(&effective_prompt, max_turns, timeout_secs, Some(sink)).await;
-                                    let cs = eng.cache_guard.snapshot();
-                                    let turns = eng.total_turns;
-                                    let cost_usd = eng.total_cost_usd;
-                                    let kv_savings_usd = eng.total_kv_savings_usd;
-                                    let event = match res {
-                                        Ok(summary) => {
-                                            let tps = if summary.active_decode_ms > 0 {
-                                                (cs.output_tokens as f64) / (summary.active_decode_ms as f64 / 1000.0)
-                                            } else {
-                                                0.0
-                                            };
-                                            UiAsyncEvent::TurnFinished {
-                                                engine: Box::new(eng),
-                                                elapsed_secs: t0.elapsed().as_secs_f64(),
-                                                turns: summary.turns,
-                                                kv_pct: cs.cache_hit_pct,
-                                                tps,
-                                                final_text: summary.final_text,
-                                                cost_usd,
-                                                kv_savings_usd,
-                                                err: None,
-                                            }
-                                        }
-                                        Err(e) => UiAsyncEvent::TurnFinished {
-                                            engine: Box::new(eng),
-                                            elapsed_secs: t0.elapsed().as_secs_f64(),
-                                            turns,
-                                            kv_pct: cs.cache_hit_pct,
-                                            tps: 0.0,
-                                            final_text: String::new(),
-                                            cost_usd,
-                                            kv_savings_usd,
-                                            err: Some(format!("{e:#}")),
-                                        },
-                                    };
-                                    let _ = tx_clone.send(event);
-                                });
+                                dispatch_prompt_turn(&mut state, &tx, &submitted, effective_prompt);
                             }
                             KeyEvent {
                                 code: KeyCode::Backspace,
@@ -5676,6 +6893,246 @@ mod tests {
         let md = fs::read_to_string(&mirror_path).unwrap();
         assert!(md.contains("Always guard MSVC delayload"));
         assert!(!md.contains('\r'));
+
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn steer27b_28b_tui_super_workflows_and_4_subtab_network_cockpit_render_cleanly() {
+        use ratatui::backend::TestBackend;
+
+        let ws = env::temp_dir().join(format!(
+            "omnia_tui_cockpit_{}_{}",
+            std::process::id(),
+            &omnia_core::uuid_v4()[..8]
+        ));
+        let _ = fs::create_dir_all(&ws);
+
+        // 1. Subtab & Speedtest profile cycles
+        assert_eq!(NetworkSubtab::IdentityWifi.next(), NetworkSubtab::DnsLab);
+        assert_eq!(NetworkSubtab::DnsLab.next(), NetworkSubtab::ProxyTls);
+        assert_eq!(
+            NetworkSubtab::ProxyTls.next(),
+            NetworkSubtab::SpeedRadarMonitor
+        );
+        assert_eq!(
+            NetworkSubtab::SpeedRadarMonitor.next(),
+            NetworkSubtab::IdentityWifi
+        );
+        assert_eq!(NetworkSubtab::parse("dns"), Some(NetworkSubtab::DnsLab));
+        assert_eq!(
+            NetworkSubtab::parse("radar"),
+            Some(NetworkSubtab::SpeedRadarMonitor)
+        );
+        assert_eq!(
+            SpeedtestProfileChoice::Quick.next(),
+            SpeedtestProfileChoice::Standard
+        );
+        assert_eq!(
+            SpeedtestProfileChoice::Standard.next(),
+            SpeedtestProfileChoice::Exhaustive
+        );
+        assert_eq!(
+            SpeedtestProfileChoice::Exhaustive.next(),
+            SpeedtestProfileChoice::Quick
+        );
+
+        // 2. Super workflow activation + Prefix-0-safe dynamic tail manifest injection
+        let (run_st, _, caps) =
+            crate::super_cmds::activate_super_run(&ws, Some("Ship 4-Subtab Cockpit"), None)
+                .unwrap();
+        assert_eq!(run_st.mode, "super_run");
+        assert!(run_st.goal_persistence);
+        assert_eq!(run_st.auto_proceed, crate::super_cmds::AutoProceedMode::Full);
+        let turn_prompt = build_super_turn_prompt(
+            "Ship 4-Subtab Cockpit",
+            "super_run",
+            &caps,
+            TuiFocusMode::Code,
+            None,
+        );
+        assert!(turn_prompt.starts_with("Ship 4-Subtab Cockpit"));
+        assert!(turn_prompt.contains("[OMNIA SUPER CAPABILITY MANIFEST]"));
+        assert!(turn_prompt.contains("goalPersistence=true"));
+
+        // 3. Render ALL 4 Network Cockpit subtabs via TestBackend & verify Privacy Mask
+        let mut state = TuiAppState {
+            workspace: ws.clone(),
+            model: DEFAULT_MODEL.into(),
+            base_url: DEFAULT_BASE_URL.into(),
+            api_key: None,
+            wire_api: WireApiMode::Auto,
+            thinking: Some("max".into()),
+            approval_mode: ApprovalMode::Yolo,
+            sandbox: false,
+            auto_proceed: run_st.auto_proceed,
+            super_mode: run_st.mode,
+            goal_persistence: run_st.goal_persistence,
+            saved: CliSavedConfig::default(),
+            max_turns: 10,
+            timeout_secs: 60,
+            db: None,
+            engine: None,
+            transcript: Vec::new(),
+            input: String::new(),
+            cursor_byte: 0,
+            history: Vec::new(),
+            history_idx: None,
+            scroll_offset: 0,
+            auto_scroll: true,
+            show_thinking: false,
+            show_creds_modal: false,
+            cred_entries: Vec::new(),
+            slash_selected: 0,
+            running: false,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            pending_approval: None,
+            kv_hit_pct: 0.0,
+            tokens_per_sec: 0.0,
+            cost_usd: 0.0,
+            kv_savings_usd: 0.0,
+            context_pct: 0.0,
+            total_turns: 0,
+            total_tools: 0,
+            tool_errors: 0,
+            cached_rss_bytes: 0,
+            last_rss_refresh: Instant::now(),
+            theme: TuiTheme::Obsidian,
+            privacy_mask: true,
+            drawer_tab: DrawerTab::Network,
+            drawer_lines: Vec::new(),
+            net_subtab: NetworkSubtab::IdentityWifi,
+            net_speedtest_profile: SpeedtestProfileChoice::Exhaustive,
+            net_single_stream: true,
+            net_monitor_active: false,
+            net_monitor_cancel: Arc::new(AtomicBool::new(false)),
+            net_monitor_target: "1.1.1.1".into(),
+            net_identity: Some(json!({
+                "provenance": "LIVE",
+                "publicIpv4": "203.0.113.77",
+                "publicIpv6": "unavailable",
+                "natClassification": "Symmetric NAT",
+                "vpnActive": false,
+                "fingerprintSha256": "abcdef1234567890",
+                "wifi": {
+                    "ssid": "StudioLab5G",
+                    "signalPct": 88,
+                    "rssiDbm": -52,
+                    "radioPhy": "802.11ax",
+                    "band": "5 GHz",
+                    "rxMbps": 866,
+                    "txMbps": 780
+                },
+                "adapters": [{
+                    "name": "Wi-Fi",
+                    "status": "Up",
+                    "ipv4Cidrs": ["192.0.2.15/24"],
+                    "linkSpeedMbps": 866
+                }]
+            })),
+            net_dns: Some(json!({
+                "systemDnsServers": ["192.0.2.1"],
+                "fastestResolver": "Cloudflare",
+                "leakStatus": "clean",
+                "hostsOverrideCount": 0,
+                "resolvers": [{
+                    "name": "Cloudflare",
+                    "server": "1.1.1.1",
+                    "p50Ms": 4.2,
+                    "p95Ms": 7.1,
+                    "failureRatePct": 0.0
+                }]
+            })),
+            net_custom_dns: Some(json!({
+                "server": "9.9.9.9",
+                "p50Ms": 11.4,
+                "p95Ms": 14.2,
+                "failureRatePct": 0.0
+            })),
+            net_proxy_tls: Some(json!({
+                "envProxies": [],
+                "localProxyPorts": [],
+                "systemProxy": {},
+                "endpoints": [{
+                    "label": "Cloudflare",
+                    "httpStatus": 200,
+                    "dnsMs": 3.0,
+                    "tlsMs": 12.0,
+                    "ttfbMs": 24.0,
+                    "tlsVersion": "TLSv1.3",
+                    "mitmCaSuspected": false
+                }]
+            })),
+            net_host: None,
+            net_speedtest_result: Some(json!({
+                "downloadMbps": 412.5,
+                "uploadMbps": 195.0,
+                "bufferbloatGrade": "A",
+                "unloaded": { "p50Ms": 6.4 }
+            })),
+            net_speedtest_waveform: vec![1200, 2800, 4125, 3980],
+            net_speedtest_pct: 100,
+            net_speedtest_phase: "done".into(),
+            net_radar: Some(json!({
+                "fastestRegion": "Asia-SG",
+                "regions": [{
+                    "region": "Asia-SG",
+                    "resolvedIp": "198.51.100.10",
+                    "rttMs": 28.4,
+                    "status": "ok"
+                }]
+            })),
+            net_traceroute: None,
+            net_monitor_rtts: vec![64, 71, 68],
+            speedtest_running: false,
+            speedtest_cancel: Arc::new(AtomicBool::new(false)),
+            last_speedtest_progress: None,
+            last_net_summary: Vec::new(),
+            last_speedtest_summary: Vec::new(),
+            last_router_summary: Vec::new(),
+            last_rewind_summary: Vec::new(),
+            last_research_summary: Vec::new(),
+            last_lifecycle_summary: Vec::new(),
+            skill_registry: None,
+            focus_mode: TuiFocusMode::Code,
+            active_persona: None,
+            forked_threads: Vec::new(),
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(66, 24)).unwrap();
+        for subtab in [
+            NetworkSubtab::IdentityWifi,
+            NetworkSubtab::DnsLab,
+            NetworkSubtab::ProxyTls,
+            NetworkSubtab::SpeedRadarMonitor,
+        ] {
+            state.net_subtab = subtab;
+            terminal
+                .draw(|f| render_network_cockpit_drawer(f, f.area(), &state))
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            let mut rendered = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    rendered.push_str(buf[(x, y)].symbol());
+                }
+                rendered.push('\n');
+            }
+            assert!(
+                !rendered.contains("203.0.113.77"),
+                "PrivacyMask must hide public IPv4 in Network Cockpit"
+            );
+            match subtab {
+                NetworkSubtab::IdentityWifi => assert!(rendered.contains("Wi-Fi RF Signal")),
+                NetworkSubtab::DnsLab => assert!(rendered.contains("DNS Benchmark")),
+                NetworkSubtab::ProxyTls => assert!(rendered.contains("Upstream Waterfall")),
+                NetworkSubtab::SpeedRadarMonitor => {
+                    assert!(rendered.contains("exhaustive"));
+                    assert!(rendered.contains("Single 1x"));
+                    assert!(rendered.contains("Asia-SG"));
+                }
+            }
+        }
 
         let _ = fs::remove_dir_all(&ws);
     }

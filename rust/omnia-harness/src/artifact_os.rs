@@ -49,6 +49,133 @@ pub fn default_agy_global_lessons_path() -> PathBuf {
 /// Default LRU cap for unified 2-tier global lessons.
 pub const GLOBAL_LESSONS_CAP: usize = 100;
 
+/// Canonical cross-host lossless super-workflow state file shared by `omnia-harness`,
+/// `omnia-agent`, `omnia-cli`, `omnia-studio`, and `agy-fast`.
+pub const SUPER_ENGINE_STATE_REL_PATH: &str = ".agents/super/engine_state.json";
+
+/// Legacy state path retained for read-only fallback migration.
+pub const LEGACY_SUPER_STATE_REL_PATH: &str = ".agents/super/state.json";
+
+/// Append-only audit log recording `/auto-proceed` policy changes and decisions.
+pub const PROCEED_DECISIONS_REL_PATH: &str = ".agents/super/proceed-decisions.jsonl";
+
+/// Resolves `<workspace_root>/.agents/super/engine_state.json`.
+#[must_use]
+pub fn engine_state_path(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(".agents")
+        .join("super")
+        .join("engine_state.json")
+}
+
+/// Resolves legacy `<workspace_root>/.agents/super/state.json`.
+#[must_use]
+pub fn legacy_super_state_path(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(".agents")
+        .join("super")
+        .join("state.json")
+}
+
+/// Reads the cross-host `.agents/super/engine_state.json` object losslessly, falling back to
+/// legacy `.agents/super/state.json` when the unified file does not exist yet.
+#[must_use]
+pub fn read_engine_state_map(workspace_root: &Path) -> serde_json::Map<String, Value> {
+    for path in [
+        engine_state_path(workspace_root),
+        legacy_super_state_path(workspace_root),
+    ] {
+        if let Ok(raw) = fs::read_to_string(&path) {
+            let cleaned = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(cleaned) {
+                return map;
+            }
+        }
+    }
+    serde_json::Map::new()
+}
+
+/// Losslessly merges `patch` into `<workspace_root>/.agents/super/engine_state.json` (reading
+/// legacy `.agents/super/state.json` on first write) so `omnia-harness`, `omnia-cli`,
+/// `omnia-studio`, and `agy-fast` never clobber each other's fields (`schemaVersion`, `waves`,
+/// `auditStreak`, `toolProofCounts`, `activePlanConvs`, `activeRunConvs`, `autoProceed`,
+/// `activeGoal`, `tokenBudget: null`).
+pub fn merge_engine_state_lossless(
+    workspace_root: &Path,
+    patch: Value,
+) -> Result<Value, String> {
+    validate_no_proto_pollution(&patch)?;
+    let patch_obj = match patch {
+        Value::Object(map) => map,
+        _ => return Err("engine_state merge patch must be a JSON object".to_string()),
+    };
+
+    let mut merged = read_engine_state_map(workspace_root);
+    for (key, val) in patch_obj {
+        let safe_val = SecretRedactor::redact_json(&val);
+        match (merged.get_mut(&key), safe_val) {
+            (Some(Value::Object(existing_sub)), Value::Object(patch_sub)) => {
+                for (sk, sv) in patch_sub {
+                    existing_sub.insert(sk, sv);
+                }
+            }
+            (_, other) => {
+                merged.insert(key, other);
+            }
+        }
+    }
+
+    if !merged.contains_key("schemaVersion") {
+        merged.insert("schemaVersion".to_string(), json!(1));
+    }
+    if !merged.contains_key("tokenBudget") {
+        merged.insert("tokenBudget".to_string(), Value::Null);
+    }
+    let next_rev = merged
+        .get("headRevision")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(1);
+    merged.insert("headRevision".to_string(), json!(next_rev));
+    merged.insert("updatedAtMs".to_string(), json!(now_epoch_ms()));
+
+    let out_val = Value::Object(merged);
+    let serialized = serde_json::to_string_pretty(&out_val)
+        .map_err(|e| format!("serialize engine_state.json: {e}"))?;
+    let target = engine_state_path(workspace_root);
+    atomic_write_with_retry(&target, format!("{serialized}\n").as_bytes())?;
+    Ok(out_val)
+}
+
+/// Appends one secret-redacted JSONL record to `<workspace_root>/.agents/super/proceed-decisions.jsonl`.
+pub fn append_proceed_decision_jsonl(
+    workspace_root: &Path,
+    entry: Value,
+) -> Result<PathBuf, String> {
+    validate_no_proto_pollution(&entry)?;
+    let path = workspace_root
+        .join(".agents")
+        .join("super")
+        .join("proceed-decisions.jsonl");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create proceed log dir {}: {e}", parent.display()))?;
+    }
+    let safe = SecretRedactor::redact_json(&entry);
+    let line = serde_json::to_string(&safe).map_err(|e| format!("serialize proceed entry: {e}"))?;
+    let mut existing = fs::read_to_string(&path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        existing.push('\n');
+    }
+    existing.push_str(&line);
+    existing.push('\n');
+    atomic_write_with_retry(&path, existing.as_bytes())?;
+    Ok(path)
+}
+
 /// All 7 mandatory follow-up session admission gate IDs (`SESSION-G01..G07`).
 pub const REQUIRED_SESSION_GATE_IDS: [&str; 7] = [
     "SESSION-G01",
@@ -1162,7 +1289,46 @@ impl ArtifactOs {
                 serde_json::from_str::<SuperWorkflowState>(&stmt.column_text(0).unwrap_or_default())
                     .unwrap_or_default()
             } else {
-                SuperWorkflowState::default()
+                let disk_map = read_engine_state_map(&self.workspace_root);
+                if disk_map.is_empty() {
+                    SuperWorkflowState::default()
+                } else {
+                    let mut hydrated = SuperWorkflowState::default();
+                    if let Some(p) = disk_map
+                        .get("phase")
+                        .or_else(|| disk_map.get("lifecyclePhase"))
+                        .and_then(Value::as_str)
+                    {
+                        hydrated.phase = p.to_string();
+                    }
+                    if let Some(w) = disk_map
+                        .get("wave")
+                        .or_else(|| disk_map.get("currentWave"))
+                        .and_then(Value::as_u64)
+                    {
+                        hydrated.wave = w.min(1000) as u32;
+                    }
+                    if let Some(s) = disk_map
+                        .get("strikeCount")
+                        .or_else(|| disk_map.get("strike_count"))
+                        .and_then(Value::as_u64)
+                    {
+                        hydrated.strike_count = s.min(100) as u32;
+                    }
+                    if let Some(g) = disk_map.get("activeGoalId").and_then(Value::as_str) {
+                        hydrated.active_goal_id = Some(g.to_string());
+                    }
+                    if let Some(sp) = disk_map.get("activeSpecId").and_then(Value::as_str) {
+                        hydrated.active_spec_id = Some(sp.to_string());
+                    }
+                    if let Some(pl) = disk_map.get("activePlanId").and_then(Value::as_str) {
+                        hydrated.active_plan_id = Some(pl.to_string());
+                    }
+                    if let Some(lh) = disk_map.get("lastHandoffId").and_then(Value::as_str) {
+                        hydrated.last_handoff_id = Some(lh.to_string());
+                    }
+                    hydrated
+                }
             }
         };
         let todos = self.list_artifacts(Some(ArtifactKind::Todo), None)?;
@@ -1242,8 +1408,17 @@ impl ArtifactOs {
         stmt.step().map_err(|e| e.to_string())?;
 
         if sync_to_disk {
-            let p = self.workspace_root.join(".agents").join("super").join("state.json");
-            let _ = atomic_write_with_retry(&p, format!("{payload}\n").as_bytes());
+            let mut disk_patch = match serde_json::to_value(&st) {
+                Ok(Value::Object(m)) => m,
+                _ => serde_json::Map::new(),
+            };
+            if let Value::Object(raw_extra) = patch {
+                for (k, v) in raw_extra {
+                    disk_patch.entry(k).or_insert(v);
+                }
+            }
+            disk_patch.insert("tokenBudget".to_string(), Value::Null);
+            let _ = merge_engine_state_lossless(&self.workspace_root, Value::Object(disk_patch));
         }
         Ok(st)
     }
@@ -2172,6 +2347,100 @@ mod tests {
         .unwrap();
         assert_eq!(git_drift.decision, "DEFERRED");
         assert!(git_drift.reverted_to_deferred);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lossless_engine_state_merge_preserves_agy_fast_fields_and_reads_legacy_fallback() {
+        let root = std::env::temp_dir().join(format!("omnia-engine-state-{}", uuid_v4()));
+        fs::create_dir_all(root.join(".agents").join("super")).unwrap();
+
+        // 1. Legacy `.agents/super/state.json` is hydrated when `engine_state.json` does not exist yet.
+        atomic_write_with_retry(
+            &legacy_super_state_path(&root),
+            br#"{
+  "phase": "plan",
+  "wave": 2,
+  "activeGoalId": "goal_legacy",
+  "customLegacyFlag": true
+}
+"#,
+        )
+        .unwrap();
+        let legacy_map = read_engine_state_map(&root);
+        assert_eq!(legacy_map.get("phase").and_then(Value::as_str), Some("plan"));
+        assert_eq!(
+            legacy_map.get("customLegacyFlag").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        // 2. Seed `.agents/super/engine_state.json` with agy-fast fields, then merge Omnia updates losslessly.
+        atomic_write_with_retry(
+            &engine_state_path(&root),
+            br#"{
+  "schemaVersion": 1,
+  "headRevision": 4,
+  "mode": "super_run",
+  "waves": [{"id": 1, "name": "wave-1", "status": "done"}],
+  "auditStreak": 2,
+  "requiredAuditStreak": 3,
+  "toolProofCounts": {"swarm": 4, "edits": 7},
+  "activeRunConvs": ["conv-1"],
+  "tokenBudget": null
+}
+"#,
+        )
+        .unwrap();
+
+        let os = ArtifactOs::open_in_memory(&root).unwrap();
+        let st = os
+            .update_super_state(
+                json!({
+                    "phase": "verify",
+                    "wave": 3,
+                    "autoProceed": "full",
+                    "activeGoal": "Ship Steer 27B",
+                    "toolProofCounts": {"runChecks": 2}
+                }),
+                true,
+            )
+            .unwrap();
+        assert_eq!(st.phase, "verify");
+        assert_eq!(st.wave, 3);
+
+        let merged = read_engine_state_map(&root);
+        assert_eq!(merged.get("schemaVersion").and_then(Value::as_u64), Some(1));
+        assert_eq!(merged.get("headRevision").and_then(Value::as_u64), Some(5));
+        assert_eq!(merged.get("auditStreak").and_then(Value::as_u64), Some(2));
+        assert_eq!(
+            merged.get("waves").and_then(Value::as_array).map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            merged
+                .get("activeRunConvs")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        // Nested toolProofCounts preserves agy-fast keys while adding new keys!
+        assert_eq!(merged["toolProofCounts"]["swarm"], json!(4));
+        assert_eq!(merged["toolProofCounts"]["edits"], json!(7));
+        assert_eq!(merged["toolProofCounts"]["runChecks"], json!(2));
+        assert_eq!(merged["autoProceed"], json!("full"));
+        assert_eq!(merged["activeGoal"], json!("Ship Steer 27B"));
+        assert_eq!(merged["tokenBudget"], Value::Null);
+
+        let log_path = append_proceed_decision_jsonl(
+            &root,
+            json!({"policy": "full", "reason": "super-run activation"}),
+        )
+        .unwrap();
+        assert!(log_path.is_file());
+        let log_txt = fs::read_to_string(&log_path).unwrap();
+        assert!(log_txt.contains("super-run activation"));
+        assert!(!log_txt.contains('\r'));
 
         let _ = fs::remove_dir_all(&root);
     }

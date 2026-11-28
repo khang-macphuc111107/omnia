@@ -45,6 +45,7 @@ pub mod recipes;
 pub mod sanitizer;
 pub mod sap_json;
 pub mod search;
+pub mod super_orchestrator;
 pub mod supervisor;
 pub mod swarm_runtime;
 pub mod test_time_scaling;
@@ -104,6 +105,10 @@ pub use lakeview::{
     RepetitionLoopGuard, SemanticLoopGuard, ToolCallRecord,
 };
 pub use lsp::{LazyLspManager, LspLanguage, LspLocation, LspQueryResult};
+pub use mcp_client::{
+    detect_local_agy_fast_binary, discover_mcp_configs_with_home,
+    discover_workspace_and_local_mcp_configs, DiscoveredMcpServer, McpDiscoveryReport,
+};
 pub use memory_engine::{MemoryEngine, RecallQuery, RecallResponse, RetainItemInput};
 pub use merkle::{HarnessMerkleStatus, MerkleFileEntry, MerkleIndex, MerkleRefreshDelta};
 pub use office_reader::{
@@ -133,6 +138,13 @@ pub use sanitizer::{
 };
 pub use sap_json::{repair_tool_json, SapRepairResult};
 pub use search::{HybridSearchIndex, SearchMode, SearchOutcome, SearchQueryOptions};
+pub use super_orchestrator::{
+    build_unified_capability_registry, AutoProceedPolicy, BoostEscalationDecision,
+    CleanroomAuditRecord, GoalExitEvaluation, SuperActivationReceipt, SuperMode,
+    SuperOrchestrator, GOAL_CANCELLED_MARKER, GOAL_COMPLETE_MARKER, OMNIA_WORKSPACE_CRATES,
+    SUPER_BOOST_RCA_STRIKE_THRESHOLD, SUPER_MAX_ZERO_PROGRESS_STRIKES,
+    SUPER_REQUIRED_AUDIT_STREAK, SUPER_WORKFLOW_LANES, WORKSPACE_CRATE_COUNT,
+};
 pub use supervisor::{
     pid_is_alive, process_tree_rss_bytes, spawn_supervised_command, strip_provider_secrets,
     strip_provider_secrets_tokio, ProcessSupervisor,
@@ -142,8 +154,8 @@ pub use test_time_scaling::{
     run_best_of_n, run_mcts_tree_search, run_tex_cross_validation, TestTimeScalingConfig,
 };
 pub use tools::{
-    compact_shell_output, detect_default_shell, ExtensionToolHandler, FileMutationLocks,
-    InteractiveApprover, ToolExecOutput, ToolRuntime,
+    builtin_deferred_18crate_tools, compact_shell_output, detect_default_shell,
+    ExtensionToolHandler, FileMutationLocks, InteractiveApprover, ToolExecOutput, ToolRuntime,
 };
 pub use trajectory::{TrajectoryEvent, TrajectoryRecorder};
 

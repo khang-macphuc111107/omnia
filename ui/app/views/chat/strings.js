@@ -208,7 +208,19 @@ registerStrings('chat', {
     routedAnnounce: 'Đã định tuyến thử tới {route}.',
     fencedAnnounce: 'Bộ định tuyến không chọn được tuyến nào.',
     cancelledAnnounce: 'Đã huỷ yêu cầu định tuyến.',
-    errorAnnounce: 'Không chạy thử được định tuyến.'
+    errorAnnounce: 'Không chạy thử được định tuyến.',
+    // super workflows
+    stateSuper: 'Super',
+    superPlanActive: 'Đã kích hoạt /super-plan (Spec-Oracle)',
+    superRunActive: 'Đã khởi chạy /super-run tự chủ (YOLO · Swarm 32-Cap)',
+    superProceedSet: 'Chính sách AutoProceedPolicy: {policy}',
+    superCancelled: 'Đã huỷ phiên Super đang chạy',
+    superCancelBtn: 'Huỷ Super',
+    superNote: 'Điều phối trực tiếp qua /api/v5/super/*.',
+    superAnnounce: 'Đã thực thi lệnh Super {cmd}.',
+    cmdSuperPlan: 'Soạn lệnh /super-plan (Lập kế hoạch & Spec-Oracle)',
+    cmdSuperRun: 'Soạn lệnh /super-run (Tự chủ Goal + Swarm + Boost)',
+    cmdAutoProceed: 'Soạn lệnh /auto-proceed (off | standard | full)'
   },
   en: {
     pane: 'Conversation',
@@ -405,6 +417,17 @@ registerStrings('chat', {
     routedAnnounce: 'Dry-run routed to {route}.',
     fencedAnnounce: 'The router could not pick any route.',
     cancelledAnnounce: 'Routing request cancelled.',
-    errorAnnounce: 'The routing dry run failed.'
+    errorAnnounce: 'The routing dry run failed.',
+    stateSuper: 'Super',
+    superPlanActive: 'Activated /super-plan (Spec-Oracle)',
+    superRunActive: 'Launched autonomous /super-run (YOLO · Swarm 32-Cap)',
+    superProceedSet: 'AutoProceedPolicy: {policy}',
+    superCancelled: 'Active Super workflow cancelled',
+    superCancelBtn: 'Cancel Super',
+    superNote: 'Dispatched directly via /api/v5/super/*.',
+    superAnnounce: 'Executed Super command {cmd}.',
+    cmdSuperPlan: 'Compose /super-plan (Planning & Spec-Oracle)',
+    cmdSuperRun: 'Compose /super-run (Autonomous Goal + Swarm + Boost)',
+    cmdAutoProceed: 'Compose /auto-proceed (off | standard | full)'
   }
 });

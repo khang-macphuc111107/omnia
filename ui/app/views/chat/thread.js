@@ -114,6 +114,30 @@ function routeEvent(message, index, stagger) {
           : null}${note}
       </div>`;
   }
+  if (route.state === 'super') {
+    const meta = route.superMeta || {};
+    const kind = meta.kind || 'run';
+    const tone = kind === 'cancel' ? 'warn' : kind === 'plan' ? 'info' : 'ok';
+    const labelKey =
+      kind === 'plan'
+        ? 'chat.superPlanActive'
+        : kind === 'proceed'
+          ? 'chat.superProceedSet'
+          : kind === 'cancel'
+            ? 'chat.superCancelled'
+            : 'chat.superRunActive';
+    return html`<div class="event enter" role="note" style="${style}" ${raw(attrs('super'))}>
+        <span class="status status--${tone}">${icon('zap')}${t('chat.stateSuper')}</span>
+        <span>${t(labelKey, { policy: meta.autoProceed || 'standard' })}</span>
+        ${meta.runId ? html`<span class="chip chip--mono">${meta.runId}</span>` : null}
+        <span class="chip chip--mono">autoProceed:${meta.autoProceed || 'standard'}</span>
+        <span class="chip chip--mono">tokenBudget:null</span>
+        ${kind === 'plan' || kind === 'run'
+          ? html`<button class="btn btn--ghost btn--sm" type="button" data-action="cancel-super" data-id="${message.id}" data-run-id="${meta.runId || ''}">${icon('stop', { size: 'sm' })}${t('chat.superCancelBtn')}</button>`
+          : null}
+        <span class="event__note">${t('chat.superNote')}</span>
+      </div>`;
+  }
   return html`<div class="event enter" role="note" style="${style}" ${raw(attrs('error'))}>
       <span class="status status--danger">${icon('stop')}${t('chat.stateError')}</span>
       <span>${t('chat.routeError')}: ${errorText(route.errorCode)}</span>

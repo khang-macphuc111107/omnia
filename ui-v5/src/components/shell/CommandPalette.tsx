@@ -145,10 +145,48 @@ export function scoreCommandMatch(action: CommandAction, query: string): number 
   return -1;
 }
 
+type PaletteProceedLevel = 'off' | 'standard' | 'full';
+
+async function palettePostJson(
+  url: string,
+  body?: Record<string, unknown>,
+  method: 'GET' | 'POST' = 'POST',
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; message: string }> {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+    });
+    const text = await res.text();
+    let data: Record<string, unknown> = {};
+    if (text.trim()) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          data = parsed as Record<string, unknown>;
+        }
+      } catch {
+        data = { raw: text };
+      }
+    }
+    if (!res.ok) {
+      return { ok: false, message: String(data.message ?? data.error ?? `HTTP ${res.status}`) };
+    }
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
 export function CommandPalette() {
   const [query, setQuery] = createSignal('');
   const [manualScope, setManualScope] = createSignal<PaletteScopeId>('all');
   const [selectedIndex, setSelectedIndex] = createSignal(0);
+  const [proceedPolicy, setProceedPolicy] = createSignal<PaletteProceedLevel>('standard');
   let inputRef: HTMLInputElement | undefined;
 
   const parsedQuery = createMemo(() => parseScopedQuery(query(), manualScope()));
@@ -180,6 +218,113 @@ export function CommandPalette() {
 
   const allCommands = createMemo<ScopedCommandAction[]>(() => {
     const base: ScopedCommandAction[] = [
+      // Unified Super Workflows & Instant Automation (>)
+      {
+        id: 'act-super-plan',
+        scope: 'commands',
+        title: '/super-plan (Unified Planning + Spec-Oracle)',
+        group: 'Super Workflow',
+        keywords: 'super plan super-plan unified planning spec oracle hydration auto proceed off goal',
+        run: () => {
+          const goal = composerDraft().trim() || 'Interactive unified /super-plan session';
+          openWorkbench('chat');
+          if (!composerDraft().trim()) setComposerDraft('/super-plan ');
+          void palettePostJson('/api/v5/super/plan', {
+            goal,
+            prompt: goal,
+            sessionId: activeSessionId(),
+            autoProceed: 'off',
+            goalPersistence: false,
+            tokenBudget: null,
+          }).then((res) => {
+            setProceedPolicy('off');
+            if (res.ok) {
+              const rid = String(res.data.runId ?? res.data.run_id ?? 'super-plan');
+              flashNotice(`Super-Plan hydrated (${rid}) · autoProceed: off · Spec-Oracle ready`);
+            } else {
+              flashNotice(`Super-Plan ready in composer (${res.message})`);
+            }
+          });
+        },
+      },
+      {
+        id: 'act-super-run',
+        scope: 'commands',
+        title: '/super-run (Unified Autonomous Goal + Swarm + Boost + Learn)',
+        group: 'Super Workflow',
+        keywords: 'super run super-run unified autonomous goal swarm 32 cap boost learn yolo auto proceed full',
+        run: () => {
+          const goal = composerDraft().trim() || 'Autonomous unified /super-run execution';
+          openWorkbench('lifecycle');
+          void palettePostJson('/api/v5/super/run', {
+            goal,
+            prompt: goal,
+            sessionId: activeSessionId(),
+            autoProceed: 'full',
+            goalPersistence: true,
+            approvalMode: 'yolo',
+            tokenBudget: null,
+            boost: true,
+          }).then((res) => {
+            setProceedPolicy('full');
+            if (res.ok) {
+              const rid = String(res.data.runId ?? res.data.run_id ?? 'super-run');
+              flashNotice(`Super-Run launched (${rid}) · autoProceed: full · YOLO · Swarm 32-Cap`);
+            } else {
+              flashNotice(`Super-Run Command Center opened (${res.message})`);
+            }
+          });
+        },
+      },
+      {
+        id: 'act-pro-network-lab',
+        scope: 'providers',
+        title: 'Open Pro Network & Speedtest Lab',
+        group: 'Network',
+        keywords: 'open pro network speedtest lab bufferbloat dns leak vpn proxy tls waterfall iperf',
+        run: () => openObservabilityTab('network'),
+      },
+      {
+        id: 'act-sync-global-learn',
+        scope: 'commands',
+        title: 'Sync Global /learn Lessons',
+        group: 'Learn',
+        keywords: 'sync global learn lessons antigravity codex mirror tier 2 omniadata',
+        run: () => {
+          void palettePostJson('/api/v5/learn/sync-global', {}).then((res) => {
+            if (res.ok) {
+              const count = res.data.syncedCount ?? res.data.synced ?? res.data.total ?? '';
+              flashNotice(`Global /learn synced${count !== '' ? ` (${String(count)} entries)` : ''}`);
+            } else {
+              flashNotice(`Global /learn sync note: ${res.message}`);
+            }
+          });
+        },
+      },
+      {
+        id: 'act-toggle-auto-proceed',
+        scope: 'commands',
+        title: `Toggle Auto-Proceed Policy (currently ${proceedPolicy().toUpperCase()})`,
+        group: 'Super Workflow',
+        keywords: 'toggle auto proceed policy off standard full super workflow approval',
+        run: () => {
+          const order: PaletteProceedLevel[] = ['off', 'standard', 'full'];
+          const next = order[(order.indexOf(proceedPolicy()) + 1) % order.length];
+          setProceedPolicy(next);
+          void palettePostJson('/api/v5/super/proceed', {
+            policy: next,
+            autoProceed: next,
+            sessionId: activeSessionId(),
+          }).then((res) => {
+            flashNotice(
+              res.ok
+                ? `AutoProceedPolicy -> ${next.toUpperCase()}`
+                : `AutoProceedPolicy -> ${next.toUpperCase()} (local note: ${res.message})`,
+            );
+          });
+        },
+      },
+
       // Modes (commands)
       { id: 'mode-chat', scope: 'commands', title: 'Switch to Chat Mode', group: 'Mode', keywords: 'chat conversation agent', shortcut: 'Alt+1', run: () => setTopMode('chat') },
       { id: 'mode-ide', scope: 'commands', title: 'Switch to IDE Mode', group: 'Mode', keywords: 'ide editor codemirror terminal lsp dap git', run: () => setTopMode('ide') },
@@ -471,6 +616,11 @@ export function CommandPalette() {
       setManualScope('all');
       setSelectedIndex(0);
       setTimeout(() => inputRef?.focus(), 0);
+      void palettePostJson('/api/v5/super/proceed', undefined, 'GET').then((res) => {
+        if (!res.ok) return;
+        const p = String(res.data.policy ?? res.data.autoProceed ?? res.data.auto_proceed ?? '').toLowerCase();
+        if (p === 'off' || p === 'standard' || p === 'full') setProceedPolicy(p);
+      });
     }
   });
 

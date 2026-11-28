@@ -8,9 +8,12 @@ import '../app/views/chat/strings.js';
 import { t } from '../app/core/i18n.js';
 import {
   emptyChat, sanitizeChat, buildPolicy, estimateTokens, routeFromResponse, routeFromError, receiptMessage,
-  selectedScore, rejectedScores, scoreShares, trimMessages, MAX_MESSAGES, chatKey, pendingRoute, cancelledRoute
+  selectedScore, rejectedScores, scoreShares, trimMessages, MAX_MESSAGES, chatKey, pendingRoute, cancelledRoute,
+  superRouteFromResult
 } from '../app/views/chat/local-store.js';
 import { createRunTracker } from '../app/views/chat/run-control.js';
+import { parseSuperSlashCommand, dispatchSuperSlashCommand } from '../app/views/chat/super-commands.js';
+import { api } from '../app/api.js';
 import {
   diffEdit, insertAtCaret, wrapInline, toggleLinePrefix, insertBlock, tableSnippet, insertToken, removeToken
 } from '../app/views/chat/format.js';
@@ -503,4 +506,153 @@ test('AUD-24: createRunTracker aborts AbortController, calls /api/chat/stop + /a
   });
   assert.equal(retried.state, 'routed');
   assert.equal(retried.selectedCandidateId, 'omnia-primary');
+});
+
+// ---------------------------------------------------------------------------
+// Steer #27B: fallback ui executable /super-plan, /super-run, /boost & /auto-proceed
+// ---------------------------------------------------------------------------
+
+test('Steer #27B: api.super exposes status, capabilities, plan, run, cancel, proceed, setProceed', () => {
+  assert.equal(typeof api.super.status, 'function');
+  assert.equal(typeof api.super.capabilities, 'function');
+  assert.equal(typeof api.super.plan, 'function');
+  assert.equal(typeof api.super.run, 'function');
+  assert.equal(typeof api.super.cancel, 'function');
+  assert.equal(typeof api.super.proceed, 'function');
+  assert.equal(typeof api.super.setProceed, 'function');
+});
+
+test('Steer #27B: parseSuperSlashCommand recognizes /super-plan, /super-run, /boost, /auto-proceed, /super-cancel', () => {
+  assert.equal(parseSuperSlashCommand('normal prompt'), null);
+  assert.equal(parseSuperSlashCommand('/super-planx typo'), null);
+  assert.deepEqual(parseSuperSlashCommand('/super-plan Build spec oracle'), {
+    kind: 'plan',
+    cmd: '/super-plan',
+    goal: 'Build spec oracle',
+    raw: '/super-plan Build spec oracle'
+  });
+  assert.deepEqual(parseSuperSlashCommand('/super-run Ship full release'), {
+    kind: 'run',
+    cmd: '/super-run',
+    goal: 'Ship full release',
+    boost: false,
+    raw: '/super-run Ship full release'
+  });
+  assert.deepEqual(parseSuperSlashCommand('/boost Parallel audit'), {
+    kind: 'run',
+    cmd: '/boost',
+    goal: 'Parallel audit',
+    boost: true,
+    raw: '/boost Parallel audit'
+  });
+  assert.deepEqual(parseSuperSlashCommand('/auto-proceed FULL'), {
+    kind: 'proceed',
+    cmd: '/auto-proceed',
+    policy: 'full',
+    invalidArg: '',
+    raw: '/auto-proceed FULL'
+  });
+  assert.deepEqual(parseSuperSlashCommand('/auto-proceed invalid-mode'), {
+    kind: 'proceed',
+    cmd: '/auto-proceed',
+    policy: '',
+    invalidArg: 'invalid-mode',
+    raw: '/auto-proceed invalid-mode'
+  });
+  assert.deepEqual(parseSuperSlashCommand('/super-cancel sr-42'), {
+    kind: 'cancel',
+    cmd: '/super-cancel',
+    runId: 'sr-42',
+    raw: '/super-cancel sr-42'
+  });
+});
+
+test('Steer #27B: dispatchSuperSlashCommand enforces /super-plan, /super-run, /auto-proceed & /super-cancel contracts', async () => {
+  const calls = [];
+  const client = {
+    super: {
+      async plan(body) {
+        calls.push({ fn: 'plan', body });
+        return { ok: true, runId: 'sp-101', phase: 'spec-oracle', auditStreak: 0 };
+      },
+      async run(body) {
+        calls.push({ fn: 'run', body });
+        return { ok: true, runId: 'sr-202', phase: 'swarm-32', auditStreak: 2 };
+      },
+      async proceed() {
+        calls.push({ fn: 'proceed' });
+        return { ok: true, policy: 'standard' };
+      },
+      async setProceed(policy) {
+        calls.push({ fn: 'setProceed', policy });
+        return { ok: true, policy };
+      },
+      async cancel(body) {
+        calls.push({ fn: 'cancel', body });
+        return { ok: true, status: 'cancelled', marker: '<!-- GOAL_CANCELLED -->', runId: body.runId };
+      }
+    }
+  };
+
+  const planRes = await dispatchSuperSlashCommand(parseSuperSlashCommand('/super-plan Draft RFC'), { client, sessionId: 'sess-a' });
+  assert.equal(planRes.mode, 'super-plan');
+  assert.equal(planRes.runId, 'sp-101');
+  assert.equal(planRes.autoProceed, 'off');
+  assert.equal(planRes.goalPersistence, false);
+  assert.equal(planRes.tokenBudget, null);
+  assert.equal(calls[0].fn, 'plan');
+  assert.equal(calls[0].body.autoProceed, 'off');
+  assert.equal(calls[0].body.goalPersistence, false);
+  assert.equal(calls[0].body.tokenBudget, null);
+
+  const runRes = await dispatchSuperSlashCommand(parseSuperSlashCommand('/super-run Execute mission'), { client, sessionId: 'sess-a' });
+  assert.equal(runRes.mode, 'super-run');
+  assert.equal(runRes.runId, 'sr-202');
+  assert.equal(runRes.autoProceed, 'full');
+  assert.equal(runRes.goalPersistence, true);
+  assert.equal(runRes.approvalMode, 'yolo');
+  assert.equal(runRes.tokenBudget, null);
+  assert.equal(calls[1].body.approvalMode, 'yolo');
+  assert.equal(calls[1].body.tokenBudget, null);
+
+  const boostRes = await dispatchSuperSlashCommand(parseSuperSlashCommand('/boost Deep sweep'), { client, sessionId: 'sess-a' });
+  assert.equal(boostRes.boost, true);
+  assert.equal(calls[2].body.boost, true);
+
+  const getPol = await dispatchSuperSlashCommand(parseSuperSlashCommand('/auto-proceed'), { client, sessionId: 'sess-a' });
+  assert.equal(getPol.autoProceed, 'standard');
+  const setPol = await dispatchSuperSlashCommand(parseSuperSlashCommand('/auto-proceed full'), { client, sessionId: 'sess-a' });
+  assert.equal(setPol.autoProceed, 'full');
+
+  await assert.rejects(
+    () => dispatchSuperSlashCommand(parseSuperSlashCommand('/auto-proceed bogus'), { client, sessionId: 'sess-a' }),
+    (err) => err && err.code === 'invalid_policy'
+  );
+
+  const cancelRes = await dispatchSuperSlashCommand(parseSuperSlashCommand('/super-cancel sr-202'), { client, sessionId: 'sess-a' });
+  assert.equal(cancelRes.kind, 'cancel');
+  assert.equal(cancelRes.marker, '<!-- GOAL_CANCELLED -->');
+});
+
+test('Steer #27B: superRouteFromResult persists through sanitizeChat and renders escaped super event card with cancel action', () => {
+  const policy = buildPolicy('/super-run demo');
+  const route = superRouteFromResult(
+    { kind: 'run', mode: 'super-run', runId: 'sr-99', autoProceed: 'full', tokenBudget: null, status: 'SUPER_RUN_ACTIVE' },
+    policy
+  );
+  const stored = sanitizeChat({
+    v: 1,
+    messages: [{ id: 'm-super', role: 'user', markdown: `/super-run ${EVIL}`, createdAt: 100, attachments: [], route }],
+    draft: { text: '', rev: 0, attachments: [] }
+  });
+  assert.equal(stored.messages[0].route.state, 'super');
+  assert.equal(stored.messages[0].route.superMeta.runId, 'sr-99');
+
+  const out = String(threadHtml({ sessionState: 'ready', sessionId: 's1', error: null, chat: stored, bannerHidden: true, stagger: false }));
+  assert.equal(out.includes(EVIL), false);
+  assert.match(out, /data-state="super"/);
+  assert.match(out, /sr-99/);
+  assert.match(out, /autoProceed:full/);
+  assert.match(out, /tokenBudget:null/);
+  assert.match(out, /data-action="cancel-super" data-id="m-super" data-run-id="sr-99"/);
 });

@@ -130,6 +130,7 @@ omnia-media-capture = { path = "rust/omnia-media-capture" }
 omnia-agent = { path = "rust/omnia-agent" }
 omnia-downloader = { path = "rust/omnia-downloader" }
 omnia-notebook = { path = "rust/omnia-notebook" }
+omnia-computer = { path = "rust/omnia-computer" }
 
 [profile.dev]
 incremental = true

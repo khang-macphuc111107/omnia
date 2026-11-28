@@ -38,7 +38,7 @@ async fn run_smoke(cfg: StudioConfig) -> ExitCode {
     };
 
     let addr = server.local_addr();
-    let probe_res = smoke_probe_health(addr).await;
+    let probe_res = smoke_probe_suite(addr).await;
     let base_url = server.base_url();
     server.shutdown().await;
 
@@ -54,31 +54,38 @@ async fn run_smoke(cfg: StudioConfig) -> ExitCode {
     }
 }
 
-async fn smoke_probe_health(addr: std::net::SocketAddr) -> Result<String, String> {
+async fn smoke_probe_suite(addr: std::net::SocketAddr) -> Result<String, String> {
+    let health = smoke_probe_endpoint(addr, "/api/health").await?;
+    smoke_probe_endpoint(addr, "/api/v5/super/status").await?;
+    smoke_probe_endpoint(addr, "/api/v5/super/capabilities").await?;
+    smoke_probe_endpoint(addr, "/api/v5/computer/status").await?;
+    Ok(health)
+}
+
+async fn smoke_probe_endpoint(addr: std::net::SocketAddr, path: &str) -> Result<String, String> {
     let mut stream = TcpStream::connect(addr)
         .await
-        .map_err(|e| format!("connect error: {e}"))?;
+        .map_err(|e| format!("connect error on {path}: {e}"))?;
     let host_header = if addr.is_ipv6() {
         format!("[{}]:{}", addr.ip(), addr.port())
     } else {
         format!("{}:{}", addr.ip(), addr.port())
     };
-    let req =
-        format!("GET /api/health HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n");
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n");
     stream
         .write_all(req.as_bytes())
         .await
-        .map_err(|e| format!("write error: {e}"))?;
+        .map_err(|e| format!("write error on {path}: {e}"))?;
 
     let mut resp = Vec::new();
     stream
         .read_to_end(&mut resp)
         .await
-        .map_err(|e| format!("read error: {e}"))?;
+        .map_err(|e| format!("read error on {path}: {e}"))?;
     let text = String::from_utf8_lossy(&resp);
     let first_line = text.lines().next().unwrap_or_default().to_string();
     if !first_line.contains("200") || !text.contains("\"ok\":true") {
-        return Err(format!("unexpected health response: {first_line}"));
+        return Err(format!("unexpected response for {path}: {first_line}"));
     }
     Ok(first_line)
 }
@@ -92,7 +99,10 @@ async fn run_forever(cfg: StudioConfig) -> ExitCode {
         }
     };
 
-    println!("Omnia Studio listening on {}", server.base_url());
+    println!(
+        "Omnia Studio listening on {} (Super v5 workflows + 21 Computer Use tools)",
+        server.base_url()
+    );
     std::future::pending::<()>().await;
     server.shutdown().await;
     ExitCode::SUCCESS

@@ -558,6 +558,36 @@ export const api = {
   skills: {
     /** → { ok, query, total, skills:[{name,description,path,category,score}] } */
     search: (q = '', opts) => get('/api/skills', { q }, opts)
+  },
+
+  super: {
+    /** → { ok, mode, phase, autoProceed, goalPersistence, auditStreak, tokenBudget:null, activeGoal, steers, runId } */
+    status: (opts) => get('/api/v5/super/status', null, opts),
+    /** → { ok, crates, agentTools, computerTools, skills, mcpServers, plugins, workflows, lanes } */
+    capabilities: (opts) => get('/api/v5/super/capabilities', null, opts),
+    /** → hydrated /super-plan execution envelope (autoProceed:'off', goalPersistence:false, tokenBudget:null) */
+    plan: (body = {}, opts) =>
+      post('/api/v5/super/plan', {
+        autoProceed: 'off',
+        goalPersistence: false,
+        tokenBudget: null,
+        ...body
+      }, opts),
+    /** → live /super-run autonomous envelope (autoProceed:'full', goalPersistence:true, approvalMode:'yolo', tokenBudget:null) */
+    run: (body = {}, opts) =>
+      post('/api/v5/super/run', {
+        autoProceed: 'full',
+        goalPersistence: true,
+        approvalMode: 'yolo',
+        tokenBudget: null,
+        ...body
+      }, opts),
+    /** → { ok, status:'cancelled', marker:'<!-- GOAL_CANCELLED -->' } */
+    cancel: (body = {}, opts) => post('/api/v5/super/cancel', body, opts),
+    /** → { ok, policy:'off'|'standard'|'full' } */
+    proceed: (opts) => get('/api/v5/super/proceed', null, opts),
+    /** → { ok, policy:'off'|'standard'|'full' } */
+    setProceed: (policy, opts) => post('/api/v5/super/proceed', { policy, autoProceed: policy }, opts)
   }
 };
 

@@ -2,7 +2,8 @@
 //! Host Hardware/WAL/Ports, SQLite Router Lab, CredMan V5, Smart Alerts, Side-by-Side Diffing,
 //! One-Click Exports (JSON/CSV/Markdown/Diagnostic), Privacy Mask, and Steer Controls.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,11 +16,14 @@ use omnia_routing::{CircuitState, QuotaState};
 use omnia_workspace_ops::hardware::collect_host_system_snapshot;
 use omnia_workspace_ops::net_diag::{
     default_upstream_targets, inspect_dns_and_benchmark, inspect_network_identity,
-    inspect_proxy_tls_and_endpoints, run_speedtest_streaming, DnsBenchOptions, DnsIntelReport,
-    EndpointProbeTarget, NetDiagOptions, NetworkIdentityReport, SpeedtestConfig,
-    SpeedtestProgressEvent, SpeedtestResult,
+    inspect_proxy_tls_and_endpoints, normalize_custom_probe_url, probe_tls_host,
+    run_bounded_traceroute, run_global_latency_radar, run_speedtest_streaming,
+    validate_custom_dns_ip, DnsBenchOptions, DnsIntelReport, EndpointProbeTarget, NetDiagOptions,
+    NetworkIdentityReport, PassiveMonitorState, SpeedtestConfig, SpeedtestProgressEvent,
+    SpeedtestResult,
 };
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
 
@@ -31,11 +35,65 @@ use crate::telemetry::inspect_sqlite_wal_files;
 
 const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
-/// Runtime state for live on-demand speedtests and cached observatory diagnostics.
+/// Editable Smart Alert threshold rules persisted under `studio_data_dir()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertRulesConfig {
+    #[serde(default = "default_ttft_p95_warn_ms")]
+    pub ttft_p95_warn_ms: f64,
+    #[serde(default = "default_cache_hit_min_pct")]
+    pub cache_hit_min_pct: f64,
+    #[serde(default = "default_bufferbloat_warn_ms")]
+    pub bufferbloat_warn_ms: f64,
+    #[serde(default = "default_context_warn_pct")]
+    pub context_warn_pct: f64,
+    #[serde(default = "default_disk_free_warn_pct")]
+    pub disk_free_warn_pct: f64,
+    #[serde(default = "default_error_rate_warn_pct")]
+    pub error_rate_warn_pct: f64,
+}
+
+fn default_ttft_p95_warn_ms() -> f64 {
+    5_000.0
+}
+fn default_cache_hit_min_pct() -> f64 {
+    70.0
+}
+fn default_bufferbloat_warn_ms() -> f64 {
+    60.0
+}
+fn default_context_warn_pct() -> f64 {
+    80.0
+}
+fn default_disk_free_warn_pct() -> f64 {
+    10.0
+}
+fn default_error_rate_warn_pct() -> f64 {
+    10.0
+}
+
+impl Default for AlertRulesConfig {
+    fn default() -> Self {
+        Self {
+            ttft_p95_warn_ms: default_ttft_p95_warn_ms(),
+            cache_hit_min_pct: default_cache_hit_min_pct(),
+            bufferbloat_warn_ms: default_bufferbloat_warn_ms(),
+            context_warn_pct: default_context_warn_pct(),
+            disk_free_warn_pct: default_disk_free_warn_pct(),
+            error_rate_warn_pct: default_error_rate_warn_pct(),
+        }
+    }
+}
+
+/// Runtime state for live on-demand speedtests, passive monitor, smart alert acks/rules, and cached diagnostics.
 pub struct ObservatoryState {
     active_run: Mutex<Option<ActiveSpeedtestRun>>,
     last_identity: Mutex<Option<NetworkIdentityReport>>,
     last_dns: Mutex<Option<DnsIntelReport>>,
+    passive_monitor: PassiveMonitorState,
+    alert_acks: Mutex<BTreeSet<String>>,
+    alert_rules: Mutex<AlertRulesConfig>,
+    hydrated_from_disk: Mutex<bool>,
 }
 
 struct ActiveSpeedtestRun {
@@ -54,6 +112,10 @@ impl Default for ObservatoryState {
             active_run: Mutex::new(None),
             last_identity: Mutex::new(None),
             last_dns: Mutex::new(None),
+            passive_monitor: PassiveMonitorState::new(),
+            alert_acks: Mutex::new(BTreeSet::new()),
+            alert_rules: Mutex::new(AlertRulesConfig::default()),
+            hydrated_from_disk: Mutex::new(false),
         }
     }
 }
@@ -62,6 +124,86 @@ impl ObservatoryState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn ensure_hydrated(&self, data_dir: &Path) {
+        let mut flag = self.hydrated_from_disk.lock();
+        if *flag {
+            return;
+        }
+        *flag = true;
+        drop(flag);
+
+        let rules_path = data_dir.join("alert_rules_v5.json");
+        if let Ok(raw) = std::fs::read_to_string(&rules_path) {
+            if let Ok(parsed) = serde_json::from_str::<AlertRulesConfig>(&raw) {
+                *self.alert_rules.lock() = parsed;
+            }
+        }
+        let acks_path = data_dir.join("alert_acks_v5.json");
+        if let Ok(raw) = std::fs::read_to_string(&acks_path) {
+            if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&raw) {
+                let mut g = self.alert_acks.lock();
+                for id in parsed {
+                    g.insert(id);
+                }
+            }
+        }
+    }
+
+    fn write_json_atomic(path: &Path, val: &Value) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+        if let Ok(bytes) = serde_json::to_vec_pretty(val) {
+            if std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
+                let _ = std::fs::write(path, &bytes);
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+
+    fn current_rules(&self, data_dir: &Path) -> AlertRulesConfig {
+        self.ensure_hydrated(data_dir);
+        self.alert_rules.lock().clone()
+    }
+
+    fn update_rules(&self, data_dir: &Path, next: AlertRulesConfig) -> AlertRulesConfig {
+        self.ensure_hydrated(data_dir);
+        let clamped = AlertRulesConfig {
+            ttft_p95_warn_ms: next.ttft_p95_warn_ms.clamp(200.0, 120_000.0),
+            cache_hit_min_pct: next.cache_hit_min_pct.clamp(0.0, 100.0),
+            bufferbloat_warn_ms: next.bufferbloat_warn_ms.clamp(5.0, 5_000.0),
+            context_warn_pct: next.context_warn_pct.clamp(10.0, 99.0),
+            disk_free_warn_pct: next.disk_free_warn_pct.clamp(1.0, 50.0),
+            error_rate_warn_pct: next.error_rate_warn_pct.clamp(0.5, 100.0),
+        };
+        *self.alert_rules.lock() = clamped.clone();
+        if let Ok(v) = serde_json::to_value(&clamped) {
+            Self::write_json_atomic(&data_dir.join("alert_rules_v5.json"), &v);
+        }
+        clamped
+    }
+
+    fn set_alert_ack(&self, data_dir: &Path, alert_id: &str, acked: bool) -> Vec<String> {
+        self.ensure_hydrated(data_dir);
+        let list: Vec<String> = {
+            let mut g = self.alert_acks.lock();
+            if acked {
+                g.insert(alert_id.to_string());
+            } else {
+                g.remove(alert_id);
+            }
+            g.iter().cloned().collect()
+        };
+        Self::write_json_atomic(&data_dir.join("alert_acks_v5.json"), &json!(list));
+        list
+    }
+
+    fn is_alert_acked(&self, data_dir: &Path, alert_id: &str) -> bool {
+        self.ensure_hydrated(data_dir);
+        self.alert_acks.lock().contains(alert_id)
     }
 
     #[must_use]
@@ -88,15 +230,22 @@ pub fn is_known_route(path: &str) -> bool {
     matches!(
         path,
         "/api/v5/network/overview"
+            | "/api/v5/network/snapshot"
             | "/api/v5/network/identity"
             | "/api/network/identity"
             | "/api/v5/network/dns"
             | "/api/v5/network/dns/benchmark"
             | "/api/v5/network/proxy-tls"
+            | "/api/v5/network/tls-probe"
+            | "/api/v5/network/radar"
+            | "/api/v5/network/traceroute"
+            | "/api/v5/network/monitor"
+            | "/api/v5/network/speedtest"
             | "/api/v5/network/speedtest/start"
             | "/api/v5/network/speedtest/cancel"
             | "/api/v5/network/speedtest/stream"
             | "/api/v5/network/speedtest/history"
+            | "/api/v5/observatory/summary"
             | "/api/v5/telemetry/summary"
             | "/api/v5/telemetry/requests"
             | "/api/v5/telemetry/record"
@@ -113,6 +262,8 @@ pub fn is_known_route(path: &str) -> bool {
             | "/api/v5/creds"
             | "/api/v5/creds/delete"
             | "/api/v5/alerts"
+            | "/api/v5/alerts/ack"
+            | "/api/v5/alerts/rules"
             | "/api/v5/diff/sessions"
             | "/api/v5/diff/speedtests"
             | "/api/v5/diff/models"
@@ -123,11 +274,13 @@ pub fn is_known_route(path: &str) -> bool {
     )
 }
 
-/// Dispatches all `/api/v5/{network,telemetry,system,hardware,router,creds,alerts,diff,export,steer}/*` routes.
+/// Dispatches all `/api/v5/{network,observatory,telemetry,system,hardware,router,creds,alerts,diff,export,steer}/*` routes.
 pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<HttpResponse> {
     let resp = match (req.method.as_str(), req.path.as_str()) {
-        // 1. Network Observatory & On-Demand Streaming Speedtest
-        ("GET", "/api/v5/network/overview") => handle_network_overview(state, req).await,
+        // 1. Network Observatory, Pro Speedtest, Radar, Traceroute, Monitor & TLS Probe
+        ("GET", "/api/v5/network/overview")
+        | ("GET", "/api/v5/network/snapshot")
+        | ("POST", "/api/v5/network/snapshot") => handle_network_overview(state, req).await,
         ("GET", "/api/v5/network/identity")
         | ("POST", "/api/v5/network/identity")
         | ("GET", "/api/network/identity") => handle_network_identity(state, req).await,
@@ -138,12 +291,20 @@ pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<Htt
         ("GET", "/api/v5/network/proxy-tls") | ("POST", "/api/v5/network/proxy-tls") => {
             handle_network_proxy_tls(state, req).await
         }
-        ("POST", "/api/v5/network/speedtest/start") => handle_speedtest_start(state, req),
+        ("POST", "/api/v5/network/tls-probe") => handle_network_tls_probe(req).await,
+        ("GET", "/api/v5/network/radar") => handle_network_radar(req).await,
+        ("POST", "/api/v5/network/traceroute") => handle_network_traceroute(req).await,
+        ("GET", "/api/v5/network/monitor") => handle_network_monitor_get(state, req),
+        ("POST", "/api/v5/network/monitor") => handle_network_monitor_post(state, req).await,
+        ("POST", "/api/v5/network/speedtest/start") | ("POST", "/api/v5/network/speedtest") => {
+            handle_speedtest_start(state, req)
+        }
         ("POST", "/api/v5/network/speedtest/cancel") => handle_speedtest_cancel(state, req),
         ("GET", "/api/v5/network/speedtest/stream") => handle_speedtest_stream(state, req),
         ("GET", "/api/v5/network/speedtest/history") => handle_speedtest_history(state, req),
 
-        // 2. Lab-Grade AI Telemetry & Statistical Forensics
+        // 2. Lab-Grade AI Telemetry, Observatory Summary & Statistical Forensics
+        ("GET", "/api/v5/observatory/summary") => handle_observatory_summary(state, req).await,
         ("GET", "/api/v5/telemetry/summary") => handle_telemetry_summary(state, req),
         ("GET", "/api/v5/telemetry/requests") => handle_telemetry_requests(state, req),
         ("POST", "/api/v5/telemetry/record") => handle_telemetry_record(state, req),
@@ -169,8 +330,13 @@ pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<Htt
         ("POST", "/api/v5/creds") => handle_creds_set(req),
         ("POST", "/api/v5/creds/delete") => handle_creds_delete(req),
 
-        // 6. Smart Alerts Engine
-        ("GET", "/api/v5/alerts") => handle_smart_alerts(state, req).await,
+        // 6. Smart Alerts Engine, Ack & Editable Threshold Rules
+        ("GET", "/api/v5/alerts") | ("POST", "/api/v5/alerts") => {
+            handle_smart_alerts(state, req).await
+        }
+        ("POST", "/api/v5/alerts/ack") => handle_smart_alerts_ack(state, req),
+        ("GET", "/api/v5/alerts/rules") => handle_smart_alerts_rules_get(state, req),
+        ("POST", "/api/v5/alerts/rules") => handle_smart_alerts_rules_post(state, req),
 
         // 7. Side-by-Side Comparison / Diff Endpoints
         ("GET", "/api/v5/diff/sessions") => handle_diff_sessions(state, req),
@@ -264,17 +430,64 @@ fn configured_upstream_targets() -> Vec<EndpointProbeTarget> {
 // =========================================================================
 
 async fn handle_network_overview(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = parse_body(req).unwrap_or_else(|_| json!({}));
     let probe_public = req
         .query_param("probePublic")
         .or_else(|| req.query_param("probe_public"))
         .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false"))
+        .or_else(|| body.get("probePublic").and_then(Value::as_bool))
         .unwrap_or(true);
     let force = req
         .query_param("force")
-        .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true"));
-    let targets = configured_upstream_targets();
-    let state_c = Arc::clone(state);
+        .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true"))
+        || body.get("force").and_then(Value::as_bool) == Some(true);
 
+    let custom_dns_raw = req
+        .query_param("customDns")
+        .or_else(|| req.query_param("custom_dns"))
+        .or_else(|| req.query_param("custom_dns_ip"))
+        .or_else(|| pick_str(&body, &["customDns", "custom_dns", "custom_dns_ip"]).map(ToString::to_string));
+    let custom_dns_ip = if let Some(ref raw) = custom_dns_raw {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            match validate_custom_dns_ip(trimmed) {
+                Ok(valid) => Some(valid),
+                Err(msg) => return HttpResponse::error(400, "invalid_dns_ip", &msg),
+            }
+        }
+    } else {
+        None
+    };
+
+    let custom_host_raw = req
+        .query_param("customHost")
+        .or_else(|| req.query_param("custom_host"))
+        .or_else(|| pick_str(&body, &["customHost", "custom_host"]).map(ToString::to_string));
+    let mut targets = configured_upstream_targets();
+    if let Some(ref raw) = custom_host_raw {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            match normalize_custom_probe_url(trimmed) {
+                Ok(tgt) => {
+                    if !targets.iter().any(|t| t.url == tgt.url) {
+                        targets.push(tgt);
+                    }
+                }
+                Err(msg) => {
+                    let code = if msg.to_ascii_lowercase().contains("forbidden") {
+                        403
+                    } else {
+                        400
+                    };
+                    return HttpResponse::error(code, "invalid_custom_host", &msg);
+                }
+            }
+        }
+    }
+
+    let state_c = Arc::clone(state);
     let res = tokio::task::spawn_blocking(move || {
         let identity = inspect_network_identity(&NetDiagOptions {
             probe_public_ip: probe_public,
@@ -282,24 +495,33 @@ async fn handle_network_overview(state: &Arc<StudioState>, req: &HttpRequest) ->
             force_refresh: force,
         });
         *state_c.observatory.last_identity.lock() = Some(identity.clone());
-        let dns_passive = inspect_dns_and_benchmark(&DnsBenchOptions {
-            run_benchmark: false,
+        let run_custom_dns = custom_dns_ip.is_some();
+        let dns_probe = inspect_dns_and_benchmark(&DnsBenchOptions {
+            run_benchmark: run_custom_dns,
             public_ipv4_hint: identity.public_ipv4.clone(),
+            custom_dns_ip,
             ..DnsBenchOptions::default()
         });
-        let proxy_tls = inspect_proxy_tls_and_endpoints(&targets, force);
-        (identity, dns_passive, proxy_tls)
+        if run_custom_dns {
+            *state_c.observatory.last_dns.lock() = Some(dns_probe.clone());
+        }
+        let proxy_tls = inspect_proxy_tls_and_endpoints(&targets, force || custom_host_raw.is_some());
+        (identity, dns_probe, proxy_tls, run_custom_dns)
     })
     .await;
 
     match res {
-        Ok((identity, dns_passive, proxy_tls)) => {
-            let last_dns = state
-                .observatory
-                .last_dns
-                .lock()
-                .clone()
-                .unwrap_or(dns_passive);
+        Ok((identity, dns_probe, proxy_tls, used_custom_dns)) => {
+            let last_dns = if used_custom_dns {
+                dns_probe
+            } else {
+                state
+                    .observatory
+                    .last_dns
+                    .lock()
+                    .clone()
+                    .unwrap_or(dns_probe)
+            };
             let mut dns_val = serde_json::to_value(&last_dns).unwrap_or_else(|_| json!({}));
             if let Some(obj) = dns_val.as_object_mut() {
                 obj.insert("provenance".to_string(), json!("LIVE"));
@@ -311,6 +533,7 @@ async fn handle_network_overview(state: &Arc<StudioState>, req: &HttpRequest) ->
             let history = state.ops.list_speedtests(10).unwrap_or_default();
             let latest_speedtest = history.first().cloned();
             let active_speedtest = state.observatory.active_run_summary();
+            let monitor = state.observatory.passive_monitor.snapshot();
             json_ok_masked(
                 req,
                 json!({
@@ -322,6 +545,7 @@ async fn handle_network_overview(state: &Arc<StudioState>, req: &HttpRequest) ->
                     "lastSpeedtest": latest_speedtest,
                     "recentSpeedtests": history,
                     "activeSpeedtest": active_speedtest,
+                    "monitor": monitor,
                     "autoSpeedtestDisabled": true,
                 }),
             )
@@ -363,7 +587,8 @@ async fn handle_network_dns(state: &Arc<StudioState>, req: &HttpRequest) -> Http
     let body = parse_body(req).unwrap_or_else(|_| json!({}));
     let domain = req
         .query_param("domain")
-        .or_else(|| pick_str(&body, &["domain", "queryDomain"]).map(ToString::to_string))
+        .or_else(|| req.query_param("queryDomain"))
+        .or_else(|| pick_str(&body, &["domain", "queryDomain", "query_domain"]).map(ToString::to_string))
         .unwrap_or_else(|| "example.com".to_string());
     let trials = req
         .query_param("trials")
@@ -376,6 +601,25 @@ async fn handle_network_dns(state: &Arc<StudioState>, req: &HttpRequest) -> Http
         .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false"))
         .or_else(|| body.get("runBenchmark").and_then(Value::as_bool))
         .unwrap_or(true);
+    let custom_dns_raw = req
+        .query_param("customDns")
+        .or_else(|| req.query_param("custom_dns"))
+        .or_else(|| req.query_param("custom_dns_ip"))
+        .or_else(|| pick_str(&body, &["customDns", "custom_dns", "custom_dns_ip"]).map(ToString::to_string));
+    let custom_dns_ip = if let Some(ref raw) = custom_dns_raw {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            match validate_custom_dns_ip(trimmed) {
+                Ok(valid) => Some(valid),
+                Err(msg) => return HttpResponse::error(400, "invalid_dns_ip", &msg),
+            }
+        }
+    } else {
+        None
+    };
+
     let pub_hint = state
         .observatory
         .last_identity
@@ -391,6 +635,7 @@ async fn handle_network_dns(state: &Arc<StudioState>, req: &HttpRequest) -> Http
             timeout_ms: 1_000,
             run_benchmark: run_bench,
             public_ipv4_hint: pub_hint,
+            custom_dns_ip,
         });
         *state_c.observatory.last_dns.lock() = Some(rep.clone());
         rep
@@ -404,7 +649,7 @@ async fn handle_network_dns(state: &Arc<StudioState>, req: &HttpRequest) -> Http
                     "dns_leak_detected",
                     None,
                     json!({
-                        "severity": "warn",
+                        "severity": "warning",
                         "kind": "dns_leak",
                         "message": rep.leak_warning,
                     }),
@@ -422,13 +667,199 @@ async fn handle_network_proxy_tls(_state: &Arc<StudioState>, req: &HttpRequest) 
         .query_param("force")
         .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true"))
         || body.get("force").and_then(Value::as_bool) == Some(true);
-    let targets = configured_upstream_targets();
-    match tokio::task::spawn_blocking(move || inspect_proxy_tls_and_endpoints(&targets, force))
-        .await
+    let custom_host_raw = req
+        .query_param("customHost")
+        .or_else(|| req.query_param("custom_host"))
+        .or_else(|| pick_str(&body, &["customHost", "custom_host"]).map(ToString::to_string));
+
+    let mut targets = configured_upstream_targets();
+    let has_custom = if let Some(ref raw) = custom_host_raw {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            false
+        } else {
+            match normalize_custom_probe_url(trimmed) {
+                Ok(tgt) => {
+                    if !targets.iter().any(|t| t.url == tgt.url) {
+                        targets.push(tgt);
+                    }
+                    true
+                }
+                Err(msg) => {
+                    let code = if msg.to_ascii_lowercase().contains("forbidden") {
+                        403
+                    } else {
+                        400
+                    };
+                    return HttpResponse::error(code, "invalid_custom_host", &msg);
+                }
+            }
+        }
+    } else {
+        false
+    };
+
+    match tokio::task::spawn_blocking(move || {
+        inspect_proxy_tls_and_endpoints(&targets, force || has_custom)
+    })
+    .await
     {
         Ok(rep) => json_ok_masked(req, json!({ "ok": true, "proxyTls": rep })),
         Err(e) => HttpResponse::error(500, "network_proxy_tls_failed", &e.to_string()),
     }
+}
+
+async fn handle_network_tls_probe(req: &HttpRequest) -> HttpResponse {
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let Some(host) = req
+        .query_param("host")
+        .or_else(|| req.query_param("target"))
+        .or_else(|| pick_str(&body, &["host", "target"]).map(ToString::to_string))
+    else {
+        return HttpResponse::error(400, "missing_host", "Field 'host' is required.");
+    };
+    match tokio::task::spawn_blocking(move || probe_tls_host(&host)).await {
+        Ok(Ok(rep)) => {
+            let mut val = serde_json::to_value(&rep).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("ok".to_string(), json!(true));
+                obj.insert("tls".to_string(), serde_json::to_value(&rep).unwrap_or(Value::Null));
+            }
+            json_ok_masked(req, val)
+        }
+        Ok(Err(msg)) => {
+            let code = if msg.to_ascii_lowercase().contains("forbidden")
+                || msg.to_ascii_lowercase().contains("ssrf")
+            {
+                403
+            } else {
+                400
+            };
+            HttpResponse::error(code, "invalid_tls_host", &msg)
+        }
+        Err(e) => HttpResponse::error(500, "tls_probe_failed", &e.to_string()),
+    }
+}
+
+async fn handle_network_radar(req: &HttpRequest) -> HttpResponse {
+    match tokio::task::spawn_blocking(run_global_latency_radar).await {
+        Ok(rep) => {
+            let regions_val = serde_json::to_value(&rep.regions).unwrap_or_else(|_| json!([]));
+            let mut val = serde_json::to_value(&rep).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("ok".to_string(), json!(true));
+                obj.insert("probes".to_string(), regions_val);
+            }
+            json_ok_masked(req, val)
+        }
+        Err(e) => HttpResponse::error(500, "radar_probe_failed", &e.to_string()),
+    }
+}
+
+async fn handle_network_traceroute(req: &HttpRequest) -> HttpResponse {
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let Some(target) = req
+        .query_param("target")
+        .or_else(|| req.query_param("host"))
+        .or_else(|| pick_str(&body, &["target", "host"]).map(ToString::to_string))
+    else {
+        return HttpResponse::error(400, "missing_target", "Field 'target' is required.");
+    };
+    let max_hops = req
+        .query_param("maxHops")
+        .or_else(|| req.query_param("max_hops"))
+        .and_then(|s| s.parse::<u64>().ok())
+        .or_else(|| {
+            body.get("maxHops")
+                .or_else(|| body.get("max_hops"))
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(12)
+        .clamp(1, 12) as u8;
+
+    match tokio::task::spawn_blocking(move || run_bounded_traceroute(&target, max_hops)).await {
+        Ok(Ok(rep)) => {
+            let mut val = serde_json::to_value(&rep).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("ok".to_string(), json!(true));
+            }
+            json_ok_masked(req, val)
+        }
+        Ok(Err(msg)) => {
+            let code = if msg.to_ascii_lowercase().contains("forbidden")
+                || msg.to_ascii_lowercase().contains("ssrf")
+            {
+                403
+            } else {
+                400
+            };
+            HttpResponse::error(code, "traceroute_rejected", &msg)
+        }
+        Err(e) => HttpResponse::error(500, "traceroute_failed", &e.to_string()),
+    }
+}
+
+fn handle_network_monitor_get(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let snap = state.observatory.passive_monitor.snapshot();
+    let mut val = serde_json::to_value(&snap).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("ok".to_string(), json!(true));
+    }
+    json_ok_masked(req, val)
+}
+
+async fn handle_network_monitor_post(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let action = pick_str(&body, &["action"])
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            if body.get("enabled").and_then(Value::as_bool) == Some(false) {
+                "stop".to_string()
+            } else {
+                "start".to_string()
+            }
+        });
+    let interval_ms = body
+        .get("intervalMs")
+        .or_else(|| body.get("interval_ms"))
+        .and_then(Value::as_u64);
+    let target = pick_str(&body, &["target", "host"]).map(ToString::to_string);
+
+    match action.as_str() {
+        "stop" => state.observatory.passive_monitor.stop(),
+        "reset" => state.observatory.passive_monitor.reset(),
+        "sample" => {
+            let st = Arc::clone(state);
+            let _ = tokio::task::spawn_blocking(move || st.observatory.passive_monitor.sample_once()).await;
+        }
+        _ => {
+            if let Err(msg) = state
+                .observatory
+                .passive_monitor
+                .start(interval_ms, target.as_deref())
+            {
+                let code = if msg.to_ascii_lowercase().contains("forbidden")
+                    || msg.to_ascii_lowercase().contains("ssrf")
+                {
+                    403
+                } else {
+                    400
+                };
+                return HttpResponse::error(code, "monitor_start_failed", &msg);
+            }
+        }
+    }
+
+    handle_network_monitor_get(state, req)
 }
 
 fn handle_speedtest_start(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
@@ -436,8 +867,17 @@ fn handle_speedtest_start(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let profile = pick_str(&body, &["profile"]).unwrap_or("standard");
-    let mut cfg = SpeedtestConfig::for_profile(profile);
+    let profile_str = req
+        .query_param("profile")
+        .or_else(|| pick_str(&body, &["profile"]).map(ToString::to_string))
+        .unwrap_or_else(|| "standard".to_string());
+    let stream_mode_str = req
+        .query_param("streamMode")
+        .or_else(|| req.query_param("stream_mode"))
+        .or_else(|| pick_str(&body, &["streamMode", "stream_mode"]).map(ToString::to_string))
+        .unwrap_or_else(|| "multi".to_string());
+
+    let mut cfg = SpeedtestConfig::for_profile(&profile_str).with_stream_mode(&stream_mode_str);
 
     // Allow loopback baseUrlOverride strictly for isolated offline E2E/unit verification.
     if let Some(override_url) = pick_str(&body, &["baseUrlOverride", "base_url_override"]) {
@@ -452,7 +892,7 @@ fn handle_speedtest_start(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
         }
         cfg.base_url_override = Some(override_url.to_string());
         cfg.unloaded_samples = 4;
-        cfg.multi_streams = 2;
+        cfg.multi_streams = if cfg.stream_mode == "single" { 1 } else { 2 };
         cfg.phase_duration_ms = 900;
     }
 
@@ -494,6 +934,7 @@ fn handle_speedtest_start(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
     let tx_bg = progress_tx.clone();
 
     let profile_label = cfg.profile.clone();
+    let mode_label = cfg.stream_mode.clone();
     state.event_feed.publish(
         "network",
         "speedtest_started",
@@ -501,6 +942,7 @@ fn handle_speedtest_start(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
         json!({
             "runId": run_id,
             "profile": profile_label,
+            "streamMode": mode_label,
             "startedAtMs": started_at_ms,
         }),
     );
@@ -528,7 +970,7 @@ fn handle_speedtest_start(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
                 "bufferbloat_spike",
                 None,
                 json!({
-                    "severity": if result.bufferbloat_grade == "C" { "warn" } else { "critical" },
+                    "severity": if result.bufferbloat_grade == "C" { "warning" } else { "critical" },
                     "kind": "bufferbloat_spike",
                     "runId": result.run_id,
                     "grade": result.bufferbloat_grade,
@@ -542,6 +984,7 @@ fn handle_speedtest_start(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
         "ok": true,
         "runId": run_id,
         "profile": profile_label,
+        "streamMode": mode_label,
         "status": "running",
         "streamUrl": format!("/api/v5/network/speedtest/stream?runId={run_id}"),
         "wsChannel": "network",
@@ -668,8 +1111,335 @@ fn handle_speedtest_history(state: &Arc<StudioState>, req: &HttpRequest) -> Http
 }
 
 // =========================================================================
-// 2. Lab-Grade AI Telemetry & Statistical Forensics
+// 2. Lab-Grade AI Telemetry, Observatory Summary & Statistical Forensics
 // =========================================================================
+
+async fn handle_observatory_summary(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    use chrono::{DateTime, Datelike, Local, Timelike};
+
+    let filter = parse_trace_filter(req);
+    let summary = state
+        .ops
+        .telemetry_summary(&filter)
+        .unwrap_or_else(|_| json!({}));
+    let all_rows = state
+        .ops
+        .list_rich_traces(&TraceQueryFilter {
+            window_ms: None,
+            model: filter.model.clone(),
+            role: filter.role.clone(),
+            session_id: filter.session_id.clone(),
+            limit: 5_000,
+        })
+        .unwrap_or_default();
+
+    let now_ms = now_epoch_ms();
+    let mut heatmap = vec![vec![0u64; 24]; 7];
+
+    type TelemetryBucket = (String, i64, i64, i64, i64, f64, u64, u64);
+
+    // 24h hourly buckets (oldest -> newest)
+    const HOUR_MS: i64 = 3_600_000;
+    const DAY_MS: i64 = 86_400_000;
+    let cur_hour_start = (now_ms / HOUR_MS) * HOUR_MS;
+    let first_hour_start = cur_hour_start - 23 * HOUR_MS;
+    let mut h_buckets: Vec<TelemetryBucket> = (0..24)
+        .map(|i| {
+            let ts = first_hour_start + i * HOUR_MS;
+            let lbl = DateTime::from_timestamp_millis(ts)
+                .map(|dt| dt.with_timezone(&Local).format("%H:00").to_string())
+                .unwrap_or_else(|| format!("{i:02}:00"));
+            (lbl, ts, 0, 0, 0, 0.0, 0, 0)
+        })
+        .collect();
+
+    // 30d daily buckets (oldest -> newest)
+    let cur_day_start = (now_ms / DAY_MS) * DAY_MS;
+    let first_day_start = cur_day_start - 29 * DAY_MS;
+    let mut d_buckets: Vec<TelemetryBucket> = (0..30)
+        .map(|i| {
+            let ts = first_day_start + i * DAY_MS;
+            let lbl = DateTime::from_timestamp_millis(ts)
+                .map(|dt| dt.with_timezone(&Local).format("%m-%d").to_string())
+                .unwrap_or_else(|| format!("D{i}"));
+            (lbl, ts, 0, 0, 0, 0.0, 0, 0)
+        })
+        .collect();
+
+    struct McpAgg {
+        tool: String,
+        server: String,
+        calls: u64,
+        durations: Vec<f64>,
+        tokens_saved: i64,
+        cost_saved_usd: f64,
+        errors: u64,
+    }
+    let mut mcp_map: BTreeMap<String, McpAgg> = BTreeMap::new();
+
+    for r in &all_rows {
+        let ts = r.get("recordedAtMs").and_then(Value::as_i64).unwrap_or(0);
+        let in_t = r.get("inputTokens").and_then(Value::as_i64).unwrap_or(0);
+        let out_t = r.get("outputTokens").and_then(Value::as_i64).unwrap_or(0);
+        let reas_t = r.get("reasoningTokens").and_then(Value::as_i64).unwrap_or(0);
+        let tot_t = in_t + out_t + reas_t;
+        let cost = r.get("costUsd").and_then(Value::as_f64).unwrap_or(0.0);
+        let is_err = r.get("isError").and_then(Value::as_bool).unwrap_or(false);
+
+        if ts > 0 {
+            if let Some(utc) = DateTime::from_timestamp_millis(ts) {
+                let dt = utc.with_timezone(&Local);
+                let dow = dt.weekday().num_days_from_monday() as usize;
+                let hr = dt.hour() as usize;
+                if dow < 7 && hr < 24 {
+                    heatmap[dow][hr] += 1;
+                }
+            }
+            if ts >= first_hour_start && ts < cur_hour_start + HOUR_MS {
+                let idx = ((ts - first_hour_start) / HOUR_MS) as usize;
+                if let Some(b) = h_buckets.get_mut(idx) {
+                    b.2 += tot_t;
+                    b.3 += in_t;
+                    b.4 += out_t;
+                    b.5 += cost;
+                    b.6 += 1;
+                    if is_err {
+                        b.7 += 1;
+                    }
+                }
+            }
+            if ts >= first_day_start && ts < cur_day_start + DAY_MS {
+                let idx = ((ts - first_day_start) / DAY_MS) as usize;
+                if let Some(b) = d_buckets.get_mut(idx) {
+                    b.2 += tot_t;
+                    b.3 += in_t;
+                    b.4 += out_t;
+                    b.5 += cost;
+                    b.6 += 1;
+                    if is_err {
+                        b.7 += 1;
+                    }
+                }
+            }
+        }
+
+        let role = r.get("role").and_then(Value::as_str).unwrap_or("");
+        let surface = r.get("surface").and_then(Value::as_str).unwrap_or("");
+        let model = r.get("modelId").and_then(Value::as_str).unwrap_or("unknown");
+        let saved_t = r.get("savedTokens").and_then(Value::as_i64).unwrap_or(0);
+        let kv_usd = r.get("kvSavingsUsd").and_then(Value::as_f64).unwrap_or(0.0);
+        let dur_ms = r.get("durationMs").and_then(Value::as_f64).unwrap_or(0.0);
+        let is_mcp_or_tool = surface.to_ascii_lowercase().starts_with("mcp")
+            || role.to_ascii_lowercase().starts_with("mcp")
+            || role.to_ascii_lowercase().starts_with("tool")
+            || saved_t > 0;
+        if is_mcp_or_tool {
+            let key = if surface.to_ascii_lowercase().starts_with("mcp") {
+                format!("{surface}::{role}")
+            } else {
+                format!("{}::{}", if surface.is_empty() { "agent" } else { surface }, if role.is_empty() { model } else { role })
+            };
+            let entry = mcp_map.entry(key).or_insert_with(|| McpAgg {
+                tool: if role.is_empty() { model.to_string() } else { role.to_string() },
+                server: if surface.is_empty() { "omnia-mcp".to_string() } else { surface.to_string() },
+                calls: 0,
+                durations: Vec::new(),
+                tokens_saved: 0,
+                cost_saved_usd: 0.0,
+                errors: 0,
+            });
+            entry.calls += 1;
+            if dur_ms > 0.0 {
+                entry.durations.push(dur_ms);
+            }
+            entry.tokens_saved += saved_t;
+            entry.cost_saved_usd += kv_usd;
+            if is_err {
+                entry.errors += 1;
+            }
+        }
+    }
+
+    // Merge connected MCP server/tool inventory cleanly (truthful 0 counts until called)
+    for t in state.mcp.search_tools("", 100) {
+        let srv = t.get("server").and_then(Value::as_str).unwrap_or("mcp").to_string();
+        let name = t
+            .get("tool")
+            .or_else(|| t.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("tool")
+            .to_string();
+        let key = format!("{srv}::{name}");
+        mcp_map.entry(key).or_insert(McpAgg {
+            tool: name,
+            server: srv,
+            calls: 0,
+            durations: Vec::new(),
+            tokens_saved: 0,
+            cost_saved_usd: 0.0,
+            errors: 0,
+        });
+    }
+
+    let bucket_json = |b: &(String, i64, i64, i64, i64, f64, u64, u64)| -> Value {
+        json!({
+            "label": b.0,
+            "tsMs": b.1,
+            "tokens": b.2,
+            "totalTokens": b.2,
+            "inputTokens": b.3,
+            "outputTokens": b.4,
+            "costUsd": ((b.5 * 1_000_000.0).round() / 1_000_000.0),
+            "requests": b.6,
+            "errors": b.7,
+        })
+    };
+    let trends_24h: Vec<Value> = h_buckets.iter().map(bucket_json).collect();
+    let trends_30d: Vec<Value> = d_buckets.iter().map(bucket_json).collect();
+
+    let mcp_rows: Vec<Value> = mcp_map
+        .into_values()
+        .map(|mut a| {
+            a.durations.sort_by(|x, y| x.total_cmp(y));
+            let avg_ms = if a.durations.is_empty() {
+                0.0
+            } else {
+                ((a.durations.iter().sum::<f64>() / a.durations.len() as f64) * 100.0).round() / 100.0
+            };
+            let p95_ms = if a.durations.is_empty() {
+                0.0
+            } else {
+                let idx = ((a.durations.len() - 1) as f64 * 0.95).round() as usize;
+                ((a.durations[idx.min(a.durations.len() - 1)]) * 100.0).round() / 100.0
+            };
+            let err_rate = if a.calls > 0 {
+                ((a.errors as f64 / a.calls as f64) * 10_000.0).round() / 10_000.0
+            } else {
+                0.0
+            };
+            json!({
+                "tool": a.tool,
+                "toolName": a.tool,
+                "name": a.tool,
+                "server": a.server,
+                "calls": a.calls,
+                "count": a.calls,
+                "avgLatencyMs": avg_ms,
+                "p95LatencyMs": p95_ms,
+                "tokensSaved": a.tokens_saved,
+                "costSavedUsd": ((a.cost_saved_usd * 1_000_000.0).round() / 1_000_000.0),
+                "errorCount": a.errors,
+                "errorRate": err_rate,
+            })
+        })
+        .collect();
+
+    // Context Window Fill & Compaction ETA derived from latest traces
+    const WARN_THRESHOLD: i64 = 160_000;
+    const HARD_CAP: i64 = 200_000;
+    let latest_fill_pct = all_rows
+        .iter()
+        .find_map(|r| r.get("contextWindowFillPct").and_then(Value::as_f64));
+    let latest_input_span = all_rows.first().map(|r| {
+        r.get("inputTokens").and_then(Value::as_i64).unwrap_or(0)
+            + r.get("cacheReadTokens").and_then(Value::as_i64).unwrap_or(0)
+            + r.get("cacheWriteTokens").and_then(Value::as_i64).unwrap_or(0)
+    });
+    let current_tokens = if let Some(pct) = latest_fill_pct {
+        ((pct / 100.0) * (HARD_CAP as f64)).round() as i64
+    } else {
+        latest_input_span.unwrap_or(0)
+    };
+    let fill_pct = latest_fill_pct.unwrap_or_else(|| {
+        if current_tokens > 0 {
+            ((current_tokens as f64 / HARD_CAP as f64) * 10000.0).round() / 100.0
+        } else {
+            0.0
+        }
+    });
+
+    let recent_slice: Vec<&Value> = all_rows.iter().take(12).collect();
+    let recent_tok_sum: i64 = recent_slice
+        .iter()
+        .map(|r| {
+            r.get("inputTokens").and_then(Value::as_i64).unwrap_or(0)
+                + r.get("outputTokens").and_then(Value::as_i64).unwrap_or(0)
+                + r.get("reasoningTokens").and_then(Value::as_i64).unwrap_or(0)
+        })
+        .sum();
+    let tokens_per_turn = if recent_slice.is_empty() {
+        0.0
+    } else {
+        ((recent_tok_sum as f64 / recent_slice.len() as f64) * 10.0).round() / 10.0
+    };
+    let newest_ts = recent_slice
+        .first()
+        .and_then(|r| r.get("recordedAtMs").and_then(Value::as_i64))
+        .unwrap_or(0);
+    let oldest_ts = recent_slice
+        .last()
+        .and_then(|r| r.get("recordedAtMs").and_then(Value::as_i64))
+        .unwrap_or(0);
+    let span_mins = ((newest_ts.saturating_sub(oldest_ts) as f64) / 60_000.0).max(1.0);
+    let tokens_per_min = if recent_slice.is_empty() {
+        0.0
+    } else {
+        ((recent_tok_sum as f64 / span_mins) * 10.0).round() / 10.0
+    };
+    let est_secs_to_200k = if all_rows.is_empty() || tokens_per_min <= 0.0 {
+        None
+    } else if current_tokens >= HARD_CAP {
+        Some(0i64)
+    } else {
+        Some((((HARD_CAP - current_tokens) as f64 / tokens_per_min) * 60.0).round() as i64)
+    };
+    let compaction_eta_turns = all_rows
+        .iter()
+        .find_map(|r| r.get("compactionEtaTurns").and_then(Value::as_i64))
+        .or_else(|| {
+            if all_rows.is_empty() || tokens_per_turn <= 0.0 {
+                None
+            } else if current_tokens >= WARN_THRESHOLD {
+                Some(0i64)
+            } else {
+                Some(((WARN_THRESHOLD - current_tokens) as f64 / tokens_per_turn).ceil() as i64)
+            }
+        });
+
+    let host = tokio::task::spawn_blocking(collect_host_system_snapshot)
+        .await
+        .ok();
+    let alerts = evaluate_alerts_sync(state, host.as_ref());
+    let rules = state
+        .observatory
+        .current_rules(&state.config.studio_data_dir());
+
+    json_ok_masked(
+        req,
+        json!({
+            "ok": true,
+            "window": req.query_param("window").unwrap_or_else(|| "24h".to_string()),
+            "activityHeatmap7x24": heatmap,
+            "trends24h": trends_24h,
+            "trends30d": trends_30d,
+            "contextEta": {
+                "tokensPerTurn": tokens_per_turn,
+                "tokensPerMin": tokens_per_min,
+                "estSecsTo200k": est_secs_to_200k,
+                "warnThreshold": WARN_THRESHOLD,
+                "hardCap": HARD_CAP,
+                "currentTokens": current_tokens,
+                "fillPct": fill_pct,
+                "compactionEtaTurns": compaction_eta_turns,
+            },
+            "mcpToolTelemetry": mcp_rows,
+            "mcpServers": state.mcp.list_servers(),
+            "alerts": alerts,
+            "rules": rules,
+            "summary": summary,
+        }),
+    )
+}
 
 fn parse_trace_filter(req: &HttpRequest) -> TraceQueryFilter {
     TraceQueryFilter {
@@ -1258,8 +2028,24 @@ fn evaluate_alerts_sync(
 ) -> Vec<Value> {
     let mut alerts = Vec::new();
     let now = now_epoch_ms();
+    let data_dir = state.config.studio_data_dir();
+    let rules = state.observatory.current_rules(&data_dir);
 
-    // 1 & 2. Telemetry TTFT spike & Cache Hit < 70%
+    let mut push_alert = |id: String, kind: &str, severity: &str, target_tab: &str, title: String, detail: String, observed_at_ms: i64| {
+        let acked = state.observatory.is_alert_acked(&data_dir, &id);
+        alerts.push(json!({
+            "id": id,
+            "kind": kind,
+            "severity": severity,
+            "targetTab": target_tab,
+            "title": title,
+            "detail": detail,
+            "acked": acked,
+            "observedAtMs": observed_at_ms,
+        }));
+    };
+
+    // 1..4. Telemetry TTFT spike, Cache Hit < min%, Error Rate > threshold, Context Window fill
     if let Ok(summary) = state.ops.telemetry_summary(&TraceQueryFilter {
         window_ms: Some(86_400_000),
         ..TraceQueryFilter::default()
@@ -1271,31 +2057,79 @@ fn evaluate_alerts_sync(
             .and_then(|t| t.get("p95"))
             .and_then(Value::as_f64)
         {
-            if p95 > 5_000.0 {
-                alerts.push(json!({
-                    "id": "alert_ttft_spike",
-                    "kind": "ttft_spike",
-                    "severity": if p95 > 12_000.0 { "critical" } else { "warn" },
-                    "title": "Elevated Time-to-First-Token (p95)",
-                    "detail": format!("24h TTFT p95 is {:.0} ms (threshold 5,000 ms).", p95),
-                    "observedAtMs": now,
-                }));
+            if p95 > rules.ttft_p95_warn_ms {
+                let sev = if p95 > (rules.ttft_p95_warn_ms * 2.2) {
+                    "critical"
+                } else {
+                    "warning"
+                };
+                push_alert(
+                    "alert_ttft_spike".to_string(),
+                    "ttft_spike",
+                    sev,
+                    "telemetry",
+                    "Elevated Time-to-First-Token (p95)".to_string(),
+                    format!(
+                        "24h TTFT p95 is {:.0} ms (threshold {:.0} ms).",
+                        p95, rules.ttft_p95_warn_ms
+                    ),
+                    now,
+                );
             }
         }
         let cache_pct = summary.get("cacheHitPct").and_then(Value::as_f64).unwrap_or(100.0);
-        if total_req >= 3 && cache_pct < 70.0 {
-            alerts.push(json!({
-                "id": "alert_cache_low",
-                "kind": "cache_hit_low",
-                "severity": "warn",
-                "title": "Prefix-0 KV Cache Hit Rate Below 70%",
-                "detail": format!("Observed 24h KV cache hit rate is {:.1}% across {total_req} requests.", cache_pct),
-                "observedAtMs": now,
-            }));
+        if total_req >= 3 && cache_pct < rules.cache_hit_min_pct {
+            push_alert(
+                "alert_cache_low".to_string(),
+                "cache_hit_low",
+                "warning",
+                "telemetry",
+                format!("Prefix-0 KV Cache Hit Rate Below {:.0}%", rules.cache_hit_min_pct),
+                format!(
+                    "Observed 24h KV cache hit rate is {:.1}% across {total_req} requests.",
+                    cache_pct
+                ),
+                now,
+            );
+        }
+        let err_pct = summary.get("errorRate").and_then(Value::as_f64).unwrap_or(0.0) * 100.0;
+        if total_req >= 3 && err_pct > rules.error_rate_warn_pct {
+            push_alert(
+                "alert_error_rate".to_string(),
+                "error_rate_spike",
+                if err_pct > (rules.error_rate_warn_pct * 2.0) { "critical" } else { "warning" },
+                "telemetry",
+                "Elevated AI Request Error Rate".to_string(),
+                format!(
+                    "24h error rate is {:.1}% (threshold {:.1}%).",
+                    err_pct, rules.error_rate_warn_pct
+                ),
+                now,
+            );
+        }
+        if let Some(fill) = summary
+            .get("contextWindow")
+            .and_then(|c| c.get("latestFillPct"))
+            .and_then(Value::as_f64)
+        {
+            if fill >= rules.context_warn_pct {
+                push_alert(
+                    "alert_context_fill".to_string(),
+                    "context_window_high",
+                    if fill >= 92.0 { "critical" } else { "warning" },
+                    "telemetry",
+                    format!("Context Window at {:.0}%", fill),
+                    format!(
+                        "Latest session context fill is {:.1}% (warn threshold {:.0}%).",
+                        fill, rules.context_warn_pct
+                    ),
+                    now,
+                );
+            }
         }
     }
 
-    // 3. Router Circuit Open
+    // 5. Router Circuit Open
     if let Ok(snaps) = state.router.snapshots(now) {
         for s in snaps {
             if !matches!(s.state.circuit, CircuitState::Closed) {
@@ -1304,61 +2138,78 @@ fn evaluate_alerts_sync(
                     CircuitState::HalfOpen { .. } => "HalfOpen",
                     CircuitState::Closed => "Closed",
                 };
-                alerts.push(json!({
-                    "id": format!("alert_circuit_{}", s.candidate.candidate_id),
-                    "kind": "circuit_tripped",
-                    "severity": "warn",
-                    "title": format!("Circuit {st_str}: {}", s.candidate.candidate_id),
-                    "detail": format!("Candidate '{}' is currently in {st_str} circuit state.", s.candidate.candidate_id),
-                    "observedAtMs": now,
-                }));
+                push_alert(
+                    format!("alert_circuit_{}", s.candidate.candidate_id),
+                    "circuit_tripped",
+                    "warning",
+                    "router",
+                    format!("Circuit {st_str}: {}", s.candidate.candidate_id),
+                    format!("Candidate '{}' is currently in {st_str} circuit state.", s.candidate.candidate_id),
+                    now,
+                );
             }
         }
     }
 
-    // 4. Bufferbloat spike (latest persisted speedtest)
+    // 6. Bufferbloat spike (latest persisted speedtest)
     if let Ok(runs) = state.ops.list_speedtests(1) {
         if let Some(latest) = runs.first() {
-            if !latest.cancelled && matches!(latest.bufferbloat_grade.as_str(), "C" | "D" | "F") {
-                alerts.push(json!({
-                    "id": format!("alert_bloat_{}", latest.run_id),
-                    "kind": "bufferbloat_spike",
-                    "severity": if latest.bufferbloat_grade == "C" { "warn" } else { "critical" },
-                    "title": format!("Bufferbloat Grade {} (+{:.0} ms)", latest.bufferbloat_grade, latest.worst_bufferbloat_delta_ms),
-                    "detail": format!("Latest speedtest showed DL +{:.1} ms / UL +{:.1} ms loaded latency inflation.", latest.dl_bufferbloat_delta_ms, latest.ul_bufferbloat_delta_ms),
-                    "observedAtMs": latest.finished_at_ms,
-                }));
+            if !latest.cancelled && latest.worst_bufferbloat_delta_ms > rules.bufferbloat_warn_ms {
+                push_alert(
+                    format!("alert_bloat_{}", latest.run_id),
+                    "bufferbloat_spike",
+                    if latest.worst_bufferbloat_delta_ms >= 200.0 || matches!(latest.bufferbloat_grade.as_str(), "D" | "F") {
+                        "critical"
+                    } else {
+                        "warning"
+                    },
+                    "network",
+                    format!("Bufferbloat Grade {} (+{:.0} ms)", latest.bufferbloat_grade, latest.worst_bufferbloat_delta_ms),
+                    format!(
+                        "Latest speedtest showed DL +{:.1} ms / UL +{:.1} ms loaded latency inflation (threshold +{:.0} ms).",
+                        latest.dl_bufferbloat_delta_ms, latest.ul_bufferbloat_delta_ms, rules.bufferbloat_warn_ms
+                    ),
+                    latest.finished_at_ms,
+                );
             }
         }
     }
 
-    // 5. DNS Leak warning (from last DNS diagnostic)
+    // 7. DNS Leak warning (from last DNS diagnostic)
     if let Some(ref dns) = *state.observatory.last_dns.lock() {
         if dns.leak_status == "possible_dns_leak" {
-            alerts.push(json!({
-                "id": "alert_dns_leak",
-                "kind": "dns_leak",
-                "severity": "warn",
-                "title": "Potential VPN DNS Leak Detected",
-                "detail": dns.leak_warning.clone().unwrap_or_else(|| "System DNS may bypass VPN tunnel.".into()),
-                "observedAtMs": dns.observed_at_ms,
-            }));
+            push_alert(
+                "alert_dns_leak".to_string(),
+                "dns_leak",
+                "warning",
+                "network",
+                "Potential VPN DNS Leak Detected".to_string(),
+                dns.leak_warning.clone().unwrap_or_else(|| "System DNS may bypass VPN tunnel.".into()),
+                dns.observed_at_ms,
+            );
         }
     }
 
-    // 6. Low Disk Space
+    // 8. Low Disk Space
     if let Some(host) = host_opt {
         for disk in &host.disks {
             let free_pct = 100.0 - disk.used_pct;
-            if free_pct < 10.0 {
-                alerts.push(json!({
-                    "id": format!("alert_disk_{}", disk.drive),
-                    "kind": "low_disk",
-                    "severity": if free_pct < 5.0 { "critical" } else { "warn" },
-                    "title": format!("Low Free Disk Space on {}", disk.drive),
-                    "detail": format!("Drive {} has {:.1}% free ({:.1} GiB remaining).", disk.drive, free_pct, (disk.free_bytes as f64) / 1_073_741_824.0),
-                    "observedAtMs": now,
-                }));
+            if free_pct < rules.disk_free_warn_pct {
+                push_alert(
+                    format!("alert_disk_{}", disk.drive),
+                    "low_disk",
+                    if free_pct < (rules.disk_free_warn_pct * 0.5) { "critical" } else { "warning" },
+                    "system",
+                    format!("Low Free Disk Space on {}", disk.drive),
+                    format!(
+                        "Drive {} has {:.1}% free ({:.1} GiB remaining; threshold {:.0}%).",
+                        disk.drive,
+                        free_pct,
+                        (disk.free_bytes as f64) / 1_073_741_824.0,
+                        rules.disk_free_warn_pct
+                    ),
+                    now,
+                );
             }
         }
     }
@@ -1371,15 +2222,99 @@ async fn handle_smart_alerts(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
         .await
         .ok();
     let alerts = evaluate_alerts_sync(state, host.as_ref());
+    let rules = state
+        .observatory
+        .current_rules(&state.config.studio_data_dir());
     json_ok_masked(
         req,
         json!({
             "ok": true,
             "count": alerts.len(),
             "alerts": alerts,
+            "rules": rules,
             "evaluatedAtMs": now_epoch_ms(),
         }),
     )
+}
+
+fn handle_smart_alerts_ack(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let Some(alert_id) = pick_str(&body, &["alertId", "alert_id", "id"]) else {
+        return HttpResponse::error(400, "missing_alert_id", "Field 'alertId' is required.");
+    };
+    let acked = body
+        .get("acked")
+        .or_else(|| body.get("acknowledged"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let data_dir = state.config.studio_data_dir();
+    let acked_ids = state.observatory.set_alert_ack(&data_dir, alert_id, acked);
+    state.event_feed.publish(
+        "alerts",
+        "alert_acknowledged",
+        None,
+        json!({ "alertId": alert_id, "acked": acked }),
+    );
+    HttpResponse::ok(json!({
+        "ok": true,
+        "alertId": alert_id,
+        "acked": acked,
+        "ackedIds": acked_ids,
+    }))
+}
+
+fn handle_smart_alerts_rules_get(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let rules = state
+        .observatory
+        .current_rules(&state.config.studio_data_dir());
+    let mut val = serde_json::to_value(&rules).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("ok".to_string(), json!(true));
+        obj.insert("rules".to_string(), serde_json::to_value(&rules).unwrap_or(Value::Null));
+    }
+    json_ok_masked(req, val)
+}
+
+fn handle_smart_alerts_rules_post(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let src = body.get("rules").filter(|v| v.is_object()).unwrap_or(&body);
+    let mut next = state
+        .observatory
+        .current_rules(&state.config.studio_data_dir());
+    if let Some(v) = pick_f64(src, &["ttftP95WarnMs", "ttft_p95_warn_ms"]) {
+        next.ttft_p95_warn_ms = v;
+    }
+    if let Some(v) = pick_f64(src, &["cacheHitMinPct", "cache_hit_min_pct"]) {
+        next.cache_hit_min_pct = v;
+    }
+    if let Some(v) = pick_f64(src, &["bufferbloatWarnMs", "bufferbloat_warn_ms"]) {
+        next.bufferbloat_warn_ms = v;
+    }
+    if let Some(v) = pick_f64(src, &["contextWarnPct", "context_warn_pct"]) {
+        next.context_warn_pct = v;
+    }
+    if let Some(v) = pick_f64(src, &["diskFreeWarnPct", "disk_free_warn_pct"]) {
+        next.disk_free_warn_pct = v;
+    }
+    if let Some(v) = pick_f64(src, &["errorRateWarnPct", "error_rate_warn_pct"]) {
+        next.error_rate_warn_pct = v;
+    }
+
+    let saved = state
+        .observatory
+        .update_rules(&state.config.studio_data_dir(), next);
+    let mut val = serde_json::to_value(&saved).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("ok".to_string(), json!(true));
+        obj.insert("rules".to_string(), serde_json::to_value(&saved).unwrap_or(Value::Null));
+    }
+    json_ok_masked(req, val)
 }
 
 // =========================================================================
@@ -2122,5 +3057,147 @@ mod tests {
         assert_eq!(crj["cancelled"], true);
         assert_eq!(crj["status"], "cancelled");
         assert_eq!(crj["cancelledCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn steer28b_network_guards_monitor_summary_alerts_ack_and_rules_work() {
+        let state = make_test_state();
+
+        // 1. Snapshot offline + monitor schema
+        let snap = dispatch_request(
+            Arc::clone(&state),
+            make_req("GET", "/api/v5/network/snapshot?probePublic=false&privacy_mask=true", b""),
+        )
+        .await;
+        assert_eq!(snap.status, 200);
+        let sj: Value = serde_json::from_slice(&snap.body).expect("snap json");
+        assert_eq!(sj["ok"], true);
+        assert_eq!(sj["autoSpeedtestDisabled"], true);
+        assert_eq!(sj["monitor"]["capacity"], 120);
+        assert!(
+            sj["proxyTls"]["endpoints"]
+                .as_array()
+                .is_some_and(|v| v.len() >= 9)
+        );
+
+        // 2. SSRF & injection guards across dns, tls-probe, proxy-tls, traceroute, monitor
+        let bad_dns = dispatch_request(
+            Arc::clone(&state),
+            make_req("GET", "/api/v5/network/dns/benchmark?customDns=not-an-ip", b""),
+        )
+        .await;
+        assert_eq!(bad_dns.status, 400);
+
+        let bad_tls = dispatch_request(
+            Arc::clone(&state),
+            make_req("POST", "/api/v5/network/tls-probe", br#"{"host":"169.254.169.254"}"#),
+        )
+        .await;
+        assert_eq!(bad_tls.status, 403);
+
+        let bad_agy = dispatch_request(
+            Arc::clone(&state),
+            make_req("POST", "/api/v5/network/proxy-tls", br#"{"customHost":"agy.example.test"}"#),
+        )
+        .await;
+        assert_eq!(bad_agy.status, 403);
+
+        let bad_trace = dispatch_request(
+            Arc::clone(&state),
+            make_req("POST", "/api/v5/network/traceroute", br#"{"target":"-bad;calc","maxHops":8}"#),
+        )
+        .await;
+        assert_eq!(bad_trace.status, 400);
+
+        let mon_get = dispatch_request(
+            Arc::clone(&state),
+            make_req("GET", "/api/v5/network/monitor", b""),
+        )
+        .await;
+        assert_eq!(mon_get.status, 200);
+        let mj: Value = serde_json::from_slice(&mon_get.body).expect("mon json");
+        assert_eq!(mj["capacity"], 120);
+        assert_eq!(mj["running"], false);
+
+        // 3. Record traces -> verify GET /api/v5/observatory/summary heatmap, 24h/30d trends, contextEta, mcpToolTelemetry
+        for idx in 0..3 {
+            let rec_body = json!({
+                "reqId": format!("req_obs_{idx}"),
+                "sessionId": "sess_obs_1",
+                "role": "mcp_search",
+                "surface": "mcp",
+                "modelId": "claude-sonnet-5-5",
+                "inputTokens": 4000,
+                "outputTokens": 600,
+                "savedTokens": 1200,
+                "kvSavingsUsd": 0.0036,
+                "costUsd": 0.012,
+                "durationMs": 420,
+                "ttftMs": 180,
+                "contextWindowFillPct": 85.0,
+            });
+            let r = dispatch_request(
+                Arc::clone(&state),
+                make_req("POST", "/api/v5/telemetry/record", rec_body.to_string().as_bytes()),
+            )
+            .await;
+            assert_eq!(r.status, 200);
+        }
+
+        let obs = dispatch_request(
+            Arc::clone(&state),
+            make_req("GET", "/api/v5/observatory/summary?window=24h", b""),
+        )
+        .await;
+        assert_eq!(obs.status, 200);
+        let oj: Value = serde_json::from_slice(&obs.body).expect("obs json");
+        assert_eq!(oj["ok"], true);
+        let hm = oj["activityHeatmap7x24"].as_array().expect("heatmap");
+        assert_eq!(hm.len(), 7);
+        assert_eq!(hm[0].as_array().map(|r| r.len()), Some(24));
+        assert_eq!(oj["trends24h"].as_array().map(|v| v.len()), Some(24));
+        assert_eq!(oj["trends30d"].as_array().map(|v| v.len()), Some(30));
+        assert_eq!(oj["contextEta"]["warnThreshold"], 160_000);
+        assert_eq!(oj["contextEta"]["hardCap"], 200_000);
+        assert!(oj["contextEta"]["tokensPerTurn"].as_f64().unwrap_or(0.0) > 0.0);
+        assert!(oj["mcpToolTelemetry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["tokensSaved"].as_i64().unwrap_or(0) == 3600));
+
+        // 4. Alert rules update + alert ack persistence roundtrip
+        let rules_post = dispatch_request(
+            Arc::clone(&state),
+            make_req(
+                "POST",
+                "/api/v5/alerts/rules",
+                br#"{"ttftP95WarnMs":3500,"cacheHitMinPct":65,"contextWarnPct":75}"#,
+            ),
+        )
+        .await;
+        assert_eq!(rules_post.status, 200);
+        let rpj: Value = serde_json::from_slice(&rules_post.body).expect("rules post");
+        assert_eq!(rpj["rules"]["ttftP95WarnMs"], 3500.0);
+        assert_eq!(rpj["rules"]["contextWarnPct"], 75.0);
+
+        let ack_resp = dispatch_request(
+            Arc::clone(&state),
+            make_req("POST", "/api/v5/alerts/ack", br#"{"alertId":"alert_context_fill","acked":true}"#),
+        )
+        .await;
+        assert_eq!(ack_resp.status, 200);
+        let alerts_after = dispatch_request(
+            Arc::clone(&state),
+            make_req("GET", "/api/v5/alerts", b""),
+        )
+        .await;
+        assert_eq!(alerts_after.status, 200);
+        let aaj: Value = serde_json::from_slice(&alerts_after.body).expect("alerts after");
+        assert!(aaj["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "alert_context_fill" && a["acked"] == true));
     }
 }

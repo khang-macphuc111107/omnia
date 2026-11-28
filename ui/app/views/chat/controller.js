@@ -13,8 +13,9 @@ import { openPalette } from '../../core/palette.js';
 import { toast, announce, copyText, rovingFocus } from '../../core/overlay.js';
 import { api, poll, describeError } from '../../api.js';
 import {
-  emptyChat, loadChat, saveChat, trimMessages, newMessageId, messagePolicy, pendingRoute
+  emptyChat, loadChat, saveChat, trimMessages, newMessageId, messagePolicy, pendingRoute, superRouteFromResult, routeFromError
 } from './local-store.js';
+import { parseSuperSlashCommand, dispatchSuperSlashCommand } from './super-commands.js';
 import { createRunTracker } from './run-control.js';
 import { threadHtml } from './thread.js';
 import { inspectorHtml } from './inspector.js';
@@ -458,6 +459,48 @@ export function createChat(host, initialRoute) {
     textarea()?.focus();
   }
 
+  function runSuperCommand(sessionId, messageId, policy, superCmd) {
+    dispatchSuperSlashCommand(superCmd, { client: api, sessionId })
+      .then((result) => {
+        if (!alive || S.loadedFor !== sessionId) return;
+        patchRouteInState(messageId, superRouteFromResult(result, policy));
+        announce(t('chat.superAnnounce', { cmd: superCmd.cmd }));
+      })
+      .catch((error) => {
+        if (!alive || S.loadedFor !== sessionId) return;
+        patchRouteInState(messageId, routeFromError(error, policy));
+        toast({ variant: 'danger', title: describeError(error) });
+      });
+  }
+
+  function cancelSuper(messageId, runId) {
+    const sessionId = S.loadedFor;
+    const message = S.chat.messages.find((m) => m.id === messageId);
+    const policy = (message && message.route && message.route.policy) || messagePolicy(sessionId, messageId, '/super-cancel');
+    dispatchSuperSlashCommand({ kind: 'cancel', cmd: '/super-cancel', runId: runId || '', raw: '/super-cancel' }, { client: api, sessionId })
+      .then((result) => {
+        if (!alive || S.loadedFor !== sessionId) return;
+        patchRouteInState(messageId, superRouteFromResult(result, policy));
+        toast({ variant: 'info', title: t('chat.superCancelled') });
+      })
+      .catch((error) => {
+        toast({ variant: 'danger', title: describeError(error) });
+      });
+  }
+
+  function prefillSlash(prefix) {
+    const ta = textarea();
+    if (!ta || !ready()) return;
+    ta.value = prefix;
+    S.chat.draft = { ...draft(), text: prefix, rev: draft().rev + 1 };
+    S.dirty = true;
+    autosize(ta);
+    S.previewHtml = previewInnerHtml(draft());
+    paintComposer();
+    ta.focus();
+    ta.setSelectionRange(prefix.length, prefix.length);
+  }
+
   function send() {
     if (!canSend() || S.composing) return;
     const ta = textarea();
@@ -466,6 +509,7 @@ export function createChat(host, initialRoute) {
     const sessionId = S.loadedFor;
     const id = newMessageId();
     const policy = messagePolicy(sessionId, id, markdown);
+    const superCmd = parseSuperSlashCommand(markdown);
     const message = {
       id,
       role: 'user',
@@ -490,7 +534,8 @@ export function createChat(host, initialRoute) {
     paintInspector();
     ta.focus();
     announce(t('chat.sent'));
-    runDecide(sessionId, id, policy);
+    if (superCmd) runSuperCommand(sessionId, id, policy, superCmd);
+    else runDecide(sessionId, id, policy);
   }
 
   function retry(messageId) {
@@ -735,6 +780,9 @@ export function createChat(host, initialRoute) {
       case 'cancel-route':
         void cancelDecide(S.loadedFor, el.getAttribute('data-id'));
         break;
+      case 'cancel-super':
+        cancelSuper(el.getAttribute('data-id'), el.getAttribute('data-run-id') || '');
+        break;
       case 'retry-route':
         retry(el.getAttribute('data-id'));
         break;
@@ -927,6 +975,7 @@ export function createChat(host, initialRoute) {
       if (alive && ready()) paintComposer();
     },
     focusComposer,
+    prefillSlash,
     togglePreview,
     toggleInspector: () => setInspector(!inspectorOpen()),
     attach: () => composerEl.querySelector('[data-role="file-input"]')?.click(),

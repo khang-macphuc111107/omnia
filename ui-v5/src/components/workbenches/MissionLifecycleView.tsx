@@ -12,8 +12,10 @@ import {
   Plus,
   Radar,
   RefreshCw,
+  Rocket,
   ShieldCheck,
   Sparkles,
+  Square,
 } from 'lucide-solid';
 import { api } from '@/api/client';
 import { activeSessionId, flashNotice, lifecycleRefreshSeq, privacyMask } from '@/state/studio';
@@ -43,6 +45,11 @@ export function MissionLifecycleView() {
   const [artifacts, setArtifacts] = createSignal<Array<Record<string, unknown>>>([]);
   const [links, setLinks] = createSignal<Array<Record<string, unknown>>>([]);
   const [superState, setSuperState] = createSignal<Record<string, unknown> | null>(null);
+  const [superStatus, setSuperStatus] = createSignal<Record<string, unknown> | null>(null);
+  const [superCaps, setSuperCaps] = createSignal<Record<string, unknown> | null>(null);
+  const [superGoalInput, setSuperGoalInput] = createSignal('');
+  const [proceedPolicy, setProceedPolicy] = createSignal<'off' | 'standard' | 'full'>('standard');
+  const [superActionBusy, setSuperActionBusy] = createSignal(false);
   const [lessons, setLessons] = createSignal<Array<Record<string, unknown>>>([]);
   const [gapRadar, setGapRadar] = createSignal<Record<string, unknown> | null>(null);
   const [thinkSessions, setThinkSessions] = createSignal<Array<Record<string, unknown>>>([]);
@@ -81,13 +88,17 @@ export function MissionLifecycleView() {
   const [activeThinkId, setActiveThinkId] = createSignal('');
 
   const loadAll = async () => {
-    const [artRes, superRes, lesRes, gapRes, thinkRes] = await Promise.all([
-      api.listLifecycleArtifacts(),
-      api.getSuperWorkflowState(),
-      api.listLearnLessons(),
-      api.getLearnGapRadar(),
-      api.listThinkSessions(),
-    ]);
+    const [artRes, superRes, liveSuperStatusRes, liveSuperCapsRes, proceedRes, lesRes, gapRes, thinkRes] =
+      await Promise.all([
+        api.listLifecycleArtifacts(),
+        api.getSuperWorkflowState(),
+        api.safeJson<Record<string, unknown>>('/api/v5/super/status'),
+        api.safeJson<Record<string, unknown>>('/api/v5/super/capabilities'),
+        api.safeJson<Record<string, unknown>>('/api/v5/super/proceed'),
+        api.listLearnLessons(),
+        api.getLearnGapRadar(),
+        api.listThinkSessions(),
+      ]);
     if (artRes.ok) {
       const list = (artRes.data.artifacts ?? []) as Array<Record<string, unknown>>;
       setArtifacts(Array.isArray(list) ? list : []);
@@ -96,6 +107,20 @@ export function MissionLifecycleView() {
       if (Array.isArray(list) && list.length > 0 && !selectedArt()) setSelectedArt(list[0]);
     }
     if (superRes.ok) setSuperState(superRes.data);
+    if (liveSuperStatusRes.ok) {
+      setSuperStatus(liveSuperStatusRes.data);
+      const rawPol = String(
+        liveSuperStatusRes.data.autoProceed ?? liveSuperStatusRes.data.auto_proceed ?? '',
+      ).toLowerCase();
+      if (rawPol === 'off' || rawPol === 'standard' || rawPol === 'full') setProceedPolicy(rawPol);
+    }
+    if (liveSuperCapsRes.ok) setSuperCaps(liveSuperCapsRes.data);
+    if (proceedRes.ok) {
+      const rawPol = String(
+        proceedRes.data.policy ?? proceedRes.data.autoProceed ?? proceedRes.data.auto_proceed ?? '',
+      ).toLowerCase();
+      if (rawPol === 'off' || rawPol === 'standard' || rawPol === 'full') setProceedPolicy(rawPol);
+    }
     if (lesRes.ok) {
       const list = (lesRes.data.lessons ?? []) as Array<Record<string, unknown>>;
       setLessons(Array.isArray(list) ? list : []);
@@ -109,6 +134,190 @@ export function MissionLifecycleView() {
       }
     }
   };
+
+  const handleLaunchSuperPlan = async () => {
+    if (superActionBusy()) return;
+    const goal =
+      superGoalInput().trim() ||
+      String(superStatus()?.activeGoal ?? superStatus()?.active_goal ?? '').trim() ||
+      'Unified /super-plan mission architecture';
+    setSuperActionBusy(true);
+    const res = await api.safeJson<Record<string, unknown>>('/api/v5/super/plan', {
+      method: 'POST',
+      body: JSON.stringify({
+        goal,
+        prompt: goal,
+        sessionId: activeSessionId(),
+        autoProceed: 'off',
+        goalPersistence: false,
+        tokenBudget: null,
+      }),
+    });
+    setSuperActionBusy(false);
+    setProceedPolicy('off');
+    if (res.ok) {
+      setSuperStatus(res.data);
+      const rid = String(res.data.runId ?? res.data.run_id ?? 'super-plan');
+      const msg = `Launched /super-plan (${rid}) · autoProceed: off · Spec-Oracle hydrated`;
+      setStatusNote(msg);
+      flashNotice(msg);
+      await loadAll();
+    } else {
+      setStatusNote(`/super-plan (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleLaunchSuperRun = async () => {
+    if (superActionBusy()) return;
+    const goal =
+      superGoalInput().trim() ||
+      String(superStatus()?.activeGoal ?? superStatus()?.active_goal ?? '').trim() ||
+      'Autonomous /super-run execution with 3/3 cleanroom audit gate';
+    setSuperActionBusy(true);
+    const res = await api.safeJson<Record<string, unknown>>('/api/v5/super/run', {
+      method: 'POST',
+      body: JSON.stringify({
+        goal,
+        prompt: goal,
+        sessionId: activeSessionId(),
+        autoProceed: 'full',
+        goalPersistence: true,
+        approvalMode: 'yolo',
+        tokenBudget: null,
+        boost: true,
+      }),
+    });
+    setSuperActionBusy(false);
+    setProceedPolicy('full');
+    if (res.ok) {
+      setSuperStatus(res.data);
+      const rid = String(res.data.runId ?? res.data.run_id ?? 'super-run');
+      const msg = `Launched /super-run (${rid}) · autoProceed: full · YOLO · Swarm 32-Cap · tokenBudget: null`;
+      setStatusNote(msg);
+      flashNotice(msg);
+      await loadAll();
+    } else {
+      setStatusNote(`/super-run (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleSetProceedPolicy = async (next: 'off' | 'standard' | 'full') => {
+    if (superActionBusy()) return;
+    setProceedPolicy(next);
+    setSuperActionBusy(true);
+    const res = await api.safeJson<Record<string, unknown>>('/api/v5/super/proceed', {
+      method: 'POST',
+      body: JSON.stringify({
+        policy: next,
+        autoProceed: next,
+        sessionId: activeSessionId(),
+      }),
+    });
+    setSuperActionBusy(false);
+    if (res.ok) {
+      const msg = `AutoProceedPolicy -> ${next.toUpperCase()}`;
+      setStatusNote(msg);
+      flashNotice(msg);
+      await loadAll();
+    } else {
+      setStatusNote(`AutoProceedPolicy (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleCancelSuperRun = async () => {
+    if (superActionBusy()) return;
+    const runId = String(superStatus()?.runId ?? superStatus()?.run_id ?? '').trim() || undefined;
+    setSuperActionBusy(true);
+    const res = await api.safeJson<Record<string, unknown>>('/api/v5/super/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ runId, sessionId: activeSessionId() }),
+    });
+    setSuperActionBusy(false);
+    if (res.ok) {
+      setSuperStatus(res.data);
+      const marker = String(res.data.marker ?? '<!-- GOAL_CANCELLED -->');
+      const msg = `Active Super run cancelled ${marker}`;
+      setStatusNote(msg);
+      flashNotice(msg);
+      await loadAll();
+    } else {
+      setStatusNote(`Cancel Super run (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const superSummary = createMemo(() => {
+    const st = superStatus() ?? superState() ?? {};
+    const caps = superCaps() ?? {};
+    const mode = String(st.mode ?? st.state ?? 'ready');
+    const phase = String(st.phase ?? 'idle');
+    const runId = String(st.runId ?? st.run_id ?? '');
+    const auditStreak = Number(st.auditStreak ?? st.audit_streak ?? 0) || 0;
+    const goalPersistence = Boolean(st.goalPersistence ?? st.goal_persistence ?? mode.toLowerCase().includes('run'));
+    const activeGoal = String(st.activeGoal ?? st.active_goal ?? st.goal ?? '');
+    const crates = Number(caps.crates ?? 18) || 18;
+    const agentTools = Number(caps.agentTools ?? caps.agent_tools ?? 42) || 42;
+    const computerTools = Number(caps.computerTools ?? caps.computer_tools ?? 21) || 21;
+    const rawSkills = caps.skills;
+    let skillsLabel = '22 + 1,001 Vault';
+    if (rawSkills && typeof rawSkills === 'object' && !Array.isArray(rawSkills)) {
+      const sk = rawSkills as Record<string, unknown>;
+      const wsCount = Number(sk.workspaceCount ?? sk.workspace_count ?? 0) || 0;
+      const vaultCount = Number(sk.coldVaultCount ?? sk.cold_vault_count ?? 0) || 0;
+      const plugSkills = Number(sk.pluginSkillCount ?? sk.plugin_skill_count ?? 0) || 0;
+      const total = Number(sk.totalCount ?? sk.total_count ?? wsCount + vaultCount + plugSkills) || 0;
+      const m2v = sk.m2vEnabled === true ? ' · M2V' : '';
+      skillsLabel =
+        wsCount > 0 || vaultCount > 0
+          ? `${wsCount}+${vaultCount.toLocaleString()} Skills${plugSkills > 0 ? ` (+${plugSkills} plug)` : ''}${m2v}`
+          : total > 0
+            ? `${total.toLocaleString()} Skills${m2v}`
+            : '22 + 1,001 Vault';
+    } else if (typeof rawSkills === 'number') {
+      skillsLabel = `${rawSkills} active + 1,001 Vault`;
+    } else if (typeof rawSkills === 'string' && rawSkills.trim()) {
+      skillsLabel = rawSkills;
+    }
+    const rawMcp = caps.mcpServers ?? caps.mcp_servers;
+    const mcpSummary =
+      caps.mcpSummary && typeof caps.mcpSummary === 'object' && !Array.isArray(caps.mcpSummary)
+        ? (caps.mcpSummary as Record<string, unknown>)
+        : null;
+    const mcpCount = Array.isArray(rawMcp)
+      ? rawMcp.length
+      : Number(mcpSummary?.discoveredCount ?? mcpSummary?.connectedCount ?? rawMcp ?? 0) || 0;
+    const pluginCount = Array.isArray(caps.plugins)
+      ? caps.plugins.length
+      : Number(caps.plugins ?? 0) || 0;
+    const rawAgy = caps.agyFast ?? caps.agy_fast;
+    const agyFast =
+      typeof rawAgy === 'string' && rawAgy.trim()
+        ? rawAgy
+        : rawAgy && typeof rawAgy === 'object' && !Array.isArray(rawAgy)
+          ? String(
+              (rawAgy as Record<string, unknown>).status ??
+                ((rawAgy as Record<string, unknown>).available ? 'available' : 'bridged'),
+            )
+          : 'bridged';
+    const lanes = Array.isArray(caps.lanes) ? (caps.lanes as string[]) : [];
+    const steers = Array.isArray(st.steers) ? st.steers.length : Number(st.steers ?? 0) || 0;
+    return {
+      mode,
+      phase,
+      runId,
+      auditStreak,
+      goalPersistence,
+      activeGoal,
+      crates,
+      agentTools,
+      computerTools,
+      skillsLabel,
+      mcpCount,
+      pluginCount,
+      agyFast,
+      lanes,
+      steers,
+    };
+  });
 
   onMount(() => {
     void loadAll();
@@ -321,6 +530,157 @@ export function MissionLifecycleView() {
       </Show>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Unified /super-plan & /super-run Command Center */}
+        <section
+          data-testid="super-command-center"
+          class="omnia-surface-panel rounded-lg p-3.5 space-y-3 border-[var(--border-accent)] min-w-0"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-2 min-w-0">
+            <div class="flex flex-wrap items-center gap-2 min-w-0">
+              <Rocket class="w-4 h-4 text-[var(--accent-cyan)] shrink-0" />
+              <span class="font-bold text-[13px] text-[var(--ink-primary)]">
+                Unified /super-plan &amp; /super-run Command Center
+              </span>
+              <span
+                data-testid="super-mode-badge"
+                class="omnia-badge font-mono-num uppercase text-[10px]"
+                classList={{
+                  'text-[var(--status-emerald)]': superSummary().mode.toLowerCase().includes('run'),
+                  'text-[var(--accent-cyan)]': superSummary().mode.toLowerCase().includes('plan'),
+                  'text-[var(--ink-secondary)]':
+                    !superSummary().mode.toLowerCase().includes('run') &&
+                    !superSummary().mode.toLowerCase().includes('plan'),
+                }}
+              >
+                {superSummary().mode} · {superSummary().phase}
+              </span>
+              <Show when={superSummary().runId}>
+                <span class="omnia-badge font-mono-num text-[10px] text-[var(--ink-secondary)]">
+                  run:{superSummary().runId}
+                </span>
+              </Show>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5 shrink-0 font-mono-num text-[10.5px]">
+              <span
+                data-testid="super-audit-streak"
+                class="omnia-badge"
+                classList={{
+                  'text-[var(--status-emerald)]': superSummary().auditStreak >= 3,
+                  'text-[var(--accent-amber)]': superSummary().auditStreak < 3,
+                }}
+                title="3 consecutive zero-finding Cleanroom Audits required for whole-goal completion"
+              >
+                Audit Streak: {superSummary().auditStreak}/3
+              </span>
+              <span class="omnia-badge text-[var(--accent-cyan)]">tokenBudget: null</span>
+              <span class="omnia-badge text-[var(--ink-secondary)]">
+                Steers: {superSummary().steers}
+              </span>
+            </div>
+          </div>
+
+          {/* Full Omnia Architecture Capability Pills */}
+          <div
+            data-testid="super-capability-pills"
+            class="flex flex-wrap items-center gap-1.5 text-[10.5px] font-mono-num min-w-0"
+          >
+            <span class="omnia-badge text-[var(--accent-cyan)]">{superSummary().crates} Rust Crates</span>
+            <span class="omnia-badge text-[var(--status-emerald)]">
+              {superSummary().agentTools}+{superSummary().computerTools} Tools (Agent+CU)
+            </span>
+            <span class="omnia-badge text-[var(--accent-amber)]">{superSummary().skillsLabel}</span>
+            <span class="omnia-badge text-[var(--ink-secondary)]">
+              MCP: {superSummary().mcpCount > 0 ? superSummary().mcpCount : 'auto-discovered'}
+            </span>
+            <span class="omnia-badge text-[var(--ink-secondary)]">
+              Plugins: {superSummary().pluginCount > 0 ? superSummary().pluginCount : 'auto-discovered'}
+            </span>
+            <span class="omnia-badge text-[var(--accent-cyan)]">agy-fast: {superSummary().agyFast}</span>
+            <span class="omnia-badge text-[var(--status-emerald)]">Swarm 32-Cap · Boost</span>
+            <span class="omnia-badge text-[var(--ink-secondary)]">
+              Goal Persist: {superSummary().goalPersistence ? 'ON' : 'STANDBY'}
+            </span>
+          </div>
+
+          <Show when={superSummary().activeGoal}>
+            <div class="px-2.5 py-1.5 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] text-[11.5px] font-mono-num text-[var(--ink-secondary)] truncate">
+              Active Goal: <span class="text-[var(--ink-primary)]">{maskText(superSummary().activeGoal, privacyMask())}</span>
+            </div>
+          </Show>
+
+          {/* Interactive Goal Launcher + AutoProceedPolicy + Cancel Run */}
+          <div class="flex flex-wrap items-center gap-2 min-w-0">
+            <input
+              type="text"
+              data-testid="super-goal-input"
+              placeholder="Enter mission goal for /super-plan or /super-run..."
+              value={superGoalInput()}
+              onInput={(e) => setSuperGoalInput(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  void handleLaunchSuperRun();
+                }
+              }}
+              class="flex-1 min-w-[200px] rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5 text-[12px] text-[var(--ink-primary)]"
+            />
+            <button
+              type="button"
+              data-testid="super-launch-plan-btn"
+              disabled={superActionBusy()}
+              class="omnia-btn text-[11.5px] shrink-0"
+              title="POST /api/v5/super/plan (autoProceed: off, goalPersistence: false, Spec-Oracle hydrated)"
+              onClick={() => void handleLaunchSuperPlan()}
+            >
+              <Sparkles class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
+              <span>Launch /super-plan</span>
+            </button>
+            <button
+              type="button"
+              data-testid="super-launch-run-btn"
+              disabled={superActionBusy()}
+              class="omnia-btn omnia-btn-primary text-[11.5px] shrink-0"
+              title="POST /api/v5/super/run (autoProceed: full, YOLO, Swarm 32-Cap, Boost, tokenBudget: null)"
+              onClick={() => void handleLaunchSuperRun()}
+            >
+              <Rocket class="w-3.5 h-3.5" />
+              <span>Launch /super-run</span>
+            </button>
+
+            {/* AutoProceedPolicy Selector */}
+            <div
+              data-testid="super-proceed-selector"
+              class="omp-segmented text-[11px] shrink-0"
+              title="POST /api/v5/super/proceed — AutoProceedPolicy"
+            >
+              {(['off', 'standard', 'full'] as const).map((pol) => (
+                <button
+                  type="button"
+                  data-proceed-policy={pol}
+                  aria-pressed={proceedPolicy() === pol}
+                  disabled={superActionBusy()}
+                  onClick={() => void handleSetProceedPolicy(pol)}
+                >
+                  {pol === 'off' ? 'Off' : pol === 'standard' ? 'Standard' : 'Full'}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              data-testid="super-cancel-run-btn"
+              disabled={superActionBusy()}
+              class="omnia-btn omnia-btn-danger text-[11.5px] shrink-0"
+              title="POST /api/v5/super/cancel (<!-- GOAL_CANCELLED -->)"
+              onClick={() => void handleCancelSuperRun()}
+            >
+              <Square class="w-3.5 h-3.5" />
+              <span>Cancel Active Run</span>
+            </button>
+          </div>
+        </section>
+
         {/* 1. 12-Artifact Cross-Linked Graph */}
         <Show when={subTab() === 'artifacts'}>
           <div class="flex flex-wrap gap-1.5 text-[11px] font-mono-num">
@@ -703,7 +1063,18 @@ export function MissionLifecycleView() {
                 <span>Super-Plan / Super-Run Wave &amp; 3-Strike State</span>
               </div>
               <pre class="p-3 rounded border border-[var(--border-subtle)] bg-[var(--bg-code)] text-[11px] font-mono-num max-h-72 overflow-auto whitespace-pre-wrap">
-                {JSON.stringify(maskJson(superState() ?? { state: 'ready', tokenBudget: null }, privacyMask()), null, 2)}
+                {JSON.stringify(
+                  maskJson(
+                    {
+                      superStatus: superStatus() ?? { mode: 'ready', autoProceed: proceedPolicy(), tokenBudget: null },
+                      capabilities: superCaps() ?? { crates: 18, agentTools: 42, computerTools: 21 },
+                      workflowState: superState() ?? { state: 'ready', tokenBudget: null },
+                    },
+                    privacyMask(),
+                  ),
+                  null,
+                  2,
+                )}
               </pre>
             </div>
           </div>

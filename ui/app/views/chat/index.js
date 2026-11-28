@@ -30,6 +30,9 @@ registerCommands(() => {
   const lang = getLang();
   return [
     { id: 'chat.focus', group, title: t('chat.cmdFocus'), keywords: 'composer focus soan thao', icon: 'edit', run: () => chat.focusComposer() },
+    { id: 'chat.superPlan', group, title: t('chat.cmdSuperPlan'), keywords: 'super plan super-plan planning spec oracle', icon: 'zap', run: () => chat.prefillSlash('/super-plan ') },
+    { id: 'chat.superRun', group, title: t('chat.cmdSuperRun'), keywords: 'super run super-run autonomous goal swarm boost yolo', icon: 'zap', run: () => chat.prefillSlash('/super-run ') },
+    { id: 'chat.autoProceed', group, title: t('chat.cmdAutoProceed'), keywords: 'auto proceed policy off standard full', icon: 'zap', run: () => chat.prefillSlash('/auto-proceed ') },
     { id: 'chat.preview', group, title: t('chat.cmdPreview'), keywords: 'preview xem truoc markdown', icon: 'eye', run: () => chat.togglePreview() },
     { id: 'chat.inspector', group, title: t('chat.cmdInspector'), keywords: 'inspector chi tiet receipt steer', icon: 'panel-right', shortcut: 'Ctrl .', run: () => chat.toggleInspector() },
     { id: 'chat.attach', group, title: t('chat.cmdAttach'), keywords: 'attach file dinh kem tep', icon: 'paperclip', run: () => chat.attach() },

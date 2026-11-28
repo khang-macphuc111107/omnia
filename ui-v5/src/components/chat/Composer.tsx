@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   BookMarked,
   Brain,
@@ -74,6 +74,10 @@ import { detectEncryptedArchive, sha256Hex } from '@/utils/crypto';
 import { LATEX_15_TEMPLATES } from '@/utils/markdown';
 
 const SLASH_COMMANDS = [
+  { cmd: '/super-plan', desc: 'Unified Planning + Spec-Oracle + Full Hydration (autoProceed: off)', immediate: false },
+  { cmd: '/super-run', desc: 'Unified Autonomous Goal + Swarm 32-Cap + Boost + Learn (autoProceed: full, YOLO)', immediate: false },
+  { cmd: '/auto-proceed', desc: 'Get or set AutoProceedPolicy: off | standard | full', immediate: false },
+  { cmd: '/boost', desc: 'High-Parallelism Boost (Deep Research + Deep Think + Swarm 32-Cap /super-run)', immediate: false },
   { cmd: '/arena', desc: 'Open AI Studio & Multi-Model Parallel Arena (Gems, Elo, Get Code)', immediate: true },
   { cmd: '/canvas', desc: 'Open Live Interactive Artifacts Canvas & Preview Drawer', immediate: true },
   { cmd: '/focus', desc: 'Switch focus mode: solo | web | academic | code | rag | deep', immediate: false },
@@ -111,6 +115,66 @@ const FOCUS_PILLS: Array<{ id: FocusMode | 'arena'; label: string; title: string
   { id: 'arena', label: 'Arena', title: 'Open Multi-Model Parallel Arena & Parameter Lab' },
 ];
 
+type AutoProceedLevel = 'off' | 'standard' | 'full';
+
+interface SuperRunBannerState {
+  mode: 'super-plan' | 'super-run';
+  runId: string;
+  goal: string;
+  phase: string;
+  autoProceed: AutoProceedLevel;
+  goalPersistence: boolean;
+  approvalMode: string;
+  boost: boolean;
+  auditStreak: number;
+  status: string;
+}
+
+function normalizeProceedPolicy(value: unknown, fallback: AutoProceedLevel = 'standard'): AutoProceedLevel {
+  const s = String(value ?? '').trim().toLowerCase();
+  if (s === 'off' || s === 'standard' || s === 'full') return s;
+  return fallback;
+}
+
+async function fetchSuperJson(
+  url: string,
+  init?: RequestInit,
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; status: number; message: string }> {
+  try {
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+    const text = await res.text();
+    let parsed: Record<string, unknown> = {};
+    if (text.trim()) {
+      try {
+        const raw = JSON.parse(text);
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          parsed = raw as Record<string, unknown>;
+        }
+      } catch {
+        parsed = { raw: text };
+      }
+    }
+    if (!res.ok) {
+      const msg = String(parsed.message ?? parsed.error ?? `HTTP ${res.status}`);
+      return { ok: false, status: res.status, message: msg };
+    }
+    return { ok: true, data: parsed };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      message: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
+
 export function Composer() {
   let textareaRef: HTMLTextAreaElement | undefined;
   let fileInputRef: HTMLInputElement | undefined;
@@ -129,6 +193,44 @@ export function Composer() {
   const [voiceEngine, setVoiceEngine] = createSignal<'browser' | 'whisper'>('browser');
   const [whisperBusy, setWhisperBusy] = createSignal(false);
   const [composerLane, setComposerLane] = createSignal<'default' | 'queue' | 'steer' | 'btw' | 'discuss'>('default');
+  const [activeSuperRun, setActiveSuperRun] = createSignal<SuperRunBannerState | null>(null);
+  const [superBusy, setSuperBusy] = createSignal(false);
+  const [autoProceedPolicy, setAutoProceedPolicy] = createSignal<AutoProceedLevel>('standard');
+
+  onMount(() => {
+    void (async () => {
+      const res = await fetchSuperJson('/api/v5/super/status');
+      if (!res.ok) return;
+      const d = res.data;
+      const policy = normalizeProceedPolicy(d.autoProceed ?? d.auto_proceed ?? d.policy, 'standard');
+      setAutoProceedPolicy(policy);
+      const rawMode = String(d.mode ?? '').toLowerCase();
+      const rawStatus = String(d.status ?? d.phase ?? '').toLowerCase();
+      const isCancelledOrIdle =
+        d.active === false ||
+        !rawMode ||
+        rawMode === 'idle' ||
+        rawMode === 'none' ||
+        rawStatus === 'idle' ||
+        rawStatus === 'cancelled' ||
+        rawStatus === 'completed';
+      if (!isCancelledOrIdle && (rawMode.includes('plan') || rawMode.includes('run'))) {
+        const mode: 'super-plan' | 'super-run' = rawMode.includes('plan') ? 'super-plan' : 'super-run';
+        setActiveSuperRun({
+          mode,
+          runId: String(d.runId ?? d.run_id ?? `${mode}-live`),
+          goal: String(d.activeGoal ?? d.active_goal ?? d.goal ?? ''),
+          phase: String(d.phase ?? 'active'),
+          autoProceed: policy,
+          goalPersistence: Boolean(d.goalPersistence ?? d.goal_persistence ?? mode === 'super-run'),
+          approvalMode: String(d.approvalMode ?? d.approval_mode ?? (mode === 'super-run' ? 'yolo' : 'interactive')),
+          boost: Boolean(d.boost),
+          auditStreak: Number(d.auditStreak ?? d.audit_streak ?? 0) || 0,
+          status: String(d.status ?? 'active'),
+        });
+      }
+    })();
+  });
 
   onCleanup(() => {
     try {
@@ -406,6 +508,205 @@ export function Composer() {
     }
   };
 
+  const cancelActiveSuperRun = async () => {
+    const current = activeSuperRun();
+    if (superBusy()) return;
+    setSuperBusy(true);
+    try {
+      const res = await fetchSuperJson('/api/v5/super/cancel', {
+        method: 'POST',
+        body: JSON.stringify({
+          runId: current?.runId ?? undefined,
+          sessionId: activeSessionId(),
+        }),
+      });
+      if (isStreaming()) abortActiveStream();
+      setActiveSuperRun(null);
+      if (res.ok) {
+        const marker = String(res.data.marker ?? '<!-- GOAL_CANCELLED -->');
+        flashNotice(`Super workflow cancelled (${current?.runId ?? 'active'}) ${marker}`);
+      } else {
+        flashNotice(`Super cancel note (${res.status || 'offline'}): ${res.message}`);
+      }
+    } finally {
+      setSuperBusy(false);
+    }
+  };
+
+  const tryHandleSuperSlash = async (rawText: string): Promise<boolean> => {
+    const match = rawText.match(/^(\/(?:super-plan|super-run|auto-proceed|boost))(?:\s+([\s\S]*))?$/i);
+    if (!match) return false;
+    const cmd = match[1].toLowerCase();
+    const rest = (match[2] ?? '').trim();
+
+    if (cmd === '/auto-proceed') {
+      if (!rest) {
+        setSuperBusy(true);
+        try {
+          const res = await fetchSuperJson('/api/v5/super/proceed');
+          const policy = res.ok
+            ? normalizeProceedPolicy(res.data.policy ?? res.data.autoProceed ?? res.data.auto_proceed, autoProceedPolicy())
+            : autoProceedPolicy();
+          setAutoProceedPolicy(policy);
+          setComposerDraft('');
+          flashNotice(
+            res.ok
+              ? `AutoProceedPolicy is ${policy.toUpperCase()} (use /auto-proceed off|standard|full)`
+              : `AutoProceedPolicy (${policy.toUpperCase()}) · backend note: ${res.message}`,
+          );
+        } finally {
+          setSuperBusy(false);
+        }
+        return true;
+      }
+      const next = rest.toLowerCase();
+      if (next !== 'off' && next !== 'standard' && next !== 'full') {
+        flashNotice('Usage: /auto-proceed off | standard | full');
+        return true;
+      }
+      setSuperBusy(true);
+      try {
+        const res = await fetchSuperJson('/api/v5/super/proceed', {
+          method: 'POST',
+          body: JSON.stringify({
+            policy: next,
+            autoProceed: next,
+            sessionId: activeSessionId(),
+          }),
+        });
+        setAutoProceedPolicy(next);
+        setActiveSuperRun((prev) => (prev ? { ...prev, autoProceed: next } : prev));
+        setComposerDraft('');
+        flashNotice(
+          res.ok
+            ? `AutoProceedPolicy updated -> ${next.toUpperCase()}`
+            : `AutoProceedPolicy set locally -> ${next.toUpperCase()} (${res.message})`,
+        );
+      } finally {
+        setSuperBusy(false);
+      }
+      return true;
+    }
+
+    if (cmd === '/super-plan') {
+      const goal = rest || 'Interactive unified /super-plan session';
+      setSuperBusy(true);
+      let runId = `sp-${Date.now().toString(36)}`;
+      let phase = 'hydrate-plan';
+      let auditStreak = 0;
+      try {
+        const res = await fetchSuperJson('/api/v5/super/plan', {
+          method: 'POST',
+          body: JSON.stringify({
+            goal,
+            prompt: goal,
+            sessionId: activeSessionId(),
+            autoProceed: 'off',
+            goalPersistence: false,
+            tokenBudget: null,
+          }),
+        });
+        if (res.ok) {
+          runId = String(res.data.runId ?? res.data.run_id ?? runId);
+          phase = String(res.data.phase ?? phase);
+          auditStreak = Number(res.data.auditStreak ?? res.data.audit_streak ?? 0) || 0;
+          flashNotice(`Super-Plan active (${runId}) · autoProceed: off · Spec-Oracle hydrated`);
+        } else {
+          flashNotice(`Super-Plan started locally (${res.status || 'offline'}): ${res.message}`);
+        }
+      } finally {
+        setSuperBusy(false);
+      }
+      setAutoProceedPolicy('off');
+      setActiveSuperRun({
+        mode: 'super-plan',
+        runId,
+        goal,
+        phase,
+        autoProceed: 'off',
+        goalPersistence: false,
+        approvalMode: 'interactive',
+        boost: false,
+        auditStreak,
+        status: 'active',
+      });
+      if (rest) {
+        setComposerDraft(`[/super-plan · runId:${runId} · autoProceed:off · goalPersistence:false]\n${rest}`);
+        await sendComposerMessage();
+      } else {
+        setComposerDraft('');
+        textareaRef?.focus();
+      }
+      return true;
+    }
+
+    // /super-run or /boost
+    const isBoost = cmd === '/boost';
+    const goal = rest || (isBoost ? 'High-parallelism Boost execution' : 'Autonomous unified /super-run execution');
+    setAgentRunMode('solo');
+    if (isBoost) {
+      setFocusMode('deep');
+      setResearchMode('deep');
+      setThinkMode('deep');
+    }
+    setSuperBusy(true);
+    let runId = `sr-${Date.now().toString(36)}`;
+    let phase = isBoost ? 'boost-swarm' : 'autonomous-run';
+    let auditStreak = 0;
+    try {
+      const res = await fetchSuperJson('/api/v5/super/run', {
+        method: 'POST',
+        body: JSON.stringify({
+          goal,
+          prompt: goal,
+          sessionId: activeSessionId(),
+          autoProceed: 'full',
+          goalPersistence: true,
+          approvalMode: 'yolo',
+          tokenBudget: null,
+          boost: isBoost,
+        }),
+      });
+      if (res.ok) {
+        runId = String(res.data.runId ?? res.data.run_id ?? runId);
+        phase = String(res.data.phase ?? phase);
+        auditStreak = Number(res.data.auditStreak ?? res.data.audit_streak ?? 0) || 0;
+        flashNotice(
+          isBoost
+            ? `Boost Super-Run launched (${runId}) · Deep Research + Deep Think + Swarm 32-Cap · tokenBudget: null`
+            : `Super-Run launched (${runId}) · autoProceed: full · YOLO · Swarm 32-Cap · tokenBudget: null`,
+        );
+      } else {
+        flashNotice(`${isBoost ? 'Boost' : 'Super-Run'} started locally (${res.status || 'offline'}): ${res.message}`);
+      }
+    } finally {
+      setSuperBusy(false);
+    }
+    setAutoProceedPolicy('full');
+    setActiveSuperRun({
+      mode: 'super-run',
+      runId,
+      goal,
+      phase,
+      autoProceed: 'full',
+      goalPersistence: true,
+      approvalMode: 'yolo',
+      boost: isBoost,
+      auditStreak,
+      status: 'running',
+    });
+    if (rest) {
+      setComposerDraft(
+        `[${isBoost ? '/boost /super-run' : '/super-run'} · runId:${runId} · autoProceed:full · yolo · tokenBudget:null]\n${rest}`,
+      );
+      await sendComposerMessage();
+    } else {
+      setComposerDraft('');
+      textareaRef?.focus();
+    }
+    return true;
+  };
+
   const submitComposerAction = async () => {
     const lane = composerLane();
     const raw = composerDraft().trim();
@@ -420,6 +721,10 @@ export function Composer() {
       return;
     }
     if (!raw && attachments.length === 0) return;
+    if (lane === 'default' && raw.startsWith('/')) {
+      const handledSuper = await tryHandleSuperSlash(raw);
+      if (handledSuper) return;
+    }
     if (lane === 'queue') {
       if (!raw) return;
       setComposerDraft('');
@@ -594,6 +899,66 @@ export function Composer() {
           </div>
         </div>
       </div>
+
+      {/* Live Unified /super-plan & /super-run Status Banner */}
+      <Show when={activeSuperRun()}>
+        {(run) => (
+          <div
+            data-testid="composer-super-banner"
+            data-super-mode={run().mode}
+            class="mb-2 px-3 py-1.5 rounded border flex flex-wrap items-center justify-between gap-2 text-[11px] min-w-0"
+            classList={{
+              'border-[var(--accent-cyan)] bg-[var(--accent-dim)] text-[var(--ink-primary)]':
+                run().mode === 'super-plan',
+              'border-[var(--status-emerald)] bg-[var(--bg-elevated)] text-[var(--ink-primary)]':
+                run().mode === 'super-run',
+            }}
+          >
+            <div class="flex flex-wrap items-center gap-1.5 min-w-0">
+              <span
+                class="omnia-badge font-mono-num font-bold uppercase text-[10px]"
+                classList={{
+                  'text-[var(--accent-cyan)]': run().mode === 'super-plan',
+                  'text-[var(--status-emerald)]': run().mode === 'super-run',
+                }}
+              >
+                {run().mode === 'super-plan' ? 'SUPER-PLAN' : run().boost ? 'SUPER-RUN · BOOST' : 'SUPER-RUN'}
+              </span>
+              <span class="font-mono-num text-[var(--ink-secondary)]">{run().runId}</span>
+              <span class="omnia-badge font-mono-num text-[10px] text-[var(--accent-amber)]">
+                autoProceed:{run().autoProceed}
+              </span>
+              <Show when={run().mode === 'super-run'}>
+                <span class="omnia-badge font-mono-num text-[10px] text-[var(--status-emerald)]">
+                  YOLO · Swarm-32 · tokenBudget:null
+                </span>
+              </Show>
+              <span class="text-[var(--ink-secondary)] truncate max-w-[260px]" title={run().goal}>
+                {run().goal}
+              </span>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                class="omnia-btn px-2 py-0.5 text-[10.5px]"
+                onClick={() => openWorkbench('lifecycle')}
+              >
+                Command Center
+              </button>
+              <button
+                type="button"
+                data-testid="composer-super-cancel"
+                disabled={superBusy()}
+                class="omnia-btn omnia-btn-danger px-2 py-0.5 text-[10.5px]"
+                onClick={() => void cancelActiveSuperRun()}
+              >
+                <Square class="w-3 h-3" />
+                <span>{superBusy() ? 'Cancelling...' : 'Cancel Run'}</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </Show>
 
       {/* Live Deep Research Multi-Stage Progress Strip */}
       <Show when={researchProgress.active}>
@@ -882,7 +1247,7 @@ export function Composer() {
           onSelect={(e) => setComposerCaret(e.currentTarget.selectionStart)}
           onPaste={(e) => void handlePaste(e)}
           onKeyDown={(e) => {
-            if (isComposing() || (e as KeyboardEvent).isComposing) return;
+            if (isComposing() || (e as KeyboardEvent).isComposing || e.keyCode === 229 || e.key === 'Process') return;
             if (e.key === 'Escape' && pendingPasteChoice()) {
               e.preventDefault();
               setPendingPasteChoice(null);
@@ -898,7 +1263,14 @@ export function Composer() {
               e.preventDefault();
               if (slashMatches().length > 0 && composerDraft().trim() === '/') {
                 const chosen = slashMatches()[slashIndex()];
-                if (chosen) void handleSlashCommand(chosen.cmd);
+                if (chosen) {
+                  if (chosen.immediate) {
+                    void handleSlashCommand(chosen.cmd);
+                  } else {
+                    setComposerDraft(`${chosen.cmd} `);
+                    textareaRef?.focus();
+                  }
+                }
                 return;
               }
               void submitComposerAction();

@@ -18,6 +18,7 @@ base64.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 omnia-agent.workspace = true
+omnia-computer = { path = "../omnia-computer" }
 omnia-connector-gateway = { path = "../omnia-connector-gateway" }
 omnia-core = { path = "../omnia-core" }
 omnia-downloader.workspace = true

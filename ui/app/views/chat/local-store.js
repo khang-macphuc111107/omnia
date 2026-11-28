@@ -13,7 +13,7 @@ import { hasLatex } from '../../lib/markdown.js';
 export const KEY_PREFIX = 'omnia.ui.chat.';
 export const SCHEMA_VERSION = 1;
 export const MAX_MESSAGES = 200;
-export const ROUTE_STATES = ['pending', 'routed', 'fenced', 'cancelled', 'error'];
+export const ROUTE_STATES = ['pending', 'routed', 'fenced', 'cancelled', 'error', 'super'];
 export const PLACEMENTS = ['inline', 'tray', 'both'];
 
 export const chatKey = (sessionId) => `${KEY_PREFIX}${sessionId}`;
@@ -52,7 +52,8 @@ export function sanitizeRoute(value) {
     errorCode: text(route.errorCode),
     policy: isObject(route.policy) ? route.policy : null,
     cancelledAt: count(route.cancelledAt),
-    cancelAck: isObject(route.cancelAck) ? route.cancelAck : null
+    cancelAck: isObject(route.cancelAck) ? route.cancelAck : null,
+    superMeta: isObject(route.superMeta) ? route.superMeta : null
   };
 }
 
@@ -178,6 +179,21 @@ export function routeFromError(error, policy) {
     policy,
     cancelledAt: 0,
     cancelAck: null
+  };
+}
+
+export function superRouteFromResult(result, policy) {
+  const meta = isObject(result) ? result : {};
+  return {
+    state: 'super',
+    selectedCandidateId: typeof meta.mode === 'string' ? meta.mode : 'super',
+    receipt: null,
+    status: text(meta.status) || 'SUPER_ACTIVE',
+    errorCode: '',
+    policy,
+    cancelledAt: meta.kind === 'cancel' ? Date.now() : 0,
+    cancelAck: null,
+    superMeta: meta
   };
 }
 

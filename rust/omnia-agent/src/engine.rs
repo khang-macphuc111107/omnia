@@ -1273,6 +1273,9 @@ pub struct NativeSuperEngine {
     pub tts_config: TestTimeScalingConfig,
     pub dynamic_router: Option<Arc<DynamicProviderRouter>>,
     pub role_endpoints: BTreeMap<ModelRole, ResolvedModelEndpoint>,
+    /// Optional executable unified `/super-plan` & `/super-run` orchestrator (`None` by default;
+    /// preserves 100% backward compatibility for `NativeSuperEngine::new`).
+    pub super_orchestrator: Option<crate::super_orchestrator::SuperOrchestrator>,
     pub system_prompt: String,
     pub canonical_tools: Vec<Value>,
     pub tool_schemas_by_name: HashMap<String, Value>,
@@ -1490,6 +1493,7 @@ impl NativeSuperEngine {
             tts_config: TestTimeScalingConfig::default(),
             dynamic_router: None,
             role_endpoints: BTreeMap::new(),
+            super_orchestrator: None,
             system_prompt,
             canonical_tools,
             tool_schemas_by_name,
@@ -1544,6 +1548,55 @@ impl NativeSuperEngine {
     /// Attach a configured `DynamicProviderRouter` (optionally WAL SQLite-backed).
     pub fn bind_dynamic_router(&mut self, router: Arc<DynamicProviderRouter>) {
         self.dynamic_router = Some(router);
+    }
+
+    /// Attach an explicit `SuperOrchestrator` for unified `/super-plan` & `/super-run` execution.
+    pub fn attach_super_orchestrator(
+        &mut self,
+        orchestrator: crate::super_orchestrator::SuperOrchestrator,
+    ) {
+        self.super_orchestrator = Some(orchestrator);
+    }
+
+    /// Read-only reference to the attached `SuperOrchestrator`, if active.
+    #[must_use]
+    pub fn super_orchestrator(&self) -> Option<&crate::super_orchestrator::SuperOrchestrator> {
+        self.super_orchestrator.as_ref()
+    }
+
+    /// Mutable reference to the attached `SuperOrchestrator`, if active.
+    pub fn super_orchestrator_mut(
+        &mut self,
+    ) -> Option<&mut crate::super_orchestrator::SuperOrchestrator> {
+        self.super_orchestrator.as_mut()
+    }
+
+    /// Activates `/super-plan` on this engine (`AutoProceedPolicy::Off`, `goal_persistence = false`,
+    /// `token_budget = None`, lossless `.agents/super/engine_state.json`).
+    pub fn activate_super_plan(
+        &mut self,
+        goal_prompt: &str,
+    ) -> Result<crate::super_orchestrator::SuperActivationReceipt> {
+        let orch = self.super_orchestrator.get_or_insert_with(|| {
+            crate::super_orchestrator::SuperOrchestrator::from_workspace_state(
+                self.workspace_root.clone(),
+            )
+        });
+        orch.activate_super_plan(goal_prompt, true)
+    }
+
+    /// Activates `/super-run` on this engine (`AutoProceedPolicy::Full`, `ApprovalMode::Yolo`,
+    /// `goal_persistence = true`, `token_budget = None`, lossless `.agents/super/engine_state.json`).
+    pub fn activate_super_run(
+        &mut self,
+        goal_prompt: &str,
+    ) -> Result<crate::super_orchestrator::SuperActivationReceipt> {
+        let orch = self.super_orchestrator.get_or_insert_with(|| {
+            crate::super_orchestrator::SuperOrchestrator::from_workspace_state(
+                self.workspace_root.clone(),
+            )
+        });
+        orch.activate_super_run(goal_prompt, true)
     }
 
     /// Initialize WAL SQLite-backed `DynamicProviderRouter` from `omnia_router.db` and `models.yml`.
@@ -2219,6 +2272,15 @@ impl NativeSuperEngine {
                 }
             ));
         }
+        if let Some(ref orch) = self.super_orchestrator {
+            if orch.mode() != crate::super_orchestrator::SuperMode::Idle {
+                let super_tail = orch.build_dynamic_tail_hydration();
+                if !super_tail.trim().is_empty() {
+                    user_content.push_str("\n\n");
+                    user_content.push_str(&super_tail);
+                }
+            }
+        }
 
         let user_msg = if user_blocks.is_empty() {
             HarnessMessage::user(user_content, self.total_turns + 1)
@@ -2828,6 +2890,74 @@ impl NativeSuperEngine {
                         s(HarnessStreamEvent::TurnEnd { turn: cur_turn });
                     }
                     continue;
+                }
+
+                // 5. SuperRun Stage-5 `/goal` Persistence & Cleanroom Audit Gate
+                // Active ONLY when a `SuperOrchestrator` with `goal_persistence == true` is attached.
+                if let Some(ref mut orch) = self.super_orchestrator {
+                    if orch.goal_persistence() {
+                        let fp = format!(
+                            "t{}:tc{}:te{}:m{}:sh{}:ec{:?}:len{}",
+                            cur_turn,
+                            self.total_tool_calls,
+                            self.total_tool_errors,
+                            progress.files_mutated.len(),
+                            progress.shell_runs_total,
+                            progress.last_shell_exit_code,
+                            final_text.len()
+                        );
+                        let turn_had_error = progress.last_shell_exit_code.is_some_and(|c| c != 0);
+                        let last_verify_passed = progress.files_mutated.is_empty()
+                            || progress.test_suite_passed_since_last_mutation
+                            || (progress.verified_since_last_mutation
+                                && progress.last_shell_exit_code == Some(0));
+                        let eval = orch.evaluate_exit_gate(
+                            &final_text,
+                            &fp,
+                            turn_had_error,
+                            last_verify_passed,
+                            &self.endpoint.model_id,
+                            self.dynamic_router.as_deref(),
+                        );
+                        if !eval.allow_exit
+                            && prompt_turns < max_turns
+                            && rem_now > Duration::from_secs(20)
+                        {
+                            if eval.boost_decision.should_escalate {
+                                progress.escalate_reasoning = true;
+                            }
+                            self.trajectory.record(
+                                cur_turn,
+                                "super_goal_persistence_continue",
+                                json!({
+                                    "status": eval.status,
+                                    "openTodos": eval.open_todos,
+                                    "openDodGates": eval.open_dod_gates,
+                                    "pendingSteers": eval.pending_steers,
+                                    "auditStreak": eval.audit_streak,
+                                    "requiredAuditStreak": eval.required_audit_streak,
+                                    "boostEscalate": eval.boost_decision.should_escalate,
+                                    "blockingReasons": eval.blocking_reasons,
+                                }),
+                            );
+                            if let Some(cont_prompt) = eval.continuation_prompt {
+                                self.messages
+                                    .push(HarnessMessage::user(cont_prompt, cur_turn));
+                            }
+                            if let Some(ref s) = sink {
+                                s(HarnessStreamEvent::TurnEnd { turn: cur_turn });
+                            }
+                            continue;
+                        }
+                        if eval.allow_exit
+                            && orch.mode() == crate::super_orchestrator::SuperMode::SuperRun
+                            && !eval.circuit_breaker_tripped
+                            && eval.marker.as_deref()
+                                != Some(crate::super_orchestrator::GOAL_CANCELLED_MARKER)
+                        {
+                            let _ = orch.finalize_complete(&final_text, true);
+                        }
+                    }
                 }
 
                 if let Some(ref s) = sink {

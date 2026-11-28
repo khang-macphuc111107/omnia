@@ -8,6 +8,7 @@ description = "Full Native Rust SOTA v4 Autonomous Coding Agent Engine for Omnia
 [features]
 default = ["cpp-c-ast"]
 cpp-c-ast = ["omnia-graph/cpp-c-ast", "dep:tree-sitter-c", "dep:tree-sitter-cpp"]
+computer-use = ["dep:omnia-computer"]
 
 [dependencies]
 aho-corasick.workspace = true
@@ -24,6 +25,7 @@ ignore.workspace = true
 imara-diff.workspace = true
 memchr.workspace = true
 omnia-connector-gateway.workspace = true
+omnia-computer = { workspace = true, optional = true }
 omnia-core.workspace = true
 omnia-graph = { path = "../omnia-graph", default-features = false }
 omnia-harness.workspace = true

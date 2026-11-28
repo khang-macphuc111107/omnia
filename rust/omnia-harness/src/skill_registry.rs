@@ -51,7 +51,7 @@ pub enum SkillError {
 }
 
 /// Optional UI metadata parsed from `<skill_dir>/agents/openai.yaml`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct OpenAiSkillInterface {
     pub display_name: String,
     pub short_description: String,
@@ -70,7 +70,7 @@ impl OpenAiSkillInterface {
 }
 
 /// Registered skill metadata loaded from `SKILL.md` and `agents/openai.yaml`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SkillMetadata {
     pub name: String,
     pub description: String,
@@ -195,6 +195,218 @@ pub struct SkillLoadReport {
     pub loaded: usize,
     pub skipped: usize,
     pub errors: Vec<String>,
+}
+
+/// Metadata for a read-only discovered skill from workspace, user home, or installed local plugins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredPluginSkill {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub plugin_id: Option<String>,
+    pub path: String,
+    pub sha256: Option<String>,
+}
+
+/// Unified skill inventory across workspace `.agents/skills/`, external Cold Vault,
+/// installed local plugin `SKILL.md` directories, and Model2Vec readiness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedSkillDiscoveryReport {
+    pub workspace_skills: Vec<SkillMetadata>,
+    pub cold_vault_count: usize,
+    pub plugin_skills: Vec<DiscoveredPluginSkill>,
+    pub scanned_roots: Vec<String>,
+    pub m2v_available: bool,
+}
+
+/// Resolves default local plugin & user skill directories dynamically from `USERPROFILE` / `HOME`
+/// (never hardcoding any user-specific path and never touching OAuth/cookie/`.pb` files).
+#[must_use]
+pub fn default_local_plugin_skill_roots(workspace_root: &Path) -> Vec<(String, PathBuf)> {
+    let mut roots = Vec::new();
+    let ws_plugins = workspace_root.join(".omnia").join("plugins");
+    if ws_plugins.is_dir() {
+        roots.push(("workspace_plugins".to_string(), ws_plugins));
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let home_dir = PathBuf::from(home);
+        roots.push((
+            "local_plugin".to_string(),
+            home_dir.join(".gemini").join("config").join("plugins"),
+        ));
+        roots.push((
+            "user_gemini_skills".to_string(),
+            home_dir.join(".gemini").join("config").join("skills"),
+        ));
+        roots.push((
+            "user_agents_skills".to_string(),
+            home_dir.join(".agents").join("skills"),
+        ));
+        roots.push((
+            "user_codex_skills".to_string(),
+            home_dir.join(".codex").join("skills"),
+        ));
+    }
+    roots
+}
+
+/// Scans `roots` read-only for `SKILL.md` frontmatter metadata with symlink/reparse containment
+/// guards and bounded per-root scan caps. Supports both flat `<root>/<skill>/SKILL.md` and
+/// plugin-nested `<root>/<plugin>/skills/<skill>/SKILL.md` layouts.
+#[must_use]
+pub fn discover_plugin_skills_in_roots(
+    roots: &[(String, PathBuf)],
+) -> Vec<DiscoveredPluginSkill> {
+    let mut found = Vec::new();
+    let mut seen_keys: BTreeSet<(String, String)> = BTreeSet::new();
+
+    for (source, root_dir) in roots {
+        let Ok(canonical_root) = canonical_safe_dir(root_dir) else {
+            continue;
+        };
+        let Ok(rd) = fs::read_dir(&canonical_root) else {
+            continue;
+        };
+        let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+
+        for child in entries.into_iter().take(256) {
+            let Ok(meta) = fs::symlink_metadata(&child) else {
+                continue;
+            };
+            if is_symlink_or_reparse(&meta) || !meta.is_dir() || !is_within_root(&canonical_root, &child) {
+                continue;
+            }
+            let child_name = child
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            // Layout A: `<root>/<skill>/SKILL.md` (or `<plugin>/SKILL.md`)
+            if let Some(item) = read_discovered_skill_md(
+                &canonical_root,
+                &child,
+                source,
+                if source.contains("plugin") {
+                    Some(child_name.clone())
+                } else {
+                    None
+                },
+            ) {
+                if seen_keys.insert((item.source.clone(), item.name.clone())) {
+                    found.push(item);
+                }
+            }
+
+            // Layout B: `<root>/<plugin>/skills/<skill>/SKILL.md`
+            let nested_skills = child.join("skills");
+            if let Ok(nmeta) = fs::symlink_metadata(&nested_skills) {
+                if !is_symlink_or_reparse(&nmeta)
+                    && nmeta.is_dir()
+                    && is_within_root(&canonical_root, &nested_skills)
+                {
+                    if let Ok(sub_rd) = fs::read_dir(&nested_skills) {
+                        let mut sub_dirs: Vec<PathBuf> = sub_rd.flatten().map(|e| e.path()).collect();
+                        sub_dirs.sort();
+                        for sk_dir in sub_dirs.into_iter().take(256) {
+                            let Ok(sk_meta) = fs::symlink_metadata(&sk_dir) else {
+                                continue;
+                            };
+                            if is_symlink_or_reparse(&sk_meta)
+                                || !sk_meta.is_dir()
+                                || !is_within_root(&canonical_root, &sk_dir)
+                            {
+                                continue;
+                            }
+                            if let Some(item) = read_discovered_skill_md(
+                                &canonical_root,
+                                &sk_dir,
+                                source,
+                                Some(child_name.clone()),
+                            ) {
+                                if seen_keys.insert((item.source.clone(), item.name.clone())) {
+                                    found.push(item);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    found.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.source.cmp(&b.source)));
+    found
+}
+
+fn read_discovered_skill_md(
+    canonical_root: &Path,
+    skill_dir: &Path,
+    source: &str,
+    plugin_id: Option<String>,
+) -> Option<DiscoveredPluginSkill> {
+    let skill_md = skill_dir.join("SKILL.md");
+    let md_meta = fs::symlink_metadata(&skill_md).ok()?;
+    if is_symlink_or_reparse(&md_meta)
+        || !md_meta.is_file()
+        || md_meta.len() > MAX_SKILL_FILE_BYTES
+        || !is_within_root(canonical_root, &skill_md)
+    {
+        return None;
+    }
+    let bytes = fs::read(&skill_md).ok()?;
+    let digest = sha256_hex(&bytes);
+    let text = omnia_core::sanitize_utf8_lossy(&bytes);
+    let stripped = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
+    let fm = parse_frontmatter_full(stripped)?;
+    let fallback_name = skill_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = if fm.name.is_empty() {
+        fallback_name
+    } else {
+        fm.name
+    };
+    Some(DiscoveredPluginSkill {
+        name,
+        description: truncate_utf8_codepoints(&fm.description, MAX_DESCRIPTION_CODEPOINTS),
+        source: source.to_string(),
+        plugin_id,
+        path: skill_md.to_string_lossy().replace('\\', "/"),
+        sha256: Some(digest),
+    })
+}
+
+/// Discovers workspace `.agents/skills/`, external Cold Vault catalog count, dynamic local
+/// plugin/user `SKILL.md` metadata, and Model2Vec availability in one read-only pass.
+#[must_use]
+pub fn discover_unified_skills(workspace_root: &Path) -> UnifiedSkillDiscoveryReport {
+    let reg = SkillRegistry::new();
+    let _ = reg
+        .load_from_workspace(workspace_root)
+        .or_else(|_| reg.load_from_directory(&workspace_root.join(".agents").join("skills")));
+    let cold_vault_count = reg.load_default_cold_vault();
+    let m2v_available = reg.try_load_default_m2v();
+    let workspace_skills = reg.list_skills().unwrap_or_default();
+
+    let roots = default_local_plugin_skill_roots(workspace_root);
+    let scanned_roots: Vec<String> = roots
+        .iter()
+        .filter(|(_, p)| p.is_dir())
+        .map(|(_, p)| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let plugin_skills = discover_plugin_skills_in_roots(&roots);
+
+    UnifiedSkillDiscoveryReport {
+        workspace_skills,
+        cold_vault_count,
+        plugin_skills,
+        scanned_roots,
+        m2v_available,
+    }
 }
 
 impl SkillLoadReport {
@@ -1814,5 +2026,42 @@ mod tests {
         assert!(reg.gap_radar_candidates(2, 0.5).is_empty());
 
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn discover_plugin_skills_scans_nested_plugin_and_flat_skill_roots_safely() {
+        let root = std::env::temp_dir().join(format!("omnia-plugin-skills-{}", omnia_core::uuid_v4()));
+        let nested = root
+            .join("plugins")
+            .join("demo-plugin")
+            .join("skills")
+            .join("fast-verify");
+        let flat = root.join("user-skills").join("global-lessons");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&flat).unwrap();
+
+        fs::write(
+            nested.join("SKILL.md"),
+            "---\nname: fast-verify\ndescription: Use when running deterministic fast checks.\n---\n# Fast Verify\n",
+        )
+        .unwrap();
+        fs::write(
+            flat.join("SKILL.md"),
+            "---\nname: global-lessons\ndescription: Use when recalling durable cross-project lessons.\n---\n# Lessons\n",
+        )
+        .unwrap();
+
+        let found = discover_plugin_skills_in_roots(&[
+            ("local_plugin".to_string(), root.join("plugins")),
+            ("user_skills".to_string(), root.join("user-skills")),
+        ]);
+        assert_eq!(found.len(), 2);
+        let pv = found.iter().find(|s| s.name == "fast-verify").unwrap();
+        assert_eq!(pv.plugin_id.as_deref(), Some("demo-plugin"));
+        assert!(pv.sha256.as_ref().is_some_and(|h| h.len() == 64));
+        let gl = found.iter().find(|s| s.name == "global-lessons").unwrap();
+        assert_eq!(gl.source, "user_skills");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

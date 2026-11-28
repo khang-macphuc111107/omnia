@@ -1,12 +1,13 @@
-import { Show, createSignal } from 'solid-js';
-import { Activity, Cpu, Globe, HardDrive, KeyRound, RefreshCw, Trophy } from 'lucide-solid';
+import { Show, createSignal, onMount } from 'solid-js';
+import { Activity, AlertTriangle, Cpu, Globe, HardDrive, KeyRound, RefreshCw, Trophy } from 'lucide-solid';
 import { AiTelemetryPanel } from '@/components/workbenches/obs/AiTelemetryPanel';
 import { BenchmarkScoreboardPanel } from '@/components/workbenches/obs/BenchmarkScoreboardPanel';
 import { NetworkSpeedtestPanel } from '@/components/workbenches/obs/NetworkSpeedtestPanel';
 import { RouterLabPanel } from '@/components/workbenches/obs/RouterLabPanel';
 import { SystemHardwarePanel } from '@/components/workbenches/obs/SystemHardwarePanel';
 import { VaultDiffExportPanel } from '@/components/workbenches/obs/VaultDiffExportPanel';
-import { obsSubTab, setObsSubTab } from '@/state/studio';
+import { studioV5 } from '@/lib/studio';
+import { obsSubTab, refreshSmartAlerts, setObsSubTab, smartAlerts } from '@/state/studio';
 import type { ObservabilitySubTab } from '@/types';
 
 const SUB_TABS: Array<{ id: ObservabilitySubTab; label: string; icon: () => any }> = [
@@ -20,6 +21,21 @@ const SUB_TABS: Array<{ id: ObservabilitySubTab; label: string; icon: () => any 
 
 export function ObservabilityView() {
   const [refreshSeq, setRefreshSeq] = createSignal(0);
+  const [superModeLabel, setSuperModeLabel] = createSignal('');
+
+  const probeObservatoryStatus = async () => {
+    void refreshSmartAlerts();
+    const res = await studioV5.getSuperStatus();
+    if (res.ok && res.data.mode) {
+      const mode = String(res.data.mode);
+      const proceed = String(res.data.autoProceed ?? res.data.auto_proceed ?? '');
+      setSuperModeLabel(proceed ? `${mode} · ${proceed}` : mode);
+    }
+  };
+
+  onMount(() => {
+    void probeObservatoryStatus();
+  });
 
   return (
     <div
@@ -43,14 +59,36 @@ export function ObservabilityView() {
           ))}
         </div>
 
-        <button
-          type="button"
-          class="omnia-btn text-[11px] shrink-0"
-          onClick={() => setRefreshSeq((n) => n + 1)}
-        >
-          <RefreshCw class="w-3.5 h-3.5" />
-          <span>Refresh All</span>
-        </button>
+        <div class="flex flex-wrap items-center gap-1.5 shrink-0">
+          <Show when={superModeLabel()}>
+            <span class="omnia-badge font-mono-num text-[10.5px] text-[var(--accent-cyan)]">
+              Super: {superModeLabel()}
+            </span>
+          </Show>
+          <Show when={smartAlerts.length > 0}>
+            <button
+              type="button"
+              data-testid="obs-alerts-pill"
+              onClick={() => setObsSubTab('telemetry')}
+              class="omnia-badge font-mono-num text-[10.5px] text-[var(--accent-amber)] cursor-pointer inline-flex items-center gap-1"
+              title="Jump to Smart Alerts & Threshold Rules"
+            >
+              <AlertTriangle class="w-3 h-3" />
+              <span>{smartAlerts.length} Alert{smartAlerts.length === 1 ? '' : 's'}</span>
+            </button>
+          </Show>
+          <button
+            type="button"
+            class="omnia-btn text-[11px] shrink-0"
+            onClick={() => {
+              setRefreshSeq((n) => n + 1);
+              void probeObservatoryStatus();
+            }}
+          >
+            <RefreshCw class="w-3.5 h-3.5" />
+            <span>Refresh All</span>
+          </button>
+        </div>
       </div>
 
       {/* Active Observatory Panel */}

@@ -25,10 +25,13 @@ use serde_json::{json, Value};
 use crate::http::{HttpRequest, HttpResponse};
 use crate::routes_legacy::StudioState;
 
-/// Returns `true` if `path` belongs to the Steer #18-#20 Research / Think / Lifecycle / Learn / Skills v5 surface.
+/// Returns `true` if `path` belongs to the Steer #18-#20 Research / Think / Lifecycle / Learn / Skills v5 surface
+/// or Steer #27B Super / Computer Use v5 routes.
 #[must_use]
 pub fn is_known_route(path: &str) -> bool {
-    matches!(
+    crate::routes_super_v5::is_known_route(path)
+        || crate::routes_computer_v5::is_known_route(path)
+        || matches!(
         path,
         "/api/v5/research/status"
             | "/api/v5/research/sources"
@@ -71,8 +74,14 @@ pub fn is_known_route(path: &str) -> bool {
     )
 }
 
-/// Dispatches all `/api/v5/{research,rag,think,lifecycle,learn,skills}/*` endpoints.
+/// Dispatches all `/api/v5/{research,rag,think,lifecycle,learn,skills,super,computer}/*` endpoints.
 pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<HttpResponse> {
+    if let Some(resp) = crate::routes_super_v5::dispatch(state, req).await {
+        return Some(resp);
+    }
+    if let Some(resp) = crate::routes_computer_v5::dispatch(state, req).await {
+        return Some(resp);
+    }
     if !is_known_route(req.path.as_str()) {
         return None;
     }
@@ -1649,12 +1658,14 @@ fn handle_lifecycle_handoff(state: &Arc<StudioState>, req: &HttpRequest) -> Http
 
 fn handle_lifecycle_super_state_get(state: &Arc<StudioState>) -> HttpResponse {
     let super_state = state.artifact_os.super_state().unwrap_or_default();
+    let engine_map = omnia_harness::artifact_os::read_engine_state_map(&state.config.workspace_root);
     let mut out = serde_json::to_value(&super_state).unwrap_or_else(|_| json!({}));
     if let Value::Object(ref mut map) = out {
         map.insert("ok".to_string(), json!(true));
         map.insert("state".to_string(), json!("online"));
         map.insert("tokenBudget".to_string(), Value::Null);
         map.insert("superState".to_string(), json!(super_state));
+        map.insert("engineState".to_string(), Value::Object(engine_map));
     }
     HttpResponse::ok(out)
 }
@@ -1672,9 +1683,24 @@ fn handle_lifecycle_super_state_post(state: &Arc<StudioState>, req: &HttpRequest
 
     match state
         .artifact_os
-        .update_super_state(Value::Object(obj), sync_to_disk)
+        .update_super_state(Value::Object(obj.clone()), false)
     {
         Ok(st) => {
+            let engine_state = if sync_to_disk {
+                let mut patch = serde_json::Map::new();
+                patch.insert("phase".to_string(), json!(st.phase));
+                patch.insert("lifecyclePhase".to_string(), json!(st.phase));
+                patch.insert("wave".to_string(), json!(st.wave));
+                patch.insert("strikeCount".to_string(), json!(st.strike_count));
+                patch.insert("tokenBudget".to_string(), Value::Null);
+                omnia_harness::artifact_os::merge_engine_state_lossless(
+                    &state.config.workspace_root,
+                    Value::Object(patch),
+                )
+                .ok()
+            } else {
+                None
+            };
             state.event_feed.publish(
                 "lifecycle",
                 "super_state_updated",
@@ -1686,6 +1712,7 @@ fn handle_lifecycle_super_state_post(state: &Arc<StudioState>, req: &HttpRequest
                 "state": "online",
                 "tokenBudget": Value::Null,
                 "superState": st,
+                "engineState": engine_state,
             }))
         }
         Err(err) => HttpResponse::error(400, "super_state_update_failed", &err),
@@ -2494,5 +2521,21 @@ mod tests {
         let vcj: Value = serde_json::from_slice(&vc.body).unwrap();
         assert_eq!(vcj["ok"], true);
         assert!(vcj.get("citationCoveragePct").is_some());
+    }
+
+    #[tokio::test]
+    async fn delegates_steer27b_super_and_computer_routes() {
+        let state = make_test_state();
+        for path in [
+            "/api/v5/super/status",
+            "/api/v5/super/capabilities",
+            "/api/v5/super/proceed",
+            "/api/v5/computer/status",
+        ] {
+            assert!(is_known_route(path), "expected known route for {path}");
+            let req = make_req("GET", path, "", Value::Null);
+            let resp = dispatch(&state, &req).await.expect("delegated route matched");
+            assert_eq!(resp.status, 200, "GET {path} must return 200");
+        }
     }
 }

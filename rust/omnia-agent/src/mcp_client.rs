@@ -578,6 +578,335 @@ pub struct McpServerStatus {
     pub last_error: Option<String>,
 }
 
+/// One safely auto-discovered MCP server candidate (read-only metadata; never auto-spawns).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredMcpServer {
+    pub name: String,
+    pub source: String,
+    pub source_path: String,
+    pub transport_kind: String,
+    pub config: McpServerConfig,
+    pub opt_in: bool,
+}
+
+/// Safe read-only MCP auto-discovery report covering `.mcp.json`, `.omnia/mcp_config.json`,
+/// and opt-in local stdio `agy-fast --mcp` while strictly skipping `google_credentials` servers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiscoveryReport {
+    pub servers: Vec<DiscoveredMcpServer>,
+    pub skipped: Vec<Value>,
+    pub scanned_paths: Vec<String>,
+    pub agy_fast_binary: Option<String>,
+}
+
+fn resolve_user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+}
+
+/// Dynamically detects an installed `agy-fast` native plugin binary via `OMNIA_AGY_FAST_BIN` or
+/// `USERPROFILE`/`HOME` without hardcoding any user path or reading OAuth/cookie/`.pb` files.
+#[must_use]
+pub fn detect_local_agy_fast_binary() -> Option<PathBuf> {
+    if let Some(env_bin) = std::env::var_os("OMNIA_AGY_FAST_BIN") {
+        let p = PathBuf::from(env_bin);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let home = resolve_user_home_dir()?;
+    detect_agy_fast_binary_in_home(&home)
+}
+
+fn detect_agy_fast_binary_in_home(home: &Path) -> Option<PathBuf> {
+    let base = home
+        .join(".gemini")
+        .join("config")
+        .join("plugins")
+        .join("agy-fast");
+    [
+        base.join("bin").join("agy-fast.exe"),
+        base.join("bin").join("agy-fast"),
+        base.join("agy-fast.exe"),
+        base.join("agy-fast"),
+    ]
+    .into_iter()
+    .find(|cand| cand.is_file())
+}
+
+/// Safely auto-discovers MCP server configs from `<workspace>/.mcp.json`,
+/// `<workspace>/.omnia/mcp_config.json`, and opt-in local stdio `agy-fast --mcp`.
+///
+/// Strictly skips any server declaring `authProviderType: "google_credentials"` and NEVER reads
+/// OAuth tokens, browser cookies, or `.pb` state files.
+#[must_use]
+pub fn discover_workspace_and_local_mcp_configs(workspace: &Path) -> McpDiscoveryReport {
+    let home = resolve_user_home_dir();
+    let agy_bin = detect_local_agy_fast_binary();
+    discover_mcp_configs_with_home(workspace, home.as_deref(), agy_bin.as_deref())
+}
+
+/// Deterministic helper accepting explicit `home_dir` and `agy_fast_bin` overrides for tests.
+#[must_use]
+pub fn discover_mcp_configs_with_home(
+    workspace: &Path,
+    home_dir: Option<&Path>,
+    agy_fast_bin: Option<&Path>,
+) -> McpDiscoveryReport {
+    let mut report = McpDiscoveryReport::default();
+    let mut seen_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    let mut config_files: Vec<(&'static str, PathBuf, bool)> = vec![
+        (".mcp.json", workspace.join(".mcp.json"), false),
+        (
+            ".omnia/mcp_config.json",
+            workspace.join(".omnia").join("mcp_config.json"),
+            false,
+        ),
+    ];
+    if let Some(home) = home_dir {
+        let plugin_mcp = home
+            .join(".gemini")
+            .join("config")
+            .join("plugins")
+            .join("agy-fast")
+            .join("mcp_config.json");
+        if plugin_mcp.is_file() {
+            config_files.push(("local_agy_fast_plugin_config", plugin_mcp, true));
+        }
+    }
+
+    for (source, path, opt_in) in config_files {
+        if !path.is_file() {
+            continue;
+        }
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        report.scanned_paths.push(path_str.clone());
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            report.skipped.push(json!({
+                "source": source,
+                "path": path_str,
+                "reason": "unreadable_config_file"
+            }));
+            continue;
+        };
+        let cleaned = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+        let Ok(doc) = serde_json::from_str::<Value>(cleaned) else {
+            report.skipped.push(json!({
+                "source": source,
+                "path": path_str,
+                "reason": "invalid_json"
+            }));
+            continue;
+        };
+        let Some(map) = doc
+            .get("mcpServers")
+            .or_else(|| doc.get("servers"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for (srv_name, entry) in map {
+            let Some(obj) = entry.as_object() else {
+                continue;
+            };
+            let auth_provider = obj
+                .get("authProviderType")
+                .or_else(|| obj.get("auth_provider_type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if auth_provider.eq_ignore_ascii_case("google_credentials") {
+                report.skipped.push(json!({
+                    "name": srv_name,
+                    "source": source,
+                    "reason": "skipped_google_credentials_auth_provider"
+                }));
+                continue;
+            }
+            if obj.get("disabled").and_then(Value::as_bool) == Some(true)
+                || obj.get("enabled").and_then(Value::as_bool) == Some(false)
+            {
+                report.skipped.push(json!({
+                    "name": srv_name,
+                    "source": source,
+                    "reason": "disabled_in_config"
+                }));
+                continue;
+            }
+            if !seen_names.insert(srv_name.clone()) {
+                continue;
+            }
+            if let Some((transport_kind, cfg)) = parse_discovered_mcp_server(srv_name, obj) {
+                report.servers.push(DiscoveredMcpServer {
+                    name: srv_name.clone(),
+                    source: source.to_string(),
+                    source_path: path_str.clone(),
+                    transport_kind,
+                    config: cfg,
+                    opt_in,
+                });
+            } else {
+                report.skipped.push(json!({
+                    "name": srv_name,
+                    "source": source,
+                    "reason": "unsupported_or_incomplete_transport"
+                }));
+            }
+        }
+    }
+
+    let resolved_agy = agy_fast_bin
+        .map(Path::to_path_buf)
+        .or_else(|| home_dir.and_then(detect_agy_fast_binary_in_home));
+    if let Some(bin_path) = resolved_agy {
+        let bin_str = bin_path.to_string_lossy().replace('\\', "/");
+        report.agy_fast_binary = Some(bin_str.clone());
+        if seen_names.insert("agy-fast".to_string()) {
+            report.servers.push(DiscoveredMcpServer {
+                name: "agy-fast".to_string(),
+                source: "local_agy_fast".to_string(),
+                source_path: bin_str.clone(),
+                transport_kind: "stdio".to_string(),
+                config: McpServerConfig {
+                    name: "agy-fast".to_string(),
+                    transport: McpTransportConfig::Stdio {
+                        command: bin_str,
+                        args: vec!["--mcp".to_string()],
+                        env: BTreeMap::new(),
+                        cwd: Some(workspace.to_string_lossy().into_owned()),
+                    },
+                    enabled: true,
+                    timeout_ms: DEFAULT_MCP_TIMEOUT_MS,
+                    oauth: None,
+                },
+                opt_in: true,
+            });
+        }
+    }
+
+    report.servers.sort_by(|a, b| a.name.cmp(&b.name));
+    report
+}
+
+fn parse_discovered_mcp_server(
+    srv_name: &str,
+    obj: &Map<String, Value>,
+) -> Option<(String, McpServerConfig)> {
+    let timeout_ms = obj
+        .get("timeoutMs")
+        .or_else(|| obj.get("timeout_ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_MCP_TIMEOUT_MS)
+        .clamp(1_000, 120_000);
+    let kind_hint = obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if let Some(cmd) = obj.get("command").and_then(Value::as_str) {
+        let cmd_trimmed = cmd.trim();
+        if cmd_trimmed.is_empty() {
+            return None;
+        }
+        let args: Vec<String> = obj
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut env = BTreeMap::new();
+        if let Some(env_map) = obj.get("env").and_then(Value::as_object) {
+            for (k, v) in env_map {
+                let low = k.to_ascii_lowercase();
+                if low.contains("cookie") || low.contains("oauth_token") || low.contains("refresh_token") {
+                    continue;
+                }
+                if let Some(sv) = v.as_str() {
+                    env.insert(k.clone(), sv.to_owned());
+                }
+            }
+        }
+        let cwd = obj
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        return Some((
+            "stdio".to_string(),
+            McpServerConfig {
+                name: srv_name.to_string(),
+                transport: McpTransportConfig::Stdio {
+                    command: cmd_trimmed.to_string(),
+                    args,
+                    env,
+                    cwd,
+                },
+                enabled: true,
+                timeout_ms,
+                oauth: None,
+            },
+        ));
+    }
+
+    let url = obj
+        .get("url")
+        .or_else(|| obj.get("serverUrl"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| s.starts_with("http://") || s.starts_with("https://"))?;
+    let mut headers = BTreeMap::new();
+    if let Some(hmap) = obj.get("headers").and_then(Value::as_object) {
+        for (k, v) in hmap {
+            let low = k.to_ascii_lowercase();
+            if low == "cookie" {
+                continue;
+            }
+            if let Some(sv) = v.as_str() {
+                headers.insert(k.clone(), sv.to_owned());
+            }
+        }
+    }
+    if kind_hint == "sse" {
+        Some((
+            "sse".to_string(),
+            McpServerConfig {
+                name: srv_name.to_string(),
+                transport: McpTransportConfig::Sse {
+                    url: url.to_string(),
+                    headers,
+                },
+                enabled: true,
+                timeout_ms,
+                oauth: None,
+            },
+        ))
+    } else {
+        Some((
+            "http".to_string(),
+            McpServerConfig {
+                name: srv_name.to_string(),
+                transport: McpTransportConfig::Http {
+                    url: url.to_string(),
+                    headers,
+                },
+                enabled: true,
+                timeout_ms,
+                oauth: None,
+            },
+        ))
+    }
+}
+
 enum ConnectedTransport {
     Stdio(Arc<StdioMcpTransport>),
     Http(Arc<HttpMcpTransport>),
@@ -1445,6 +1774,13 @@ impl McpManager {
         out
     }
 
+    /// Runs safe read-only MCP auto-discovery across workspace `.mcp.json`,
+    /// `.omnia/mcp_config.json`, and opt-in local stdio `agy-fast --mcp`.
+    #[must_use]
+    pub fn discover_configs(&self) -> McpDiscoveryReport {
+        discover_workspace_and_local_mcp_configs(&self.workspace_root)
+    }
+
     fn resolve_stored_token(server_name: &str, url: &str) -> Option<String> {
         // Consult Win32 Credential Manager (`omnia:mcp:<server>` or `omnia:mcp_oauth:<url>`) if populated.
         let targets = [
@@ -1938,5 +2274,66 @@ for line in sys.stdin:
             .expect("stdio tools/call");
         assert_eq!(call.text_summary, "stdio_ok");
         assert!(mgr.disconnect_server("pydemo").await);
+    }
+
+    #[test]
+    fn discover_workspace_and_local_mcp_configs_skips_google_credentials_and_finds_agy_fast() {
+        let root = std::env::temp_dir().join(format!("omnia-mcp-disc-{}", uuid::Uuid::new_v4()));
+        let ws = root.join("workspace");
+        let fake_home = root.join("home");
+        let agy_bin_dir = fake_home
+            .join(".gemini")
+            .join("config")
+            .join("plugins")
+            .join("agy-fast")
+            .join("bin");
+        std::fs::create_dir_all(ws.join(".omnia")).unwrap();
+        std::fs::create_dir_all(&agy_bin_dir).unwrap();
+
+        let fake_agy_bin = agy_bin_dir.join("agy-fast.exe");
+        std::fs::write(&fake_agy_bin, b"synthetic-placeholder").unwrap();
+
+        std::fs::write(
+            ws.join(".mcp.json"),
+            r#"{
+  "mcpServers": {
+    "local-tools": { "command": "omnia", "args": ["--mcp"] },
+    "google-private": { "url": "https://example.test/mcp", "authProviderType": "google_credentials" },
+    "off-server": { "command": "noop", "disabled": true }
+  }
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join(".omnia").join("mcp_config.json"),
+            r#"{
+  "mcpServers": {
+    "docs-http": { "url": "https://docs.example.test/mcp" }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let rep = discover_mcp_configs_with_home(&ws, Some(&fake_home), None);
+        let names: Vec<&str> = rep.servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["agy-fast", "docs-http", "local-tools"]);
+        assert!(!names.contains(&"google-private"));
+        assert!(!names.contains(&"off-server"));
+        assert!(rep
+            .skipped
+            .iter()
+            .any(|s| s["name"] == "google-private" && s["reason"] == "skipped_google_credentials_auth_provider"));
+        assert!(rep
+            .skipped
+            .iter()
+            .any(|s| s["name"] == "off-server" && s["reason"] == "disabled_in_config"));
+        let agy = rep.servers.iter().find(|s| s.name == "agy-fast").unwrap();
+        assert!(agy.opt_in);
+        assert_eq!(agy.transport_kind, "stdio");
+        assert!(rep.agy_fast_binary.is_some());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

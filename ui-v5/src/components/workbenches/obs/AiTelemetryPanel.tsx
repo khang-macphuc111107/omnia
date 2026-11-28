@@ -1,6 +1,14 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from 'solid-js';
-import { Activity, AlertTriangle, Filter, RefreshCw, Sparkles } from 'lucide-solid';
+import { Activity, AlertTriangle, Check, Filter, RefreshCw, Sliders, Sparkles } from 'lucide-solid';
 import { api } from '@/api/client';
+import {
+  type AlertThresholdRules,
+  type ContextEtaSnapshot,
+  type McpToolTelemetryRow,
+  type ObservatorySummaryResponse,
+  type TrendBucket,
+  studioV5,
+} from '@/lib/studio';
 import {
   activeSessionId,
   openObservabilityTab,
@@ -17,6 +25,18 @@ import {
   parseBackendDistribution,
   sparklinePoints,
 } from '@/utils/stats';
+
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function formatDurationSecs(secs: number | null | undefined): string {
+  if (secs === null || secs === undefined || !Number.isFinite(Number(secs))) return '—';
+  const s = Math.max(0, Math.round(Number(secs)));
+  if (s < 60) return `${s}s`;
+  const mins = Math.floor(s / 60);
+  if (mins < 60) return `${mins}m ${s % 60}s`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+}
 
 function DistributionCard(props: {
   title: string;
@@ -162,14 +182,45 @@ function normalizeRequestRow(raw: Record<string, unknown>, idx: number): Telemet
 
 export function AiTelemetryPanel(props: { refreshSeq: number }) {
   const [windowSel, setWindowSel] = createSignal<TelemetryWindow>('24h');
+  const [trendRange, setTrendRange] = createSignal<'24h' | '30d'>('24h');
   const [modelFilter, setModelFilter] = createSignal('');
   const [roleFilter, setRoleFilter] = createSignal('');
   const [sessionFilter, setSessionFilter] = createSignal('');
   const [outliersOnly, setOutliersOnly] = createSignal(false);
   const [summary, setSummary] = createSignal<Record<string, unknown> | null>(null);
+  const [obsSummary, setObsSummary] = createSignal<ObservatorySummaryResponse | null>(null);
   const [rows, setRows] = createSignal<TelemetryRequestRow[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [loadNote, setLoadNote] = createSignal('');
+
+  // Smart Alerts Ack & Editable Threshold Rules
+  const [ackedIds, setAckedIds] = createSignal<Record<string, boolean>>({});
+  const [ackBusyId, setAckBusyId] = createSignal<string | null>(null);
+  const [rulesOpen, setRulesOpen] = createSignal(false);
+  const [rulesRaw, setRulesRaw] = createSignal<AlertThresholdRules>({});
+  const [ttftWarnMs, setTtftWarnMs] = createSignal(4500);
+  const [cacheMinPct, setCacheMinPct] = createSignal(55);
+  const [bloatWarnMs, setBloatWarnMs] = createSignal(60);
+  const [ctxWarnPct, setCtxWarnPct] = createSignal(75);
+  const [diskWarnPct, setDiskWarnPct] = createSignal(15);
+  const [errRateWarnPct, setErrRateWarnPct] = createSignal(10);
+  const [savingRules, setSavingRules] = createSignal(false);
+  const [rulesNote, setRulesNote] = createSignal('');
+
+  const hydrateAlertRules = (raw: Record<string, unknown>) => {
+    const inner = (raw.rules && typeof raw.rules === 'object' ? raw.rules : raw) as AlertThresholdRules;
+    setRulesRaw(inner);
+    const num = (a: unknown, b: unknown, fallback: number) => {
+      const v = Number(a ?? b);
+      return Number.isFinite(v) && v > 0 ? v : fallback;
+    };
+    setTtftWarnMs(num(inner.ttftP95WarnMs, inner.ttft_p95_warn_ms, 4500));
+    setCacheMinPct(num(inner.cacheHitMinPct, inner.cache_hit_min_pct, 55));
+    setBloatWarnMs(num(inner.bufferbloatWarnMs, inner.bufferbloat_warn_ms, 60));
+    setCtxWarnPct(num(inner.contextWarnPct, inner.context_warn_pct, 75));
+    setDiskWarnPct(num(inner.diskFreeWarnPct, inner.disk_free_warn_pct, 15));
+    setErrRateWarnPct(num(inner.errorRateWarnPct, inner.error_rate_warn_pct, 10));
+  };
 
   const loadTelemetry = async () => {
     setLoading(true);
@@ -180,9 +231,11 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
       sessionId: sessionFilter() || undefined,
       privacyMask: privacyMask(),
     };
-    const [sumRes, reqRes] = await Promise.all([
+    const [sumRes, reqRes, obsRes, rulesRes] = await Promise.all([
       api.getTelemetrySummary(params),
       api.getTelemetryRequests({ ...params, limit: 120 }),
+      studioV5.getObservatorySummary({ window: windowSel(), privacyMask: privacyMask() }),
+      studioV5.getAlertRules(),
       refreshSmartAlerts(),
     ]);
 
@@ -194,7 +247,6 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
       setSummary(inner);
       setLoadNote('');
     } else {
-      // Graceful fallback to legacy /api/stats/spotlight
       const fb = await api.getSpotlightStats();
       if (fb.ok) {
         const inner =
@@ -205,6 +257,14 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
       } else {
         setLoadNote(`Telemetry note (${sumRes.error.code}): ${sumRes.error.message}`);
       }
+    }
+
+    if (obsRes.ok) {
+      setObsSummary(obsRes.data);
+    }
+
+    if (rulesRes.ok) {
+      hydrateAlertRules(rulesRes.data);
     }
 
     if (reqRes.ok) {
@@ -220,6 +280,41 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
       }
     }
     setLoading(false);
+  };
+
+  const handleAckAlert = async (alertId: string) => {
+    setAckBusyId(alertId);
+    const res = await studioV5.ackSmartAlert(alertId, true);
+    if (res.ok) {
+      setAckedIds((prev) => ({ ...prev, [alertId]: true }));
+      setRulesNote(`Acknowledged alert ${alertId}`);
+      void refreshSmartAlerts();
+    } else {
+      setRulesNote(`Ack note (${res.error.code}): ${res.error.message}`);
+    }
+    setAckBusyId(null);
+  };
+
+  const handleSaveRules = async () => {
+    setSavingRules(true);
+    const merged: AlertThresholdRules = {
+      ...rulesRaw(),
+      ttftP95WarnMs: ttftWarnMs(),
+      cacheHitMinPct: cacheMinPct(),
+      bufferbloatWarnMs: bloatWarnMs(),
+      contextWarnPct: ctxWarnPct(),
+      diskFreeWarnPct: diskWarnPct(),
+      errorRateWarnPct: errRateWarnPct(),
+    };
+    const res = await studioV5.saveAlertRules(merged);
+    if (res.ok) {
+      hydrateAlertRules(res.data);
+      setRulesNote('Alert threshold rules saved');
+      void refreshSmartAlerts();
+    } else {
+      setRulesNote(`Save rules note (${res.error.code}): ${res.error.message}`);
+    }
+    setSavingRules(false);
   };
 
   onMount(() => {
@@ -291,16 +386,46 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
 
   const totals = createMemo(() => {
     const s = summary();
+    const obs = obsSummary();
     const t = (s?.totals && typeof s.totals === 'object' ? (s.totals as Record<string, unknown>) : s) ?? {};
     const totalCost = Number(t.totalCostUsd ?? t.totalCost ?? filteredRows().reduce((a, r) => a + r.costUsd, 0));
     const kvSavings = Number(s?.kvSavingsUsd ?? t.kvSavingsUsd ?? filteredRows().reduce((a, r) => a + r.kvSavingsUsd, 0));
     const cacheRate = Number(t.cacheHitRate ?? t.cacheRate ?? 0);
     const totalReqs = Number(t.totalRequests ?? filteredRows().length);
     const errRate = Number(t.errorRate ?? 0);
-    const ctxObj = (s?.contextWindow && typeof s.contextWindow === 'object' ? (s.contextWindow as Record<string, unknown>) : {}) as Record<string, unknown>;
-    const fillPct = Number(ctxObj.latestFillPct ?? ctxObj.peakFillPct ?? ctxObj.fillPct ?? ctxObj.fill_pct ?? 0);
-    const etaTurns = ctxObj.compactionEtaTurns ?? ctxObj.compaction_eta_turns;
-    return { totalCost, kvSavings, cacheRate, totalReqs, errRate, fillPct, etaTurns };
+
+    const ctxObj = (s?.contextWindow && typeof s.contextWindow === 'object'
+      ? (s.contextWindow as Record<string, unknown>)
+      : {}) as Record<string, unknown>;
+    const etaObj: ContextEtaSnapshot =
+      (obs?.contextEta ?? obs?.context_eta ?? (s?.contextEta as ContextEtaSnapshot | undefined) ?? {}) as ContextEtaSnapshot;
+
+    const fillPct = Number(
+      etaObj.fillPct ?? etaObj.fill_pct ?? ctxObj.latestFillPct ?? ctxObj.peakFillPct ?? ctxObj.fillPct ?? ctxObj.fill_pct ?? 0,
+    );
+    const etaTurns = etaObj.compactionEtaTurns ?? etaObj.compaction_eta_turns ?? ctxObj.compactionEtaTurns ?? ctxObj.compaction_eta_turns;
+    const tokensPerTurn = etaObj.tokensPerTurn ?? etaObj.tokens_per_turn ?? null;
+    const tokensPerMin = etaObj.tokensPerMin ?? etaObj.tokens_per_min ?? null;
+    const estSecsTo200k = etaObj.estSecsTo200k ?? etaObj.est_secs_to_200k ?? null;
+    const warnThreshold = Number(etaObj.warnThreshold ?? etaObj.warn_threshold ?? 160_000);
+    const hardCap = Number(etaObj.hardCap ?? etaObj.hard_cap ?? 200_000);
+    const warnPct = hardCap > 0 ? Math.min(100, Math.max(5, (warnThreshold / hardCap) * 100)) : 80;
+
+    return {
+      totalCost,
+      kvSavings,
+      cacheRate,
+      totalReqs,
+      errRate,
+      fillPct,
+      etaTurns,
+      tokensPerTurn,
+      tokensPerMin,
+      estSecsTo200k,
+      warnThreshold,
+      hardCap,
+      warnPct,
+    };
   });
 
   const cacheTrendPoints = createMemo(() => {
@@ -338,42 +463,232 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
     return Array.from(counts.entries()).map(([reason, count]) => ({ reason, count }));
   });
 
+  // 7x24 Activity Heatmap (backend `activityHeatmap7x24` or truthfully aggregated from live rows)
+  const heatmap7x24 = createMemo<number[][]>(() => {
+    const raw = obsSummary()?.activityHeatmap7x24 ?? obsSummary()?.activity_heatmap_7x24;
+    if (Array.isArray(raw) && raw.length === 7 && raw.every((row) => Array.isArray(row) && row.length === 24)) {
+      return raw.map((row) => row.map((v) => Math.max(0, Number(v ?? 0))));
+    }
+    const grid = Array.from({ length: 7 }, () => new Array<number>(24).fill(0));
+    for (const r of filteredRows()) {
+      const d = new Date(r.recordedAtMs);
+      if (Number.isNaN(d.getTime())) continue;
+      const dayIdx = (d.getDay() + 6) % 7; // Mon=0..Sun=6
+      const hr = d.getHours();
+      grid[dayIdx][hr] += 1;
+    }
+    return grid;
+  });
+
+  const heatmapMax = createMemo(() => {
+    let mx = 0;
+    for (const row of heatmap7x24()) {
+      for (const v of row) {
+        if (v > mx) mx = v;
+      }
+    }
+    return mx;
+  });
+
+  // 24h / 30d Token & Spend Trends
+  const activeTrends = createMemo<TrendBucket[]>(() => {
+    const obs = obsSummary();
+    const raw =
+      trendRange() === '24h'
+        ? obs?.trends24h ?? obs?.trends_24h
+        : obs?.trends30d ?? obs?.trends_30d;
+    if (Array.isArray(raw) && raw.length > 0) return raw;
+
+    // Truthful fallback from recorded SQLite request rows
+    const list = filteredRows();
+    if (list.length === 0) return [];
+    const buckets = new Map<string, TrendBucket>();
+    for (const r of list.slice().reverse()) {
+      const d = new Date(r.recordedAtMs);
+      if (Number.isNaN(d.getTime())) continue;
+      const label =
+        trendRange() === '24h'
+          ? `${String(d.getHours()).padStart(2, '0')}:00`
+          : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const cur = buckets.get(label) ?? { label, totalTokens: 0, costUsd: 0, requests: 0 };
+      cur.totalTokens = (cur.totalTokens ?? 0) + r.inputTokens + r.outputTokens + r.reasoningTokens;
+      cur.costUsd = (cur.costUsd ?? 0) + r.costUsd;
+      cur.requests = (cur.requests ?? 0) + 1;
+      buckets.set(label, cur);
+    }
+    return Array.from(buckets.values()).slice(-30);
+  });
+
+  const trendTokenMax = createMemo(() =>
+    Math.max(
+      1,
+      ...activeTrends().map((b) => Number(b.totalTokens ?? b.total_tokens ?? b.tokens ?? 0)),
+    ),
+  );
+
+  const trendSpendPoints = createMemo(() => {
+    const vals = activeTrends().map((b) => Number(b.costUsd ?? b.cost_usd ?? 0));
+    return vals.length >= 2 ? sparklinePoints(vals, 280, 68, 5) : '';
+  });
+
+  const mcpRows = createMemo<McpToolTelemetryRow[]>(() => {
+    const raw = obsSummary()?.mcpToolTelemetry ?? obsSummary()?.mcp_tool_telemetry;
+    return Array.isArray(raw) ? raw : [];
+  });
+
   return (
-    <div data-testid="obs-telemetry-panel" class="space-y-4">
-      {/* Smart Alerts Strip */}
-      <Show when={smartAlerts.length > 0}>
-        <div class="omnia-surface-panel rounded-lg p-3 border-[var(--accent-amber)] space-y-1.5">
-          <div class="flex items-center justify-between text-[11.5px] font-semibold">
-            <span class="flex items-center gap-1.5 text-[var(--accent-amber)]">
-              <AlertTriangle class="w-3.5 h-3.5" />
-              <span>Smart Alerts ({smartAlerts.length})</span>
+    <div data-testid="obs-telemetry-panel" class="space-y-4 min-w-0">
+      {/* Smart Alerts Strip + Acknowledge + Editable Threshold Rules */}
+      <div class="omnia-surface-panel rounded-lg p-3 space-y-2 border border-[var(--border-subtle)]">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-[11.5px]">
+          <span class="flex items-center gap-1.5 font-semibold text-[var(--accent-amber)]">
+            <AlertTriangle class="w-3.5 h-3.5" />
+            <span>Smart Alerts ({smartAlerts.length})</span>
+            <span class="font-mono-num text-[10.5px] font-normal text-[var(--ink-muted)]">
+              TTFT / Cache / Circuit / Bloat / DNS / Context / Disk
             </span>
-            <span class="font-mono-num text-[10.5px] text-[var(--ink-muted)]">Live Rules: TTFT / Cache / Circuit / Bloat / DNS / Disk</span>
-          </div>
+          </span>
+          <button
+            type="button"
+            data-testid="alerts-rules-toggle"
+            aria-expanded={rulesOpen()}
+            class="omnia-btn text-[10.5px]"
+            onClick={() => setRulesOpen(!rulesOpen())}
+          >
+            <Sliders class="w-3 h-3" />
+            <span>{rulesOpen() ? 'Hide Rules' : 'Threshold Rules'}</span>
+          </button>
+        </div>
+
+        <Show when={rulesNote()}>
+          <div class="text-[11px] font-mono-num text-[var(--accent-cyan)]">{rulesNote()}</div>
+        </Show>
+
+        <Show
+          when={smartAlerts.length > 0}
+          fallback={
+            <div class="text-[11px] font-mono-num text-[var(--ink-muted)]">
+              0 active smart alerts in current telemetry window.
+            </div>
+          }
+        >
           <div class="flex flex-wrap gap-2">
             <For each={smartAlerts}>
-              {(alert) => (
-                <button
-                  type="button"
-                  onClick={() => alert.targetTab && openObservabilityTab(alert.targetTab as ObservabilitySubTab)}
-                  class="px-2.5 py-1 rounded border text-left text-[11.5px] cursor-pointer flex items-center gap-2"
-                  classList={{
-                    'border-[var(--status-coral)] bg-[var(--status-coral-dim)] text-[var(--status-coral)]':
-                      alert.severity === 'critical',
-                    'border-[var(--accent-amber)] bg-[var(--accent-amber-dim)] text-[var(--accent-amber)]':
-                      alert.severity === 'warning',
-                    'border-[var(--border-subtle)] bg-[var(--bg-canvas)] text-[var(--ink-secondary)]':
-                      alert.severity === 'info',
-                  }}
-                >
-                  <span class="font-semibold">{alert.title}</span>
-                  <span class="text-[11px] opacity-90">{maskText(alert.detail, privacyMask())}</span>
-                </button>
-              )}
+              {(alert) => {
+                const isAcked = () => Boolean(ackedIds()[alert.id]);
+                return (
+                  <div
+                    class="px-2.5 py-1 rounded border text-[11.5px] flex items-center gap-2"
+                    classList={{
+                      'opacity-60': isAcked(),
+                      'border-[var(--status-coral)] bg-[var(--status-coral-dim)] text-[var(--status-coral)]':
+                        alert.severity === 'critical',
+                      'border-[var(--accent-amber)] bg-[var(--accent-amber-dim)] text-[var(--accent-amber)]':
+                        alert.severity === 'warning',
+                      'border-[var(--border-subtle)] bg-[var(--bg-canvas)] text-[var(--ink-secondary)]':
+                        alert.severity === 'info',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => alert.targetTab && openObservabilityTab(alert.targetTab as ObservabilitySubTab)}
+                      class="text-left cursor-pointer flex items-center gap-1.5 bg-transparent border-0 p-0 text-inherit"
+                    >
+                      <span class="font-semibold">{alert.title}</span>
+                      <span class="text-[11px] opacity-90">{maskText(alert.detail, privacyMask())}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isAcked() || ackBusyId() === alert.id}
+                      onClick={() => void handleAckAlert(alert.id)}
+                      class="omnia-badge text-[10px] cursor-pointer shrink-0 inline-flex items-center gap-0.5"
+                      title="Acknowledge alert via POST /api/v5/alerts/ack"
+                    >
+                      <Check class="w-2.5 h-2.5" />
+                      <span>{isAcked() ? 'Acked' : 'Ack'}</span>
+                    </button>
+                  </div>
+                );
+              }}
             </For>
           </div>
-        </div>
-      </Show>
+        </Show>
+
+        <Show when={rulesOpen()}>
+          <div
+            data-testid="alerts-rules-editor"
+            class="pt-2 border-t border-[var(--border-subtle)] space-y-2 text-[11px] font-mono-num"
+          >
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+              <label class="space-y-0.5">
+                <span class="text-[10px] text-[var(--ink-muted)] block">TTFT p95 (ms)</span>
+                <input
+                  type="number"
+                  value={ttftWarnMs()}
+                  onInput={(e) => setTtftWarnMs(Number(e.currentTarget.value) || 0)}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[var(--ink-primary)]"
+                />
+              </label>
+              <label class="space-y-0.5">
+                <span class="text-[10px] text-[var(--ink-muted)] block">Cache Min (%)</span>
+                <input
+                  type="number"
+                  value={cacheMinPct()}
+                  onInput={(e) => setCacheMinPct(Number(e.currentTarget.value) || 0)}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[var(--ink-primary)]"
+                />
+              </label>
+              <label class="space-y-0.5">
+                <span class="text-[10px] text-[var(--ink-muted)] block">Bloat Warn (ms)</span>
+                <input
+                  type="number"
+                  value={bloatWarnMs()}
+                  onInput={(e) => setBloatWarnMs(Number(e.currentTarget.value) || 0)}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[var(--ink-primary)]"
+                />
+              </label>
+              <label class="space-y-0.5">
+                <span class="text-[10px] text-[var(--ink-muted)] block">Context Warn (%)</span>
+                <input
+                  type="number"
+                  value={ctxWarnPct()}
+                  onInput={(e) => setCtxWarnPct(Number(e.currentTarget.value) || 0)}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[var(--ink-primary)]"
+                />
+              </label>
+              <label class="space-y-0.5">
+                <span class="text-[10px] text-[var(--ink-muted)] block">Disk Free Min (%)</span>
+                <input
+                  type="number"
+                  value={diskWarnPct()}
+                  onInput={(e) => setDiskWarnPct(Number(e.currentTarget.value) || 0)}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[var(--ink-primary)]"
+                />
+              </label>
+              <label class="space-y-0.5">
+                <span class="text-[10px] text-[var(--ink-muted)] block">Error Rate (%)</span>
+                <input
+                  type="number"
+                  value={errRateWarnPct()}
+                  onInput={(e) => setErrRateWarnPct(Number(e.currentTarget.value) || 0)}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[var(--ink-primary)]"
+                />
+              </label>
+            </div>
+            <div class="flex justify-end">
+              <button
+                type="button"
+                data-testid="alerts-rules-save"
+                disabled={savingRules()}
+                class="omnia-btn omnia-btn-primary text-[11px]"
+                onClick={() => void handleSaveRules()}
+              >
+                <span>{savingRules() ? 'Saving...' : 'Save Threshold Rules'}</span>
+              </button>
+            </div>
+          </div>
+        </Show>
+      </div>
 
       {/* Filters & Window Controls */}
       <div class="omnia-surface-panel rounded-lg p-3 flex flex-wrap items-center justify-between gap-2 text-[12px]">
@@ -390,7 +705,7 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
             ))}
           </div>
 
-          <div class="flex items-center gap-1.5">
+          <div class="flex flex-wrap items-center gap-1.5">
             <Filter class="w-3.5 h-3.5 text-[var(--ink-muted)]" />
             <select
               aria-label="Filter by Model"
@@ -448,11 +763,11 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
         </div>
       </Show>
 
-      {/* Top KPI + Prefix-0 KV Cache Trend + Context Window Fill % */}
+      {/* Top KPI + Prefix-0 KV Cache Trend + Enriched Context Window Fill & Compaction ETA */}
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2">
           <div class="text-[11.5px] font-semibold text-[var(--ink-secondary)] flex items-center justify-between">
-            <span>Spend & KV Savings (6-Decimal USD)</span>
+            <span>Spend &amp; KV Savings (6-Decimal USD)</span>
             <span class="omnia-badge text-[var(--status-emerald)]">budget: UNBOUNDED</span>
           </div>
           <div class="grid grid-cols-2 gap-2 font-mono-num">
@@ -503,39 +818,260 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
           </div>
         </div>
 
-        <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2">
+        {/* Enriched Context Window Fill & Compaction ETA */}
+        <div data-testid="context-window-eta-card" class="omnia-surface-panel rounded-lg p-3.5 space-y-2">
           <div class="text-[11.5px] font-semibold text-[var(--ink-secondary)] flex items-center justify-between">
             <span class="flex items-center gap-1.5">
               <Activity class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
-              <span>Context Window Fill & Compaction ETA</span>
+              <span>Context Window Fill &amp; Compaction ETA</span>
             </span>
             <span class="font-mono-num font-bold text-[var(--accent-cyan)]">
               {totals().fillPct.toFixed(1)}%
             </span>
           </div>
-          <div class="w-full h-3 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] overflow-hidden">
+          <div class="relative w-full h-3 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] overflow-hidden">
             <div
               class="h-full"
               style={{
                 width: `${Math.min(100, Math.max(2, totals().fillPct))}%`,
                 'background-color':
-                  totals().fillPct > 85
+                  totals().fillPct >= totals().warnPct
                     ? 'var(--status-coral)'
                     : totals().fillPct > 65
                       ? 'var(--accent-amber)'
                       : 'var(--accent-cyan)',
               }}
             />
+            {/* Dual warnThreshold marker */}
+            <div
+              class="absolute top-0 bottom-0 w-0.5 bg-[var(--accent-amber)]"
+              style={{ left: `${totals().warnPct}%` }}
+              title={`Warn Threshold: ${totals().warnThreshold.toLocaleString()} tok`}
+            />
           </div>
-          <div class="flex items-center justify-between text-[11px] font-mono-num text-[var(--ink-muted)]">
-            <span>
-              Compaction ETA:{' '}
-              {totals().etaTurns !== undefined && totals().etaTurns !== null
-                ? `~${String(totals().etaTurns)} turns`
-                : 'ample headroom'}
+          <div class="grid grid-cols-2 gap-1 text-[10.5px] font-mono-num text-[var(--ink-secondary)]">
+            <span class="truncate">
+              Tok/turn:{' '}
+              <strong>
+                {totals().tokensPerTurn !== null ? Math.round(Number(totals().tokensPerTurn)).toLocaleString() : '—'}
+              </strong>
             </span>
-            <span>Lakeview Anchored</span>
+            <span class="truncate">
+              Tok/min:{' '}
+              <strong>
+                {totals().tokensPerMin !== null ? Math.round(Number(totals().tokensPerMin)).toLocaleString() : '—'}
+              </strong>
+            </span>
+            <span class="truncate">
+              ETA 200k:{' '}
+              <strong class="text-[var(--accent-cyan)]">
+                {totals().estSecsTo200k !== null
+                  ? formatDurationSecs(totals().estSecsTo200k)
+                  : totals().etaTurns !== undefined && totals().etaTurns !== null
+                    ? `~${String(totals().etaTurns)} turns`
+                    : 'ample headroom'}
+              </strong>
+            </span>
+            <span class="truncate text-[var(--ink-muted)]">
+              Warn {(totals().warnThreshold / 1000).toFixed(0)}k / Cap {(totals().hardCap / 1000).toFixed(0)}k
+            </span>
           </div>
+        </div>
+      </div>
+
+      {/* Enterprise Analytics: 7x24 Pure-SVG Activity Heatmap + 24h/30d Token & Spend Trends */}
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div data-testid="obs-activity-heatmap" class="omnia-surface-panel rounded-lg p-3.5 space-y-2 min-w-0">
+          <div class="flex items-center justify-between gap-2 text-[12px]">
+            <span class="font-bold text-[var(--ink-primary)]">7×24 Activity Heatmap (UTC/Local)</span>
+            <span class="font-mono-num text-[10.5px] text-[var(--ink-muted)]">
+              Peak cell: {heatmapMax()} reqs
+            </span>
+          </div>
+          <div class="overflow-x-auto">
+            <svg viewBox="0 0 330 116" class="w-full h-32 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)]">
+              <For each={heatmap7x24()}>
+                {(row, dIdx) => (
+                  <>
+                    <text
+                      x="4"
+                      y={16 + dIdx() * 13}
+                      fill="var(--ink-muted)"
+                      font-size="8"
+                      class="font-mono-num"
+                    >
+                      {WEEKDAYS[dIdx()]}
+                    </text>
+                    <For each={row}>
+                      {(count, hIdx) => {
+                        const mx = Math.max(1, heatmapMax());
+                        const opacity = count === 0 ? 0.08 : 0.25 + (count / mx) * 0.75;
+                        return (
+                          <rect
+                            x={32 + hIdx() * 12}
+                            y={7 + dIdx() * 13}
+                            width="10"
+                            height="10"
+                            rx="1.5"
+                            fill="var(--accent-cyan)"
+                            fill-opacity={opacity.toFixed(2)}
+                            stroke="var(--border-subtle)"
+                            stroke-width="0.5"
+                          >
+                            <title>
+                              {WEEKDAYS[dIdx()]} {String(hIdx()).padStart(2, '0')}:00 — {count} req(s)
+                            </title>
+                          </rect>
+                        );
+                      }}
+                    </For>
+                  </>
+                )}
+              </For>
+              {[0, 6, 12, 18, 23].map((hr) => (
+                <text
+                  x={32 + hr * 12}
+                  y="110"
+                  fill="var(--ink-muted)"
+                  font-size="7.5"
+                  class="font-mono-num"
+                >
+                  {String(hr).padStart(2, '0')}h
+                </text>
+              ))}
+            </svg>
+          </div>
+        </div>
+
+        <div data-testid="obs-token-spend-trends" class="omnia-surface-panel rounded-lg p-3.5 space-y-2 min-w-0">
+          <div class="flex flex-wrap items-center justify-between gap-2 text-[12px]">
+            <span class="font-bold text-[var(--ink-primary)]">Token Volume &amp; Spend Trends</span>
+            <div class="omp-segmented text-[10.5px]">
+              <button
+                type="button"
+                aria-pressed={trendRange() === '24h'}
+                onClick={() => setTrendRange('24h')}
+              >
+                24h
+              </button>
+              <button
+                type="button"
+                aria-pressed={trendRange() === '30d'}
+                onClick={() => setTrendRange('30d')}
+              >
+                30d
+              </button>
+            </div>
+          </div>
+          <Show
+            when={activeTrends().length > 0}
+            fallback={
+              <div class="p-4 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] text-[11px] font-mono-num text-[var(--ink-muted)] text-center">
+                No {trendRange()} token/spend trend buckets recorded yet.
+              </div>
+            }
+          >
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div class="space-y-1">
+                <div class="text-[10px] font-mono-num text-[var(--ink-muted)]">Token Volume ({trendRange()})</div>
+                <svg viewBox="0 0 280 68" class="w-full h-20 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)]">
+                  <For each={activeTrends()}>
+                    {(b, idx) => {
+                      const toks = Number(b.totalTokens ?? b.total_tokens ?? b.tokens ?? 0);
+                      const bh = Math.max(2, (toks / trendTokenMax()) * 56);
+                      const bw = 264 / Math.max(1, activeTrends().length);
+                      return (
+                        <rect
+                          x={8 + idx() * bw}
+                          y={62 - bh}
+                          width={Math.max(2, bw - 2)}
+                          height={bh}
+                          rx="1"
+                          fill="var(--accent-cyan)"
+                          fill-opacity="0.82"
+                        >
+                          <title>
+                            {String(b.label ?? idx())}: {toks.toLocaleString()} tok
+                          </title>
+                        </rect>
+                      );
+                    }}
+                  </For>
+                </svg>
+              </div>
+              <div class="space-y-1">
+                <div class="text-[10px] font-mono-num text-[var(--ink-muted)]">USD Spend Curve ({trendRange()})</div>
+                <svg viewBox="0 0 280 68" class="w-full h-20 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)]">
+                  <line x1="0" y1="34" x2="280" y2="34" stroke="var(--border-subtle)" stroke-dasharray="3 3" />
+                  <Show when={trendSpendPoints().length > 0}>
+                    <polyline fill="none" stroke="var(--status-emerald)" stroke-width="2" points={trendSpendPoints()} />
+                  </Show>
+                </svg>
+              </div>
+            </div>
+          </Show>
+        </div>
+      </div>
+
+      {/* MCP Tool Savings & Latency Table */}
+      <div data-testid="obs-mcp-telemetry-table" class="omnia-surface-panel rounded-lg overflow-hidden">
+        <div class="px-3.5 py-2 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)] flex items-center justify-between">
+          <span class="font-bold text-[12px]">MCP Tool Savings &amp; Latency ({mcpRows().length})</span>
+          <span class="text-[10.5px] font-mono-num text-[var(--ink-muted)]">
+            Live MCP / agy-fast / Omnia tool telemetry
+          </span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-[11px] font-mono-num">
+            <thead>
+              <tr class="border-b border-[var(--border-subtle)] bg-[var(--bg-rail)] text-[var(--ink-muted)] text-[10.5px]">
+                <th class="px-2.5 py-1.5">Tool</th>
+                <th class="px-2.5 py-1.5">Server</th>
+                <th class="px-2.5 py-1.5">Calls</th>
+                <th class="px-2.5 py-1.5">Avg / p95</th>
+                <th class="px-2.5 py-1.5">Tokens Saved</th>
+                <th class="px-2.5 py-1.5">Est. Saved (USD)</th>
+                <th class="px-2.5 py-1.5">Errors</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-[var(--border-subtle)]">
+              <Show
+                when={mcpRows().length > 0}
+                fallback={
+                  <tr>
+                    <td colspan="7" class="px-3 py-4 text-center text-[var(--ink-muted)]">
+                      No MCP tool invocations recorded in this window yet.
+                    </td>
+                  </tr>
+                }
+              >
+                <For each={mcpRows()}>
+                  {(m) => (
+                    <tr class="hover:bg-[var(--bg-elevated)]">
+                      <td class="px-2.5 py-1.5 font-semibold text-[var(--accent-cyan)]">
+                        {String(m.tool ?? m.toolName ?? m.name ?? 'mcp_tool')}
+                      </td>
+                      <td class="px-2.5 py-1.5 text-[var(--ink-secondary)]">{String(m.server ?? 'omnia')}</td>
+                      <td class="px-2.5 py-1.5">{Number(m.calls ?? m.count ?? 0)}</td>
+                      <td class="px-2.5 py-1.5">
+                        {formatMs(Number(m.avgLatencyMs ?? m.avg_latency_ms ?? 0))} /{' '}
+                        {formatMs(Number(m.p95LatencyMs ?? m.p95_latency_ms ?? 0))}
+                      </td>
+                      <td class="px-2.5 py-1.5 text-[var(--status-emerald)]">
+                        {Number(m.tokensSaved ?? m.tokens_saved ?? 0).toLocaleString()}
+                      </td>
+                      <td class="px-2.5 py-1.5 text-[var(--status-emerald)]">
+                        {formatCost6(Number(m.costSavedUsd ?? m.cost_saved_usd ?? 0))}
+                      </td>
+                      <td class="px-2.5 py-1.5">
+                        {Number(m.errorCount ?? m.error_count ?? 0)}
+                      </td>
+                    </tr>
+                  )}
+                </For>
+              </Show>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -588,7 +1124,7 @@ export function AiTelemetryPanel(props: { refreshSeq: number }) {
       {/* Per-Request Waterfall Table */}
       <div class="omnia-surface-panel rounded-lg overflow-hidden">
         <div class="px-3.5 py-2.5 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)] flex items-center justify-between">
-          <span class="font-bold text-[12.5px]">Per-Request Wire & SSE Waterfall ({filteredRows().length})</span>
+          <span class="font-bold text-[12.5px]">Per-Request Wire &amp; SSE Waterfall ({filteredRows().length})</span>
           <span class="text-[11px] font-mono-num text-[var(--ink-muted)]">
             Zero fabricated rows · Real SQLite telemetry
           </span>
