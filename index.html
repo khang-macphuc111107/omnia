@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Omnia v5.0.0 — Full Native Rust AI Agent Harness &amp; 6-App Flagship Studio</title>
+  <meta name="description" content="Omnia v5.0.0: 17-Crate Native Rust Autonomous Coding-Agent Harness (Default YOLO/Full-Access), 6-App Flagship Web Studio (AI Studio Arena, Live Canvas, Perplexity Pro, NotebookLM++), ratatui TUI & Win32 Mica Desktop Shell." />
+  <style>
+    :root {
+      --bg: #090b10;
+      --bg-elev: #111520;
+      --bg-card: #151a27;
+      --border: #242c40;
+      --ink: #eef2ff;
+      --muted: #9aa6c4;
+      --cyan: #38bdf8;
+      --amber: #f59e0b;
+      --emerald: #34d399;
+      --violet: #a78bfa;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 600px at 50% -120px, rgba(56,189,248,.14), transparent 65%), var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.55;
+    }
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 20px 72px; }
+    header {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 16px; padding-bottom: 20px; border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 20px; letter-spacing: -.02em; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+      border-radius: 999px; font-size: 12px; font-weight: 600; font-family: var(--mono);
+      background: rgba(56,189,248,.12); color: var(--cyan); border: 1px solid rgba(56,189,248,.35);
+    }
+    .pill.emerald { background: rgba(52,211,153,.12); color: var(--emerald); border-color: rgba(52,211,153,.35); }
+    .pill.amber { background: rgba(245,158,11,.12); color: var(--amber); border-color: rgba(245,158,11,.35); }
+    nav { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; }
+    .hero { padding: 48px 0 32px; }
+    .hero h1 { font-size: clamp(32px, 5vw, 52px); line-height: 1.1; margin: 14px 0 16px; letter-spacing: -.03em; }
+    .hero p { max-width: 780px; color: var(--muted); font-size: 17px; margin: 0 0 26px; }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px;
+      border-radius: 10px; font-weight: 600; font-size: 14px; border: 1px solid var(--border);
+      background: var(--bg-card); color: var(--ink);
+    }
+    .btn.primary { background: linear-gradient(135deg, #0284c7, #2563eb); border-color: transparent; color: #fff; }
+    .btn:hover { text-decoration: none; filter: brightness(1.08); }
+    .metrics {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px; margin: 28px 0 44px;
+    }
+    .metric {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px;
+    }
+    .metric .val { font-family: var(--mono); font-size: 26px; font-weight: 800; color: var(--cyan); }
+    .metric .lbl { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+    h2 { font-size: 24px; margin: 44px 0 16px; letter-spacing: -.02em; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 20px;
+    }
+    .card h3 { margin: 0 0 8px; font-size: 16.5px; }
+    .card p { margin: 0; color: var(--muted); font-size: 14px; }
+    .bar-row { display: grid; grid-template-columns: 120px 1fr 84px; gap: 12px; align-items: center; margin: 10px 0; font-family: var(--mono); font-size: 13px; }
+    .bar-track { height: 12px; border-radius: 999px; background: var(--bg-elev); overflow: hidden; border: 1px solid var(--border); }
+    .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--cyan), var(--emerald)); }
+    .bar-fill.dim { background: #3b4661; }
+    pre {
+      background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px; color: #dbeafe;
+    }
+    footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <span>OMNIA</span>
+        <span class="pill">v5.0.0</span>
+        <span class="pill emerald">17 Rust Crates</span>
+      </div>
+      <nav>
+        <a href="https://github.com/khang-macphuc111107/omnia">GitHub</a>
+        <a href="https://github.com/khang-macphuc111107/omnia/releases/tag/v5.0.0">Releases</a>
+        <a href="https://github.com/khang-macphuc111107/omnia/tree/master/docs/wiki">Wiki</a>
+        <a href="https://github.com/khang-macphuc111107/omnia/discussions">Discussions</a>
+        <a href="https://github.com/khang-macphuc111107/omnia/issues">Issues</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        <span class="pill emerald">#1 Suite v5 · 90.79% (69/76)</span>
+        <span class="pill amber">Default YOLO · Full-Access · Auto-Approve</span>
+        <span class="pill">0 External CDN · MIT License</span>
+      </div>
+      <h1>Full Native Rust Autonomous Harness &amp; 6-App Flagship Studio.</h1>
+      <p>
+        Built as a 17-crate Rust workspace paired with an offline SolidJS Studio (<code>omnia-studio.exe</code>),
+        a lean <code>12.389 MiB</code> CLI &amp; <code>ratatui</code> TUI (<code>omnia.exe</code>), and a Win32 DWM Mica desktop shell (<code>omnia-native.exe</code>) — uniting AI Studio Arena, Live Artifact Canvas, ChatGPT Tree Branching, Claude Thinking Accordions, Perplexity Pro Answer Engine, and NotebookLM++ in one local native studio.
+      </p>
+      <div class="cta-row">
+        <a class="btn primary" href="https://github.com/khang-macphuc111107/omnia/releases/download/v5.0.0/omnia-v5.0.0-windows-x86_64.zip">Download Windows x86_64 Bundle (v5.0.0)</a>
+        <a class="btn" href="https://github.com/khang-macphuc111107/omnia/releases/tag/v5.0.0">Release Notes &amp; SHA256SUMS</a>
+        <a class="btn" href="https://github.com/khang-macphuc111107/omnia/tree/master/docs/wiki">Explore Wiki Docs</a>
+      </div>
+    </section>
+
+    <section class="metrics">
+      <div class="metric"><div class="val">12.389 MiB</div><div class="lbl">Standalone <code>omnia.exe</code> binary (budget &lt;= 14 MiB)</div></div>
+      <div class="metric"><div class="val">8.29 ms</div><div class="lbl">Warm <code>--version</code> median latency (budget &lt;= 15 ms)</div></div>
+      <div class="metric"><div class="val">90.79%</div><div class="lbl">Suite v5 #1 (<code>69/76</code>, McNemar p &lt; 1e-5 vs 6 peers)</div></div>
+      <div class="metric"><div class="val">575 / 575</div><div class="lbl">Rust tests PASS + 3/3 clippy -D warnings + 3/3 cleanroom</div></div>
+    </section>
+
+    <h2>6-App Flagship Studio Fusion (<code>ui-v5</code> + Pure Rust)</h2>
+    <section class="grid">
+      <div class="card">
+        <h3>AI Studio &amp; Parallel 2-4 Model Arena</h3>
+        <p>Run 2-4 models simultaneously with TTFT, tok/s, 6-decimal USD, lexical side-by-side diff, JSON Schema validation, pre-send cost estimation, 1-click Get Code (curl/Python/TS/Rust), Omnia Gems/Personas CRUD, and persistent SQLite WAL Elo leaderboard.</p>
+      </div>
+      <div class="card">
+        <h3>Live Sandboxed Artifact Canvas</h3>
+        <p>Auto-detects HTML, SVG, Mermaid, Markdown, Code, CSV, and JSON artifacts with offline CSP <code>&lt;iframe sandbox="allow-scripts"&gt;</code> live preview, editable code, split/diff views, version scrubber, download, and inline "Refine in Omnia".</p>
+      </div>
+      <div class="card">
+        <h3>Perplexity Pro &amp; Deep Research RAG</h3>
+        <p>Multi-backend web &amp; academic search (arXiv, OpenAlex, Europe PMC), Focus Modes (Web/Academic/Code/RAG/Deep), top Source Carousel with <code>[S###]</code>/<code>[G###]</code> citations, Related Follow-Up chips, and editable Deep Research plans.</p>
+      </div>
+      <div class="card">
+        <h3>NotebookLM++ (Atelier Studio)</h3>
+        <p>All 11/11 artifact formats (incl. FAQ &amp; Timeline), per-source grounding checkboxes, interactive SVG pan/zoom Mind Map, graded MCQ Quiz, spaced-repetition Flashcards, and 2-Host Podcast player with interactive "Join Podcast".</p>
+      </div>
+      <div class="card">
+        <h3>ChatGPT Branching &amp; Claude Accordions</h3>
+        <p>Edit &amp; Branch, Regenerate, Fork Thread (<code>&lt; 1/N &gt;</code> persisted switcher), collapsible Thinking &amp; Tool-Call timelines, Voice Dictation, and offline Markdown/HTML/JSON thread export.</p>
+      </div>
+      <div class="card">
+        <h3>Full-Freedom YOLO Harness + Observatory</h3>
+        <p>Defaults to <code>YOLO / Turbo / Full-Access / Auto-Approve</code> (opt-in strict modes preserved), paired with percentile telemetry, zero-crate Rust Speedtest/Bufferbloat (A+..F), Router Lab, 12-Artifact Mission Lifecycle OS, OmniDrive v3, and 1,001-Skill Cold Vault.</p>
+      </div>
+    </section>
+
+    <h2>Suite v5 Verified Scoreboard (502 Trials, 0 Leaks, 0 Secrets)</h2>
+    <section class="card">
+      <div class="bar-row"><strong>omnia</strong><div class="bar-track"><div class="bar-fill" style="width:90.79%"></div></div><strong>90.79%</strong></div>
+      <div class="bar-row"><span>goose</span><div class="bar-track"><div class="bar-fill dim" style="width:38.16%"></div></div><span>38.16%</span></div>
+      <div class="bar-row"><span>codex</span><div class="bar-track"><div class="bar-fill dim" style="width:33.33%"></div></div><span>33.33%</span></div>
+      <div class="bar-row"><span>opencode</span><div class="bar-track"><div class="bar-fill dim" style="width:32.89%"></div></div><span>32.89%</span></div>
+      <div class="bar-row"><span>claude</span><div class="bar-track"><div class="bar-fill dim" style="width:27.14%"></div></div><span>27.14%</span></div>
+      <div class="bar-row"><span>omp</span><div class="bar-track"><div class="bar-fill dim" style="width:18.18%"></div></div><span>18.18%</span></div>
+      <div class="bar-row"><span>dsh</span><div class="bar-track"><div class="bar-fill dim" style="width:10.61%"></div></div><span>10.61%</span></div>
+      <p style="margin-top:14px;font-size:12.5px;color:var(--muted);">
+        Honest boundary: Official Docker/WSL2 Linux container grades for Terminal-Bench 4.1 and SWE-bench Verified/Pro remain <code>DEFERRED_BOUNDARY</code> (tracked in <a href="https://github.com/khang-macphuc111107/omnia/issues/8">#8</a>). Full methodology attached in <code>FINAL_SCOREBOARD_V5.md</code>.
+      </p>
+    </section>
+
+    <h2>Quickstart (Windows x86_64)</h2>
+    <pre><code># Run headless CLI (defaults to YOLO / Full-Access &amp; effort=max)
+.\omnia.exe --version
+.\omnia.exe tui
+.\omnia.exe arena "Compare Rust vs Go channels" --models claude-sonnet-5-5,gpt-6.2-sol,gemini-4-carbon --json
+
+# Launch Flagship Web Studio (http://127.0.0.1:8787) or Win32 Mica Desktop Host
+.\omnia-studio.exe
+.\omnia-native.exe --studio</code></pre>
+
+    <footer>
+      <span>Omnia v5.0.0 · MIT License · Pure Native Rust</span>
+      <span><a href="https://github.com/khang-macphuc111107/omnia/blob/master/SECURITY.md">Security</a> · <a href="https://github.com/khang-macphuc111107/omnia/blob/master/CHANGELOG.md">Changelog</a> · <a href="https://github.com/khang-macphuc111107/omnia/blob/master/CONTRIBUTING.md">Contributing</a></span>
+    </footer>
+  </div>
+</body>
+</html>
