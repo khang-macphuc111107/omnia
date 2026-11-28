@@ -1,0 +1,76 @@
+name: Omnia Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and publish (e.g. v5.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-release:
+    name: Build & Publish Windows x86_64 Binaries
+    runs-on: windows-latest
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}\omnia-rust-release
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and out-of-source release target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: omnia-release-win-x64-v5
+          cache-directories: ${{ runner.temp }}\omnia-rust-release
+
+      - name: Build all 5 Windows release binaries (standalone omnia-cli LAST for <= 14 MiB)
+        shell: pwsh
+        run: |
+          cargo build --workspace --release --locked
+          cargo build -p omnia-cli --release --locked
+
+      - name: Package release zip and SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $tag = if ("${{ inputs.tag }}" -ne "") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $stage = Join-Path $env:RUNNER_TEMP "omnia-stage-$tag"
+          $outDir = Join-Path $env:RUNNER_TEMP "omnia-dist-$tag"
+          New-Item -ItemType Directory -Force -Path $stage, $outDir | Out-Null
+          $bins = @('omnia.exe', 'omnia-studio.exe', 'omnia-runtime.exe', 'omnia-native.exe', 'omnia_qa_seed.exe')
+          foreach ($b in $bins) {
+            Copy-Item (Join-Path $env:CARGO_TARGET_DIR "release\$b") (Join-Path $stage $b) -Force
+            Copy-Item (Join-Path $env:CARGO_TARGET_DIR "release\$b") (Join-Path $outDir $b) -Force
+          }
+          $zipPath = Join-Path $outDir "omnia-$tag-windows-x86_64.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath -Force
+          $sums = Get-ChildItem $outDir -File | Sort-Object Name | ForEach-Object {
+            $h = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            "$h  $($_.Name)"
+          }
+          [System.IO.File]::WriteAllText((Join-Path $outDir 'SHA256SUMS.txt'), ($sums -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OUT_DIR=$outDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Publish or update GitHub Release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem $env:OUT_DIR -File | Select-Object -ExpandProperty FullName
+          gh release view $env:TAG 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @assets --clobber
+          } else {
+            gh release create $env:TAG @assets --title "Omnia $env:TAG" --generate-notes
+          }

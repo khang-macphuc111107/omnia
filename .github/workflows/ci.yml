@@ -1,0 +1,183 @@
+name: Omnia CI
+
+on:
+  push:
+    branches:
+      - master
+      - omnia-sota-harness
+      - "feat/**"
+      - "fix/**"
+      - "release/**"
+      - "ci/**"
+  pull_request:
+    branches:
+      - master
+      - omnia-sota-harness
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene-skills-python-ui:
+    name: Hygiene, Zero-Secret, Skills, Python & Fallback UI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enforce zero retired C++/CMake/junk and zero CRLF
+        shell: bash
+        run: |
+          set -euo pipefail
+          legacy_count=$(git ls-files | grep -E '(\.(cpp|hpp|cxx|hxx)$|(^|/)CMakeLists\.txt$|ModuleAnalysisCache)' | wc -l || true)
+          if [ "$legacy_count" -ne 0 ]; then
+            echo "Found forbidden retired C++/CMake/junk tracked files:"
+            git ls-files | grep -E '(\.(cpp|hpp|cxx|hxx)$|(^|/)CMakeLists\.txt$|ModuleAnalysisCache)'
+            exit 1
+          fi
+          crlf_count=$(git ls-files --eol | grep 'w/crlf' | wc -l || true)
+          if [ "$crlf_count" -ne 0 ]; then
+            echo "Found CRLF line endings in tracked files:"
+            git ls-files --eol | grep 'w/crlf'
+            exit 1
+          fi
+
+      - name: Run zero-secret and full-repo hygiene audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B tools/omnia-consolidated-audit/audit.py --repo . --secret-scope all --out /tmp/omnia-audit.json
+          python3 -B -c '
+          import json, sys
+          data = json.load(open("/tmp/omnia-audit.json", encoding="utf-8"))
+          g = data["gates"]
+          s = data["summary"]
+          required = [
+              "zero_secrets_ok",
+              "full_repo_hygiene_hard_gates_ok",
+              "full_repo_hygiene_strict_ok",
+              "overlap_clean",
+          ]
+          failed = [k for k in required if not g.get(k)]
+          print(json.dumps({"gates": {k: g.get(k) for k in required}, "rust_crates": s.get("rust_crates"), "rustFiles": s.get("rustFiles"), "secret_findings": s.get("secret_findings")}, indent=2))
+          if failed:
+              print("FAILED CI AUDIT GATES:", failed, file=sys.stderr)
+              sys.exit(1)
+          '
+
+      - name: Validate 22/22 workspace skills and 16/16 bilingual router golden eval
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B tools/omnia-skill-parity/validate_skills.py --strict-all-skills
+          python3 -B .agents/skills/omni-bilingual-skill-router/scripts/skill_router.py golden-eval
+
+      - name: Run all Python tool and packaging test suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B platform/validate_targets.py
+          python3 -B -m unittest discover -s platform -p "test_*.py"
+          for dir in \
+            tools/agy-history-sync \
+            tools/omnia-history-import \
+            tools/omnia-connector-intake \
+            tools/omnia-runtime-compat \
+            tools/omnia-consolidated-audit \
+            tools/omnia-skill-parity \
+            tools/omnia-gemini-extractor \
+            tools/omnia-benchmark \
+            tools/omnia-benchmark/public_suites \
+            tools/maintained-scripts; do
+            echo "=== unittest: $dir ==="
+            python3 -B -m unittest discover -s "$dir" -p "test_*.py"
+          done
+
+      - name: Check modular fallback UI syntax, unit tests & release staging tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in $(find ui -name '*.js' | sort); do
+            node --check "$f"
+          done
+          node --test ui/tests/*.test.js
+          node --test tools/maintained-scripts/stage-public-release.test.mjs
+
+      - name: Verify zero __pycache__ emitted inside repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          pycache=$(find . -name "__pycache__" | wc -l || true)
+          if [ "$pycache" -ne 0 ]; then
+            echo "Found unexpected __pycache__ directories!"
+            exit 1
+          fi
+
+  rust-windows-workspace:
+    name: Rust 17-Crate Workspace (Windows x86_64)
+    runs-on: windows-latest
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}\omnia-rust-workspace
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust stable (clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry and out-of-source target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: omnia-win-x64-v5
+          cache-directories: ${{ runner.temp }}\omnia-rust-workspace
+
+      - name: Cargo check (17 crates, locked)
+        shell: pwsh
+        run: cargo check --workspace --locked
+
+      - name: Cargo clippy -D warnings (all targets, locked)
+        shell: pwsh
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy -p omnia-cli --all-targets --locked -- -D warnings
+
+      - name: Cargo test (17 crates, locked)
+        shell: pwsh
+        run: cargo test --workspace --locked -- --test-threads=2
+
+      - name: Build standalone lean omnia.exe and verify <= 14 MiB + smoke
+        shell: pwsh
+        run: |
+          cargo build -p omnia-cli --release --locked
+          $exe = Join-Path $env:CARGO_TARGET_DIR 'release\omnia.exe'
+          $sizeBytes = (Get-Item $exe).Length
+          $sizeMiB = [math]::Round($sizeBytes / 1MB, 3)
+          Write-Host "omnia.exe size: $sizeBytes B ($sizeMiB MiB)"
+          if ($sizeBytes -gt (14 * 1024 * 1024)) {
+            throw "omnia.exe exceeded 14 MiB budget: $sizeMiB MiB"
+          }
+          & $exe --version
+          & $exe --profile-startup
+          & $exe arena "hello" --models claude-sonnet-5-5,gpt-6.2-sol --offline --json | Out-Null
+
+      - name: Run headless Win32 native QA path-guard suite (40/40)
+        shell: pwsh
+        run: pwsh -NoProfile -File native/qa-paths.tests.ps1

@@ -1,0 +1,45 @@
+name: Sync Docs Wiki
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "docs/wiki/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-wiki:
+    name: Mirror docs/wiki to GitHub Wiki
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Push docs/wiki pages if Wiki repo is initialized
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WIKI_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
+          if ! git ls-remote "$WIKI_URL" >/dev/null 2>&1; then
+            echo "GitHub Wiki repository is not initialized yet. Create the first page once at https://github.com/${GITHUB_REPOSITORY}/wiki/_new and re-run this workflow."
+            exit 0
+          fi
+          TMP_WIKI=$(mktemp -d)
+          git clone "$WIKI_URL" "$TMP_WIKI"
+          cp -f docs/wiki/*.md "$TMP_WIKI/"
+          cd "$TMP_WIKI"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          if git diff --cached --quiet; then
+            echo "Wiki is already up to date."
+          else
+            git commit -m "docs(wiki): sync docs/wiki from ${GITHUB_SHA::7}"
+            git push origin HEAD
+          fi
