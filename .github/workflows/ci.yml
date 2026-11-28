@@ -103,12 +103,10 @@ jobs:
           python3 -B tools/omnia-skill-parity/validate_skills.py --strict-all-skills
           python3 -B .agents/skills/omni-bilingual-skill-router/scripts/skill_router.py golden-eval
 
-      - name: Run all Python tool and packaging test suites
+      - name: Run all cross-platform Python tool test suites
         shell: bash
         run: |
           set -euo pipefail
-          python3 -B platform/validate_targets.py
-          python3 -B -m unittest discover -s platform -p "test_*.py"
           for dir in \
             tools/agy-history-sync \
             tools/omnia-history-import \
@@ -198,6 +196,9 @@ jobs:
           & $exe --profile-startup
           & $exe arena "hello" --models claude-sonnet-5-5,gpt-6.2-sol --offline --json | Out-Null
 
-      - name: Run headless Win32 native QA path-guard suite (40/40)
+      - name: Run Windows packaging targets & headless Win32 native QA path-guard suite (40/40)
         shell: pwsh
-        run: pwsh -NoProfile -File native/qa-paths.tests.ps1
+        run: |
+          python -B platform/validate_targets.py
+          python -B -m unittest discover -s platform -p "test_*.py"
+          pwsh -NoProfile -File native/qa-paths.tests.ps1
