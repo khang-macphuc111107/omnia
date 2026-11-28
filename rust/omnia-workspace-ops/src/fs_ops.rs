@@ -1174,7 +1174,11 @@ mod tests {
         let create_receipt =
             write_atomic(&sb.root, "docs/new_note.md", "# Title\n", &opts).expect("create");
         let create_rb = create_receipt.rollback.as_ref().expect("rollback receipt");
-        assert!(create_rb.receipt_path.starts_with(&sb.external_rollback));
+        let canonical_receipt =
+            fs::canonicalize(&create_rb.receipt_path).expect("canonicalize receipt path");
+        let canonical_rollback_dir =
+            fs::canonicalize(&sb.external_rollback).expect("canonicalize rollback dir");
+        assert!(canonical_receipt.starts_with(&canonical_rollback_dir));
         assert!(sb.root.join("docs/new_note.md").exists());
 
         // 2) Update existing file with rollback receipt, verify rollback restores original bytes.
