@@ -4,8 +4,10 @@ function Initialize-OmniaQaCaptureInterop {
     if ('OmniaQaCapture' -as [type]) { return }
     Add-Type @'
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 public static class OmniaQaCapture {
+ public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
  [DllImport("user32.dll", SetLastError=true)]
  public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
  [DllImport("user32.dll", SetLastError=true)]
@@ -19,11 +21,77 @@ public static class OmniaQaCapture {
  [DllImport("user32.dll")]
  public static extern bool IsWindow(IntPtr hwnd);
  [DllImport("user32.dll")]
+ public static extern bool IsWindowVisible(IntPtr hwnd);
+ [DllImport("user32.dll")]
  public static extern bool IsIconic(IntPtr hwnd);
+ [DllImport("user32.dll")]
+ public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+ public static extern int GetClassNameW(IntPtr hwnd, StringBuilder lpClassName, int nMaxCount);
+ [DllImport("user32.dll")]
+ public static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
  [StructLayout(LayoutKind.Sequential)]
  public struct Rect { public int Left, Top, Right, Bottom; }
+
+ public static IntPtr FindProcessWindow(uint targetPid, string preferredClass) {
+  IntPtr preferred = IntPtr.Zero;
+  IntPtr fallback = IntPtr.Zero;
+  EnumWindows((hwnd, lParam) => {
+   uint pid = 0;
+   GetWindowThreadProcessId(hwnd, out pid);
+   if (pid != targetPid || !IsWindowVisible(hwnd)) return true;
+   var sb = new StringBuilder(128);
+   int len = GetClassNameW(hwnd, sb, sb.Capacity);
+   string cls = len > 0 ? sb.ToString() : string.Empty;
+   if (!string.IsNullOrEmpty(preferredClass) && string.Equals(cls, preferredClass, StringComparison.Ordinal)) {
+    preferred = hwnd;
+    return false;
+   }
+   if (fallback == IntPtr.Zero &&
+       !string.Equals(cls, "UAC_InputIndicatorOverlayWnd", StringComparison.OrdinalIgnoreCase) &&
+       !string.Equals(cls, "IME", StringComparison.OrdinalIgnoreCase) &&
+       !string.Equals(cls, "MSCTFIME UI", StringComparison.OrdinalIgnoreCase)) {
+    Rect r;
+    if (GetWindowRect(hwnd, out r) && (r.Right - r.Left) > 0 && (r.Bottom - r.Top) > 0) {
+     fallback = hwnd;
+    }
+   }
+   return true;
+  }, IntPtr.Zero);
+  return preferred != IntPtr.Zero ? preferred : fallback;
+ }
 }
 '@
+}
+
+function Find-OmniaQaMainWindow {
+    param(
+        [Parameter(Mandatory)][Diagnostics.Process]$Process,
+        [string]$PreferredClass = 'OmniaNativeShellClass'
+    )
+    Initialize-OmniaQaCaptureInterop
+    $Process.Refresh()
+    if ($Process.HasExited) { return [IntPtr]::Zero }
+    $found = [OmniaQaCapture]::FindProcessWindow([uint32]$Process.Id, $PreferredClass)
+    if ($found -ne [IntPtr]::Zero) { return $found }
+    return [IntPtr]::Zero
+}
+
+function Close-OmniaQaWindow {
+    param(
+        [Parameter(Mandatory)][IntPtr]$WindowHandle,
+        [Parameter(Mandatory)][Diagnostics.Process]$Process,
+        [int]$TimeoutMs = 5000
+    )
+    Initialize-OmniaQaCaptureInterop
+    if ($WindowHandle -ne [IntPtr]::Zero -and [OmniaQaCapture]::IsWindow($WindowHandle)) {
+        $null = [OmniaQaCapture]::PostMessageW($WindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+        if ($Process.WaitForExit($TimeoutMs)) { return $true }
+    }
+    $Process.Refresh()
+    if ($Process.HasExited) { return $true }
+    if ($Process.CloseMainWindow() -and $Process.WaitForExit($TimeoutMs)) { return $true }
+    return $Process.HasExited
 }
 
 function Save-OmniaQaWindowCapture {

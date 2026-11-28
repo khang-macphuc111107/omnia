@@ -15,13 +15,13 @@ import {
   privacyMask,
   refreshResearchSources,
   researchDrawerOpen,
-  setCanvasDrawerOpen,
   setCommandPaletteOpen,
   setComposerDraft,
   setResearchDrawerOpen,
   setSteerDrawerOpen,
   setTopMode,
   steerDrawerOpen,
+  toggleCanvasDrawer,
   togglePrivacyMask,
   triggerDnsBenchmark,
   triggerQuickSpeedtest,
@@ -86,7 +86,7 @@ export function CommandPalette() {
         keywords: 'canvas artifact live preview html svg mermaid code split diff',
         run: () => {
           setTopMode('chat');
-          setCanvasDrawerOpen(true);
+          toggleCanvasDrawer();
         },
       },
       {

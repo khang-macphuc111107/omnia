@@ -170,6 +170,25 @@ export function openCanvasArtifact(art: CanvasArtifact): void {
   setCanvasDrawerOpen(true);
 }
 
+export function toggleCanvasDrawer(): void {
+  if (canvasDrawerOpen()) {
+    setCanvasDrawerOpen(false);
+    return;
+  }
+  if (!activeCanvasArtifact()) {
+    openCanvasArtifact({
+      id: 'canvas-starter',
+      title: 'Omnia Live Canvas Playground',
+      kind: 'html',
+      language: 'html',
+      content:
+        '<div style="font-family:system-ui,sans-serif;padding:16px"><h3>Omnia Live Artifact Canvas</h3><p>Edit HTML, SVG, Mermaid, Code, CSV, or JSON live with Split &amp; Diff views.</p></div>',
+    });
+    return;
+  }
+  setCanvasDrawerOpen(true);
+}
+
 export function updateCanvasArtifactContent(content: string, label?: string): void {
   const cur = activeCanvasArtifact();
   if (!cur) return;
@@ -1103,7 +1122,7 @@ export async function handleSlashCommand(rawPrompt: string): Promise<boolean> {
   }
   if (cmd === '/canvas') {
     setComposerDraft('');
-    setCanvasDrawerOpen(true);
+    toggleCanvasDrawer();
     return true;
   }
   if (cmd === '/focus') {
