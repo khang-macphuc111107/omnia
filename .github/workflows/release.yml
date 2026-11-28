@@ -35,7 +35,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Node.js 22 for ui-v5 build
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
