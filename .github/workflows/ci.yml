@@ -132,22 +132,26 @@ jobs:
     name: Rust 17-Crate Workspace (Windows x86_64)
     runs-on: windows-latest
     env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}\omnia-rust-workspace
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Rust stable (clippy + rustfmt)
+      - name: Configure out-of-source Cargo target directory (DOD-06)
+        shell: pwsh
+        run: |
+          $targetDir = Join-Path $env:RUNNER_TEMP 'omnia-rust-workspace'
+          "CARGO_TARGET_DIR=$targetDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Setup Rust stable (clippy)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
-      - name: Cache Cargo registry and out-of-source target
+      - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: omnia-win-x64-v5
-          cache-directories: ${{ runner.temp }}\omnia-rust-workspace
 
       - name: Cargo check (17 crates, locked)
         shell: pwsh

@@ -18,21 +18,26 @@ jobs:
   build-windows-release:
     name: Build & Publish Windows x86_64 Binaries
     runs-on: windows-latest
+    environment: production-release
     env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}\omnia-rust-release
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure out-of-source Cargo target directory (DOD-06)
+        shell: pwsh
+        run: |
+          $targetDir = Join-Path $env:RUNNER_TEMP 'omnia-rust-release'
+          "CARGO_TARGET_DIR=$targetDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo registry and out-of-source release target
+      - name: Cache Cargo registry and release build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: omnia-release-win-x64-v5
-          cache-directories: ${{ runner.temp }}\omnia-rust-release
 
       - name: Build all 5 Windows release binaries (standalone omnia-cli LAST for <= 14 MiB)
         shell: pwsh
