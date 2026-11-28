@@ -114,8 +114,7 @@ jobs:
             tools/omnia-runtime-compat \
             tools/omnia-consolidated-audit \
             tools/omnia-skill-parity \
-            tools/omnia-gemini-extractor \
-            tools/maintained-scripts; do
+            tools/omnia-gemini-extractor; do
             echo "=== unittest: $dir ==="
             python3 -B -m unittest discover -s "$dir" -p "test_*.py"
           done

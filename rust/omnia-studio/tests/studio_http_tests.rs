@@ -1042,7 +1042,11 @@ async fn capability_routes_workspace_connectors_media_and_remote_enforce_contrac
     let receipt_path = aj["rollbackReceipt"]["receiptPath"]
         .as_str()
         .expect("external rollback receipt path");
-    assert!(Path::new(receipt_path).starts_with(&rollback_dir));
+    let canonical_receipt =
+        std::fs::canonicalize(receipt_path).unwrap_or_else(|_| PathBuf::from(receipt_path));
+    let canonical_rollback =
+        std::fs::canonicalize(&rollback_dir).unwrap_or_else(|_| rollback_dir.clone());
+    assert!(canonical_receipt.starts_with(&canonical_rollback));
 
     let diff_rb = http_request(
         addr,
