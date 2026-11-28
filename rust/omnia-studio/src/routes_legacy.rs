@@ -15,6 +15,7 @@ use omnia_agent::hooks::HookRegistry;
 use omnia_agent::mcp_client::McpManager;
 use omnia_agent::memory_engine::MemoryEngine;
 use omnia_agent::{read_models_config, AgentStore, DapManager, SuperHarnessManager};
+use crate::routes_arena_studio_v5;
 use crate::routes_capabilities::{
     dispatch_capability_route, ConnectorConfigRecord, RemoteControlState,
 };
@@ -458,6 +459,9 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
     if let Some(rl_resp) = routes_research_lifecycle_v5::dispatch(&state, &req).await {
         return rl_resp;
     }
+    if let Some(arena_resp) = routes_arena_studio_v5::dispatch(&state, &req).await {
+        return arena_resp;
+    }
     if let Some(dl_resp) = dispatch_download_route(&state, &req).await {
         return dl_resp;
     }
@@ -562,6 +566,7 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
                 || crate::routes_observatory_v5::is_known_route(path)
                 || crate::routes_atelier_drive_v5::is_known_route(path)
                 || routes_research_lifecycle_v5::is_known_route(path)
+                || routes_arena_studio_v5::is_known_route(path)
                 || is_known_download_route(path)
                 || matches!(
                 path,

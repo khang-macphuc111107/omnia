@@ -15,7 +15,7 @@
 
 use crate::cache_guard::blake3_hex;
 use crate::graph_locator::verify_syntax_delta;
-use crate::path_guard::ensure_within_workspace;
+use crate::path_guard::resolve_tool_path;
 use crate::sanitizer::{atomic_write_bom_free, format_fail_fast_error};
 use anyhow::{bail, Context, Result};
 use imara_diff::{Algorithm, Diff, InternedInput};
@@ -184,8 +184,9 @@ fn verify_pre_read_guard(
     workspace_root: &Path,
     rel_path: &str,
     tracker: &FileReadTracker,
+    unrestricted: bool,
 ) -> Result<(PathBuf, String, bool, bool, ReadGuardState)> {
-    let abs = ensure_within_workspace(workspace_root, rel_path)?;
+    let abs = resolve_tool_path(workspace_root, rel_path, unrestricted)?;
     if !abs.exists() {
         bail!(
             "{}",
@@ -262,8 +263,30 @@ pub fn edit_file_by_hashline(
     new_string: &str,
     tracker: &FileReadTracker,
 ) -> Result<EditFileResult> {
+    edit_file_by_hashline_with_unrestricted(
+        workspace_root,
+        rel_path,
+        start_anchor,
+        end_anchor,
+        new_string,
+        tracker,
+        false,
+    )
+}
+
+/// Mode 1 with explicit path containment policy (`unrestricted = true` in YOLO mode).
+#[allow(clippy::too_many_arguments)]
+pub fn edit_file_by_hashline_with_unrestricted(
+    workspace_root: &Path,
+    rel_path: &str,
+    start_anchor: &str,
+    end_anchor: Option<&str>,
+    new_string: &str,
+    tracker: &FileReadTracker,
+    unrestricted: bool,
+) -> Result<EditFileResult> {
     let (abs, norm_content, uses_crlf, had_bom, _guard) =
-        verify_pre_read_guard(workspace_root, rel_path, tracker)?;
+        verify_pre_read_guard(workspace_root, rel_path, tracker, unrestricted)?;
     let (start_1, start_tag) = parse_hashline_anchor(start_anchor)?;
     let (end_1, end_tag) = match end_anchor.filter(|s| !s.trim().is_empty()) {
         Some(ea) => parse_hashline_anchor(ea)?,
@@ -398,6 +421,28 @@ pub fn edit_file_guarded(
     replace_all: bool,
     tracker: &FileReadTracker,
 ) -> Result<EditFileResult> {
+    edit_file_guarded_with_unrestricted(
+        workspace_root,
+        rel_path,
+        old_string,
+        new_string,
+        replace_all,
+        tracker,
+        false,
+    )
+}
+
+/// Mode 2 with explicit path containment policy (`unrestricted = true` in YOLO mode).
+#[allow(clippy::too_many_arguments)]
+pub fn edit_file_guarded_with_unrestricted(
+    workspace_root: &Path,
+    rel_path: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+    tracker: &FileReadTracker,
+    unrestricted: bool,
+) -> Result<EditFileResult> {
     if old_string.is_empty() {
         bail!(
             "{}",
@@ -422,7 +467,7 @@ pub fn edit_file_guarded(
     }
 
     let (abs, norm_content, uses_crlf, had_bom, guard) =
-        verify_pre_read_guard(workspace_root, rel_path, tracker)?;
+        verify_pre_read_guard(workspace_root, rel_path, tracker, unrestricted)?;
     let mut norm_old = old_string.replace("\r\n", "\n");
     let mut norm_new = new_string.replace("\r\n", "\n");
 
@@ -957,8 +1002,32 @@ pub fn edit_file_by_symbol_block(
     new_block: &str,
     tracker: &FileReadTracker,
 ) -> Result<EditFileResult> {
+    edit_file_by_symbol_block_with_unrestricted(
+        workspace_root,
+        rel_path,
+        symbol_name,
+        start_line_1,
+        end_line_1,
+        new_block,
+        tracker,
+        false,
+    )
+}
+
+/// Tree-sitter `BlockDiff` with explicit path containment policy (`unrestricted = true` in YOLO mode).
+#[allow(clippy::too_many_arguments)]
+pub fn edit_file_by_symbol_block_with_unrestricted(
+    workspace_root: &Path,
+    rel_path: &str,
+    symbol_name: &str,
+    start_line_1: usize,
+    end_line_1: usize,
+    new_block: &str,
+    tracker: &FileReadTracker,
+    unrestricted: bool,
+) -> Result<EditFileResult> {
     let (abs, normalized, uses_crlf, had_bom, _guard) =
-        verify_pre_read_guard(workspace_root, rel_path, tracker)?;
+        verify_pre_read_guard(workspace_root, rel_path, tracker, unrestricted)?;
     let trailing_nl = normalized.ends_with('\n');
     let lines: Vec<&str> = normalized
         .strip_suffix('\n')
@@ -1127,6 +1196,7 @@ pub fn run_fast_compiler_syntax_check(workspace_root: &Path, abs_path: &Path) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path_guard::ensure_within_workspace;
 
     #[test]
     fn enforces_pre_read_guard_and_supports_fast_apply_indent_fallback() {
@@ -1152,7 +1222,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), initial);
 
         // 2. Record read -> Fast Apply fallback matches despite wrong indentation AND preserves real indentation!
-        let abs = ensure_within_workspace(&tmp, "calc.py").unwrap();
+        let abs = crate::path_guard::ensure_within_workspace(&tmp, "calc.py").unwrap();
         tracker.record_read(&abs, initial.as_bytes());
         let res = edit_file_guarded(
             &tmp,
@@ -1420,7 +1490,7 @@ def compute(items):
         let f = tmp.join("calc.py");
         fs::write(&f, src).unwrap();
 
-        let abs = ensure_within_workspace(&tmp, "calc.py").unwrap();
+        let abs = crate::path_guard::ensure_within_workspace(&tmp, "calc.py").unwrap();
         let tracker = FileReadTracker::new();
         tracker.record_read(&abs, src.as_bytes());
 
@@ -1477,5 +1547,37 @@ def compute(items):
         }
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unrestricted_edit_allows_outside_workspace_while_strict_rejects() {
+        let root = std::env::temp_dir().join(format!("omni_edit_unr_{}", uuid::Uuid::new_v4()));
+        let ws = root.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let outside = root.join("sibling.txt");
+        fs::write(&outside, "alpha\nbeta\n").unwrap();
+
+        let tracker = FileReadTracker::new();
+        tracker.record_read(&outside, b"alpha\nbeta\n");
+
+        assert!(
+            edit_file_guarded(&ws, "../sibling.txt", "beta", "gamma", false, &tracker).is_err(),
+            "strict edit_file_guarded must reject ../ escape"
+        );
+
+        let res = edit_file_guarded_with_unrestricted(
+            &ws,
+            "../sibling.txt",
+            "beta",
+            "gamma",
+            false,
+            &tracker,
+            true,
+        )
+        .expect("unrestricted edit must allow outside-workspace paths");
+        assert_eq!(res.replacements, 1);
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "alpha\ngamma\n");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

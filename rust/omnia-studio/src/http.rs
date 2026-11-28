@@ -1041,7 +1041,7 @@ where
                 let mut r = HttpResponse::empty(204);
                 r.headers.push((
                     "Access-Control-Allow-Methods".to_string(),
-                    "GET, POST, OPTIONS".to_string(),
+                    "GET, POST, DELETE, OPTIONS".to_string(),
                 ));
                 r.headers.push((
                     "Access-Control-Allow-Headers".to_string(),

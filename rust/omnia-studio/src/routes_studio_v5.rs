@@ -444,7 +444,7 @@ async fn handle_agent_spawn(state: &Arc<StudioState>, req: &HttpRequest) -> Http
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("sess_{}", uuid_v4()));
     let backend = parse_backend_id(non_empty_str(&body, &["backend"]));
-    let approval_mode = parse_approval_mode(non_empty_str(&body, &["approvalMode", "mode"]));
+    let approval_mode = parse_approval_mode(non_empty_str(&body, &["approvalMode", "approval_mode", "mode"]));
     let wire_api = parse_wire_api(non_empty_str(&body, &["wireApi"]));
     let role_override = resolve_role_override(&state.ops, non_empty_str(&body, &["role"]).unwrap_or("main"));
     let provider = non_empty_str(&body, &["provider", "providerId"])
@@ -459,8 +459,8 @@ async fn handle_agent_spawn(state: &Arc<StudioState>, req: &HttpRequest) -> Http
     let max_turns = body
         .get("maxTurns")
         .and_then(Value::as_u64)
-        .map(|n| n.clamp(1, 64) as u32)
-        .unwrap_or(16);
+        .map(|n| n.clamp(1, 128) as u32)
+        .unwrap_or(32);
 
     let sink = build_harness_sink(Arc::clone(state), tab_id.clone());
     let spawn_req = ManagedSpawnRequest {
@@ -523,7 +523,7 @@ async fn handle_agent_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
     let session_id = non_empty_str(&body, &["sessionId", "tabId"])
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("sess_{}", uuid_v4()));
-    let mode = non_empty_str(&body, &["mode"]).unwrap_or("builder").to_ascii_lowercase();
+    let mode = non_empty_str(&body, &["mode"]).unwrap_or("solo").to_ascii_lowercase();
     let _ = state.ops.set_session_mode(
         &session_id,
         &mode,
@@ -686,18 +686,22 @@ async fn handle_agent_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
             match existing_sk {
                 Some(sk) => sk,
                 None => {
-                    let approval_mode = match mode.as_str() {
-                        "chat" => ApprovalMode::Plan,
-                        "solo" => ApprovalMode::Yolo,
-                        _ => parse_approval_mode(non_empty_str(&body, &["approvalMode"])),
-                    };
+                    let approval_mode = parse_approval_mode(non_empty_str(&body, &["approvalMode", "approval_mode"]));
+                    let max_turns = body
+                        .get("maxTurns")
+                        .and_then(Value::as_u64)
+                        .map(|n| n.clamp(1, 128) as u32)
+                        .unwrap_or(32);
                     let sink = build_harness_sink(Arc::clone(state), session_id.clone());
                     let spawn_req = ManagedSpawnRequest {
                         tab_id: session_id.clone(),
                         cwd: state.config.workspace_root.clone(),
                         backend: parse_backend_id(non_empty_str(&body, &["backend"])),
                         approval_mode,
-                        workspace_trusted: true,
+                        workspace_trusted: body
+                            .get("workspaceTrusted")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
                         permission_rules: Vec::new(),
                         provider: non_empty_str(&body, &["provider", "providerId"])
                             .map(ToString::to_string)
@@ -710,7 +714,7 @@ async fn handle_agent_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
                             .or(role_override.2),
                         wire_api: parse_wire_api(non_empty_str(&body, &["wireApi"])),
                         config_dir: None,
-                        max_turns: if mode == "solo" { 32 } else { 16 },
+                        max_turns,
                     };
                     match state.harness.spawn_session(spawn_req, sink).await {
                         Ok((sk, _, _)) => sk,
@@ -2895,12 +2899,15 @@ fn parse_backend_id(raw: Option<&str>) -> HarnessBackendId {
 }
 
 fn parse_approval_mode(raw: Option<&str>) -> ApprovalMode {
-    match raw.map(str::trim).unwrap_or("ask").to_ascii_lowercase().as_str() {
-        "plan" | "read-only" | "readonly" | "chat" => ApprovalMode::Plan,
-        "yolo" | "auto-yolo" | "solo" => ApprovalMode::Yolo,
+    match raw.map(str::trim).unwrap_or("yolo").to_ascii_lowercase().as_str() {
+        "plan" | "read-only" | "readonly" => ApprovalMode::Plan,
         "write" | "auto-workspace" | "workspace" => ApprovalMode::Write,
+        "always-ask" | "ask" => ApprovalMode::AlwaysAsk,
         "cached" | "always-ask-cached" => ApprovalMode::AlwaysAskCached,
-        _ => ApprovalMode::AlwaysAsk,
+        // Default and full-freedom aliases (`yolo`, `turbo`, `full`, `full-access`,
+        // `unrestricted`, `auto`, `auto-approve`, `auto-yolo`, `solo`, `chat`, `builder`)
+        // resolve to `ApprovalMode::Yolo`.
+        _ => ApprovalMode::Yolo,
     }
 }
 
@@ -2922,4 +2929,48 @@ fn is_provider_config_error(msg: &str) -> bool {
         || lower.contains("models.yml")
         || lower.contains("unconfigured")
         || lower.contains("credential")
+}
+
+#[cfg(test)]
+mod steer22_approval_tests {
+    use super::*;
+
+    #[test]
+    fn parse_approval_mode_defaults_to_yolo_and_honors_explicit_opt_ins() {
+        assert_eq!(parse_approval_mode(None), ApprovalMode::Yolo);
+        for alias in [
+            "",
+            "yolo",
+            "turbo",
+            "full",
+            "full-access",
+            "unrestricted",
+            "auto",
+            "auto-approve",
+            "auto-yolo",
+            "solo",
+            "chat",
+            "builder",
+        ] {
+            assert_eq!(
+                parse_approval_mode(Some(alias)),
+                ApprovalMode::Yolo,
+                "expected Yolo for alias `{alias}`"
+            );
+        }
+        assert_eq!(parse_approval_mode(Some("plan")), ApprovalMode::Plan);
+        assert_eq!(parse_approval_mode(Some("read-only")), ApprovalMode::Plan);
+        assert_eq!(parse_approval_mode(Some("readonly")), ApprovalMode::Plan);
+        assert_eq!(parse_approval_mode(Some("write")), ApprovalMode::Write);
+        assert_eq!(parse_approval_mode(Some("always-ask")), ApprovalMode::AlwaysAsk);
+        assert_eq!(parse_approval_mode(Some("ask")), ApprovalMode::AlwaysAsk);
+        assert_eq!(
+            parse_approval_mode(Some("always-ask-cached")),
+            ApprovalMode::AlwaysAskCached
+        );
+        assert_eq!(
+            parse_approval_mode(Some("cached")),
+            ApprovalMode::AlwaysAskCached
+        );
+    }
 }

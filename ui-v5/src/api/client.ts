@@ -301,6 +301,10 @@ export class StudioApiClient {
       subagent_model?: string;
       subagent_effort?: EffortLevel;
       mode: AgentRunMode;
+      approval_mode?: 'yolo' | 'write' | 'plan' | 'always-ask' | 'always-ask-cached';
+      focus_mode?: string;
+      system_prompt?: string;
+      persona_id?: string;
       research_mode?: 'auto' | 'deep' | 'off';
       think_mode?: 'auto' | 'deep' | 'off';
       rag_scope?: 'local_global' | 'local' | 'off';
@@ -310,12 +314,18 @@ export class StudioApiClient {
     onEvent: (eventType: string, data: Record<string, unknown>) => void,
     signal?: AbortSignal,
   ): Promise<void> {
+    const approvalMode = payload.approval_mode ?? 'yolo';
     const res = await fetch(this.url('/api/chat/stream'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify({
         ...payload,
         sessionId: payload.session_id,
+        approval_mode: approvalMode,
+        approvalMode,
+        focusMode: payload.focus_mode,
+        systemPrompt: payload.system_prompt,
+        personaId: payload.persona_id,
         researchMode: payload.research_mode,
         thinkMode: payload.think_mode,
         ragScope: payload.rag_scope,
@@ -1180,6 +1190,121 @@ export class StudioApiClient {
 
   exportResearchDossier(format: 'markdown' | 'json' = 'markdown', sessionId = '') {
     return this.safeText(this.withQuery('/api/v5/research/export', { format, session_id: sessionId }));
+  }
+
+  runResearchAnswer(payload: {
+    query: string;
+    focus: 'web' | 'academic' | 'code' | 'rag' | 'deep';
+    planSteps?: string[];
+  }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/research/answer', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // Steer #23 AI Studio Arena, Omnia Gems/Personas, Live Cost Estimator & Chat Branching
+  compareArena(payload: {
+    prompt: string;
+    systemPrompt?: string;
+    models: string[];
+    effort?: EffortLevel;
+    temperature?: number;
+    topP?: number;
+    maxTokens?: number;
+    stopSequences?: string[];
+    jsonSchema?: unknown;
+    live?: boolean;
+  }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/arena/compare', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  voteArena(payload: {
+    runId?: string;
+    winnerModel: string;
+    loserModels?: string[];
+    tie?: boolean;
+    prompt?: string;
+  }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/arena/vote', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  getArenaLeaderboard() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/arena/leaderboard');
+  }
+
+  listStudioPersonas() {
+    return this.safeJson<Record<string, unknown>>('/api/v5/studio/personas');
+  }
+
+  upsertStudioPersona(payload: Record<string, unknown>) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/studio/personas', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  deleteStudioPersona(id: string) {
+    return this.safeJson<Record<string, unknown>>(this.withQuery('/api/v5/studio/personas', { id }), {
+      method: 'DELETE',
+      body: JSON.stringify({ id }),
+    });
+  }
+
+  estimateStudioCost(payload: {
+    prompt: string;
+    systemPrompt?: string;
+    models?: string[];
+    maxTokens?: number;
+    jsonSchema?: string;
+  }) {
+    return this.safeJson<Record<string, unknown>>('/api/v5/studio/estimate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  listSessionBranches(sessionId: string) {
+    return this.safeJson<Record<string, unknown>>(
+      `/api/v5/sessions/${encodeURIComponent(sessionId)}/branches`,
+    );
+  }
+
+  createSessionBranch(
+    sessionId: string,
+    payload: {
+      parentMsgId: string;
+      role: string;
+      content: string;
+      modelId?: string;
+      effort?: EffortLevel;
+      thinkingText?: string;
+      toolCalls?: unknown[];
+    },
+  ) {
+    return this.safeJson<Record<string, unknown>>(
+      `/api/v5/sessions/${encodeURIComponent(sessionId)}/branches`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    );
+  }
+
+  forkSessionById(sessionId: string, turnIdx?: number) {
+    return this.safeJson<{ session?: SessionRecord } & Record<string, unknown>>(
+      `/api/v5/sessions/${encodeURIComponent(sessionId)}/fork`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ sessionId, session_id: sessionId, turn_idx: turnIdx }),
+      },
+    );
   }
 
   // Steer #18-#20 Deep Think Sessions

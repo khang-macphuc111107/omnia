@@ -262,7 +262,7 @@ impl StudioArtifactService {
             }
         }
         let parsed_json = extract_json_payload(&llm_resp.text);
-        let structured_json = json!({
+        let mut structured_json = json!({
             "schema": format!("omnia.studio.{}.llm.v1", req.kind.as_str()),
             "title": title,
             "focus": focus,
@@ -276,6 +276,18 @@ impl StudioArtifactService {
             "citation_verification": verify,
             "parsed_payload": parsed_json,
         });
+        // Hoist structured interactive payloads (`questions`, `tree`, `turns`, `cards`) to top-level
+        // keys so NotebookLM++ UI viewers consume LLM and deterministic outputs identically.
+        if let (Some(dst), Some(src_obj)) = (
+            structured_json.as_object_mut(),
+            parsed_json.as_ref().and_then(Value::as_object),
+        ) {
+            for key in ["questions", "tree", "turns", "cards", "slides", "events", "entries", "mermaid"] {
+                if let Some(val) = src_obj.get(key) {
+                    dst.insert(key.to_string(), val.clone());
+                }
+            }
+        }
 
         let now = now_epoch_ms();
         let row = StoredArtifactRow {
@@ -403,19 +415,19 @@ Produce clean GitHub-Flavored Markdown AND embed a fenced ```json``` block match
             "Artifact: Two-Host Audio Overview Script (Host A: analytical guide, Host B: inquisitive synthesizer).\n\
              Include chapter markers, natural conversational transitions, spoken math/term clarity, SSML pause hints `[pause:300ms]`, \
              and `[source_id:chunk_idx]` citations on every key point.\n\
-             Embed ```json```: {\"chapters\":[{\"title\",\"turns\":[{\"speaker\":\"Host A\"|\"Host B\",\"line\",\"citations\":[]}]}]}."
+             Embed ```json```: {\"turns\":[{\"speaker\":\"Host A\"|\"Host B\",\"text\":\"...\",\"citation_ids\":[\"[source_id:0]\"]}],\"chapters\":[{\"title\":\"...\",\"turns\":[]}]}."
         }
         StudioArtifactKind::MindMap => {
             "Artifact: Hierarchical Concept Mind Map.\n\
-             Include a valid ```mermaid\\nflowchart TD``` diagram AND ```json```: {\"root\",\"branches\":[{\"label\",\"children\":[],\"citations\":[]}]}."
+             Include a valid ```mermaid\\nflowchart TD``` diagram AND ```json```: {\"tree\":{\"id\":\"root\",\"label\":\"...\",\"citation_ids\":[],\"children\":[{\"id\":\"n1\",\"label\":\"...\",\"citation_ids\":[\"[source_id:0]\"],\"children\":[]}]}}."
         }
         StudioArtifactKind::Flashcards => {
             "Artifact: Active-Recall Flashcards Deck (6-12 cards covering core definitions, mechanisms, edge cases).\n\
              Embed ```json```: {\"cards\":[{\"front\",\"back\",\"hint\",\"difficulty\":\"easy|medium|hard\",\"citations\":[]}]}."
         }
         StudioArtifactKind::Quiz => {
-            "Artifact: Assessment Quiz (5-10 MCQs with 4 plausible options, exact answer index, detailed explanation, citations).\n\
-             Embed ```json```: {\"questions\":[{\"prompt\",\"options\":[],\"correct_index\":0,\"explanation\",\"citations\":[]}]}."
+            "Artifact: Assessment Quiz (5-10 MCQs with 4 plausible options, exact answer index, detailed explanation, citation_ids).\n\
+             Embed ```json```: {\"questions\":[{\"id\":\"q1\",\"question\":\"...\",\"options\":[\"A\",\"B\",\"C\",\"D\"],\"correct_index\":0,\"explanation\":\"...\",\"citation_ids\":[\"[source_id:0]\"]}]}."
         }
         StudioArtifactKind::SlideDeck => {
             "Artifact: Executive Slide Deck (6-10 slides).\n\
@@ -467,22 +479,107 @@ fn build_audio_overview(
         md.push_str(&format!("\n> Focus: {f}\n"));
     }
     md.push_str("\n## Two-Host Dialogue Script\n");
+
+    let all_primary_cites: Vec<String> = items
+        .iter()
+        .map(|(src, chunks)| {
+            let (idx, _) = primary_snippet(chunks, 80);
+            format!("[{}:{}]", src.source_id, idx)
+        })
+        .collect();
+    let intro_text = match focus {
+        Some(f) => format!(
+            "Welcome to Omnia Atelier Audio Overview for \"{title}\". Today we're exploring {} grounded source(s) with a focus on {f}.",
+            items.len()
+        ),
+        None => format!(
+            "Welcome to Omnia Atelier Audio Overview for \"{title}\". Today we're unpacking {} grounded source(s) together.",
+            items.len()
+        ),
+    };
+    md.push_str(&format!("\n**Host A:** {intro_text}\n"));
+    turns.push(json!({
+        "speaker": "Host A",
+        "text": intro_text,
+        "line": intro_text,
+        "citation_ids": all_primary_cites.iter().take(3).cloned().collect::<Vec<_>>(),
+    }));
+
     for (i, (src, chunks)) in items.iter().enumerate() {
         let (idx, snippet) = primary_snippet(chunks, 180);
         let cite = format!("[{}:{}]", src.source_id, idx);
-        let speaker = if i % 2 == 0 { "Host A" } else { "Host B" };
-        md.push_str(&format!("\n**{speaker}:** Reviewing **{}** {cite}: {snippet}\n", src.title));
+        let lead_speaker = if i % 2 == 0 { "Host B" } else { "Host A" };
+        let follow_speaker = if lead_speaker == "Host A" { "Host B" } else { "Host A" };
+        let lead_text = format!("Looking at \"{}\" {cite}, the key evidence stands out: {snippet}", src.title);
+        md.push_str(&format!("\n**{lead_speaker}:** {lead_text}\n"));
         turns.push(json!({
-            "speaker": speaker,
+            "speaker": lead_speaker,
+            "text": lead_text,
+            "line": lead_text,
             "source_id": src.source_id,
             "citation": cite,
-            "line": snippet,
+            "citation_ids": [cite],
         }));
+
+        let follow_text = if let Some(second) = chunks.get(1) {
+            let sec_cite = format!("[{}:{}]", src.source_id, second.chunk_idx);
+            let sec_snip: String = second
+                .body
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(160)
+                .collect();
+            let text = format!(
+                "That connects directly to the follow-up section in \"{}\" {sec_cite}: {sec_snip}",
+                src.title
+            );
+            md.push_str(&format!("\n**{follow_speaker}:** {text}\n"));
+            turns.push(json!({
+                "speaker": follow_speaker,
+                "text": text,
+                "line": text,
+                "source_id": src.source_id,
+                "citation": sec_cite,
+                "citation_ids": [cite, sec_cite],
+            }));
+            None
+        } else {
+            Some(format!(
+                "Good catch — \"{}\" anchors that takeaway cleanly in {cite} so we can cross-check it against the rest of the notebook.",
+                src.title
+            ))
+        };
+        if let Some(text) = follow_text {
+            md.push_str(&format!("\n**{follow_speaker}:** {text}\n"));
+            turns.push(json!({
+                "speaker": follow_speaker,
+                "text": text,
+                "line": text,
+                "source_id": src.source_id,
+                "citation": cite,
+                "citation_ids": [cite],
+            }));
+        }
     }
+
+    let outro_text = format!(
+        "That wraps our grounded walkthrough of \"{title}\" across {} source(s). Jump in anytime to ask a follow-up question on any turn!",
+        items.len()
+    );
+    md.push_str(&format!("\n**Host B:** {outro_text}\n"));
+    turns.push(json!({
+        "speaker": "Host B",
+        "text": outro_text,
+        "line": outro_text,
+        "citation_ids": all_primary_cites,
+    }));
+
     (
         md,
         json!({
-            "schema": "omnia.studio.audio_overview.v1",
+            "schema": "omnia.studio.audio_overview.v2",
             "title": title,
             "focus": focus,
             "turns": turns,
@@ -663,21 +760,52 @@ fn build_timeline(
 fn build_quiz(title: &str, items: &[(SourceRecord, Vec<SourceChunkRecord>)]) -> (String, Value) {
     let mut questions = Vec::new();
     let mut md = format!("# {title}\n");
+    let fallback_distractors = [
+        "Unreferenced External Source",
+        "Deprecated Draft Archive",
+        "None of the Notebook Sources",
+        "Unverified Off-Corpus Summary",
+    ];
     for (i, (src, chunks)) in items.iter().enumerate() {
         let (idx, snippet) = primary_snippet(chunks, 160);
         let cite = format!("[{}:{}]", src.source_id, idx);
-        let prompt = format!(
+        let q_id = format!("q{}", i + 1);
+        let question_text = format!(
             "Which source best documents the following topic: \"{}\"?",
             snippet.chars().take(90).collect::<String>()
         );
-        let options = vec![
-            src.title.clone(),
-            "Unreferenced External Source".to_string(),
-            "Deprecated Draft Archive".to_string(),
-            "None of the Notebook Sources".to_string(),
-        ];
+        let mut distractors: Vec<String> = items
+            .iter()
+            .enumerate()
+            .filter(|(j, (other, _))| *j != i && other.title != src.title)
+            .map(|(_, (other, _))| other.title.clone())
+            .take(3)
+            .collect();
+        for fb in fallback_distractors {
+            if distractors.len() >= 3 {
+                break;
+            }
+            if fb != src.title && !distractors.iter().any(|d| d == fb) {
+                distractors.push(fb.to_string());
+            }
+        }
+        let correct_index = i % 4;
+        let mut options = Vec::with_capacity(4);
+        let mut d_iter = distractors.into_iter();
+        for slot in 0..4 {
+            if slot == correct_index {
+                options.push(src.title.clone());
+            } else {
+                options.push(d_iter.next().unwrap_or_else(|| "None of the above".to_string()));
+            }
+        }
+        let answer_letter = ["A", "B", "C", "D"][correct_index];
+        let explanation = format!(
+            "Grounded directly in \"{}\" {cite}: {snippet}",
+            src.title
+        );
         md.push_str(&format!(
-            "\n### Question {}\n\n{prompt}\n\n- A) {}\n- B) {}\n- C) {}\n- D) {}\n\n> Answer: **A** {cite}\n",
+            "\n### Question {}\n\n{question_text}\n\n- A) {}\n- B) {}\n- C) {}\n- D) {}\n\n> Answer: **{answer_letter}** — {explanation}\n",
             i + 1,
             options[0],
             options[1],
@@ -685,18 +813,22 @@ fn build_quiz(title: &str, items: &[(SourceRecord, Vec<SourceChunkRecord>)]) -> 
             options[3]
         ));
         questions.push(json!({
+            "id": q_id,
             "question_number": i + 1,
-            "prompt": prompt,
+            "question": question_text,
+            "prompt": question_text,
             "options": options,
-            "correct_index": 0,
+            "correct_index": correct_index,
+            "explanation": explanation,
             "citation": cite,
+            "citation_ids": [cite],
             "source_id": src.source_id,
         }));
     }
     (
         md,
         json!({
-            "schema": "omnia.studio.quiz.v1",
+            "schema": "omnia.studio.quiz.v2",
             "title": title,
             "questions": questions,
         }),
@@ -746,6 +878,8 @@ fn build_mind_map(
         format!("    root[\"{safe_root}\"]"),
     ];
     let mut nodes = Vec::new();
+    let mut tree_children = Vec::new();
+    let mut root_citation_ids = Vec::new();
 
     for (s_idx, (src, chunks)) in items.iter().enumerate() {
         let src_node = format!("s{s_idx}");
@@ -753,23 +887,45 @@ fn build_mind_map(
         lines.push(format!("    {src_node}[\"{safe_src}\"]"));
         lines.push(format!("    root --> {src_node}"));
         let mut child_labels = Vec::new();
+        let mut branch_children = Vec::new();
+        let mut branch_cites = Vec::new();
 
         for chunk in chunks.iter().take(4) {
             let c_node = format!("s{s_idx}_c{}", chunk.chunk_idx);
-            let label = sanitize_mermaid_label(&format!(
-                "{} [{}:{}]",
-                if chunk.heading.is_empty() {
-                    "Section"
-                } else {
-                    &chunk.heading
-                },
-                src.source_id,
-                chunk.chunk_idx
-            ));
+            let cite = format!("[{}:{}]", src.source_id, chunk.chunk_idx);
+            let heading_raw = if chunk.heading.is_empty() {
+                format!("Section {}", chunk.chunk_idx + 1)
+            } else {
+                chunk.heading.clone()
+            };
+            let clean_heading = sanitize_mermaid_label(&heading_raw);
+            let label = sanitize_mermaid_label(&format!("{heading_raw} {cite}"));
             lines.push(format!("    {c_node}[\"{label}\"]"));
             lines.push(format!("    {src_node} --> {c_node}"));
             child_labels.push(label);
+            branch_cites.push(cite.clone());
+            branch_children.push(json!({
+                "id": c_node,
+                "label": clean_heading,
+                "source_id": src.source_id,
+                "citation_ids": [cite],
+                "children": [],
+            }));
         }
+        if branch_cites.is_empty() {
+            let fallback_cite = format!("[{}:0]", src.source_id);
+            branch_cites.push(fallback_cite);
+        }
+        if let Some(first_cite) = branch_cites.first() {
+            root_citation_ids.push(first_cite.clone());
+        }
+        tree_children.push(json!({
+            "id": src_node,
+            "label": safe_src,
+            "source_id": src.source_id,
+            "citation_ids": branch_cites,
+            "children": branch_children,
+        }));
         nodes.push(json!({
             "node_id": src_node,
             "source_id": src.source_id,
@@ -778,14 +934,21 @@ fn build_mind_map(
         }));
     }
 
+    let tree = json!({
+        "id": "root",
+        "label": safe_root,
+        "citation_ids": root_citation_ids,
+        "children": tree_children,
+    });
     let mermaid = lines.join("\n");
     let md = format!("# {title}\n\n```mermaid\n{mermaid}\n```\n");
     (
         md,
         json!({
-            "schema": "omnia.studio.mind_map.v1",
+            "schema": "omnia.studio.mind_map.v2",
             "diagram_type": "flowchart_td",
             "mermaid": mermaid,
+            "tree": tree,
             "nodes": nodes,
         }),
     )
@@ -936,5 +1099,125 @@ fn record_from_row(row: StoredArtifactRow) -> StudioArtifactRecord {
         cited_source_ids: row.cited_source_ids,
         created_at_ms: row.created_at_ms,
         updated_at_ms: row.updated_at_ms,
+    }
+}
+
+#[cfg(test)]
+mod steer23_artifact_schema_tests {
+    use super::*;
+    use crate::source_library::SourceKind;
+
+    fn sample_items() -> Vec<(SourceRecord, Vec<SourceChunkRecord>)> {
+        let s1 = SourceRecord {
+            source_id: "src_alpha".to_string(),
+            notebook_id: "nb_1".to_string(),
+            remote_id: None,
+            title: "SQLite WAL Concurrency".to_string(),
+            safe_filename: "sqlite_wal.md".to_string(),
+            mime_type: "text/markdown".to_string(),
+            source_kind: SourceKind::Document,
+            is_video: false,
+            content_sha256: "0000".to_string(),
+            content_blake3: "0000".to_string(),
+            byte_size: 256,
+            chunk_count: 2,
+            ingestion_stage: "indexed".to_string(),
+            provenance: "local".to_string(),
+            metadata: json!({}),
+            created_at_ms: 1_000,
+        };
+        let c1 = vec![
+            SourceChunkRecord {
+                chunk_id: "chk_1".to_string(),
+                notebook_id: "nb_1".to_string(),
+                source_id: "src_alpha".to_string(),
+                chunk_idx: 0,
+                heading: "Write-Ahead Logging".to_string(),
+                body: "WAL allows concurrent readers alongside a single writer.".to_string(),
+                token_count: 12,
+                byte_size: 58,
+                content_blake3: "aaaa".to_string(),
+            },
+            SourceChunkRecord {
+                chunk_id: "chk_2".to_string(),
+                notebook_id: "nb_1".to_string(),
+                source_id: "src_alpha".to_string(),
+                chunk_idx: 1,
+                heading: "Checkpointing".to_string(),
+                body: "Passive checkpoints merge WAL frames back to the main DB.".to_string(),
+                token_count: 12,
+                byte_size: 59,
+                content_blake3: "bbbb".to_string(),
+            },
+        ];
+        let s2 = SourceRecord {
+            source_id: "src_beta".to_string(),
+            notebook_id: "nb_1".to_string(),
+            remote_id: None,
+            title: "Rust Async Runtime".to_string(),
+            safe_filename: "rust_async.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            source_kind: SourceKind::Document,
+            is_video: false,
+            content_sha256: "1111".to_string(),
+            content_blake3: "1111".to_string(),
+            byte_size: 180,
+            chunk_count: 1,
+            ingestion_stage: "indexed".to_string(),
+            provenance: "local".to_string(),
+            metadata: json!({}),
+            created_at_ms: 2_000,
+        };
+        let c2 = vec![SourceChunkRecord {
+            chunk_id: "chk_3".to_string(),
+            notebook_id: "nb_1".to_string(),
+            source_id: "src_beta".to_string(),
+            chunk_idx: 0,
+            heading: "Work Stealing".to_string(),
+            body: "Tokio schedules async tasks across worker queues efficiently.".to_string(),
+            token_count: 11,
+            byte_size: 62,
+            content_blake3: "cccc".to_string(),
+        }];
+        vec![(s1, c1), (s2, c2)]
+    }
+
+    #[test]
+    fn quiz_mind_map_and_audio_overview_emit_steer23_structured_schemas() {
+        let items = sample_items();
+
+        let (_qmd, qjson) = build_quiz("Systems Quiz", &items);
+        let qs = qjson["questions"].as_array().expect("quiz questions");
+        assert_eq!(qs.len(), 2);
+        assert_eq!(qs[0]["id"], "q1");
+        assert!(qs[0]["question"].as_str().unwrap().contains("Which source"));
+        assert_eq!(qs[0]["options"].as_array().unwrap().len(), 4);
+        assert!(qs[0]["correct_index"].as_u64().unwrap() < 4);
+        assert!(qs[0]["explanation"].as_str().unwrap().contains("SQLite WAL"));
+        assert_eq!(qs[0]["citation_ids"], json!(["[src_alpha:0]"]));
+
+        let (_mmd, mjson) = build_mind_map("Systems Map", &items);
+        assert!(mjson["mermaid"].as_str().unwrap().starts_with("flowchart TD"));
+        let tree = &mjson["tree"];
+        assert_eq!(tree["id"], "root");
+        assert_eq!(tree["label"], "Systems Map");
+        let branches = tree["children"].as_array().expect("tree children");
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0]["label"], "SQLite WAL Concurrency");
+        assert_eq!(branches[0]["children"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            branches[0]["children"][0]["citation_ids"],
+            json!(["[src_alpha:0]"])
+        );
+
+        let (_amd, ajson) = build_audio_overview("Systems Podcast", Some("WAL & Tokio"), &items);
+        let turns = ajson["turns"].as_array().expect("podcast turns");
+        assert!(turns.len() >= 4);
+        assert!(turns.iter().any(|t| t["speaker"] == "Host A"));
+        assert!(turns.iter().any(|t| t["speaker"] == "Host B"));
+        for t in turns {
+            assert!(!t["text"].as_str().unwrap_or("").is_empty());
+            assert!(t["citation_ids"].as_array().is_some());
+        }
     }
 }

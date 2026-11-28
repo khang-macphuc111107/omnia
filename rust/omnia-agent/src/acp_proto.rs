@@ -237,8 +237,8 @@ pub fn build_modes_state(approval: ApprovalMode) -> Value {
     json!({
         "currentModeId": current,
         "availableModes": [
-            { "id": "default", "name": "Approve", "description": "Ask before edits and shell commands" },
-            { "id": "yolo", "name": "Auto", "description": "Run tools without confirmation" }
+            { "id": "yolo", "name": "Auto", "description": "YOLO / Turbo / Full Access (Auto-Approve)" },
+            { "id": "default", "name": "Approve", "description": "Ask before edits and shell commands" }
         ]
     })
 }
@@ -252,8 +252,8 @@ fn acp_mode_state(approval: ApprovalMode) -> (&'static str, Vec<(String, String)
     (
         current,
         vec![
-            ("default".into(), "Approve".into()),
             ("yolo".into(), "Auto".into()),
+            ("default".into(), "Approve".into()),
         ],
     )
 }
@@ -262,9 +262,11 @@ fn acp_mode_state(approval: ApprovalMode) -> (&'static str, Vec<(String, String)
 #[must_use]
 pub fn approval_for_mode_id(id: &str) -> Option<ApprovalMode> {
     match id.trim().to_ascii_lowercase().as_str() {
-        "yolo" | "auto" | "bypasspermissions" | "acceptall" => Some(ApprovalMode::Yolo),
-        "default" | "approve" | "ask" => Some(ApprovalMode::AlwaysAsk),
-        "plan" => Some(ApprovalMode::Plan),
+        "yolo" | "turbo" | "full" | "full-access" | "unrestricted" | "auto" | "auto-approve"
+        | "bypasspermissions" | "acceptall" => Some(ApprovalMode::Yolo),
+        "default" | "approve" | "ask" | "always-ask" => Some(ApprovalMode::AlwaysAsk),
+        "always-ask-cached" | "cached" => Some(ApprovalMode::AlwaysAskCached),
+        "plan" | "read-only" | "readonly" => Some(ApprovalMode::Plan),
         "write" | "acceptedits" => Some(ApprovalMode::Write),
         _ => None,
     }

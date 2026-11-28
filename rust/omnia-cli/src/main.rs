@@ -17,10 +17,11 @@
 use anyhow::{bail, Context, Result};
 use mimalloc::MiMalloc;
 use omnia_agent::{
-    default_omnia_data_dir, process_tree_rss_bytes, redact_secrets, run_acp_http_server,
-    run_acp_stdio_server, run_super_eval, sanitize_windows_path, AgentStore, ApprovalMode,
-    FileReadTracker, HarnessEventSink, HarnessStreamEvent, PermissionsEngine, PluginRegistry,
-    SuperEvalOptions, TurnCheckpointStore, WireApiMode,
+    default_omnia_data_dir, process_tree_rss_bytes, redact_secrets, resolve_model_endpoint,
+    run_acp_http_server, run_acp_stdio_server, run_super_eval, sanitize_windows_path, AgentStore,
+    ApprovalMode, FileReadTracker, HarnessEventSink, HarnessStreamEvent, NativeSuperEngine,
+    PermissionsEngine, PluginRegistry, SuperEvalOptions, TurnCheckpointStore, WireApiMode,
+    WorkspaceGraphIndex,
 };
 use omnia_core::PrivacyMask;
 use omnia_workspace_ops::hardware::collect_host_system_snapshot;
@@ -219,6 +220,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "arena" => match run_arena_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia arena error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprintln!("Unknown command '{first}'. Run `omnia --help` for usage.");
             ExitCode::FAILURE
@@ -275,6 +283,7 @@ USAGE:
   omnia rag <query|sources|ingest|pin|export> [--workspace <dir>] [--tier local|global|both] [--json] ...
   omnia lifecycle <status|list|upsert|link|todo|dod|handoff|learn|lessons|gap-radar|super-state|verify> [--workspace <dir>] [--json]
   omnia skills <route|vault|dag|pipelines|doctor|codify> [--workspace <dir>] [--json] ...
+  omnia arena \"<prompt>\" --models <m1,m2[,m3,m4]> [--effort max] [--temperature 0.7] [--json]
 
 RUN OPTIONS:
   --workspace, --cwd <dir>       Target workspace directory (default: current dir)
@@ -288,8 +297,8 @@ RUN OPTIONS:
   --think <auto|deep|off>        Default-ON adaptive Deep Think mode (default: auto)
   --proactive-lifecycle <on|off> Proactive 12-artifact workspace lifecycle & auto-handoff (default: on)
   --output-format <fmt>          stream-json | json | text (default: text)
-  --auto-approve                 Run with ApprovalMode::Yolo (non-interactive)
-  --approval-mode <mode>         yolo | write | plan | always-ask | always-ask-cached
+  --auto-approve                 Run with ApprovalMode::Yolo (default — full auto-approve)
+  --approval-mode <mode>         yolo|turbo|full-access|unrestricted|auto-approve (default: yolo) | write | plan | always-ask | always-ask-cached
   --max-turns <n>                Maximum agent turns (default: 50)
   --timeout-secs, --timeout <s>  Run timeout in seconds (default: 300)
   --prompt-file <path>           Read prompt from UTF-8 file instead of positional arg
@@ -359,6 +368,9 @@ fn extract_positional_prompt(args: &[String]) -> Option<String> {
         "--winner",
         "--fg",
         "--bg",
+        "--models",
+        "--temperature",
+        "--system-prompt",
     ];
     let mut i = 0;
     let mut positionals = Vec::new();
@@ -727,7 +739,7 @@ async fn run_agent_cmd(args: &[String]) -> Result<bool> {
         model,
         prompt,
         approval_mode,
-        workspace_trusted: approval_mode == ApprovalMode::Yolo,
+        workspace_trusted: true,
         permission_rules: PermissionsEngine::default_rules(),
         thinking_level,
         config_dir,
@@ -1612,6 +1624,281 @@ fn run_skills_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn parse_cli_arena_models(raw: Option<&str>) -> Result<Vec<String>> {
+    let default_pair = "claude-sonnet-5-5,gpt-6.2-sol";
+    let src = raw.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(default_pair);
+    let mut models = Vec::new();
+    for m in src.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if !models.iter().any(|existing: &String| existing.eq_ignore_ascii_case(m)) {
+            models.push(m.to_string());
+        }
+    }
+    if models.len() < 2 {
+        bail!("omnia arena requires 2..=4 comma-separated models via --models <m1,m2[,m3,m4]>");
+    }
+    if models.len() > 4 {
+        bail!("omnia arena supports at most 4 models per parallel run (got {})", models.len());
+    }
+    Ok(models)
+}
+
+fn estimate_arena_model_diagnostic(
+    model_spec: &str,
+    prompt: &str,
+    config_dir: Option<&std::path::Path>,
+    base_url: Option<&str>,
+    api_key: Option<&str>,
+) -> serde_json::Value {
+    let input_tokens = (prompt.len().div_ceil(4) as u64).max(1);
+    let est_output_tokens = (input_tokens * 2).clamp(64, 1_024);
+    let resolved = resolve_model_endpoint(model_spec, config_dir, base_url, api_key);
+    let (provider_id, model_id, context_window, in_rate, out_rate) = match resolved {
+        Ok(ep) => (
+            ep.provider_id,
+            ep.model_id,
+            ep.context_window,
+            ep.cost_input_per_m,
+            ep.cost_output_per_m,
+        ),
+        Err(_) => ("unconfigured".to_string(), model_spec.to_string(), 200_000, 3.0, 15.0),
+    };
+    let est_cost_usd = ((input_tokens as f64 / 1_000_000.0) * in_rate
+        + (est_output_tokens as f64 / 1_000_000.0) * out_rate)
+        .max(0.0);
+    let rounded_cost = (est_cost_usd * 1_000_000.0).round() / 1_000_000.0;
+    json!({
+        "model": model_id,
+        "providerId": provider_id,
+        "status": "unconfigured_provider",
+        "configured": false,
+        "elapsedMs": 0,
+        "inputTokens": input_tokens,
+        "estimatedOutputTokens": est_output_tokens,
+        "outputTokens": 0,
+        "tokensPerSecond": 0.0,
+        "estimatedCostUsd": rounded_cost,
+        "costUsd": 0.0,
+        "contextWindow": context_window,
+        "text": serde_json::Value::Null,
+        "note": "No API key configured — set OMNIA_API_KEY/HTMUSTC_API_KEY or pass --api-key (zero fabricated answers)."
+    })
+}
+
+fn run_arena_cmd(args: &[String]) -> Result<()> {
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia arena \"<prompt>\" --models <m1,m2[,m3,m4]> [--effort max] [--temperature 0.7] [--workspace <dir>] [--base-url <url>] [--api-key <key>] [--wire-api <mode>] [--timeout-secs <s>] [--offline] [--json]"
+        );
+        return Ok(());
+    }
+    let prompt = extract_positional_prompt(args)
+        .or_else(|| arg_value(args, "--prompt"))
+        .unwrap_or_default();
+    if prompt.trim().is_empty() {
+        bail!("omnia arena requires a prompt string");
+    }
+    let models = parse_cli_arena_models(arg_value(args, "--models").as_deref())?;
+    let effort = resolve_effort_arg(args);
+    let temperature: f64 = match arg_value(args, "--temperature") {
+        Some(raw) => {
+            let v: f64 = raw.parse().context("invalid float for --temperature")?;
+            if !(0.0..=2.0).contains(&v) {
+                bail!("--temperature must be between 0.0 and 2.0");
+            }
+            v
+        }
+        None => 0.7,
+    };
+    let json_out = args.iter().any(|a| a == "--json");
+    let offline = args.iter().any(|a| a == "--offline");
+    let workspace = resolve_workspace_arg(args);
+    let config_dir = arg_value(args, "--config-dir").map(PathBuf::from);
+    let base_url = arg_value(args, "--base-url")
+        .or_else(|| arg_value(args, "--api-base"))
+        .or_else(|| env::var("OMNIA_BASE_URL").ok().filter(|s| !s.trim().is_empty()));
+    let explicit_key = arg_value(args, "--api-key")
+        .or_else(|| env::var("OMNIA_API_KEY").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| env::var("HTMUSTC_API_KEY").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| env::var("OPENAI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
+    let wire_api = arg_value(args, "--wire-api")
+        .map(|s| WireApiMode::parse_flag(&s))
+        .unwrap_or(WireApiMode::Auto);
+    let timeout_secs = arg_value(args, "--timeout-secs")
+        .or_else(|| arg_value(args, "--timeout"))
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(90)
+        .clamp(10, 180);
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let results: Vec<serde_json::Value> = rt.block_on(async {
+        let mut set = tokio::task::JoinSet::new();
+        for (idx, model_spec) in models.iter().cloned().enumerate() {
+            let ws = workspace.clone();
+            let cfg_dir = config_dir.clone();
+            let b_url = base_url.clone();
+            let key = explicit_key.clone();
+            let eff = effort.clone();
+            let p_str = prompt.clone();
+            set.spawn(async move {
+                let resolved = resolve_model_endpoint(
+                    &model_spec,
+                    cfg_dir.as_deref(),
+                    b_url.as_deref(),
+                    key.as_deref(),
+                );
+                let live_ep = if offline {
+                    None
+                } else {
+                    resolved.ok().filter(|ep| !ep.api_key.trim().is_empty())
+                };
+                let Some(ep) = live_ep else {
+                    return (
+                        idx,
+                        estimate_arena_model_diagnostic(
+                            &model_spec,
+                            &p_str,
+                            cfg_dir.as_deref(),
+                            b_url.as_deref(),
+                            key.as_deref(),
+                        ),
+                    );
+                };
+
+                let t0 = Instant::now();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&ws)));
+                let session_key = format!("cli-arena-{idx}");
+                let model_lbl = ep.model_id.clone();
+                let provider_lbl = ep.provider_id.clone();
+                let context_window = ep.context_window;
+                let eng_res = NativeSuperEngine::new(
+                    session_key,
+                    ws,
+                    ep,
+                    eff,
+                    ApprovalMode::Plan,
+                    true,
+                    PermissionsEngine::default_rules(),
+                    PluginRegistry::with_default_pillars(),
+                    graph,
+                    None,
+                    None,
+                    cancel,
+                    None,
+                );
+                let val = match eng_res {
+                    Ok(mut eng) => {
+                        eng.wire_api_mode = wire_api;
+                        match eng.run_prompt(&p_str, 1, timeout_secs, None).await {
+                            Ok(sum) => {
+                                let cs = eng.cache_guard.snapshot();
+                                let tps = if sum.active_decode_ms > 0 {
+                                    (cs.output_tokens as f64)
+                                        / (sum.active_decode_ms as f64 / 1000.0)
+                                } else {
+                                    0.0
+                                };
+                                json!({
+                                    "model": model_lbl,
+                                    "providerId": provider_lbl,
+                                    "status": "ok",
+                                    "configured": true,
+                                    "elapsedMs": t0.elapsed().as_millis() as u64,
+                                    "inputTokens": cs.uncached_input_tokens + cs.cache_read_tokens,
+                                    "outputTokens": cs.output_tokens,
+                                    "tokensPerSecond": (tps * 10.0).round() / 10.0,
+                                    "costUsd": (eng.total_cost_usd * 1_000_000.0).round() / 1_000_000.0,
+                                    "contextWindow": context_window,
+                                    "text": redact_secrets(&sum.final_text),
+                                })
+                            }
+                            Err(e) => json!({
+                                "model": model_lbl,
+                                "providerId": provider_lbl,
+                                "status": "error",
+                                "configured": true,
+                                "elapsedMs": t0.elapsed().as_millis() as u64,
+                                "costUsd": (eng.total_cost_usd * 1_000_000.0).round() / 1_000_000.0,
+                                "contextWindow": context_window,
+                                "error": redact_secrets(&format!("{e:#}")),
+                                "text": serde_json::Value::Null,
+                            }),
+                        }
+                    }
+                    Err(e) => json!({
+                        "model": model_lbl,
+                        "providerId": provider_lbl,
+                        "status": "error",
+                        "configured": true,
+                        "elapsedMs": t0.elapsed().as_millis() as u64,
+                        "costUsd": 0.0,
+                        "contextWindow": context_window,
+                        "error": redact_secrets(&format!("{e:#}")),
+                        "text": serde_json::Value::Null,
+                    }),
+                };
+                (idx, val)
+            });
+        }
+        let mut ordered = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            if let Ok(item) = joined {
+                ordered.push(item);
+            }
+        }
+        ordered.sort_by_key(|(idx, _)| *idx);
+        ordered.into_iter().map(|(_, v)| v).collect()
+    });
+
+    let payload = json!({
+        "ok": true,
+        "prompt": redact_secrets(&prompt),
+        "models": models,
+        "effort": effort.as_deref().unwrap_or("auto"),
+        "temperature": temperature,
+        "offline": offline,
+        "results": results,
+    });
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+    println!(
+        "Omnia Parallel Arena ({} models | effort={} | temp={:.2})",
+        models.len(),
+        effort.as_deref().unwrap_or("auto"),
+        temperature
+    );
+    if let Some(arr) = payload["results"].as_array() {
+        for r in arr {
+            let cost = r["costUsd"]
+                .as_f64()
+                .filter(|c| *c > 0.0)
+                .or_else(|| r["estimatedCostUsd"].as_f64())
+                .unwrap_or(0.0);
+            println!(
+                "  {} [{}] {}ms | in:{} out:{} | {:.1} tok/s | ${:.6}",
+                r["model"].as_str().unwrap_or("-"),
+                r["status"].as_str().unwrap_or("-"),
+                r["elapsedMs"].as_u64().unwrap_or(0),
+                r["inputTokens"].as_u64().unwrap_or(0),
+                r["outputTokens"].as_u64().unwrap_or(0),
+                r["tokensPerSecond"].as_f64().unwrap_or(0.0),
+                cost
+            );
+            if let Some(txt) = r["text"].as_str() {
+                let preview: String = txt.chars().take(180).collect();
+                println!("    {}", preview.replace('\n', " "));
+            } else if let Some(note) = r["note"].as_str().or_else(|| r["error"].as_str()) {
+                println!("    {note}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn redact_json_value(val: serde_json::Value) -> serde_json::Value {
     match val {
         serde_json::Value::String(s) => serde_json::Value::String(redact_secrets(&s)),
@@ -1634,8 +1921,8 @@ fn resolve_approval_mode(args: &[String]) -> Result<ApprovalMode> {
     if let Some(mode_str) = arg_value(args, "--approval-mode") {
         return ApprovalMode::try_parse_flag(&mode_str);
     }
-    // Fail-closed default when neither `--auto-approve` nor `--approval-mode` is passed.
-    Ok(ApprovalMode::AlwaysAsk)
+    // Steer #22 full-freedom default: YOLO (auto-approve, unrestricted) unless explicitly restricted.
+    Ok(ApprovalMode::Yolo)
 }
 
 fn resolve_effort_arg(args: &[String]) -> Option<String> {
@@ -1725,15 +2012,40 @@ mod tests {
     }
 
     #[test]
-    fn cli_approval_mode_fails_closed_by_default_and_rejects_typos() {
+    fn cli_approval_mode_defaults_to_yolo_and_honors_opt_ins_and_rejects_typos() {
         let bare: Vec<String> = vec!["--model".into(), "gpt-6.2-sol".into(), "hello".into()];
-        assert_eq!(resolve_approval_mode(&bare).unwrap(), ApprovalMode::AlwaysAsk);
+        assert_eq!(resolve_approval_mode(&bare).unwrap(), ApprovalMode::Yolo);
+
+        for alias in [
+            "yolo",
+            "turbo",
+            "full-access",
+            "full",
+            "unrestricted",
+            "auto",
+            "auto-approve",
+        ] {
+            let a: Vec<String> = vec!["--approval-mode".into(), alias.into()];
+            assert_eq!(resolve_approval_mode(&a).unwrap(), ApprovalMode::Yolo);
+        }
 
         let typo: Vec<String> = vec!["--approval-mode".into(), "yollo".into()];
         assert!(resolve_approval_mode(&typo).is_err());
 
         let write_mode: Vec<String> = vec!["--approval-mode".into(), "write".into()];
         assert_eq!(resolve_approval_mode(&write_mode).unwrap(), ApprovalMode::Write);
+
+        let plan_mode: Vec<String> = vec!["--approval-mode".into(), "plan".into()];
+        assert_eq!(resolve_approval_mode(&plan_mode).unwrap(), ApprovalMode::Plan);
+
+        let ask_mode: Vec<String> = vec!["--approval-mode".into(), "always-ask".into()];
+        assert_eq!(resolve_approval_mode(&ask_mode).unwrap(), ApprovalMode::AlwaysAsk);
+
+        let cached_mode: Vec<String> = vec!["--approval-mode".into(), "always-ask-cached".into()];
+        assert_eq!(
+            resolve_approval_mode(&cached_mode).unwrap(),
+            ApprovalMode::AlwaysAskCached
+        );
     }
 
     #[test]
@@ -1783,5 +2095,43 @@ mod tests {
             extract_positional_prompt(&args).as_deref(),
             Some("Rust KV cache invariance")
         );
+    }
+
+    #[test]
+    fn cli_arena_parser_and_unconfigured_diagnostic_work_without_fabricating() {
+        let arena_args: Vec<String> = vec![
+            "Compare Rust WAL vs LMDB",
+            "--models",
+            "claude-sonnet-5-5,gpt-6.2-sol,gpt-6.2-sol",
+            "--effort",
+            "max",
+            "--temperature",
+            "0.7",
+            "--json",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            extract_positional_prompt(&arena_args).as_deref(),
+            Some("Compare Rust WAL vs LMDB")
+        );
+        let models = parse_cli_arena_models(arg_value(&arena_args, "--models").as_deref()).unwrap();
+        assert_eq!(models, vec!["claude-sonnet-5-5", "gpt-6.2-sol"]);
+        assert!(parse_cli_arena_models(Some("only-one")).is_err());
+        assert!(parse_cli_arena_models(Some("m1,m2,m3,m4,m5")).is_err());
+
+        let diag = estimate_arena_model_diagnostic(
+            "claude-sonnet-5-5",
+            "Compare Rust WAL vs LMDB",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(diag["status"], json!("unconfigured_provider"));
+        assert_eq!(diag["configured"], json!(false));
+        assert!(diag["inputTokens"].as_u64().unwrap_or(0) >= 1);
+        assert!(diag["estimatedCostUsd"].as_f64().unwrap_or(-1.0) >= 0.0);
+        assert!(diag["text"].is_null());
     }
 }

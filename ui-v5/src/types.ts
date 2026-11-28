@@ -5,6 +5,7 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type WorkbenchTab =
   | 'chat'
+  | 'arena'
   | 'lifecycle'
   | 'atelier'
   | 'omnidrive'
@@ -13,9 +14,36 @@ export type WorkbenchTab =
   | 'knowledge'
   | 'benchmarks';
 
+export type FocusMode = 'solo' | 'web' | 'academic' | 'code' | 'rag' | 'deep';
 export type ResearchMode = 'auto' | 'deep' | 'off';
 export type ThinkMode = 'auto' | 'deep' | 'off';
 export type RagScope = 'local_global' | 'local' | 'off';
+
+export interface StudioPersona {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  modelId: string;
+  effort: EffortLevel;
+  temperature: number;
+  topP: number;
+  systemPrompt: string;
+  focusMode: FocusMode;
+  pinnedFiles?: string[];
+}
+
+export interface ChatBranchVariant {
+  id: string;
+  content: string;
+  thinking?: string;
+  model?: string;
+  effort?: EffortLevel;
+  createdAt: number;
+  toolCalls?: ToolCallItem[];
+  citations?: string[];
+  relatedQuestions?: string[];
+}
 
 export type ObservabilitySubTab =
   | 'telemetry'
@@ -93,6 +121,12 @@ export interface ChatTurnMessage {
   toolCalls?: ToolCallItem[];
   attachments?: AttachmentItem[];
   citations?: string[];
+  sources?: ResearchSourceRecord[];
+  relatedQuestions?: string[];
+  branches?: ChatBranchVariant[];
+  activeBranchIdx?: number;
+  durationMs?: number;
+  estimatedTokens?: number;
   quotes?: Array<{ text: string; sourceLabel?: string; originMessageId?: string }>;
   epistemicGrade?: string;
   sixStateReceipt?: Record<string, string>;

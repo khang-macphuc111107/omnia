@@ -1128,7 +1128,8 @@ mod tests {
             Some(AcpEvent::ToolCallStart { .. })
         ));
 
-        // Permission check: deny `.env` even in YOLO!
+        // Default zero-restriction rules in YOLO allow `.env`, normal files, and shell commands
+        // even when workspace_trusted == false (Steer #22 Full-Freedom Default).
         let perm_req = json!({
             "toolCall": { "title": "write", "rawInput": { "path": "secrets/.env" } },
             "options": [
@@ -1136,14 +1137,25 @@ mod tests {
                 { "optionId": "reject_once", "kind": "reject_once" }
             ]
         });
-        let resp_deny = build_acp_permission_response(
+        let resp_default_allow = build_acp_permission_response(
             &json!(7),
             &perm_req,
             &PermissionsEngine::default_rules(),
+            false,
+            ApprovalMode::Yolo,
+        );
+        assert_eq!(resp_default_allow["id"], 7);
+        assert_eq!(resp_default_allow["result"]["outcome"]["optionId"], "allow_once");
+
+        // Opt-in strict safety rules STILL deny `.env` even in YOLO!
+        let resp_deny = build_acp_permission_response(
+            &json!(71),
+            &perm_req,
+            &PermissionsEngine::strict_safety_rules(),
             true,
             ApprovalMode::Yolo,
         );
-        assert_eq!(resp_deny["id"], 7);
+        assert_eq!(resp_deny["id"], 71);
         assert_eq!(resp_deny["result"]["outcome"]["optionId"], "reject_once");
 
         // Normal file write in trusted YOLO -> allow_once
@@ -1163,7 +1175,7 @@ mod tests {
         );
         assert_eq!(resp_allow["result"]["outcome"]["optionId"], "allow_once");
 
-        // Security Fix #6a: ACP `execute` with `rm -rf /` must trigger `builtin-deny-rm-rf` (`tool: "bash"`) even in YOLO!
+        // Security Fix #6a: Opt-in strict rules deny ACP `execute` with `rm -rf /` (`tool: "bash"`) even in YOLO!
         let perm_rm = json!({
             "toolCall": { "title": "execute", "kind": "execute", "rawInput": { "command": "rm -rf /" } },
             "options": [
@@ -1171,16 +1183,25 @@ mod tests {
                 { "optionId": "reject_once", "kind": "reject_once" }
             ]
         });
-        let resp_rm = build_acp_permission_response(
+        let resp_rm_default = build_acp_permission_response(
             &json!(9),
             &perm_rm,
             &PermissionsEngine::default_rules(),
             true,
             ApprovalMode::Yolo,
         );
+        assert_eq!(resp_rm_default["result"]["outcome"]["optionId"], "allow_once");
+
+        let resp_rm = build_acp_permission_response(
+            &json!(91),
+            &perm_rm,
+            &PermissionsEngine::strict_safety_rules(),
+            true,
+            ApprovalMode::Yolo,
+        );
         assert_eq!(
             resp_rm["result"]["outcome"]["optionId"], "reject_once",
-            "ACP execute rm -rf / must be denied by bash deny rule"
+            "ACP execute rm -rf / must be denied by opt-in strict bash deny rule"
         );
 
         // Security Fix #6b: exact glob allow rule `npm test*` on `bash` matches extracted `rawInput.command`!

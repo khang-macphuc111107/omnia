@@ -1,11 +1,13 @@
-//! Fine-grained Allow/Deny Glob Permission Rules engine with Untrusted-Repo Trust Gate.
+//! Fine-grained Allow/Deny Glob Permission Rules engine with Full-Freedom Default (`YOLO`)
+//! and explicit opt-in strict safety / approval modes.
 //!
 //! Security model:
-//! - Base approval modes: `plan`, `always-ask`, `always-ask-cached`, `write`, `yolo`.
+//! - Base approval modes: `yolo` (default: YOLO / Turbo / Full-Access / Auto-Approve),
+//!   `write`, `always-ask`, `always-ask-cached`, `plan`.
 //! - Global & workspace rules carry `{ action: allow | deny, tool, matchPattern }`.
-//! - **Deny ALWAYS wins** — even over `yolo` / `Trusted`!
-//! - **Untrusted Repo Gate:** When `workspace_trusted == false`, workspace `deny` rules
-//!   ARE enforced, while workspace `allow` rules are IGNORED until explicitly trusted.
+//! - By default `PermissionsEngine::default_rules()` is empty (`0` hardcoded blocks); callers
+//!   may explicitly opt into `PermissionsEngine::strict_safety_rules()` or custom `Deny` rules.
+//! - Any explicitly configured `Deny` rule still takes precedence over `Allow` / `Yolo`.
 
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
@@ -21,25 +23,27 @@ pub enum ApprovalMode {
 }
 
 impl ApprovalMode {
-    /// Strictly parse a CLI flag value (`plan`, `always-ask`, `always-ask-cached`, `write`, `yolo`),
-    /// returning an error on unknown/typo values (never silently falling back to `Yolo`).
+    /// Strictly parse a CLI flag value (`yolo`, `turbo`, `full`, `full-access`, `unrestricted`,
+    /// `auto`, `auto-approve`, `write`, `plan`, `always-ask`, `always-ask-cached`),
+    /// returning an error on unknown/typo values.
     pub fn try_parse_flag(s: &str) -> anyhow::Result<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "plan" => Ok(Self::Plan),
+            "plan" | "read-only" | "readonly" => Ok(Self::Plan),
             "write" => Ok(Self::Write),
             "always-ask" | "ask" => Ok(Self::AlwaysAsk),
-            "always-ask-cached" => Ok(Self::AlwaysAskCached),
-            "yolo" => Ok(Self::Yolo),
+            "always-ask-cached" | "cached" => Ok(Self::AlwaysAskCached),
+            "yolo" | "turbo" | "full" | "full-access" | "unrestricted" | "auto"
+            | "auto-approve" => Ok(Self::Yolo),
             other => anyhow::bail!(
-                "invalid approval mode '{other}' (expected: plan | always-ask | always-ask-cached | write | yolo)"
+                "invalid approval mode '{other}' (expected: yolo | turbo | full-access | unrestricted | auto-approve | write | plan | always-ask | always-ask-cached)"
             ),
         }
     }
 
-    /// Parse CLI flag value, failing closed to `ApprovalMode::AlwaysAsk` on unknown values.
+    /// Parse CLI flag value, defaulting to `ApprovalMode::Yolo` (full-freedom auto-approve).
     #[must_use]
     pub fn parse_flag(s: &str) -> Self {
-        Self::try_parse_flag(s).unwrap_or(Self::AlwaysAsk)
+        Self::try_parse_flag(s).unwrap_or(Self::Yolo)
     }
 
     /// CLI flag string representation.
@@ -101,9 +105,18 @@ pub struct PermissionEvalResult {
 pub struct PermissionsEngine;
 
 impl PermissionsEngine {
-    /// Built-in default safety deny rules (`.env*`, SSH private keys, destructive shell/git ops).
+    /// Default zero-restriction rule set (empty): Omnia's harness never blocks tools, files,
+    /// or commands by default. Callers wanting hardcoded deny rules can explicitly opt into
+    /// [`Self::strict_safety_rules`].
     #[must_use]
     pub fn default_rules() -> Vec<PermissionRule> {
+        Vec::new()
+    }
+
+    /// Optional strict safety deny rules (`.env*`, SSH private keys, destructive shell/git ops)
+    /// available ONLY via explicit opt-in.
+    #[must_use]
+    pub fn strict_safety_rules() -> Vec<PermissionRule> {
         vec![
             PermissionRule {
                 id: "builtin-deny-env".into(),
@@ -221,7 +234,7 @@ impl PermissionsEngine {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
 
-        // Pass 1: DENY rules always win regardless of trust or approval mode.
+        // Pass 1: Explicitly supplied DENY rules always win regardless of trust or approval mode.
         for rule in rules.iter().filter(|r| r.action == PermissionAction::Deny) {
             if rule_matches(rule, tool, &norm_target, &file_name) {
                 return PermissionEvalResult {
@@ -236,13 +249,16 @@ impl PermissionsEngine {
             }
         }
 
-        // Pass 2: ALLOW rules (workspace allow rules ignored when untrusted).
+        // Pass 2: ALLOW rules (workspace allow rules ignored when untrusted unless base mode is Yolo).
         let mut ignored_untrusted_allow = false;
         for rule in rules.iter().filter(|r| r.action == PermissionAction::Allow) {
             if !rule_matches(rule, tool, &norm_target, &file_name) {
                 continue;
             }
-            if rule.scope == PermissionScope::Workspace && !workspace_trusted {
+            if rule.scope == PermissionScope::Workspace
+                && !workspace_trusted
+                && base_mode != ApprovalMode::Yolo
+            {
                 ignored_untrusted_allow = true;
                 continue;
             }
@@ -255,9 +271,8 @@ impl PermissionsEngine {
         }
 
         // Pass 3: Base approval mode fallback.
-        let effective_mode = if !workspace_trusted
-            && matches!(base_mode, ApprovalMode::Yolo | ApprovalMode::Write)
-        {
+        // NEVER silently downgrade ApprovalMode::Yolo -> AlwaysAsk when workspace_trusted == false!
+        let effective_mode = if !workspace_trusted && matches!(base_mode, ApprovalMode::Write) {
             ApprovalMode::AlwaysAsk
         } else {
             base_mode
@@ -373,8 +388,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deny_overrides_yolo_and_untrusted_ignores_workspace_allow() {
-        let mut rules = PermissionsEngine::default_rules();
+    fn default_rules_are_unrestricted_and_yolo_never_downgrades_on_untrusted() {
+        let rules = PermissionsEngine::default_rules();
+        assert!(rules.is_empty(), "default_rules must contain zero hardcoded blocks");
+
+        let r_env = PermissionsEngine::evaluate(
+            &rules,
+            false,
+            "write",
+            r"C:\repo\.env.local",
+            ApprovalMode::Yolo,
+        );
+        assert_eq!(r_env.decision, PermissionDecision::Allow);
+        assert!(!r_env.untrusted_override);
+
+        let r_bash = PermissionsEngine::evaluate(
+            &rules,
+            false,
+            "bash",
+            "rm -rf /tmp/scratch",
+            ApprovalMode::Yolo,
+        );
+        assert_eq!(r_bash.decision, PermissionDecision::Allow);
+        assert!(!r_bash.untrusted_override);
+    }
+
+    #[test]
+    fn opt_in_strict_safety_rules_and_always_ask_still_enforce_correctly() {
+        let mut rules = PermissionsEngine::strict_safety_rules();
+        assert_eq!(rules.len(), 11);
         rules.push(PermissionRule {
             id: "ws-allow-bash".into(),
             scope: PermissionScope::Workspace,
@@ -404,20 +446,38 @@ mod tests {
             PermissionsEngine::evaluate(&rules, true, "bash", "npm test", ApprovalMode::AlwaysAsk);
         assert_eq!(r3.decision, PermissionDecision::Allow);
         assert_eq!(r3.matched_rule_id.as_deref(), Some("ws-allow-bash"));
+
+        let r4 = PermissionsEngine::evaluate(&rules, true, "write", "src/a.rs", ApprovalMode::Plan);
+        assert_eq!(r4.decision, PermissionDecision::Deny);
     }
 
     #[test]
-    fn approval_mode_parse_fails_closed_and_try_parse_rejects_typos() {
-        assert_eq!(ApprovalMode::parse_flag("yollo"), ApprovalMode::AlwaysAsk);
-        assert_eq!(ApprovalMode::parse_flag(""), ApprovalMode::AlwaysAsk);
+    fn approval_mode_parse_defaults_to_yolo_and_try_parse_supports_aliases_and_rejects_typos() {
+        assert_eq!(ApprovalMode::parse_flag("yollo"), ApprovalMode::Yolo);
+        assert_eq!(ApprovalMode::parse_flag(""), ApprovalMode::Yolo);
         assert!(ApprovalMode::try_parse_flag("yollo").is_err());
-        assert_eq!(
-            ApprovalMode::try_parse_flag("yolo").unwrap(),
-            ApprovalMode::Yolo
-        );
+        for alias in [
+            "yolo",
+            "turbo",
+            "full",
+            "full-access",
+            "unrestricted",
+            "auto",
+            "auto-approve",
+        ] {
+            assert_eq!(
+                ApprovalMode::try_parse_flag(alias).unwrap(),
+                ApprovalMode::Yolo,
+                "alias `{alias}` must parse to ApprovalMode::Yolo"
+            );
+        }
         assert_eq!(
             ApprovalMode::try_parse_flag("plan").unwrap(),
             ApprovalMode::Plan
+        );
+        assert_eq!(
+            ApprovalMode::try_parse_flag("always-ask").unwrap(),
+            ApprovalMode::AlwaysAsk
         );
     }
 }

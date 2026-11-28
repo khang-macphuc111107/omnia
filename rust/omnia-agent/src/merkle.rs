@@ -557,11 +557,21 @@ mod tests {
         fs::write(tmp.join("a/deep/one.py"), "def one():\n    return 1\n").unwrap();
         fs::write(tmp.join("b/other/two.py"), "def two():\n    return 2\n").unwrap();
 
+        // Default full-freedom rules (`default_rules()` empty) index `.env` too (while still skipping `.git/`).
+        let mut idx_default =
+            MerkleIndex::with_options(&tmp, PermissionsEngine::default_rules(), None);
+        idx_default.refresh().unwrap();
+        assert_eq!(idx_default.files().len(), 3);
+        assert!(idx_default.files().contains_key(".env"));
+
+        // Opt-in `strict_safety_rules()` excludes `.env` and `.git/HEAD`!
         let db = AgentStore::open_in_memory().unwrap();
-        let mut idx =
-            MerkleIndex::with_options(&tmp, PermissionsEngine::default_rules(), Some(db.clone()));
+        let mut idx = MerkleIndex::with_options(
+            &tmp,
+            PermissionsEngine::strict_safety_rules(),
+            Some(db.clone()),
+        );
         let d1 = idx.refresh().unwrap();
-        // `.env` and `.git/HEAD` MUST be excluded!
         assert_eq!(idx.files().len(), 2);
         assert!(!idx.files().contains_key(".env"));
         assert_eq!(d1.changed_files.len(), 2);
@@ -582,8 +592,11 @@ mod tests {
         assert_ne!(d3.root_hash, root1);
 
         // Warm reopen from SQLite WAL cache -> 0 disk reads / 0 changed files!
-        let mut idx_warm =
-            MerkleIndex::with_options(&tmp, PermissionsEngine::default_rules(), Some(db));
+        let mut idx_warm = MerkleIndex::with_options(
+            &tmp,
+            PermissionsEngine::strict_safety_rules(),
+            Some(db),
+        );
         let d_warm = idx_warm.refresh().unwrap();
         assert_eq!(d_warm.changed_files.len(), 0);
         assert_eq!(d_warm.rehashed_dirs, 0);

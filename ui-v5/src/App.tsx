@@ -1,5 +1,6 @@
 import { Show, onCleanup, onMount } from 'solid-js';
 import { Composer } from '@/components/chat/Composer';
+import { ArtifactCanvasDrawer } from '@/components/chat/ArtifactCanvasDrawer';
 import { QuoteBtwDrawer } from '@/components/chat/QuoteBtwDrawer';
 import { Transcript } from '@/components/chat/Transcript';
 import { BrowserWorkbench } from '@/components/browser/BrowserWorkbench';
@@ -12,6 +13,7 @@ import { StatusBar } from '@/components/shell/StatusBar';
 import { SteerQueueDrawer } from '@/components/shell/SteerQueueDrawer';
 import { TopBar } from '@/components/shell/TopBar';
 import { SourcePreviewModal } from '@/components/common/SourcePreviewModal';
+import { AIStudioArenaView } from '@/components/workbenches/AIStudioArenaView';
 import { AtelierView } from '@/components/workbenches/AtelierView';
 import { KnowledgeExtensionsView } from '@/components/workbenches/KnowledgeExtensionsView';
 import { MissionLifecycleView } from '@/components/workbenches/MissionLifecycleView';
@@ -19,17 +21,22 @@ import { ObservabilityView } from '@/components/workbenches/ObservabilityView';
 import { OmniDriveView } from '@/components/workbenches/OmniDriveView';
 import { SwarmView } from '@/components/workbenches/SwarmView';
 import {
+  activeCanvasArtifact,
   activePreviewDoc,
   applyTheme,
+  canvasDrawerOpen,
   commandPaletteOpen,
   hydrateStudioStartup,
   privacyMask,
+  refineCanvasArtifact,
   setActivePreviewDoc,
+  setCanvasDrawerOpen,
   setCommandPaletteOpen,
   sidebarOpen,
   themePref,
   togglePrivacyMask,
   topMode,
+  updateCanvasArtifactContent,
   workbenchTab,
 } from '@/state/studio';
 
@@ -86,6 +93,9 @@ export function App() {
                 <Transcript />
                 <Composer />
               </Show>
+              <Show when={workbenchTab() === 'arena'}>
+                <AIStudioArenaView />
+              </Show>
               <Show when={workbenchTab() === 'atelier'}>
                 <AtelierView />
               </Show>
@@ -105,6 +115,13 @@ export function App() {
                 <MissionLifecycleView />
               </Show>
             </div>
+            <ArtifactCanvasDrawer
+              open={canvasDrawerOpen()}
+              artifact={activeCanvasArtifact()}
+              onClose={() => setCanvasDrawerOpen(false)}
+              onUpdateContent={updateCanvasArtifactContent}
+              onAskRefine={refineCanvasArtifact}
+            />
             <QuoteBtwDrawer />
             <SteerQueueDrawer />
             <ResearchSourceDrawer />

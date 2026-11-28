@@ -16,6 +16,7 @@ import {
   Plus,
   Search,
   Sparkles,
+  Swords,
   Trash2,
   Trophy,
 } from 'lucide-solid';
@@ -44,6 +45,7 @@ import { maskText } from '@/utils/privacy';
 
 const SURFACE_ITEMS: Array<{ id: WorkbenchTab; label: string; icon: () => any }> = [
   { id: 'chat', label: 'Agent Chat', icon: () => <MessageSquarePlus class="w-3.5 h-3.5" /> },
+  { id: 'arena', label: 'AI Studio & Arena', icon: () => <Swords class="w-3.5 h-3.5" /> },
   { id: 'lifecycle', label: 'Mission Lifecycle', icon: () => <Compass class="w-3.5 h-3.5" /> },
   { id: 'atelier', label: 'Atelier Studio', icon: () => <BookOpen class="w-3.5 h-3.5" /> },
   { id: 'omnidrive', label: 'OmniDrive Pro', icon: () => <Download class="w-3.5 h-3.5" /> },

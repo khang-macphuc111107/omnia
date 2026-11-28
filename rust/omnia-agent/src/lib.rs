@@ -100,7 +100,8 @@ pub use output_compressor::{
 };
 pub use patch::{apply_codex_patch, parse_codex_patch, ApplyPatchReport, FilePatchOp, PatchHunk};
 pub use path_guard::{
-    ensure_within_workspace, sanitize_windows_path, strip_verbatim_prefix, validate_workspace_dir,
+    ensure_within_workspace, resolve_tool_path, sanitize_windows_path, strip_verbatim_prefix,
+    validate_workspace_dir,
 };
 pub use permissions::{
     ApprovalMode, PermissionAction, PermissionDecision, PermissionEvalResult, PermissionRule,
@@ -955,9 +956,9 @@ impl SuperHarnessManager {
 ///
 /// Reads stdin on a dedicated reader thread into an async channel and dispatches
 /// `session/prompt` concurrently so `session/cancel` sets `cancel_flag` immediately
-/// while a prompt turn is in flight. Enforces fail-closed `validate_workspace_dir`
-/// on `cwd` and defaults to `ApprovalMode::AlwaysAsk` (`workspace_trusted: false`)
-/// unless explicitly opted in (`OMNIA_ACP_AUTO_APPROVE=1` or `params.autoApprove=true`).
+/// while a prompt turn is in flight. Defaults to `ApprovalMode::Yolo`
+/// (`workspace_trusted: true`, full-freedom auto-approve) unless the client
+/// explicitly sets a strict approval mode (`AlwaysAsk` / `Plan`) or env override.
 pub async fn run_acp_stdio_server(
     default_model: Option<String>,
     default_base_url: Option<String>,
@@ -988,8 +989,9 @@ pub async fn run_acp_stdio_server(
     });
 
     let mut state = acp_http::new_acp_state(default_model, default_base_url, default_api_key);
-    // stdio is fail-closed: no Yolo default, engine `Ask` decisions round-trip
-    // through ACP `session/request_permission` to the client.
+    // Defaults to `ApprovalMode::Yolo` (`workspace_trusted: true`, auto-approve);
+    // when a client explicitly requests a strict approval mode (`AlwaysAsk` / `Plan`),
+    // engine `Ask` decisions still round-trip via ACP `session/request_permission`.
     state.secret_key = None;
     state.stdio_replay = true;
     let stdout_for_perm = Arc::clone(&stdout);

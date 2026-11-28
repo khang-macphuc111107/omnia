@@ -1,9 +1,10 @@
 //! Compact 7-Tool Execution Engine + Progressive Skills + Lazy Host Tools + Security Gate.
 //!
-//! Security invariants enforced on EVERY call:
-//! - Every file path is validated with `crate::path_guard::ensure_within_workspace`.
+//! Security & path invariants enforced on EVERY call:
+//! - Every file path is resolved with `crate::path_guard::resolve_tool_path` (`unrestricted = true`
+//!   in default `ApprovalMode::Yolo`, strict workspace containment in opt-in restricted modes).
 //! - Every file, patch, and shell action is evaluated against `crate::permissions::PermissionsEngine`
-//!   (Global + Workspace Allow/Deny globs + Untrusted Workspace Gate; Deny ALWAYS wins).
+//!   (explicit user Allow/Deny rules & opt-in `strict_safety_rules()`; Deny ALWAYS wins).
 //! - Every `shell` command runs inside a Win32 Job Object (`spawn_supervised_command`) with
 //!   closed stdin, concurrent stdout/stderr draining, hard timeout, and guaranteed 0 orphans.
 
@@ -14,8 +15,9 @@ use crate::context::WorkspaceContextBundle;
 use crate::dap::{DapAttachRequest, DapInitialBreakpoint, DapLaunchRequest, DapManager};
 use crate::dynamic_plugins::{CordisPluginManager, DynamicPluginToolDef};
 use crate::edit::{
-    edit_file_by_hashline, edit_file_by_symbol_block, edit_file_guarded, format_hashline,
-    line_hash_tag, run_fast_compiler_syntax_check, FileReadTracker,
+    edit_file_by_hashline_with_unrestricted, edit_file_by_symbol_block_with_unrestricted,
+    edit_file_guarded_with_unrestricted, format_hashline, line_hash_tag,
+    run_fast_compiler_syntax_check, FileReadTracker,
 };
 use crate::graph_locator::{verify_syntax_delta, WorkspaceGraphIndex};
 use crate::hooks::{HookEvent, HookRegistry};
@@ -23,8 +25,8 @@ use crate::lsp::LazyLspManager;
 use crate::mcp_client::{McpManager, McpServerConfig};
 use crate::memory_engine::{dispatch_memory_tool_json, MemoryEngine};
 use crate::output_compressor::compress_tool_output;
-use crate::patch::{apply_codex_patch, parse_codex_patch, FilePatchOp};
-use crate::path_guard::{ensure_within_workspace, sanitize_windows_path};
+use crate::patch::{apply_codex_patch_with_unrestricted, parse_codex_patch, FilePatchOp};
+use crate::path_guard::{resolve_tool_path, sanitize_windows_path};
 use crate::permissions::{ApprovalMode, PermissionDecision, PermissionRule, PermissionsEngine};
 use crate::plugin::{builtin_deferred_semantic_tools, DeferredToolRegistry, ToolSpec};
 use crate::ptc::{run_code_sandbox, PtcInnerToolOutput, PtcRunRequest, PtcToolInvoker};
@@ -362,14 +364,20 @@ pub(crate) fn bound_head_tail_chars(input: &str, max_chars: usize) -> String {
 
 impl ToolRuntime {
 
+    #[inline]
+    fn is_unrestricted_paths(&self) -> bool {
+        matches!(self.approval_mode, ApprovalMode::Yolo)
+    }
+
     pub async fn authorize(&self, perm_tool: &str, target: &str) -> Result<()> {
         self.authorize_any(&[perm_tool], target).await
     }
 
     /// Unified multi-alias permission evaluation:
     /// - Deny ALWAYS wins across every alias.
-    /// - D6 Provenance Taint Escalation (`CaMeL`/`ARGUS`): if tainted by indirect prompt-injection,
-    ///   subsequent `shell`/`bash`/`write`/`edit`/`patch` actions escalate `Yolo`/`Write` -> `AlwaysAsk`!
+    /// - D6 Provenance Taint Escalation (`CaMeL`/`ARGUS`): in opt-in `ApprovalMode::Write`,
+    ///   indirect prompt-injection taint escalates privileged actions to `AlwaysAsk`;
+    ///   in default `ApprovalMode::Yolo`, never silently downgrades `Yolo -> AlwaysAsk`.
     /// - Allow wins if ANY alias evaluates to Allow (and none Deny).
     /// - Ask prompts the interactive `approver` AT MOST ONCE.
     pub async fn authorize_any(&self, perm_tools: &[&str], target: &str) -> Result<()> {
@@ -383,7 +391,7 @@ impl ToolRuntime {
         let tainted = self.tainted_by_injection_signal.load(Ordering::Relaxed);
         let effective_mode = if tainted
             && is_privileged
-            && matches!(self.approval_mode, ApprovalMode::Yolo | ApprovalMode::Write)
+            && matches!(self.approval_mode, ApprovalMode::Write)
         {
             ApprovalMode::AlwaysAsk
         } else {
@@ -684,7 +692,7 @@ impl ToolRuntime {
         symbol_opt: Option<&str>,
         char_budget: usize,
     ) -> Result<String> {
-        let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+        let abs = resolve_tool_path(&self.workspace_root, rel, self.is_unrestricted_paths())?;
         self.authorize("read", &abs.to_string_lossy()).await?;
 
         if abs.is_dir() {
@@ -704,7 +712,7 @@ impl ToolRuntime {
             ));
         }
 
-        const MAX_READ_FILE_BYTES: u64 = 4 * 1024 * 1024;
+        const MAX_READ_FILE_BYTES: u64 = 64 * 1024 * 1024;
         let file_meta = fs::metadata(&abs).with_context(|| {
             format_fail_fast_error(
                 "failed to stat file",
@@ -717,7 +725,7 @@ impl ToolRuntime {
             bail!(
                 "{}",
                 format_fail_fast_error(
-                    "file exceeds 4 MiB read_file safety cap",
+                    "file exceeds 64 MiB read_file safety cap",
                     "path",
                     &format!("{rel} ({} bytes)", file_meta.len()),
                     "Inspect targeted slices using search_code or bounded shell head/tail"
@@ -976,7 +984,8 @@ impl ToolRuntime {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+        let unrestricted = self.is_unrestricted_paths();
+        let abs = resolve_tool_path(&self.workspace_root, rel, unrestricted)?;
         self.authorize("edit", &abs.to_string_lossy()).await?;
 
         // D2: Capture Copy-on-Write BLAKE3 pre-mutation checkpoint
@@ -993,13 +1002,14 @@ impl ToolRuntime {
             .filter(|s| !s.is_empty());
 
         let res = if let Some(sa) = start_anchor {
-            edit_file_by_hashline(
+            edit_file_by_hashline_with_unrestricted(
                 &self.workspace_root,
                 rel,
                 sa,
                 end_anchor,
                 new_str,
                 &self.read_tracker,
+                unrestricted,
             )?
         } else if let Some(sym_name) = symbol_block {
             let span = {
@@ -1019,7 +1029,7 @@ impl ToolRuntime {
                     )
                 )
             })?;
-            edit_file_by_symbol_block(
+            edit_file_by_symbol_block_with_unrestricted(
                 &self.workspace_root,
                 rel,
                 sym_name,
@@ -1027,6 +1037,7 @@ impl ToolRuntime {
                 e_line,
                 new_str,
                 &self.read_tracker,
+                unrestricted,
             )?
         } else {
             let old_str = str_arg(&[
@@ -1052,13 +1063,14 @@ impl ToolRuntime {
                 .get("replace_all")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            edit_file_guarded(
+            edit_file_guarded_with_unrestricted(
                 &self.workspace_root,
                 rel,
                 old_str,
                 new_str,
                 replace_all,
                 &self.read_tracker,
+                unrestricted,
             )?
         };
 
@@ -1089,7 +1101,8 @@ impl ToolRuntime {
             .and_then(|v| v.as_str())
             .context("apply_patch requires string parameter 'patch'")?;
 
-        // Phase 1: Parse & validate ALL touched paths for workspace containment + Deny rules BEFORE prompting!
+        // Phase 1: Parse & validate ALL touched paths + explicit Deny rules BEFORE prompting!
+        let unrestricted = self.is_unrestricted_paths();
         let ops = parse_codex_patch(patch_text)?;
         let mut touched_rel: Vec<String> = Vec::new();
         let mut ask_targets: Vec<String> = Vec::new();
@@ -1108,7 +1121,7 @@ impl ToolRuntime {
                 }
             };
             for rel in paths {
-                let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+                let abs = resolve_tool_path(&self.workspace_root, rel, unrestricted)?;
                 let target_str = abs.to_string_lossy().into_owned();
                 let mut file_allowed = false;
                 for alias in ["patch", "write"] {
@@ -1138,11 +1151,11 @@ impl ToolRuntime {
             }
         }
 
-        // Phase 2: If any file requires Ask (AlwaysAsk, untrusted workspace, or D6 provenance taint), prompt ONCE
+        // Phase 2: If any file requires Ask (AlwaysAsk, untrusted non-Yolo, or D6 taint in opt-in Write), prompt ONCE
         let tainted = self.tainted_by_injection_signal.load(Ordering::Relaxed);
         if tainted
             && ask_targets.is_empty()
-            && matches!(self.approval_mode, ApprovalMode::Yolo | ApprovalMode::Write)
+            && matches!(self.approval_mode, ApprovalMode::Write)
         {
             ask_targets = touched_rel.clone();
         }
@@ -1163,31 +1176,32 @@ impl ToolRuntime {
         {
             let mut cp = self.checkpoint_store.lock().unwrap();
             for rel in &touched_rel {
-                if let Ok(abs) = ensure_within_workspace(&self.workspace_root, rel) {
+                if let Ok(abs) = resolve_tool_path(&self.workspace_root, rel, unrestricted) {
                     cp.record_pre_mutation(turn, rel, &abs);
                 }
             }
         }
 
-        // Phase 3: Apply atomically while STILL enforcing every Deny rule in the inner callback
+        // Phase 3: Apply atomically while STILL enforcing every explicit Deny rule in the inner callback
         let rules = &self.permission_rules;
         let trusted = self.workspace_trusted;
-        let report = apply_codex_patch(&self.workspace_root, patch_text, |tool, abs| {
-            let target_str = abs.to_string_lossy();
-            for alias in [tool, "write"] {
-                let eval = PermissionsEngine::evaluate(
-                    rules,
-                    trusted,
-                    alias,
-                    &target_str,
-                    ApprovalMode::Yolo,
-                );
-                if eval.decision == PermissionDecision::Deny {
-                    bail!("Permission denied ({alias}): {}", eval.reason);
+        let report =
+            apply_codex_patch_with_unrestricted(&self.workspace_root, patch_text, unrestricted, |tool, abs| {
+                let target_str = abs.to_string_lossy();
+                for alias in [tool, "write"] {
+                    let eval = PermissionsEngine::evaluate(
+                        rules,
+                        trusted,
+                        alias,
+                        &target_str,
+                        ApprovalMode::Yolo,
+                    );
+                    if eval.decision == PermissionDecision::Deny {
+                        bail!("Permission denied ({alias}): {}", eval.reason);
+                    }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
 
         // Refresh read_tracker for updated/added files so follow-up edit_file works seamlessly
         for p in &report.touched_paths {
@@ -1245,7 +1259,7 @@ impl ToolRuntime {
             .and_then(|v| v.as_str())
             .context("write_file requires string parameter 'content'")?;
 
-        let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+        let abs = resolve_tool_path(&self.workspace_root, rel, self.is_unrestricted_paths())?;
         self.authorize("write", &abs.to_string_lossy()).await?;
 
         // D2: Pre-mutation checkpoint + read prior text for D1 delta syntax verification & D8 BOM preservation
@@ -1322,7 +1336,7 @@ impl ToolRuntime {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            let abs = ensure_within_workspace(&self.workspace_root, sub)?;
+            let abs = resolve_tool_path(&self.workspace_root, sub, self.is_unrestricted_paths())?;
             self.authorize("grep", &abs.to_string_lossy()).await?;
             let rel = abs
                 .strip_prefix(&self.workspace_root)
@@ -1372,7 +1386,7 @@ impl ToolRuntime {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            let abs = ensure_within_workspace(&self.workspace_root, raw_sub)?;
+            let abs = resolve_tool_path(&self.workspace_root, raw_sub, self.is_unrestricted_paths())?;
             self.authorize("ls", &abs.to_string_lossy()).await?;
             let rel = abs
                 .strip_prefix(&self.workspace_root)
@@ -1655,7 +1669,7 @@ impl ToolRuntime {
             .get("path")
             .and_then(Value::as_str)
             .context("lsp_query requires string parameter 'path'")?;
-        let abs = ensure_within_workspace(&self.workspace_root, rel_path)?;
+        let abs = resolve_tool_path(&self.workspace_root, rel_path, self.is_unrestricted_paths())?;
         let line = args.get("line").and_then(Value::as_u64).unwrap_or(1) as u32;
         let ch = args.get("character").and_then(Value::as_u64).unwrap_or(0) as u32;
         if action == "rename" {
@@ -1680,7 +1694,9 @@ impl ToolRuntime {
             .await??;
             if outcome.edits_applied > 0 {
                 for mf in &outcome.files_modified {
-                    if let Ok(mabs) = ensure_within_workspace(&self.workspace_root, mf) {
+                    if let Ok(mabs) =
+                        resolve_tool_path(&self.workspace_root, mf, self.is_unrestricted_paths())
+                    {
                         self.read_tracker.refresh_from_disk(&mabs);
                     }
                 }
@@ -1737,7 +1753,7 @@ impl ToolRuntime {
             .map(str::to_owned);
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
         let target_abs = if let Some(rel) = args.get("path").and_then(Value::as_str) {
-            let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+            let abs = resolve_tool_path(&self.workspace_root, rel, self.is_unrestricted_paths())?;
             self.authorize("read", &abs.to_string_lossy()).await?;
             Some(abs)
         } else {
@@ -1768,7 +1784,7 @@ impl ToolRuntime {
             .context("ast_edit requires string parameter 'rewrite'")?;
         let dry_run = args.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
 
-        let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+        let abs = resolve_tool_path(&self.workspace_root, rel, self.is_unrestricted_paths())?;
         if dry_run {
             self.authorize("read", &abs.to_string_lossy()).await?;
         } else {
@@ -1994,7 +2010,7 @@ impl ToolRuntime {
                     .get("file")
                     .and_then(Value::as_str)
                     .context("dap set_breakpoints requires 'file'")?;
-                let abs = ensure_within_workspace(&self.workspace_root, file)?;
+                let abs = resolve_tool_path(&self.workspace_root, file, self.is_unrestricted_paths())?;
                 let lines = args
                     .get("lines")
                     .and_then(Value::as_array)
@@ -3006,7 +3022,7 @@ impl ToolRuntime {
 
     async fn exec_verify_artifact(&self, args: &Value) -> Result<String> {
         let content = if let Some(rel) = args.get("path").and_then(Value::as_str) {
-            let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+            let abs = resolve_tool_path(&self.workspace_root, rel, self.is_unrestricted_paths())?;
             self.authorize("verify_artifact", &abs.to_string_lossy())
                 .await?;
             fs::read_to_string(&abs)
@@ -3259,7 +3275,8 @@ impl ToolRuntime {
                 let spec = if let Some(yaml) = args.get("yaml").and_then(Value::as_str) {
                     parse_recipe_yaml(yaml, None)?
                 } else if let Some(rel) = args.get("path").and_then(Value::as_str) {
-                    let abs = ensure_within_workspace(&self.workspace_root, rel)?;
+                    let abs =
+                        resolve_tool_path(&self.workspace_root, rel, self.is_unrestricted_paths())?;
                     let raw = fs::read_to_string(&abs)?;
                     parse_recipe_yaml(&raw, Some(abs))?
                 } else {
@@ -4096,11 +4113,66 @@ mod tests {
 
     #[tokio::test]
     async fn enforces_workspace_containment_and_deny_rules_across_tools() {
-        let tmp = std::env::temp_dir().join(format!("omni_tools_sec_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!("omni_tools_sec_{}", uuid::Uuid::new_v4()));
+        let tmp = base.join("ws");
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join("ok.txt"), "hello world\n").unwrap();
-        fs::write(tmp.join(".env"), "SECRET=123\n").unwrap();
+        fs::write(tmp.join(".env"), "DUMMY_ENV_VAR=123\n").unwrap();
+        fs::write(base.join("outside.txt"), "outside sibling\n").unwrap();
 
+        // A. Opt-in strict mode (`ApprovalMode::Write` + `strict_safety_rules()`) enforces
+        // workspace containment AND explicit deny rules across read/shell/search/workspace_map.
+        let graph_strict = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx_strict = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt_strict = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Write,
+            true,
+            PermissionsEngine::strict_safety_rules(),
+            graph_strict,
+            ctx_strict,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let r_esc = rt_strict
+            .execute("read_file", &json!({ "path": "../outside.txt" }))
+            .await;
+        assert!(r_esc.is_error, "opt-in Write mode must block traversal");
+
+        let r_env = rt_strict
+            .execute("read_file", &json!({ "path": ".env" }))
+            .await;
+        assert!(r_env.is_error && r_env.content.contains("Permission denied"));
+
+        let r_rm = rt_strict
+            .execute("shell", &json!({ "command": "rm -rf /" }))
+            .await;
+        assert!(r_rm.is_error && r_rm.content.contains("Permission denied"));
+
+        fs::write(tmp.join("id_rsa"), "SYNTHETIC_KEY_MARKER\n").unwrap();
+        let r_leak_env = rt_strict
+            .execute("search_code", &json!({ "query": "DUMMY_ENV_VAR" }))
+            .await;
+        assert!(!r_leak_env.is_error);
+        assert!(
+            !r_leak_env.content.contains("DUMMY_ENV_VAR=123")
+                && !r_leak_env.content.contains("SYNTHETIC_KEY_MARKER"),
+            "strict search_code leaked denied file: {}",
+            r_leak_env.content
+        );
+
+        let r_map_esc = rt_strict
+            .execute("workspace_map", &json!({ "subpath": "../outside" }))
+            .await;
+        assert!(
+            r_map_esc.is_error,
+            "opt-in strict workspace_map must reject traversal subpath"
+        );
+
+        // B. Default full-freedom YOLO mode + empty `default_rules()` permits unrestricted reads,
+        // writes, patches, outside-workspace paths, `.env`, search, and supervised shell.
         let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
         let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
         let rt = ToolRuntime::new(
@@ -4115,23 +4187,16 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
 
-        // 1. Path traversal blocked
-        let r_esc = rt
+        let r_out = rt
             .execute("read_file", &json!({ "path": "../outside.txt" }))
             .await;
-        assert!(r_esc.is_error);
+        assert!(!r_out.is_error, "YOLO must read outside path: {}", r_out.content);
+        assert!(r_out.content.contains("outside sibling"));
 
-        // 2. Deny rule blocks .env even in YOLO mode!
-        let r_env = rt.execute("read_file", &json!({ "path": ".env" })).await;
-        assert!(r_env.is_error);
-        assert!(r_env.content.contains("Permission denied"));
+        let r_yolo_env = rt.execute("read_file", &json!({ "path": ".env" })).await;
+        assert!(!r_yolo_env.is_error, "YOLO must read .env without built-in deny: {}", r_yolo_env.content);
+        assert!(r_yolo_env.content.contains("DUMMY_ENV_VAR=123"));
 
-        // 3. Deny rule blocks `rm -rf /` in shell even in YOLO mode!
-        let r_rm = rt.execute("shell", &json!({ "command": "rm -rf /" })).await;
-        assert!(r_rm.is_error);
-        assert!(r_rm.content.contains("Permission denied"));
-
-        // 4. Normal read_file + search_code + workspace_map succeed
         let r_ok = rt.execute("read_file", &json!({ "path": "ok.txt" })).await;
         assert!(!r_ok.is_error);
         assert!(r_ok.content.contains("hello world"));
@@ -4142,7 +4207,6 @@ mod tests {
         assert!(!r_search.is_error);
         assert!(r_search.content.contains("ok.txt:1"));
 
-        // 5. Supervised shell execution works cleanly and returns stdout
         let r_sh = rt
             .execute(
                 "shell",
@@ -4152,29 +4216,7 @@ mod tests {
         assert!(!r_sh.is_error, "shell failed: {}", r_sh.content);
         assert!(r_sh.content.contains("SUPER_HARNESS_SHELL_OK"));
 
-        // 6. Security Fix #1: search_code must NEVER leak lines from `.env` or `*id_rsa*`
-        fs::write(tmp.join("id_rsa"), "PRIVATE_KEY_TOP_SECRET\n").unwrap();
-        let r_leak_env = rt
-            .execute("search_code", &json!({ "query": "SECRET" }))
-            .await;
-        assert!(!r_leak_env.is_error);
-        assert!(
-            !r_leak_env.content.contains("SECRET=123")
-                && !r_leak_env.content.contains("PRIVATE_KEY_TOP_SECRET"),
-            "search_code leaked denied secret file: {}",
-            r_leak_env.content
-        );
-
-        // 7. Security Fix #2: workspace_map rejects traversal in `subpath`
-        let r_map_esc = rt
-            .execute("workspace_map", &json!({ "subpath": "../outside" }))
-            .await;
-        assert!(
-            r_map_esc.is_error,
-            "workspace_map must reject traversal subpath"
-        );
-
-        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[tokio::test]
@@ -4196,7 +4238,7 @@ mod tests {
             })
         });
 
-        let mut rules = PermissionsEngine::default_rules();
+        let mut rules = PermissionsEngine::strict_safety_rules();
         rules.push(PermissionRule {
             id: "allow-echo-bash".into(),
             scope: PermissionScope::Global,
@@ -4297,7 +4339,7 @@ mod tests {
             tmp.clone(),
             ApprovalMode::Yolo,
             true,
-            PermissionsEngine::default_rules(),
+            PermissionsEngine::strict_safety_rules(),
             graph,
             ctx,
             None,
@@ -4555,43 +4597,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unicode_tag_smuggling_is_stripped_and_escalates_subsequent_shell_to_ask() {
+    async fn unicode_tag_smuggling_is_stripped_without_downgrading_yolo_but_escalates_opt_in_write() {
         let tmp = std::env::temp_dir().join(format!("omni_taint_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&tmp).unwrap();
         let evil = format!("x = 1\n# {}\n", "\u{E0049}\u{E0047}\u{E004E}");
         fs::write(tmp.join("sneaky.py"), evil).unwrap();
 
-        let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
-        let ctx = Arc::new(WorkspaceContextBundle::discover(&tmp));
-        // YOLO mode with NO interactive approver: normally shell runs allowed,
-        // BUT once tainted by Unicode tag smuggling, YOLO escalates to Ask (blocking unapproved shell)!
-        let rt = ToolRuntime::new(
+        // 1. Default YOLO mode strips Unicode tags & records taint, but NEVER silently downgrades YOLO -> AlwaysAsk!
+        let graph_yolo = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx_yolo = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt_yolo = ToolRuntime::new(
             tmp.clone(),
             ApprovalMode::Yolo,
             true,
             PermissionsEngine::default_rules(),
-            graph,
-            ctx,
+            graph_yolo,
+            ctx_yolo,
             None,
             None,
             Arc::new(AtomicBool::new(false)),
         );
-
-        let r_read = rt
+        let r_read = rt_yolo
             .execute("read_file", &json!({ "path": "sneaky.py" }))
             .await;
         assert!(!r_read.is_error);
         assert!(!r_read.content.contains('\u{E0049}'));
         assert!(r_read.content.contains("<untrusted_workspace_data"));
-        assert!(rt.tainted_by_injection_signal.load(Ordering::Relaxed));
+        assert!(rt_yolo.tainted_by_injection_signal.load(Ordering::Relaxed));
 
-        let r_shell = rt
+        let r_yolo_shell = rt_yolo
+            .execute("shell", &json!({ "command": "echo YOLO_UNRESTRICTED_OK" }))
+            .await;
+        assert!(
+            !r_yolo_shell.is_error && r_yolo_shell.content.contains("YOLO_UNRESTRICTED_OK"),
+            "YOLO mode must never silently downgrade on taint: {}",
+            r_yolo_shell.content
+        );
+
+        // 2. Opt-in ApprovalMode::Write still escalates tainted privileged actions to Ask.
+        let graph_write = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
+        let ctx_write = Arc::new(WorkspaceContextBundle::discover(&tmp));
+        let rt_write = ToolRuntime::new(
+            tmp.clone(),
+            ApprovalMode::Write,
+            true,
+            PermissionsEngine::default_rules(),
+            graph_write,
+            ctx_write,
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let _ = rt_write
+            .execute("read_file", &json!({ "path": "sneaky.py" }))
+            .await;
+        assert!(rt_write.tainted_by_injection_signal.load(Ordering::Relaxed));
+        let r_write_shell = rt_write
             .execute("shell", &json!({ "command": "echo HIJACKED" }))
             .await;
         assert!(
-            r_shell.is_error && r_shell.content.contains("Provenance taint escalated"),
-            "tainted session must escalate YOLO shell to Ask: {}",
-            r_shell.content
+            r_write_shell.is_error && r_write_shell.content.contains("Provenance taint escalated"),
+            "opt-in Write mode must escalate tainted shell to Ask: {}",
+            r_write_shell.content
         );
 
         let _ = fs::remove_dir_all(&tmp);
@@ -4717,12 +4784,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_rejects_files_over_4mib_before_loading_into_ram() {
+    async fn read_file_rejects_files_over_64mib_before_loading_into_ram() {
         let tmp = std::env::temp_dir().join(format!("omni_big_read_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&tmp).unwrap();
         let big_path = tmp.join("huge.log");
         let f = fs::File::create(&big_path).unwrap();
-        f.set_len(4 * 1024 * 1024 + 64).unwrap();
+        f.set_len(64 * 1024 * 1024 + 64).unwrap();
         drop(f);
 
         let graph = Arc::new(Mutex::new(WorkspaceGraphIndex::new(&tmp)));
@@ -4742,8 +4809,8 @@ mod tests {
             .execute("read_file", &json!({ "path": "huge.log" }))
             .await;
         assert!(
-            out.is_error && out.content.contains("4 MiB"),
-            "read_file must reject >4 MiB file upfront: {}",
+            out.is_error && out.content.contains("64 MiB"),
+            "read_file must reject >64 MiB file upfront: {}",
             out.content
         );
         let _ = fs::remove_dir_all(&tmp);

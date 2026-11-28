@@ -300,31 +300,41 @@ pub fn detect_web_challenge(
     None
 }
 
-/// Fetches a public URL after strict SSRF + DNS non-private IP validation and returns rich
-/// Markdown, metadata, BLAKE3 hash, and honest non-bypass challenge classification.
+/// Fetches a URL using `EgressPolicy::unrestricted()` by default (YOLO / Full-Access) and returns
+/// rich Markdown, metadata, BLAKE3 hash, and honest non-bypass challenge classification.
 pub async fn web_fetch_structured(
     url: &str,
     raw: bool,
     max_chars: usize,
 ) -> Result<StructuredWebFetch> {
+    web_fetch_with_policy(url, raw, max_chars, &EgressPolicy::unrestricted()).await
+}
+
+/// Fetches a URL under an explicit caller-supplied [`EgressPolicy`] (e.g. `EgressPolicy::unrestricted()`
+/// by default, or `EgressPolicy::public_web()` for opt-in strict public-only SSRF blocking),
+/// preserving honest non-bypass challenge classification.
+pub async fn web_fetch_with_policy(
+    url: &str,
+    raw: bool,
+    max_chars: usize,
+    policy: &EgressPolicy,
+) -> Result<StructuredWebFetch> {
     let unwrapped = unwrap_redirect_url(url);
-    let policy = EgressPolicy::public_web();
-    let (target, _addrs) = validate_egress_url_with_dns(&unwrapped, &policy)
+    let (target, _addrs) = validate_egress_url_with_dns(&unwrapped, policy)
         .map_err(|e| anyhow::anyhow!("SSRF/egress blocked `{unwrapped}`: {e}"))?;
 
     let host = url_domain(&target.normalized_url);
     let _permit = DomainPacer::global().acquire_permit(&host).await;
 
+    let redirect_policy = policy.clone();
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 5 {
                 return attempt.stop();
             }
-            if validate_egress_url_with_dns(attempt.url().as_str(), &EgressPolicy::public_web())
-                .is_err()
-            {
+            if validate_egress_url_with_dns(attempt.url().as_str(), &redirect_policy).is_err() {
                 attempt.stop()
             } else {
                 attempt.follow()

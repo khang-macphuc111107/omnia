@@ -185,6 +185,61 @@ CREATE TABLE IF NOT EXISTS ops_steer_items (
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS arena_runs (
+    run_id TEXT PRIMARY KEY,
+    prompt TEXT NOT NULL,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    models_json TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    outputs_json TEXT NOT NULL DEFAULT '[]',
+    winner_model TEXT,
+    created_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS arena_votes (
+    vote_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    winner_model TEXT NOT NULL,
+    loser_models_json TEXT NOT NULL DEFAULT '[]',
+    is_tie INTEGER NOT NULL DEFAULT 0,
+    elo_delta REAL NOT NULL DEFAULT 0.0,
+    note TEXT NOT NULL DEFAULT '',
+    created_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS studio_personas (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    icon TEXT NOT NULL DEFAULT 'sparkles',
+    description TEXT NOT NULL DEFAULT '',
+    model_id TEXT NOT NULL DEFAULT 'claude-sonnet-5-5',
+    effort TEXT NOT NULL DEFAULT 'max',
+    temperature REAL NOT NULL DEFAULT 0.7,
+    top_p REAL NOT NULL DEFAULT 0.95,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    focus_mode TEXT NOT NULL DEFAULT 'solo',
+    pinned_files_json TEXT NOT NULL DEFAULT '[]',
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_branches (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    parent_msg_id TEXT NOT NULL DEFAULT '',
+    branch_index INTEGER NOT NULL DEFAULT 0,
+    role TEXT NOT NULL DEFAULT 'assistant',
+    content TEXT NOT NULL,
+    model_id TEXT NOT NULL DEFAULT '',
+    effort TEXT NOT NULL DEFAULT 'max',
+    thinking_text TEXT NOT NULL DEFAULT '',
+    tool_calls_json TEXT NOT NULL DEFAULT '[]',
+    created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_branches_session
+    ON chat_branches (session_id, parent_msg_id, branch_index);
 "#;
 
 const OPS_USAGE_MIGRATIONS: &[&str] = &[
@@ -333,6 +388,7 @@ impl OpsStore {
             let _ = conn.exec_batch(mig);
         }
         let fts_enabled = conn.exec_batch(OPS_KB_FTS_SQL).is_ok();
+        seed_builtin_studio_personas(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             fts_enabled,
@@ -1938,6 +1994,983 @@ impl OpsStore {
         }
         Ok(out)
     }
+
+    // ---- Steer #23: AI Studio Multi-Model Arena, Elo Leaderboard, Gems/Personas & Chat Branches ----
+
+    pub fn save_arena_run(&self, input: &ArenaRunInput) -> Result<ArenaRunRecord, String> {
+        let prompt = SecretRedactor::redact(input.prompt.trim());
+        if prompt.is_empty() {
+            return Err("arena prompt cannot be empty".into());
+        }
+        let system_prompt = SecretRedactor::redact(input.system_prompt.trim());
+        let run_id = input
+            .run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("arn_{}", uuid_v4()));
+        let models: Vec<String> = input
+            .models
+            .iter()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+        let params = SecretRedactor::redact_json(&input.params);
+        let outputs = SecretRedactor::redact_json(&input.outputs);
+        let models_json = serde_json::to_string(&models).map_err(|e| e.to_string())?;
+        let params_json = serde_json::to_string(&params).map_err(|e| e.to_string())?;
+        let outputs_json = serde_json::to_string(&outputs).map_err(|e| e.to_string())?;
+        let now = now_epoch_ms();
+
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO arena_runs
+                 (run_id, prompt, system_prompt, models_json, params_json, outputs_json, winner_model, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                    prompt = excluded.prompt,
+                    system_prompt = excluded.system_prompt,
+                    models_json = excluded.models_json,
+                    params_json = excluded.params_json,
+                    outputs_json = excluded.outputs_json;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, &run_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(2, &prompt).map_err(|e| e.to_string())?;
+        stmt.bind_text(3, &system_prompt).map_err(|e| e.to_string())?;
+        stmt.bind_text(4, &models_json).map_err(|e| e.to_string())?;
+        stmt.bind_text(5, &params_json).map_err(|e| e.to_string())?;
+        stmt.bind_text(6, &outputs_json).map_err(|e| e.to_string())?;
+        stmt.bind_int64(7, now).map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+
+        Ok(ArenaRunRecord {
+            run_id,
+            prompt,
+            system_prompt,
+            models,
+            params,
+            outputs,
+            winner_model: None,
+            created_at_ms: now,
+        })
+    }
+
+    pub fn get_arena_run(&self, run_id: &str) -> Result<Option<ArenaRunRecord>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id, prompt, system_prompt, models_json, params_json, outputs_json, winner_model, created_at_ms
+                 FROM arena_runs WHERE run_id = ?1;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, run_id.trim()).map_err(|e| e.to_string())?;
+        if stmt.step_row().map_err(|e| e.to_string())? {
+            return Ok(Some(read_arena_run_row(&stmt)?));
+        }
+        Ok(None)
+    }
+
+    pub fn list_arena_runs(&self, limit: usize) -> Result<Vec<ArenaRunRecord>, String> {
+        let cap = limit.clamp(1, 200) as i64;
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id, prompt, system_prompt, models_json, params_json, outputs_json, winner_model, created_at_ms
+                 FROM arena_runs ORDER BY created_at_ms DESC LIMIT ?1;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(1, cap).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while stmt.step_row().map_err(|e| e.to_string())? {
+            out.push(read_arena_run_row(&stmt)?);
+        }
+        Ok(out)
+    }
+
+    pub fn record_arena_vote(&self, input: &ArenaVoteInput) -> Result<ArenaVoteRecord, String> {
+        let winner = input.winner_model.trim().to_string();
+        if winner.is_empty() {
+            return Err("winner_model is required".into());
+        }
+        let losers: Vec<String> = input
+            .loser_models
+            .iter()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty() && m != &winner)
+            .collect();
+        let run_id = input.run_id.trim().to_string();
+        let safe_note = SecretRedactor::redact(input.note.as_deref().unwrap_or("").trim());
+        let vote_id = format!("avt_{}", uuid_v4());
+        let now = now_epoch_ms();
+
+        let mut conn = self.conn.lock();
+        let current_ratings = compute_elo_ratings_from_conn(&conn)?;
+        let winner_elo = *current_ratings.get(&winner).unwrap_or(&ARENA_BASE_ELO);
+        let mut total_delta = 0.0_f64;
+        let actual_score = if input.is_tie { 0.5 } else { 1.0 };
+        for opp in &losers {
+            let opp_elo = *current_ratings.get(opp).unwrap_or(&ARENA_BASE_ELO);
+            let expected = 1.0 / (1.0 + 10.0_f64.powf((opp_elo - winner_elo) / 400.0));
+            total_delta += ARENA_ELO_K * (actual_score - expected);
+        }
+        let elo_delta = round2(total_delta);
+        let losers_json = serde_json::to_string(&losers).map_err(|e| e.to_string())?;
+
+        let tx = conn.begin_immediate().map_err(|e| e.to_string())?;
+        {
+            let mut ins = tx
+                .prepare(
+                    "INSERT INTO arena_votes
+                     (vote_id, run_id, winner_model, loser_models_json, is_tie, elo_delta, note, created_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
+                )
+                .map_err(|e| e.to_string())?;
+            ins.bind_text(1, &vote_id).map_err(|e| e.to_string())?;
+            ins.bind_text(2, &run_id).map_err(|e| e.to_string())?;
+            ins.bind_text(3, &winner).map_err(|e| e.to_string())?;
+            ins.bind_text(4, &losers_json).map_err(|e| e.to_string())?;
+            ins.bind_int64(5, i64::from(input.is_tie))
+                .map_err(|e| e.to_string())?;
+            ins.bind_double(6, elo_delta).map_err(|e| e.to_string())?;
+            ins.bind_text(7, &safe_note).map_err(|e| e.to_string())?;
+            ins.bind_int64(8, now).map_err(|e| e.to_string())?;
+            ins.step().map_err(|e| e.to_string())?;
+        }
+        if !run_id.is_empty() {
+            let winner_label = if input.is_tie { "tie" } else { winner.as_str() };
+            let mut upd = tx
+                .prepare("UPDATE arena_runs SET winner_model = ?2 WHERE run_id = ?1;")
+                .map_err(|e| e.to_string())?;
+            upd.bind_text(1, &run_id).map_err(|e| e.to_string())?;
+            upd.bind_text(2, winner_label).map_err(|e| e.to_string())?;
+            upd.step().map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+
+        Ok(ArenaVoteRecord {
+            vote_id,
+            run_id,
+            winner_model: winner,
+            loser_models: losers,
+            is_tie: input.is_tie,
+            elo_delta,
+            note: safe_note,
+            created_at_ms: now,
+        })
+    }
+
+    pub fn list_arena_leaderboard(&self) -> Result<Vec<ArenaLeaderboardEntry>, String> {
+        let conn = self.conn.lock();
+
+        #[derive(Default)]
+        struct ModelStats {
+            elo: f64,
+            wins: u64,
+            losses: u64,
+            ties: u64,
+            runs_count: u64,
+            ttft_sum: f64,
+            ttft_n: u64,
+            tps_sum: f64,
+            tps_n: u64,
+            cost_sum: f64,
+            cost_n: u64,
+        }
+
+        let mut map: BTreeMap<String, ModelStats> = BTreeMap::new();
+        let ensure = |m: &mut BTreeMap<String, ModelStats>, id: &str| {
+            m.entry(id.to_string()).or_insert_with(|| ModelStats {
+                elo: ARENA_BASE_ELO,
+                ..ModelStats::default()
+            });
+        };
+
+        // 1. Aggregate observed run metrics (TTFT, tok/s, USD) from arena_runs.outputs_json.
+        {
+            let mut stmt = conn
+                .prepare("SELECT models_json, outputs_json FROM arena_runs ORDER BY created_at_ms ASC;")
+                .map_err(|e| e.to_string())?;
+            while stmt.step_row().map_err(|e| e.to_string())? {
+                let models_raw = stmt.column_text(0).unwrap_or_default();
+                let outputs_raw = stmt.column_text(1).unwrap_or_default();
+                if let Ok(models) = serde_json::from_str::<Vec<String>>(&models_raw) {
+                    for m in models {
+                        if !m.trim().is_empty() {
+                            ensure(&mut map, m.trim());
+                        }
+                    }
+                }
+                if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&outputs_raw) {
+                    for item in items {
+                        let model_id = item
+                            .get("model")
+                            .or_else(|| item.get("modelId"))
+                            .or_else(|| item.get("model_id"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .unwrap_or("");
+                        if model_id.is_empty() {
+                            continue;
+                        }
+                        ensure(&mut map, model_id);
+                        if let Some(st) = map.get_mut(model_id) {
+                            st.runs_count += 1;
+                            if let Some(ttft) = item
+                                .get("ttftMs")
+                                .or_else(|| item.get("ttft_ms"))
+                                .and_then(Value::as_f64)
+                                .filter(|v| *v > 0.0)
+                            {
+                                st.ttft_sum += ttft;
+                                st.ttft_n += 1;
+                            }
+                            if let Some(tps) = item
+                                .get("tokensPerSecond")
+                                .or_else(|| item.get("tokens_per_second"))
+                                .or_else(|| item.get("tps"))
+                                .and_then(Value::as_f64)
+                                .filter(|v| *v > 0.0)
+                            {
+                                st.tps_sum += tps;
+                                st.tps_n += 1;
+                            }
+                            if let Some(cost) = item
+                                .get("costUsd")
+                                .or_else(|| item.get("cost_usd"))
+                                .and_then(Value::as_f64)
+                                .filter(|v| *v >= 0.0)
+                            {
+                                st.cost_sum += cost;
+                                st.cost_n += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Replay arena_votes chronologically to compute exact Elo (1500 base, K=32).
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT winner_model, loser_models_json, is_tie
+                     FROM arena_votes ORDER BY created_at_ms ASC, vote_id ASC;",
+                )
+                .map_err(|e| e.to_string())?;
+            while stmt.step_row().map_err(|e| e.to_string())? {
+                let winner = stmt.column_text(0).unwrap_or_default();
+                let losers_raw = stmt.column_text(1).unwrap_or_default();
+                let is_tie = stmt.column_int64(2).unwrap_or(0) != 0;
+                if winner.trim().is_empty() {
+                    continue;
+                }
+                let losers: Vec<String> = serde_json::from_str(&losers_raw).unwrap_or_default();
+                ensure(&mut map, &winner);
+                for opp in &losers {
+                    if opp.trim().is_empty() || opp == &winner {
+                        continue;
+                    }
+                    ensure(&mut map, opp);
+                    let w_elo = map[&winner].elo;
+                    let l_elo = map[opp].elo;
+                    let expected_w = 1.0 / (1.0 + 10.0_f64.powf((l_elo - w_elo) / 400.0));
+                    let score_w = if is_tie { 0.5 } else { 1.0 };
+                    let delta = ARENA_ELO_K * (score_w - expected_w);
+                    if let Some(ws) = map.get_mut(&winner) {
+                        ws.elo += delta;
+                        if is_tie {
+                            ws.ties += 1;
+                        } else {
+                            ws.wins += 1;
+                        }
+                    }
+                    if let Some(ls) = map.get_mut(opp) {
+                        ls.elo -= delta;
+                        if is_tie {
+                            ls.ties += 1;
+                        } else {
+                            ls.losses += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut entries: Vec<ArenaLeaderboardEntry> = map
+            .into_iter()
+            .map(|(model_id, st)| {
+                let matches = st.wins + st.losses + st.ties;
+                let win_rate_pct = if matches > 0 {
+                    round2(((st.wins as f64 + 0.5 * st.ties as f64) / matches as f64) * 100.0)
+                } else {
+                    0.0
+                };
+                ArenaLeaderboardEntry {
+                    model_id,
+                    elo: round2(st.elo),
+                    wins: st.wins,
+                    losses: st.losses,
+                    ties: st.ties,
+                    matches,
+                    win_rate_pct,
+                    runs_count: st.runs_count,
+                    avg_ttft_ms: (st.ttft_n > 0).then(|| round2(st.ttft_sum / st.ttft_n as f64)),
+                    avg_tps: (st.tps_n > 0).then(|| round2(st.tps_sum / st.tps_n as f64)),
+                    avg_cost_usd: if st.cost_n > 0 {
+                        round6(st.cost_sum / st.cost_n as f64)
+                    } else {
+                        0.0
+                    },
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            b.elo
+                .total_cmp(&a.elo)
+                .then_with(|| b.wins.cmp(&a.wins))
+                .then_with(|| a.model_id.cmp(&b.model_id))
+        });
+        Ok(entries)
+    }
+
+    pub fn list_studio_personas(&self) -> Result<Vec<StudioPersonaRecord>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, icon, description, model_id, effort, temperature, top_p,
+                        system_prompt, focus_mode, pinned_files_json, is_builtin, created_at_ms, updated_at_ms
+                 FROM studio_personas ORDER BY is_builtin DESC, updated_at_ms DESC, name ASC;",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while stmt.step_row().map_err(|e| e.to_string())? {
+            out.push(read_studio_persona_row(&stmt)?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_studio_persona(&self, id: &str) -> Result<Option<StudioPersonaRecord>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, icon, description, model_id, effort, temperature, top_p,
+                        system_prompt, focus_mode, pinned_files_json, is_builtin, created_at_ms, updated_at_ms
+                 FROM studio_personas WHERE id = ?1;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, id.trim()).map_err(|e| e.to_string())?;
+        if stmt.step_row().map_err(|e| e.to_string())? {
+            return Ok(Some(read_studio_persona_row(&stmt)?));
+        }
+        Ok(None)
+    }
+
+    pub fn upsert_studio_persona(
+        &self,
+        input: &StudioPersonaInput,
+    ) -> Result<StudioPersonaRecord, String> {
+        let name = SecretRedactor::redact(input.name.trim());
+        if name.is_empty() {
+            return Err("persona name is required".into());
+        }
+        let id = input
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("gem_{}", uuid_v4()));
+        let icon = input
+            .icon
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("sparkles")
+            .to_string();
+        let description = SecretRedactor::redact(input.description.as_deref().unwrap_or("").trim());
+        let model_id = input
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("claude-sonnet-5-5")
+            .to_string();
+        let effort = input
+            .effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("max")
+            .to_ascii_lowercase();
+        let temperature = input.temperature.unwrap_or(0.7).clamp(0.0, 2.0);
+        let top_p = input.top_p.unwrap_or(0.95).clamp(0.0, 1.0);
+        let system_prompt =
+            SecretRedactor::redact(input.system_prompt.as_deref().unwrap_or("").trim());
+        let focus_mode = input
+            .focus_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("solo")
+            .to_ascii_lowercase();
+        let pinned_files = input.pinned_files.clone().unwrap_or_default();
+        let pinned_json = serde_json::to_string(&pinned_files).map_err(|e| e.to_string())?;
+        let now = now_epoch_ms();
+
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO studio_personas
+                 (id, name, icon, description, model_id, effort, temperature, top_p,
+                  system_prompt, focus_mode, pinned_files_json, is_builtin, created_at_ms, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?12)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    icon = excluded.icon,
+                    description = excluded.description,
+                    model_id = excluded.model_id,
+                    effort = excluded.effort,
+                    temperature = excluded.temperature,
+                    top_p = excluded.top_p,
+                    system_prompt = excluded.system_prompt,
+                    focus_mode = excluded.focus_mode,
+                    pinned_files_json = excluded.pinned_files_json,
+                    updated_at_ms = excluded.updated_at_ms;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, &id).map_err(|e| e.to_string())?;
+        stmt.bind_text(2, &name).map_err(|e| e.to_string())?;
+        stmt.bind_text(3, &icon).map_err(|e| e.to_string())?;
+        stmt.bind_text(4, &description).map_err(|e| e.to_string())?;
+        stmt.bind_text(5, &model_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(6, &effort).map_err(|e| e.to_string())?;
+        stmt.bind_double(7, temperature).map_err(|e| e.to_string())?;
+        stmt.bind_double(8, top_p).map_err(|e| e.to_string())?;
+        stmt.bind_text(9, &system_prompt).map_err(|e| e.to_string())?;
+        stmt.bind_text(10, &focus_mode).map_err(|e| e.to_string())?;
+        stmt.bind_text(11, &pinned_json).map_err(|e| e.to_string())?;
+        stmt.bind_int64(12, now).map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+        drop(stmt);
+
+        let mut sel = conn
+            .prepare(
+                "SELECT id, name, icon, description, model_id, effort, temperature, top_p,
+                        system_prompt, focus_mode, pinned_files_json, is_builtin, created_at_ms, updated_at_ms
+                 FROM studio_personas WHERE id = ?1;",
+            )
+            .map_err(|e| e.to_string())?;
+        sel.bind_text(1, &id).map_err(|e| e.to_string())?;
+        if sel.step_row().map_err(|e| e.to_string())? {
+            return read_studio_persona_row(&sel);
+        }
+        Err(format!("failed to load upserted persona '{id}'"))
+    }
+
+    pub fn delete_studio_persona(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("DELETE FROM studio_personas WHERE id = ?1;")
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, id.trim()).map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+        Ok(conn.changes() > 0)
+    }
+
+    pub fn append_chat_branch(&self, input: &ChatBranchInput) -> Result<ChatBranchRecord, String> {
+        let session_id = input.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err("session_id is required".into());
+        }
+        let parent_msg_id = input.parent_msg_id.trim().to_string();
+        let role = if input.role.trim().is_empty() {
+            "assistant".to_string()
+        } else {
+            input.role.trim().to_ascii_lowercase()
+        };
+        let content = SecretRedactor::redact(&input.content);
+        let model_id = input.model_id.as_deref().unwrap_or("").trim().to_string();
+        let effort = input
+            .effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("max")
+            .to_string();
+        let thinking_text = SecretRedactor::redact(input.thinking_text.as_deref().unwrap_or(""));
+        let tool_calls = input
+            .tool_calls
+            .as_ref()
+            .map(SecretRedactor::redact_json)
+            .unwrap_or_else(|| json!([]));
+        let tool_calls_json = serde_json::to_string(&tool_calls).map_err(|e| e.to_string())?;
+        let id = input
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("br_{}", uuid_v4()));
+        let now = now_epoch_ms();
+
+        let mut conn = self.conn.lock();
+        let tx = conn.begin_immediate().map_err(|e| e.to_string())?;
+        let branch_index = match input.branch_index {
+            Some(idx) => idx.max(0),
+            None => {
+                let mut q = tx
+                    .prepare(
+                        "SELECT COALESCE(MAX(branch_index) + 1, 0)
+                         FROM chat_branches WHERE session_id = ?1 AND parent_msg_id = ?2;",
+                    )
+                    .map_err(|e| e.to_string())?;
+                q.bind_text(1, &session_id).map_err(|e| e.to_string())?;
+                q.bind_text(2, &parent_msg_id).map_err(|e| e.to_string())?;
+                if q.step_row().map_err(|e| e.to_string())? {
+                    q.column_int64(0).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+        };
+        {
+            let mut ins = tx
+                .prepare(
+                    "INSERT INTO chat_branches
+                     (id, session_id, parent_msg_id, branch_index, role, content,
+                      model_id, effort, thinking_text, tool_calls_json, created_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                     ON CONFLICT(id) DO UPDATE SET
+                        content = excluded.content,
+                        model_id = excluded.model_id,
+                        effort = excluded.effort,
+                        thinking_text = excluded.thinking_text,
+                        tool_calls_json = excluded.tool_calls_json;",
+                )
+                .map_err(|e| e.to_string())?;
+            ins.bind_text(1, &id).map_err(|e| e.to_string())?;
+            ins.bind_text(2, &session_id).map_err(|e| e.to_string())?;
+            ins.bind_text(3, &parent_msg_id).map_err(|e| e.to_string())?;
+            ins.bind_int64(4, branch_index).map_err(|e| e.to_string())?;
+            ins.bind_text(5, &role).map_err(|e| e.to_string())?;
+            ins.bind_text(6, &content).map_err(|e| e.to_string())?;
+            ins.bind_text(7, &model_id).map_err(|e| e.to_string())?;
+            ins.bind_text(8, &effort).map_err(|e| e.to_string())?;
+            ins.bind_text(9, &thinking_text).map_err(|e| e.to_string())?;
+            ins.bind_text(10, &tool_calls_json)
+                .map_err(|e| e.to_string())?;
+            ins.bind_int64(11, now).map_err(|e| e.to_string())?;
+            ins.step().map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+
+        Ok(ChatBranchRecord {
+            id,
+            session_id,
+            parent_msg_id,
+            branch_index,
+            role,
+            content,
+            model_id,
+            effort,
+            thinking_text,
+            tool_calls,
+            created_at_ms: now,
+        })
+    }
+
+    pub fn list_chat_branches(
+        &self,
+        session_id: &str,
+        parent_msg_id: Option<&str>,
+    ) -> Result<Vec<ChatBranchRecord>, String> {
+        let conn = self.conn.lock();
+        let mut out = Vec::new();
+        if let Some(pid) = parent_msg_id.map(str::trim).filter(|s| !s.is_empty()) {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, session_id, parent_msg_id, branch_index, role, content,
+                            model_id, effort, thinking_text, tool_calls_json, created_at_ms
+                     FROM chat_branches
+                     WHERE session_id = ?1 AND parent_msg_id = ?2
+                     ORDER BY branch_index ASC, created_at_ms ASC;",
+                )
+                .map_err(|e| e.to_string())?;
+            stmt.bind_text(1, session_id.trim())
+                .map_err(|e| e.to_string())?;
+            stmt.bind_text(2, pid).map_err(|e| e.to_string())?;
+            while stmt.step_row().map_err(|e| e.to_string())? {
+                out.push(read_chat_branch_row(&stmt)?);
+            }
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, session_id, parent_msg_id, branch_index, role, content,
+                            model_id, effort, thinking_text, tool_calls_json, created_at_ms
+                     FROM chat_branches
+                     WHERE session_id = ?1
+                     ORDER BY created_at_ms ASC, branch_index ASC;",
+                )
+                .map_err(|e| e.to_string())?;
+            stmt.bind_text(1, session_id.trim())
+                .map_err(|e| e.to_string())?;
+            while stmt.step_row().map_err(|e| e.to_string())? {
+                out.push(read_chat_branch_row(&stmt)?);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn fork_chat_branches(
+        &self,
+        source_session_id: &str,
+        target_session_id: &str,
+        up_to_branch_id: Option<&str>,
+    ) -> Result<usize, String> {
+        let branches = self.list_chat_branches(source_session_id, None)?;
+        let mut copied = 0usize;
+        for br in branches {
+            let matches_stop = up_to_branch_id
+                .map(str::trim)
+                .is_some_and(|stop| !stop.is_empty() && br.id == stop);
+            self.append_chat_branch(&ChatBranchInput {
+                id: None,
+                session_id: target_session_id.trim().to_string(),
+                parent_msg_id: br.parent_msg_id,
+                branch_index: Some(br.branch_index),
+                role: br.role,
+                content: br.content,
+                model_id: Some(br.model_id),
+                effort: Some(br.effort),
+                thinking_text: Some(br.thinking_text),
+                tool_calls: Some(br.tool_calls),
+            })?;
+            copied += 1;
+            if matches_stop {
+                break;
+            }
+        }
+        Ok(copied)
+    }
+}
+
+const ARENA_BASE_ELO: f64 = 1_500.0;
+const ARENA_ELO_K: f64 = 32.0;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaRunInput {
+    pub run_id: Option<String>,
+    pub prompt: String,
+    #[serde(default)]
+    pub system_prompt: String,
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub params: Value,
+    #[serde(default)]
+    pub outputs: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaRunRecord {
+    pub run_id: String,
+    pub prompt: String,
+    pub system_prompt: String,
+    pub models: Vec<String>,
+    pub params: Value,
+    pub outputs: Value,
+    pub winner_model: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaVoteInput {
+    #[serde(default)]
+    pub run_id: String,
+    pub winner_model: String,
+    #[serde(default)]
+    pub loser_models: Vec<String>,
+    #[serde(default)]
+    pub is_tie: bool,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaVoteRecord {
+    pub vote_id: String,
+    pub run_id: String,
+    pub winner_model: String,
+    pub loser_models: Vec<String>,
+    pub is_tie: bool,
+    pub elo_delta: f64,
+    pub note: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArenaLeaderboardEntry {
+    pub model_id: String,
+    pub elo: f64,
+    pub wins: u64,
+    pub losses: u64,
+    pub ties: u64,
+    pub matches: u64,
+    pub win_rate_pct: f64,
+    pub runs_count: u64,
+    pub avg_ttft_ms: Option<f64>,
+    pub avg_tps: Option<f64>,
+    pub avg_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioPersonaInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub icon: Option<String>,
+    pub description: Option<String>,
+    pub model_id: Option<String>,
+    pub effort: Option<String>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub system_prompt: Option<String>,
+    pub focus_mode: Option<String>,
+    pub pinned_files: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioPersonaRecord {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub description: String,
+    pub model_id: String,
+    pub effort: String,
+    pub temperature: f64,
+    pub top_p: f64,
+    pub system_prompt: String,
+    pub focus_mode: String,
+    pub pinned_files: Vec<String>,
+    pub is_builtin: bool,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBranchInput {
+    pub id: Option<String>,
+    pub session_id: String,
+    #[serde(default)]
+    pub parent_msg_id: String,
+    pub branch_index: Option<i64>,
+    #[serde(default)]
+    pub role: String,
+    pub content: String,
+    pub model_id: Option<String>,
+    pub effort: Option<String>,
+    pub thinking_text: Option<String>,
+    pub tool_calls: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBranchRecord {
+    pub id: String,
+    pub session_id: String,
+    pub parent_msg_id: String,
+    pub branch_index: i64,
+    pub role: String,
+    pub content: String,
+    pub model_id: String,
+    pub effort: String,
+    pub thinking_text: String,
+    pub tool_calls: Value,
+    pub created_at_ms: i64,
+}
+
+fn seed_builtin_studio_personas(conn: &Connection) -> Result<(), String> {
+    let existing_count = {
+        let mut stmt = conn
+            .prepare("SELECT COUNT(*) FROM studio_personas;")
+            .map_err(|e| e.to_string())?;
+        if stmt.step_row().map_err(|e| e.to_string())? {
+            stmt.column_int64(0).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+    if existing_count > 0 {
+        return Ok(());
+    }
+    let now = now_epoch_ms();
+    let defaults = [
+        (
+            "gem_principal_architect",
+            "Principal Architect",
+            "layers",
+            "Systems design, multi-crate architecture, invariants, and trade-off matrices.",
+            "claude-sonnet-5-5",
+            "max",
+            0.3_f64,
+            0.95_f64,
+            "You are a Principal Systems Architect. Reason from first principles, preserve invariants, produce crisp trade-off tables, and verify every architectural claim against real files.",
+            "solo",
+        ),
+        (
+            "gem_deep_researcher",
+            "Deep Researcher",
+            "globe",
+            "Multi-source web + academic synthesis with verifiable inline citations and PRISMA ledgers.",
+            "gemini-4-carbon",
+            "max",
+            0.4_f64,
+            0.95_f64,
+            "You are a Deep Research Analyst. Search authoritative primary sources, cross-verify claims, report conflicts honestly, and cite every claim inline with exact [S###] or [G###] markers.",
+            "deep",
+        ),
+        (
+            "gem_code_reviewer",
+            "Code Reviewer",
+            "shield",
+            "Adversarial security, concurrency, edge-case, and performance diff auditor.",
+            "gpt-6.2-sol",
+            "xhigh",
+            0.2_f64,
+            0.9_f64,
+            "You are a Staff Adversarial Code Reviewer. Hunt for races, lifetime/ownership bugs, unchecked arithmetic, injection vectors, and missing regression tests with exact file:line evidence.",
+            "code",
+        ),
+        (
+            "gem_math_proof_lab",
+            "Math & Proof Lab",
+            "sigma",
+            "Formal derivations, counterexample search, complexity proofs, and LaTeX clarity.",
+            "gpt-6.2-sol",
+            "max",
+            0.1_f64,
+            0.9_f64,
+            "You are a Formal Mathematics & Algorithms Specialist. State definitions, hypotheses, and edge cases explicitly, verify boundary cases, and present clean LaTeX derivations.",
+            "academic",
+        ),
+    ];
+    for (id, name, icon, desc, model, effort, temp, top_p, sys_prompt, focus) in defaults {
+        let mut stmt = conn
+            .prepare(
+                "INSERT OR IGNORE INTO studio_personas
+                 (id, name, icon, description, model_id, effort, temperature, top_p,
+                  system_prompt, focus_mode, pinned_files_json, is_builtin, created_at_ms, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '[]', 1, ?11, ?11);",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, id).map_err(|e| e.to_string())?;
+        stmt.bind_text(2, name).map_err(|e| e.to_string())?;
+        stmt.bind_text(3, icon).map_err(|e| e.to_string())?;
+        stmt.bind_text(4, desc).map_err(|e| e.to_string())?;
+        stmt.bind_text(5, model).map_err(|e| e.to_string())?;
+        stmt.bind_text(6, effort).map_err(|e| e.to_string())?;
+        stmt.bind_double(7, temp).map_err(|e| e.to_string())?;
+        stmt.bind_double(8, top_p).map_err(|e| e.to_string())?;
+        stmt.bind_text(9, sys_prompt).map_err(|e| e.to_string())?;
+        stmt.bind_text(10, focus).map_err(|e| e.to_string())?;
+        stmt.bind_int64(11, now).map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn compute_elo_ratings_from_conn(conn: &Connection) -> Result<BTreeMap<String, f64>, String> {
+    let mut ratings: BTreeMap<String, f64> = BTreeMap::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT winner_model, loser_models_json, is_tie
+             FROM arena_votes ORDER BY created_at_ms ASC, vote_id ASC;",
+        )
+        .map_err(|e| e.to_string())?;
+    while stmt.step_row().map_err(|e| e.to_string())? {
+        let winner = stmt.column_text(0).unwrap_or_default();
+        let losers_raw = stmt.column_text(1).unwrap_or_default();
+        let is_tie = stmt.column_int64(2).unwrap_or(0) != 0;
+        let losers: Vec<String> = serde_json::from_str(&losers_raw).unwrap_or_default();
+        let w_entry = *ratings.entry(winner.clone()).or_insert(ARENA_BASE_ELO);
+        let mut w_cur = w_entry;
+        let score_w = if is_tie { 0.5 } else { 1.0 };
+        for opp in losers {
+            if opp.trim().is_empty() || opp == winner {
+                continue;
+            }
+            let l_cur = *ratings.entry(opp.clone()).or_insert(ARENA_BASE_ELO);
+            let expected = 1.0 / (1.0 + 10.0_f64.powf((l_cur - w_cur) / 400.0));
+            let delta = ARENA_ELO_K * (score_w - expected);
+            w_cur += delta;
+            ratings.insert(opp, l_cur - delta);
+        }
+        ratings.insert(winner, w_cur);
+    }
+    Ok(ratings)
+}
+
+fn read_arena_run_row(stmt: &omnia_winsqlite::Statement<'_>) -> Result<ArenaRunRecord, String> {
+    let models_raw = stmt.column_text(3).map_err(|e| e.to_string())?;
+    let params_raw = stmt.column_text(4).map_err(|e| e.to_string())?;
+    let outputs_raw = stmt.column_text(5).map_err(|e| e.to_string())?;
+    Ok(ArenaRunRecord {
+        run_id: stmt.column_text(0).map_err(|e| e.to_string())?,
+        prompt: stmt.column_text(1).map_err(|e| e.to_string())?,
+        system_prompt: stmt.column_text(2).map_err(|e| e.to_string())?,
+        models: serde_json::from_str(&models_raw).unwrap_or_default(),
+        params: serde_json::from_str(&params_raw).unwrap_or_else(|_| json!({})),
+        outputs: serde_json::from_str(&outputs_raw).unwrap_or_else(|_| json!([])),
+        winner_model: stmt.column_opt_text(6).map_err(|e| e.to_string())?,
+        created_at_ms: stmt.column_int64(7).map_err(|e| e.to_string())?,
+    })
+}
+
+fn read_studio_persona_row(
+    stmt: &omnia_winsqlite::Statement<'_>,
+) -> Result<StudioPersonaRecord, String> {
+    let pinned_raw = stmt.column_text(10).map_err(|e| e.to_string())?;
+    Ok(StudioPersonaRecord {
+        id: stmt.column_text(0).map_err(|e| e.to_string())?,
+        name: stmt.column_text(1).map_err(|e| e.to_string())?,
+        icon: stmt.column_text(2).map_err(|e| e.to_string())?,
+        description: stmt.column_text(3).map_err(|e| e.to_string())?,
+        model_id: stmt.column_text(4).map_err(|e| e.to_string())?,
+        effort: stmt.column_text(5).map_err(|e| e.to_string())?,
+        temperature: stmt.column_double(6).map_err(|e| e.to_string())?,
+        top_p: stmt.column_double(7).map_err(|e| e.to_string())?,
+        system_prompt: stmt.column_text(8).map_err(|e| e.to_string())?,
+        focus_mode: stmt.column_text(9).map_err(|e| e.to_string())?,
+        pinned_files: serde_json::from_str(&pinned_raw).unwrap_or_default(),
+        is_builtin: stmt.column_int64(11).map_err(|e| e.to_string())? != 0,
+        created_at_ms: stmt.column_int64(12).map_err(|e| e.to_string())?,
+        updated_at_ms: stmt.column_int64(13).map_err(|e| e.to_string())?,
+    })
+}
+
+fn read_chat_branch_row(stmt: &omnia_winsqlite::Statement<'_>) -> Result<ChatBranchRecord, String> {
+    let tc_raw = stmt.column_text(9).map_err(|e| e.to_string())?;
+    Ok(ChatBranchRecord {
+        id: stmt.column_text(0).map_err(|e| e.to_string())?,
+        session_id: stmt.column_text(1).map_err(|e| e.to_string())?,
+        parent_msg_id: stmt.column_text(2).map_err(|e| e.to_string())?,
+        branch_index: stmt.column_int64(3).map_err(|e| e.to_string())?,
+        role: stmt.column_text(4).map_err(|e| e.to_string())?,
+        content: stmt.column_text(5).map_err(|e| e.to_string())?,
+        model_id: stmt.column_text(6).map_err(|e| e.to_string())?,
+        effort: stmt.column_text(7).map_err(|e| e.to_string())?,
+        thinking_text: stmt.column_text(8).map_err(|e| e.to_string())?,
+        tool_calls: serde_json::from_str(&tc_raw).unwrap_or_else(|_| json!([])),
+        created_at_ms: stmt.column_int64(10).map_err(|e| e.to_string())?,
+    })
 }
 
 fn bind_opt_f64(stmt: &mut omnia_winsqlite::Statement<'_>, idx: i32, val: Option<f64>) -> Result<(), String> {
@@ -2129,5 +3162,119 @@ mod tests {
             .upsert_steer_item("st_1", "Synthetic steer item", "ADDITIVE_INTAKE", "queued", 1000)
             .expect("steer upsert");
         assert_eq!(store.list_persisted_steer_items().expect("steer list").len(), 1);
+    }
+
+    #[test]
+    fn steer23_arena_personas_and_chat_branches_persist_and_compute_elo() {
+        let store = OpsStore::open_in_memory().expect("open ops store");
+
+        // 1. 4 built-in flagship Gems auto-seeded + CRUD
+        let initial_personas = store.list_studio_personas().expect("seeded personas");
+        assert_eq!(initial_personas.len(), 4);
+        assert!(initial_personas.iter().any(|p| p.name == "Principal Architect"));
+        assert!(initial_personas.iter().any(|p| p.name == "Deep Researcher"));
+        assert!(initial_personas.iter().any(|p| p.name == "Code Reviewer"));
+        assert!(initial_personas.iter().any(|p| p.name == "Math & Proof Lab"));
+
+        let custom = store
+            .upsert_studio_persona(&StudioPersonaInput {
+                id: None,
+                name: "Rust Kernel Tuner".to_string(),
+                icon: Some("cpu".to_string()),
+                description: Some("Zero-alloc profiling gem".to_string()),
+                model_id: Some("claude-sonnet-5-5".to_string()),
+                effort: Some("max".to_string()),
+                temperature: Some(0.25),
+                top_p: Some(0.9),
+                system_prompt: Some("Optimize hot loops cleanly.".to_string()),
+                focus_mode: Some("code".to_string()),
+                pinned_files: Some(vec!["Cargo.toml".to_string()]),
+            })
+            .expect("upsert persona");
+        assert_eq!(store.list_studio_personas().unwrap().len(), 5);
+        assert_eq!(store.get_studio_persona(&custom.id).unwrap().unwrap().name, "Rust Kernel Tuner");
+        assert!(store.delete_studio_persona(&custom.id).unwrap());
+        assert_eq!(store.list_studio_personas().unwrap().len(), 4);
+
+        // 2. Arena run + winner vote + tie vote + Elo leaderboard & telemetry averages
+        let run = store
+            .save_arena_run(&ArenaRunInput {
+                run_id: None,
+                prompt: "Compare lock-free ring buffers".to_string(),
+                system_prompt: "Be concise".to_string(),
+                models: vec!["claude-sonnet-5-5".into(), "gpt-6.2-sol".into()],
+                params: json!({ "effort": "max", "temperature": 0.5 }),
+                outputs: json!([
+                    { "model": "claude-sonnet-5-5", "ttftMs": 220.0, "tokensPerSecond": 92.0, "costUsd": 0.004200 },
+                    { "model": "gpt-6.2-sol", "ttftMs": 310.0, "tokensPerSecond": 84.0, "costUsd": 0.005100 }
+                ]),
+            })
+            .expect("save arena run");
+        assert_eq!(store.list_arena_runs(10).unwrap().len(), 1);
+
+        let v1 = store
+            .record_arena_vote(&ArenaVoteInput {
+                run_id: run.run_id.clone(),
+                winner_model: "claude-sonnet-5-5".to_string(),
+                loser_models: vec!["gpt-6.2-sol".to_string()],
+                is_tie: false,
+                note: Some("Clearer memory-ordering proof".to_string()),
+            })
+            .expect("vote 1");
+        assert!(v1.elo_delta > 0.0);
+        assert_eq!(
+            store.get_arena_run(&run.run_id).unwrap().unwrap().winner_model.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+
+        let lb = store.list_arena_leaderboard().expect("leaderboard");
+        assert_eq!(lb.len(), 2);
+        assert_eq!(lb[0].model_id, "claude-sonnet-5-5");
+        assert!(lb[0].elo > 1_500.0);
+        assert_eq!(lb[0].wins, 1);
+        assert_eq!(lb[0].avg_ttft_ms, Some(220.0));
+        assert_eq!(lb[1].model_id, "gpt-6.2-sol");
+        assert!(lb[1].elo < 1_500.0);
+        assert_eq!(lb[1].losses, 1);
+
+        // 3. Chat branches (< 1/N >) + fork lineage
+        let b0 = store
+            .append_chat_branch(&ChatBranchInput {
+                session_id: "sess_br_1".to_string(),
+                parent_msg_id: "msg_user_1".to_string(),
+                role: "assistant".to_string(),
+                content: "First response variant".to_string(),
+                model_id: Some("claude-sonnet-5-5".to_string()),
+                effort: Some("max".to_string()),
+                thinking_text: Some("Step 1".to_string()),
+                ..ChatBranchInput::default()
+            })
+            .expect("branch 0");
+        let b1 = store
+            .append_chat_branch(&ChatBranchInput {
+                session_id: "sess_br_1".to_string(),
+                parent_msg_id: "msg_user_1".to_string(),
+                role: "assistant".to_string(),
+                content: "Regenerated second variant".to_string(),
+                model_id: Some("gpt-6.2-sol".to_string()),
+                effort: Some("xhigh".to_string()),
+                ..ChatBranchInput::default()
+            })
+            .expect("branch 1");
+        assert_eq!(b0.branch_index, 0);
+        assert_eq!(b1.branch_index, 1);
+        let listed = store
+            .list_chat_branches("sess_br_1", Some("msg_user_1"))
+            .expect("list branches");
+        assert_eq!(listed.len(), 2);
+
+        let copied = store
+            .fork_chat_branches("sess_br_1", "sess_br_forked", Some(&b0.id))
+            .expect("fork branches");
+        assert_eq!(copied, 1);
+        assert_eq!(
+            store.list_chat_branches("sess_br_forked", None).unwrap().len(),
+            1
+        );
     }
 }

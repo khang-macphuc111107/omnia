@@ -889,24 +889,18 @@ impl ResearchVault {
         Ok(rec)
     }
 
-    /// SSRF-safe live URL fetch -> canonical redirect unwrap -> HTML->Markdown extraction -> persistent RAG.
+    /// Live URL fetch -> canonical redirect unwrap -> HTML->Markdown extraction -> persistent RAG.
+    /// Uses `EgressPolicy::unrestricted()` by default while preserving honest non-bypass
+    /// challenge/auth status reporting (`[BLOCKED_BY_CHALLENGE]`, `[AUTH_REQUIRED]`).
     pub async fn fetch_and_ingest_url(
         &self,
         tier: VaultTier,
         raw_url: &str,
         query_origin: &str,
-        allow_loopback: bool,
+        _allow_loopback: bool,
     ) -> Result<ResearchSourceRecord, String> {
         let unwrapped = unwrap_canonical_redirect_url(raw_url);
-        let policy = if allow_loopback {
-            EgressPolicy {
-                mode: omnia_workspace_ops::egress::EgressMode::PublicAndLoopback,
-                verify_dns_non_private: false,
-                ..EgressPolicy::default()
-            }
-        } else {
-            EgressPolicy::public_web()
-        };
+        let policy = EgressPolicy::unrestricted();
         if let Err(err) = validate_egress_url(&unwrapped, &policy) {
             return self.record_fetch_failure(
                 tier,

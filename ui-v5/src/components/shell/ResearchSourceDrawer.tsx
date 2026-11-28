@@ -4,13 +4,17 @@ import {
   Download,
   Eye,
   Globe,
+  ListChecks,
   MessageSquareQuote,
   Pin,
+  Play,
+  Plus,
   RefreshCw,
   Search,
   ShieldAlert,
   Sparkles,
   Table2,
+  Trash2,
   X,
 } from 'lucide-solid';
 import { api } from '@/api/client';
@@ -25,6 +29,7 @@ import {
   researchDrawerOpen,
   researchProgress,
   researchSources,
+  runPerplexityResearchAnswer,
   runQuickDeepResearch,
   setFocusedCitationId,
   setResearchDrawerOpen,
@@ -42,6 +47,14 @@ export function ResearchSourceDrawer() {
   const [tableColsInput, setTableColsInput] = createSignal('source,claim,grade');
   const [toolOutput, setToolOutput] = createSignal<Record<string, unknown> | null>(null);
   const [busy, setBusy] = createSignal(false);
+  const [planOpen, setPlanOpen] = createSignal(false);
+  const [answerFocus, setAnswerFocus] = createSignal<'web' | 'academic' | 'code' | 'rag' | 'deep'>('deep');
+  const [planSteps, setPlanSteps] = createSignal<string[]>([
+    'Survey primary official specs, docs & recent benchmarks',
+    'Cross-check local + global RAG vault for existing citations',
+    'Synthesize structured comparison with inline [S###] citations',
+  ]);
+  const [newStepText, setNewStepText] = createSignal('');
 
   createEffect(() => {
     if (researchDrawerOpen()) {
@@ -103,6 +116,23 @@ export function ResearchSourceDrawer() {
     setBusy(true);
     const res = await api.extractResearchTable(q, cols.length ? cols : ['source', 'excerpt']);
     setToolOutput(res.ok ? res.data : { error: res.error.code, message: res.error.message });
+    setBusy(false);
+  };
+
+  const handleGeneratePlan = () => {
+    const q = queryInput().trim() || 'current topic';
+    setPlanSteps([
+      `Identify canonical primary documentation & specifications for "${q}"`,
+      `Search peer-reviewed papers, benchmarks & trade-offs for "${q}"`,
+      `Cross-verify against Local+Global RAG ledger and synthesize cited brief`,
+    ]);
+    setPlanOpen(true);
+  };
+
+  const handleRunMultiStepAnswer = async () => {
+    const q = queryInput().trim() || planSteps()[0] || 'Omnia architecture overview';
+    setBusy(true);
+    await runPerplexityResearchAnswer(q, answerFocus(), planSteps().filter((s) => s.trim().length > 0));
     setBusy(false);
   };
 
@@ -242,6 +272,17 @@ export function ResearchSourceDrawer() {
               </button>
             </div>
             <div class="flex items-center gap-1">
+              <button
+                type="button"
+                data-testid="research-plan-toggle"
+                class="omnia-btn px-2 py-0.5 text-[10.5px]"
+                classList={{ 'border-[var(--border-accent)] text-[var(--accent-cyan)]': planOpen() }}
+                onClick={() => setPlanOpen(!planOpen())}
+                title="Edit Multi-Step Deep Research Plan (Gemini Deep Research style)"
+              >
+                <ListChecks class="w-3 h-3 text-[var(--accent-cyan)]" />
+                <span>Plan ({planSteps().length})</span>
+              </button>
               <button type="button" class="omnia-btn px-2 py-0.5 text-[10.5px]" onClick={() => void handleExportDossier('markdown')}>
                 <Download class="w-3 h-3" />
                 <span>MD</span>
@@ -251,6 +292,95 @@ export function ResearchSourceDrawer() {
               </button>
             </div>
           </div>
+
+          {/* Editable Multi-Step Research Plan (Gemini Deep Research + Perplexity Answer Engine) */}
+          <Show when={planOpen()}>
+            <div data-testid="research-plan-editor" class="pt-2 border-t border-[var(--border-subtle)] space-y-1.5 min-w-0">
+              <div class="flex items-center justify-between gap-1.5">
+                <span class="text-[10.5px] font-semibold text-[var(--accent-cyan)]">Editable Research Plan</span>
+                <div class="flex items-center gap-1">
+                  <select
+                    aria-label="Answer Focus"
+                    value={answerFocus()}
+                    onChange={(e) => setAnswerFocus(e.currentTarget.value as 'web' | 'academic' | 'code' | 'rag' | 'deep')}
+                    class="rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-1.5 py-0.5 text-[10px]"
+                  >
+                    <option value="deep">Deep</option>
+                    <option value="web">Web</option>
+                    <option value="academic">Academic</option>
+                    <option value="code">Code</option>
+                    <option value="rag">RAG</option>
+                  </select>
+                  <button type="button" class="omnia-btn px-1.5 py-0.5 text-[10px]" onClick={handleGeneratePlan}>
+                    Auto
+                  </button>
+                </div>
+              </div>
+              <div class="space-y-1 max-h-32 overflow-y-auto">
+                <For each={planSteps()}>
+                  {(step, idx) => (
+                    <div class="flex items-center gap-1 min-w-0">
+                      <span class="font-mono-num text-[10px] text-[var(--ink-muted)] shrink-0">{idx() + 1}.</span>
+                      <input
+                        type="text"
+                        value={step}
+                        onInput={(e) => {
+                          const next = [...planSteps()];
+                          next[idx()] = e.currentTarget.value;
+                          setPlanSteps(next);
+                        }}
+                        class="flex-1 min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-0.5 text-[10.5px] outline-none"
+                      />
+                      <button
+                        type="button"
+                        class="p-0.5 text-[var(--ink-muted)] hover:text-[var(--status-coral)] cursor-pointer shrink-0"
+                        title="Remove step"
+                        onClick={() => setPlanSteps(planSteps().filter((_, i) => i !== idx()))}
+                      >
+                        <Trash2 class="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
+              <div class="flex items-center gap-1 min-w-0">
+                <input
+                  type="text"
+                  placeholder="Add custom research sub-query..."
+                  value={newStepText()}
+                  onInput={(e) => setNewStepText(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newStepText().trim()) {
+                      setPlanSteps([...planSteps(), newStepText().trim()]);
+                      setNewStepText('');
+                    }
+                  }}
+                  class="flex-1 min-w-0 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-0.5 text-[10.5px] outline-none"
+                />
+                <button
+                  type="button"
+                  class="omnia-btn px-1.5 py-0.5 text-[10.5px] shrink-0"
+                  onClick={() => {
+                    if (!newStepText().trim()) return;
+                    setPlanSteps([...planSteps(), newStepText().trim()]);
+                    setNewStepText('');
+                  }}
+                >
+                  <Plus class="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  data-testid="run-research-answer-btn"
+                  disabled={busy()}
+                  class="omnia-btn omnia-btn-primary px-2 py-0.5 text-[10.5px] shrink-0"
+                  onClick={() => void handleRunMultiStepAnswer()}
+                >
+                  <Play class="w-3 h-3" />
+                  <span>Answer</span>
+                </button>
+              </div>
+            </div>
+          </Show>
         </div>
 
         {/* PRISMA Filter Tabs */}

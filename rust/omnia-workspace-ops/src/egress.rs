@@ -18,6 +18,10 @@ pub enum EgressMode {
     PublicOnly,
     /// Allow public hosts AND explicit loopback ports (for local dev servers), while blocking RFC-1918/IMDS.
     PublicAndLoopback,
+    /// Allow any valid HTTP/HTTPS destination (public, loopback, RFC-1918 LAN, custom ports,
+    /// and internal/unqualified hostnames), enforcing only explicit caller `blocked_hosts` /
+    /// `allowed_hosts` / `allowed_ports` and URL syntax hygiene.
+    Unrestricted,
 }
 
 /// Configurable fail-closed outbound network policy.
@@ -67,6 +71,20 @@ impl EgressPolicy {
     #[must_use]
     pub fn public_web() -> Self {
         Self::default()
+    }
+
+    /// Unrestricted HTTP/HTTPS egress policy allowing public, loopback, LAN, custom ports,
+    /// and internal/unqualified hostnames unless explicitly denied by `blocked_hosts`.
+    #[must_use]
+    pub fn unrestricted() -> Self {
+        Self {
+            mode: EgressMode::Unrestricted,
+            allowed_schemes: vec!["https".into(), "http".into()],
+            allowed_hosts: BTreeSet::new(),
+            blocked_hosts: BTreeSet::new(),
+            allowed_ports: BTreeSet::new(),
+            verify_dns_non_private: false,
+        }
     }
 
     /// Deny every outbound URL/host and inject dead-end proxy env vars into child commands.
@@ -277,6 +295,9 @@ pub fn apply_egress_env_to_command(cmd: &mut Command, policy: &EgressPolicy) {
         EgressMode::PublicAndLoopback => {
             cmd.env("OMNIA_EGRESS_POLICY", "public_and_loopback");
         }
+        EgressMode::Unrestricted => {
+            cmd.env("OMNIA_EGRESS_POLICY", "unrestricted");
+        }
     }
 }
 
@@ -360,7 +381,9 @@ fn classify_and_check_host(host: &str, policy: &EgressPolicy) -> Result<bool, Eg
 
     if is_localhost_name {
         return match policy.mode {
-            EgressMode::LoopbackOnly | EgressMode::PublicAndLoopback => Ok(true),
+            EgressMode::LoopbackOnly | EgressMode::PublicAndLoopback | EgressMode::Unrestricted => {
+                Ok(true)
+            }
             EgressMode::PublicOnly | EgressMode::DenyAll => Err(EgressError::BlockedHost {
                 host: host.to_owned(),
                 reason: "localhost disallowed under public-only egress".into(),
@@ -373,6 +396,10 @@ fn classify_and_check_host(host: &str, policy: &EgressPolicy) -> Result<bool, Eg
             host: host.to_owned(),
             reason: "external hostname disallowed under loopback_only".into(),
         });
+    }
+
+    if policy.mode == EgressMode::Unrestricted {
+        return Ok(false);
     }
 
     // Reject single-label internal hostnames, .local, .internal, cloud metadata domains.
@@ -418,6 +445,7 @@ pub fn is_ip_loopback(ip: IpAddr) -> bool {
 pub fn blocked_ip_reason(ip: IpAddr, mode: EgressMode) -> Option<&'static str> {
     match mode {
         EgressMode::DenyAll => return Some("deny_all policy"),
+        EgressMode::Unrestricted => return None,
         EgressMode::LoopbackOnly => {
             return (!is_ip_loopback(ip)).then_some("non-loopback IP disallowed under loopback_only");
         }
@@ -500,5 +528,31 @@ mod tests {
         assert!(validate_egress_url("ws://[::1]:9222/devtools/browser/abc", &policy).is_ok());
         assert!(validate_egress_url("https://example.com/", &policy).is_err());
         assert!(validate_egress_url("http://192.168.1.10:9222/", &policy).is_err());
+    }
+
+    #[test]
+    fn unrestricted_allows_loopback_lan_internal_custom_ports_and_public_web() {
+        let mut policy = EgressPolicy::unrestricted();
+        for ok_url in [
+            "http://127.0.0.1:8080/api",
+            "http://[::1]:3000/health",
+            "http://localhost:9222/json/version",
+            "http://192.168.1.42:8443/local",
+            "http://10.0.0.5:9000/internal",
+            "http://intranet:8081/docs",
+            "http://devbox.local:5173/",
+            "https://example.com/docs?q=1",
+        ] {
+            let target = validate_egress_url(ok_url, &policy)
+                .unwrap_or_else(|e| panic!("expected unrestricted allow for {ok_url}: {e}"));
+            if ok_url.contains("127.0.0.1") || ok_url.contains("[::1]") || ok_url.contains("localhost") {
+                assert!(target.is_loopback, "expected loopback flag for {ok_url}");
+            }
+        }
+        assert!(validate_egress_url("not-a-valid-url", &policy).is_err());
+        assert!(validate_egress_url("file:///C:/Windows/win.ini", &policy).is_err());
+
+        policy.blocked_hosts.insert("blocked.example.test".into());
+        assert!(validate_egress_url("https://blocked.example.test/x", &policy).is_err());
     }
 }

@@ -14,6 +14,7 @@ import {
   Moon,
   PanelLeft,
   Sun,
+  Swords,
   Terminal,
 } from 'lucide-solid';
 import {
@@ -22,6 +23,7 @@ import {
   health,
   ideChatDrawerOpen,
   openObservabilityTab,
+  openWorkbench,
   privacyMask,
   refreshResearchSources,
   researchDrawerOpen,
@@ -40,6 +42,7 @@ import {
   themePref,
   togglePrivacyMask,
   topMode,
+  workbenchTab,
   wsConnected,
 } from '@/state/studio';
 import type { ThemeId, TopMode } from '@/types';
@@ -166,6 +169,21 @@ export function TopBar() {
             <span class="font-mono-num">{criticalAlertCount()}</span>
           </button>
         </Show>
+
+        <button
+          type="button"
+          data-testid="topbar-arena-btn"
+          class="omnia-btn px-2 py-1 text-[11px] whitespace-nowrap shrink-0"
+          classList={{
+            'border-[var(--border-accent)] text-[var(--accent-cyan)] bg-[var(--accent-dim)]':
+              topMode() === 'chat' && workbenchTab() === 'arena',
+          }}
+          title="Open AI Studio & Multi-Model Parallel Arena (Gems, Structured Output, Elo Leaderboard)"
+          onClick={() => openWorkbench('arena')}
+        >
+          <Swords class="w-3.5 h-3.5 text-[var(--accent-amber)]" />
+          <span class="hidden lg:inline">AI Studio &amp; Arena</span>
+        </button>
 
         <button
           type="button"

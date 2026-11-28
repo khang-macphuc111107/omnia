@@ -6,9 +6,11 @@ import type {
   AttachmentItem,
   BrowserSessionState,
   BtwThread,
+  ChatBranchVariant,
   ChatTurnMessage,
   DualScopeModelConfig,
   EffortLevel,
+  FocusMode,
   HealthSnapshot,
   ModelConfigEntry,
   ObservabilitySubTab,
@@ -21,6 +23,7 @@ import type {
   SessionRecord,
   SmartAlert,
   SteerQueueEntry,
+  StudioPersona,
   ThemeId,
   ThinkMode,
   TopMode,
@@ -28,6 +31,7 @@ import type {
   WorkspaceEntry,
 } from '@/types';
 import type { PreviewDocumentData } from '@/components/common/SourcePreviewModal';
+import type { CanvasArtifact } from '@/components/chat/ArtifactCanvasDrawer';
 import { downloadTextFile, maskJson, maskText } from '@/utils/privacy';
 
 // Global Shell state — `topMode` starts on `'chat'` and is NEVER mutated by async startup hydration
@@ -41,14 +45,152 @@ export const [commandPaletteOpen, setCommandPaletteOpen] = createSignal<boolean>
 export const [btwDrawerOpen, setBtwDrawerOpen] = createSignal<boolean>(false);
 export const [steerDrawerOpen, setSteerDrawerOpen] = createSignal<boolean>(false);
 export const [researchDrawerOpen, setResearchDrawerOpen] = createSignal<boolean>(false);
+export const [canvasDrawerOpen, setCanvasDrawerOpen] = createSignal<boolean>(false);
+export const [activeCanvasArtifact, setActiveCanvasArtifact] = createSignal<CanvasArtifact | null>(null);
 export const [focusedCitationId, setFocusedCitationId] = createSignal<string | null>(null);
 export const [activePreviewDoc, setActivePreviewDoc] = createSignal<PreviewDocumentData | null>(null);
 export const [wsConnected, setWsConnected] = createSignal<boolean>(false);
 
-// Default-ON Steer #18-#20 Adaptive Intelligence Toggles
+// Default-ON Steer #18-#23 Adaptive Intelligence & Focus Mode Toggles
+export const [focusMode, setFocusMode] = createSignal<FocusMode>('solo');
 export const [researchMode, setResearchMode] = createSignal<ResearchMode>('auto');
 export const [thinkMode, setThinkMode] = createSignal<ThinkMode>('auto');
 export const [ragScope, setRagScope] = createSignal<RagScope>('local_global');
+
+export const DEFAULT_STUDIO_PERSONAS: StudioPersona[] = [
+  {
+    id: 'gem-principal-architect',
+    name: 'Principal Architect',
+    icon: 'compass',
+    description: 'Systems architecture, tradeoffs, Rust/Win32 performance, and zero-regression reviews.',
+    modelId: 'htmustc-claude/claude-opus-5-5',
+    effort: 'max',
+    temperature: 0.3,
+    topP: 0.95,
+    systemPrompt: 'Act as a Principal Systems Architect. Prioritize invariants, clean interfaces, concrete complexity tradeoffs, and verifiable acceptance checks.',
+    focusMode: 'solo',
+  },
+  {
+    id: 'gem-deep-researcher',
+    name: 'Deep Researcher',
+    icon: 'globe',
+    description: 'Perplexity + Gemini Deep Research synthesis with strict [S###] inline citations and evidence grading.',
+    modelId: 'htmustc-gemini/gemini-4-carbon',
+    effort: 'max',
+    temperature: 0.2,
+    topP: 0.9,
+    systemPrompt: 'Act as a rigorous research synthesizer. Cite every non-trivial claim with [S###]/[G###], separate observed facts from inferences, and flag blocked sources honestly.',
+    focusMode: 'deep',
+  },
+  {
+    id: 'gem-code-reviewer',
+    name: 'Code Reviewer',
+    icon: 'shield',
+    description: 'Security, concurrency, SQLite WAL, and edge-case bug hunting with crisp unified diffs.',
+    modelId: 'htmustc-openai/gpt-6.2-sol',
+    effort: 'max',
+    temperature: 0.1,
+    topP: 0.9,
+    systemPrompt: 'Act as an adversarial senior code reviewer. Hunt for race conditions, injection/framing bugs, resource leaks, and silent regressions with exact file:line citations.',
+    focusMode: 'code',
+  },
+  {
+    id: 'gem-math-proof-lab',
+    name: 'Math & Proof Lab',
+    icon: 'sigma',
+    description: 'Formal derivations, counterexamples, and clean KaTeX LaTeX notation.',
+    modelId: 'htmustc-claude/claude-sonnet-5-5',
+    effort: 'max',
+    temperature: 0.15,
+    topP: 0.9,
+    systemPrompt: 'Act as a mathematical physicist and formal verifier. Derive results step-by-step using clean LaTeX ($$...$$), state assumptions explicitly, and test edge cases.',
+    focusMode: 'academic',
+  },
+];
+
+export const [studioPersonas, setStudioPersonas] = createStore<StudioPersona[]>(DEFAULT_STUDIO_PERSONAS);
+export const [activePersonaId, setActivePersonaId] = createSignal<string | null>(null);
+
+export function activePersona(): StudioPersona | null {
+  const id = activePersonaId();
+  if (!id) return null;
+  return studioPersonas.find((p) => p.id === id) ?? null;
+}
+
+export function selectStudioPersona(id: string | null): void {
+  setActivePersonaId(id);
+  if (!id) {
+    flashNotice('Cleared active Gem / Persona');
+    return;
+  }
+  const p = studioPersonas.find((x) => x.id === id);
+  if (p) {
+    setFocusMode(p.focusMode);
+    if (p.modelId) setModelConfig('mainModel', p.modelId);
+    if (p.effort) setModelConfig('mainEffort', p.effort);
+    flashNotice(`Activated Gem: ${p.name} (${p.effort})`);
+  }
+}
+
+export async function refreshStudioPersonas(): Promise<void> {
+  const res = await api.listStudioPersonas();
+  if (res.ok) {
+    const raw = (res.data.personas ?? res.data.items ?? []) as Array<Record<string, unknown>>;
+    if (Array.isArray(raw) && raw.length > 0) {
+      setStudioPersonas(
+        raw.map((p, idx) => ({
+          id: String(p.id ?? `gem-${idx}`),
+          name: String(p.name ?? 'Omnia Gem'),
+          icon: String(p.icon ?? 'sparkles'),
+          description: String(p.description ?? ''),
+          modelId: String(p.modelId ?? p.model_id ?? modelConfig.mainModel),
+          effort: (String(p.effort ?? 'max') as EffortLevel),
+          temperature: Number(p.temperature ?? 0.3),
+          topP: Number(p.topP ?? p.top_p ?? 0.95),
+          systemPrompt: String(p.systemPrompt ?? p.system_prompt ?? ''),
+          focusMode: (String(p.focusMode ?? p.focus_mode ?? 'solo') as FocusMode),
+          pinnedFiles: Array.isArray(p.pinnedFiles ?? p.pinned_files)
+            ? ((p.pinnedFiles ?? p.pinned_files) as unknown[]).map(String)
+            : [],
+        })),
+      );
+    }
+  }
+}
+
+export function openCanvasArtifact(art: CanvasArtifact): void {
+  const withVersion: CanvasArtifact = {
+    ...art,
+    versions:
+      art.versions && art.versions.length > 0
+        ? art.versions
+        : [{ label: 'v1', content: art.content, ts: Date.now() }],
+  };
+  setActiveCanvasArtifact(withVersion);
+  setCanvasDrawerOpen(true);
+}
+
+export function updateCanvasArtifactContent(content: string, label?: string): void {
+  const cur = activeCanvasArtifact();
+  if (!cur) return;
+  const prevVersions = cur.versions ?? [{ label: 'v1', content: cur.content, ts: Date.now() }];
+  const nextLabel = label || `v${prevVersions.length + 1}`;
+  setActiveCanvasArtifact({
+    ...cur,
+    content,
+    versions: [...prevVersions, { label: nextLabel, content, ts: Date.now() }],
+  });
+}
+
+export function refineCanvasArtifact(instruction: string, currentContent: string): void {
+  const cur = activeCanvasArtifact();
+  const title = cur?.title || 'Artifact';
+  const kind = cur?.kind || 'code';
+  const prompt = `Refine ${kind} artifact "${title}" with this instruction: ${instruction}\n\n\`\`\`${cur?.language || kind}\n${currentContent}\n\`\`\``;
+  setTopMode('chat');
+  setWorkbenchTab('chat');
+  void sendComposerMessage(prompt);
+}
 export const [researchSources, setResearchSources] = createStore<ResearchSourceRecord[]>([]);
 export const [researchProgress, setResearchProgress] = createStore<ResearchProgressState>({
   active: false,
@@ -175,7 +317,7 @@ export const [activeSessionId, setActiveSessionId] = createSignal<string>('sessi
 export const [rewindPreview, setRewindPreview] = createSignal<RewindPreviewState | null>(null);
 
 // Chat & Agent Streaming State
-export const [agentRunMode, setAgentRunMode] = createSignal<AgentRunMode>('builder');
+export const [agentRunMode, setAgentRunMode] = createSignal<AgentRunMode>('solo');
 export const [messages, setMessages] = createStore<ChatTurnMessage[]>([]);
 export const [isStreaming, setIsStreaming] = createSignal<boolean>(false);
 export const [steerQueue, setSteerQueue] = createStore<SteerQueueEntry[]>([]);
@@ -381,6 +523,215 @@ export async function runQuickDeepResearch(query: string, scope: 'web' | 'academ
   }
 }
 
+export async function runPerplexityResearchAnswer(
+  query: string,
+  focus: 'web' | 'academic' | 'code' | 'rag' | 'deep' = 'web',
+  planSteps?: string[],
+): Promise<void> {
+  const clean = query.trim();
+  if (!clean) return;
+  const startedAt = Date.now();
+  setTopMode('chat');
+  setWorkbenchTab('chat');
+  setResearchProgress({ active: true, stage: `answering:${focus}`, detail: clean, searchedCount: 0, extractedCount: 0 });
+
+  const userMsg: ChatTurnMessage = {
+    id: `u-${Date.now()}`,
+    role: 'user',
+    content: clean,
+    mode: agentRunMode(),
+    model: modelConfig.mainModel,
+    effort: modelConfig.mainEffort,
+    timestamp: Date.now(),
+    turnIdx: messages.length,
+  };
+  const assistantId = `a-${Date.now() + 1}`;
+  const assistantMsg: ChatTurnMessage = {
+    id: assistantId,
+    role: 'assistant',
+    content: '',
+    model: `Perplexity-Engine (${focus})`,
+    effort: modelConfig.mainEffort,
+    mode: agentRunMode(),
+    timestamp: Date.now() + 1,
+    turnIdx: messages.length + 1,
+    streaming: true,
+  };
+  setMessages([...messages, userMsg, assistantMsg]);
+
+  const res = await api.runResearchAnswer({
+    query: clean,
+    focus,
+    planSteps: planSteps && planSteps.length > 0 ? planSteps : undefined,
+  });
+  await refreshResearchSources();
+
+  const idx = messages.findIndex((m) => m.id === assistantId);
+  if (res.ok) {
+    const d = res.data;
+    const answerMd = String(d.answer_markdown ?? d.answerMarkdown ?? d.answer ?? 'Research answer synthesized.');
+    const rawSources = (d.sources ?? []) as Array<Record<string, unknown>>;
+    const normSources: ResearchSourceRecord[] = Array.isArray(rawSources)
+      ? rawSources.map((s, i) => ({
+          citationId: String(s.citationId ?? s.citation_id ?? s.id ?? `S${String(i + 1).padStart(3, '0')}`),
+          tier: String(s.tier ?? 'web'),
+          status: String(s.status ?? 'extracted'),
+          url: String(s.url ?? s.canonicalUrl ?? ''),
+          canonicalUrl: s.canonicalUrl ? String(s.canonicalUrl) : undefined,
+          title: s.title ? String(s.title) : undefined,
+          domain: s.domain ? String(s.domain) : undefined,
+          excerpt: s.excerpt ? String(s.excerpt) : s.snippet ? String(s.snippet) : undefined,
+          content: s.content ? String(s.content) : undefined,
+          evidenceGrade: s.evidenceGrade ? String(s.evidenceGrade) : undefined,
+          blockedReason: s.blockedReason ? String(s.blockedReason) : undefined,
+        }))
+      : [];
+    const citations = Array.isArray(d.citations)
+      ? d.citations.map(String)
+      : normSources.map((s) => s.citationId);
+    const related = Array.isArray(d.related_questions ?? d.relatedQuestions)
+      ? ((d.related_questions ?? d.relatedQuestions) as unknown[]).map(String)
+      : [];
+    const elapsed = Date.now() - startedAt;
+    if (idx !== -1) {
+      setMessages(idx, {
+        ...messages[idx],
+        content: answerMd,
+        sources: normSources,
+        citations,
+        relatedQuestions: related,
+        durationMs: elapsed,
+        estimatedTokens: Math.max(1, Math.ceil(answerMd.length / 4)),
+        streaming: false,
+      });
+    }
+    setResearchProgress({
+      active: false,
+      stage: 'complete',
+      detail: `${normSources.length} sources synthesized (${focus})`,
+      searchedCount: normSources.length,
+      extractedCount: normSources.filter((s) => s.status === 'extracted').length,
+    });
+    flashNotice(`Research Answer ready (${normSources.length} sources · ${related.length} follow-ups)`);
+  } else {
+    if (idx !== -1) {
+      setMessages(idx, {
+        ...messages[idx],
+        error: `Research answer (${res.error.code}): ${res.error.message}`,
+        streaming: false,
+      });
+    }
+    setResearchProgress({ active: false, stage: 'error', detail: res.error.message, searchedCount: 0, extractedCount: 0 });
+  }
+}
+
+export async function editAndBranchMessage(msgIdx: number, nextContent: string): Promise<void> {
+  const clean = nextContent.trim();
+  const target = messages[msgIdx];
+  if (!target || !clean) return;
+  const existingBranches: ChatBranchVariant[] =
+    target.branches && target.branches.length > 0
+      ? [...target.branches]
+      : [
+          {
+            id: `${target.id}-v1`,
+            content: target.content,
+            thinking: target.thinking,
+            model: target.model,
+            effort: target.effort,
+            createdAt: target.timestamp,
+          },
+        ];
+  const newBranch: ChatBranchVariant = {
+    id: `${target.id}-v${existingBranches.length + 1}`,
+    content: clean,
+    model: target.model,
+    effort: target.effort,
+    createdAt: Date.now(),
+  };
+  const allBranches = [...existingBranches, newBranch];
+  setMessages(msgIdx, {
+    ...target,
+    content: clean,
+    branches: allBranches,
+    activeBranchIdx: allBranches.length - 1,
+  });
+  void api.createSessionBranch(activeSessionId(), {
+    parentMsgId: target.id,
+    role: target.role,
+    content: clean,
+    modelId: target.model,
+    effort: target.effort,
+  });
+  flashNotice(`Branched turn T${msgIdx} (${allBranches.length}/${allBranches.length})`);
+  if (target.role === 'user') {
+    await sendComposerMessage(clean);
+  }
+}
+
+export async function regenerateAssistantTurn(msgIdx: number): Promise<void> {
+  const target = messages[msgIdx];
+  if (!target || target.role !== 'assistant') return;
+  let userPrompt = '';
+  for (let i = msgIdx - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') {
+      userPrompt = messages[i].content;
+      break;
+    }
+  }
+  if (!userPrompt) {
+    flashNotice('No preceding user prompt found to regenerate');
+    return;
+  }
+  const existingBranches: ChatBranchVariant[] =
+    target.branches && target.branches.length > 0
+      ? [...target.branches]
+      : [
+          {
+            id: `${target.id}-v1`,
+            content: target.content,
+            thinking: target.thinking,
+            model: target.model,
+            effort: target.effort,
+            createdAt: target.timestamp,
+            toolCalls: target.toolCalls,
+            citations: target.citations,
+            relatedQuestions: target.relatedQuestions,
+          },
+        ];
+  setMessages(msgIdx, {
+    ...target,
+    branches: existingBranches,
+    activeBranchIdx: existingBranches.length - 1,
+  });
+  void api.createSessionBranch(activeSessionId(), {
+    parentMsgId: target.id,
+    role: 'assistant',
+    content: target.content,
+    modelId: target.model,
+    effort: target.effort,
+    thinkingText: target.thinking,
+  });
+  flashNotice(`Saved branch ${existingBranches.length} & regenerating response...`);
+  await sendComposerMessage(userPrompt);
+}
+
+export function switchMessageBranch(msgIdx: number, delta: number): void {
+  const target = messages[msgIdx];
+  if (!target || !target.branches || target.branches.length <= 1) return;
+  const cur = target.activeBranchIdx ?? target.branches.length - 1;
+  const next = (cur + delta + target.branches.length) % target.branches.length;
+  const variant = target.branches[next];
+  setMessages(msgIdx, {
+    ...target,
+    content: variant.content,
+    thinking: variant.thinking ?? target.thinking,
+    model: variant.model ?? target.model,
+    effort: variant.effort ?? target.effort,
+    activeBranchIdx: next,
+  });
+}
+
 export async function refreshSteerQueue(): Promise<void> {
   const res = await api.listSteerQueue();
   if (res.ok) {
@@ -500,7 +851,7 @@ export async function compactActiveSession(): Promise<void> {
   }
 }
 
-export function exportActiveSession(format: 'json' | 'markdown'): void {
+export function exportActiveSession(format: 'json' | 'markdown' | 'html'): void {
   const masked = privacyMask();
   const payload = maskJson(
     {
@@ -520,6 +871,21 @@ export function exportActiveSession(format: 'json' | 'markdown'): void {
   );
   if (format === 'json') {
     downloadTextFile(`omnia-session-${activeSessionId()}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
+  } else if (format === 'html') {
+    const esc = (s: string) =>
+      s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+    const html = [
+      '<!doctype html><html lang="en"><head><meta charset="utf-8">',
+      `<title>Omnia Session ${esc(maskText(activeSessionId(), masked))}</title>`,
+      '<style>body{font-family:system-ui,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;background:#080A0F;color:#E6EDF3;line-height:1.6}article{border:1px solid #2A3241;border-radius:8px;padding:1rem;margin:1rem 0;background:#10141D}h1{font-size:1.3rem}pre{white-space:pre-wrap;font-family:ui-monospace,monospace}</style></head><body>',
+      `<h1>Omnia Session Export (${esc(maskText(activeSessionId(), masked))})</h1>`,
+      `<p>Exported: ${esc(payload.exportedAt)} · Privacy Mask: ${masked ? 'ON' : 'OFF'} · Model: ${esc(modelConfig.mainModel)}</p>`,
+      ...payload.messages.map(
+        (m, i) => `<article><strong>Turn ${i} — ${esc(m.role.toUpperCase())}</strong><pre>${esc(m.content)}</pre></article>`,
+      ),
+      '</body></html>',
+    ].join('\n');
+    downloadTextFile(`omnia-session-${activeSessionId()}.html`, html, 'text/html;charset=utf-8');
   } else {
     const md = [
       `# Omnia Session Export (${maskText(activeSessionId(), masked)})`,
@@ -730,6 +1096,38 @@ export async function handleSlashCommand(rawPrompt: string): Promise<boolean> {
     openWorkbench('knowledge');
     return true;
   }
+  if (cmd === '/arena') {
+    setComposerDraft('');
+    openWorkbench('arena');
+    return true;
+  }
+  if (cmd === '/canvas') {
+    setComposerDraft('');
+    setCanvasDrawerOpen(true);
+    return true;
+  }
+  if (cmd === '/focus') {
+    setComposerDraft('');
+    const f = arg.toLowerCase();
+    if (f === 'solo' || f === 'web' || f === 'academic' || f === 'code' || f === 'rag' || f === 'deep') {
+      setFocusMode(f);
+      flashNotice(`Focus mode set to ${f.toUpperCase()}`);
+    } else {
+      flashNotice('Usage: /focus solo|web|academic|code|rag|deep');
+    }
+    return true;
+  }
+  if (cmd === '/persona') {
+    setComposerDraft('');
+    if (!arg || arg === 'none' || arg === 'clear') {
+      selectStudioPersona(null);
+    } else {
+      const hit = studioPersonas.find((p) => p.name.toLowerCase().includes(arg.toLowerCase()) || p.id === arg);
+      if (hit) selectStudioPersona(hit.id);
+      else flashNotice(`No Gem matched "${arg}"`);
+    }
+    return true;
+  }
   return false;
 }
 
@@ -769,6 +1167,13 @@ export async function sendComposerMessage(overridePrompt?: string): Promise<void
   }
 
   if (!overridePrompt && (await handleSlashCommand(prompt))) {
+    return;
+  }
+
+  // Perplexity Web / Academic Focus Mode routes straight to the Answer Engine
+  if (!overridePrompt && !isStreaming() && (focusMode() === 'web' || focusMode() === 'academic')) {
+    setComposerDraft('');
+    await runPerplexityResearchAnswer(prompt, focusMode() as 'web' | 'academic');
     return;
   }
 
@@ -823,6 +1228,8 @@ export async function sendComposerMessage(overridePrompt?: string): Promise<void
     }
   };
 
+  const persona = activePersona();
+  const streamStartedAt = Date.now();
   try {
     await api.streamChatTurn(
       {
@@ -833,6 +1240,10 @@ export async function sendComposerMessage(overridePrompt?: string): Promise<void
         subagent_model: modelConfig.subagentModel,
         subagent_effort: modelConfig.subagentEffort,
         mode: agentRunMode(),
+        approval_mode: 'yolo',
+        focus_mode: focusMode(),
+        system_prompt: persona?.systemPrompt,
+        persona_id: persona?.id,
         research_mode: researchMode(),
         think_mode: thinkMode(),
         rag_scope: ragScope(),
@@ -941,9 +1352,16 @@ export async function sendComposerMessage(overridePrompt?: string): Promise<void
       updateAssistant((prev) => ({ ...prev, streaming: false }));
     }
   } finally {
+    const elapsedMs = Date.now() - streamStartedAt;
     setIsStreaming(false);
     currentStreamController = null;
-    updateAssistant((prev) => ({ ...prev, streaming: false }));
+    updateAssistant((prev) => ({
+      ...prev,
+      durationMs: prev.durationMs ?? elapsedMs,
+      estimatedTokens:
+        prev.estimatedTokens ?? Math.max(1, Math.ceil((prev.content.length + (prev.thinking?.length ?? 0)) / 4)),
+      streaming: false,
+    }));
   }
 }
 
@@ -1037,9 +1455,10 @@ export async function hydrateStudioStartup(): Promise<void> {
     }
   }
 
-  // Hydrate Steer Queue and Smart Alerts passively in background
+  // Hydrate Steer Queue, Smart Alerts, and Studio Personas passively in background
   void refreshSteerQueue();
   void refreshSmartAlerts();
+  void refreshStudioPersonas();
 
   // Subscribe to multiplexed /ws updates without changing topMode
   api.connectMultiplexedWs(

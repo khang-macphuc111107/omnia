@@ -1,47 +1,60 @@
-import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import {
   BookMarked,
   Brain,
   Cpu,
   Database,
+  Download,
   FilePlus2,
   GitBranch,
   Globe,
   ListOrdered,
+  Mic,
+  MicOff,
   Paperclip,
   Plus,
   Send,
   Sigma,
   Slash,
+  Sparkles,
   Square,
+  Swords,
   X,
   Zap,
 } from 'lucide-solid';
 import { api } from '@/api/client';
 import {
   abortActiveStream,
+  activePersona,
+  activePersonaId,
   activeSessionId,
   agentRunMode,
   attachments,
   composerCaret,
   composerDraft,
   enqueueAdditiveSteer,
+  exportActiveSession,
+  flashNotice,
+  focusMode,
   handleSlashCommand,
   isStreaming,
   modelCatalog,
   modelConfig,
   modelPickerTriggerSeq,
+  openWorkbench,
   pendingPasteChoice,
   ragScope,
   refreshResearchSources,
   researchMode,
   researchProgress,
   researchSources,
+  selectStudioPersona,
   sendComposerMessage,
   setAgentRunMode,
   setAttachments,
   setComposerCaret,
   setComposerDraft,
+  setFocusMode,
   setPendingPasteChoice,
   setRagScope,
   setResearchDrawerOpen,
@@ -49,14 +62,19 @@ import {
   setSteerDrawerOpen,
   setThinkMode,
   steerQueue,
+  studioPersonas,
   thinkMode,
   updateDualModelConfig,
 } from '@/state/studio';
-import type { AgentRunMode, AttachmentItem, EffortLevel, RagScope, ResearchMode, ThinkMode } from '@/types';
+import type { AgentRunMode, AttachmentItem, EffortLevel, FocusMode, RagScope, ResearchMode, ThinkMode } from '@/types';
 import { detectEncryptedArchive, sha256Hex } from '@/utils/crypto';
 import { LATEX_15_TEMPLATES } from '@/utils/markdown';
 
 const SLASH_COMMANDS = [
+  { cmd: '/arena', desc: 'Open AI Studio & Multi-Model Parallel Arena (Gems, Elo, Get Code)', immediate: true },
+  { cmd: '/canvas', desc: 'Open Live Interactive Artifacts Canvas & Preview Drawer', immediate: true },
+  { cmd: '/focus', desc: 'Switch focus mode: solo | web | academic | code | rag | deep', immediate: false },
+  { cmd: '/persona', desc: 'Activate an Omnia Gem / Persona (or /persona clear)', immediate: false },
   { cmd: '/research', desc: 'Run Deep Research & open Sources Ledger (Web + Academic)', immediate: false },
   { cmd: '/sources', desc: 'Open Sources (Searched, Viewed & Extracted) Drawer', immediate: true },
   { cmd: '/rag', desc: 'Open Persistent Local+Global RAG & Knowledge Vault', immediate: true },
@@ -81,15 +99,34 @@ const SLASH_COMMANDS = [
   { cmd: '/clear', desc: 'Clear current draft & attachment staging', immediate: true },
 ];
 
+const FOCUS_PILLS: Array<{ id: FocusMode | 'arena'; label: string; title: string }> = [
+  { id: 'solo', label: 'SOLO YOLO', title: 'Full-freedom SOLO YOLO agent mode (default)' },
+  { id: 'web', label: 'Perplexity Web', title: 'Live web search + cited answer engine with related follow-ups' },
+  { id: 'academic', label: 'Academic', title: 'arXiv / OpenAlex / PubMed academic synthesis' },
+  { id: 'deep', label: 'Deep Research', title: 'Multi-step Deep Research + Local & Global RAG synthesis' },
+  { id: 'code', label: 'Deep Think', title: 'High-effort multi-hypothesis engineering & falsification' },
+  { id: 'arena', label: 'Arena', title: 'Open Multi-Model Parallel Arena & Parameter Lab' },
+];
+
 export function Composer() {
   let textareaRef: HTMLTextAreaElement | undefined;
   let fileInputRef: HTMLInputElement | undefined;
+  let recognitionRef: { stop: () => void } | null = null;
 
   const [isComposing, setIsComposing] = createSignal(false);
   const [latexOpen, setLatexOpen] = createSignal(false);
   const [modelPickerOpen, setModelPickerOpen] = createSignal(false);
   const [slashIndex, setSlashIndex] = createSignal(0);
   const [attachMode, setAttachMode] = createSignal<'tray' | 'inline'>('tray');
+  const [listening, setListening] = createSignal(false);
+
+  onCleanup(() => {
+    try {
+      recognitionRef?.stop();
+    } catch {
+      // ignore speech cleanup errors
+    }
+  });
 
   let lastModelTrigger = modelPickerTriggerSeq();
   createEffect(() => {
@@ -131,7 +168,6 @@ export function Composer() {
     const sha256 = await sha256Hex(bytes);
     const encryptedUnresolved = detectEncryptedArchive(name, bytes);
 
-    // SHA-256 content-addressed deduplication
     const existing = attachments.find((a) => a.sha256 === sha256);
     if (existing) {
       if (placement === 'inline') {
@@ -212,6 +248,59 @@ export function Composer() {
     }
   };
 
+  const toggleVoiceDictation = () => {
+    if (listening()) {
+      try {
+        recognitionRef?.stop();
+      } catch {
+        // ignore stop error
+      }
+      setListening(false);
+      return;
+    }
+    const w = window as unknown as Record<string, unknown>;
+    const SpeechRec = (w.SpeechRecognition ?? w.webkitSpeechRecognition) as
+      | (new () => {
+          lang: string;
+          interimResults: boolean;
+          continuous: boolean;
+          onresult: ((ev: { results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
+          onerror: (() => void) | null;
+          onend: (() => void) | null;
+          start: () => void;
+          stop: () => void;
+        })
+      | undefined;
+    if (!SpeechRec) {
+      flashNotice('Offline voice dictation unavailable in this browser runtime');
+      return;
+    }
+    try {
+      const rec = new SpeechRec();
+      rec.lang = navigator.language || 'en-US';
+      rec.interimResults = false;
+      rec.continuous = false;
+      rec.onresult = (ev) => {
+        let heard = '';
+        for (let i = 0; i < ev.results.length; i++) {
+          heard += ev.results[i][0].transcript;
+        }
+        if (heard.trim()) insertAtCaret(`${heard.trim()} `);
+      };
+      rec.onerror = () => {
+        setListening(false);
+        flashNotice('Voice dictation paused (microphone permission or offline speech engine)');
+      };
+      rec.onend = () => setListening(false);
+      recognitionRef = rec;
+      setListening(true);
+      rec.start();
+    } catch {
+      setListening(false);
+      flashNotice('Voice dictation could not start');
+    }
+  };
+
   const activeMainModel = createMemo(
     () => modelCatalog.find((m) => m.spec === modelConfig.mainModel) ?? modelCatalog[0],
   );
@@ -220,6 +309,23 @@ export function Composer() {
   );
 
   const isBtwPrefix = createMemo(() => /^btw:\s*/i.test(composerDraft().trim()));
+
+  // Live Pre-Send Token & 6-Decimal USD Estimator
+  const preSendEstimate = createMemo(() => {
+    const textChars = composerDraft().length + (activePersona()?.systemPrompt.length ?? 0);
+    const attTokens = attachments.reduce((acc, a) => acc + Math.ceil(a.sizeBytes / 4), 0);
+    const inputTokens = Math.max(1, Math.ceil(textChars / 4) + attTokens);
+    const spec = modelConfig.mainModel.toLowerCase();
+    const ratePerMillion = spec.includes('opus')
+      ? 15
+      : spec.includes('flash')
+        ? 0.35
+        : spec.includes('gpt')
+          ? 2.5
+          : 3.0;
+    const estUsd = (inputTokens / 1_000_000) * ratePerMillion;
+    return { inputTokens, estUsd };
+  });
 
   const cycleResearchMode = () => {
     const order: ResearchMode[] = ['auto', 'deep', 'off'];
@@ -236,11 +342,113 @@ export function Composer() {
     setRagScope(order[(order.indexOf(ragScope()) + 1) % order.length]);
   };
 
+  const selectFocusPill = (id: FocusMode | 'arena') => {
+    if (id === 'arena') {
+      openWorkbench('arena');
+      return;
+    }
+    setFocusMode(id);
+    if (id === 'deep') setResearchMode('deep');
+    if (id === 'code') setThinkMode('deep');
+    if (id === 'solo') setAgentRunMode('solo');
+  };
+
   return (
     <section
       data-testid="band-composer"
       class="shrink-0 px-4 pb-3 pt-2 max-w-4xl w-full mx-auto relative"
     >
+      {/* Zero-Tab-Hunting Power Bar: Focus Pills, Gem Selector, Pre-Send Cost & Thread Export */}
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-1.5 text-[11px] min-w-0">
+        <div data-testid="composer-focus-pills" class="flex flex-wrap items-center gap-1 min-w-0">
+          <For each={FOCUS_PILLS}>
+            {(pill) => {
+              const active = () => pill.id !== 'arena' && focusMode() === pill.id;
+              return (
+                <button
+                  type="button"
+                  data-focus-pill={pill.id}
+                  aria-pressed={active()}
+                  title={pill.title}
+                  onClick={() => selectFocusPill(pill.id)}
+                  class="px-2 py-0.5 rounded border text-[10.5px] font-medium cursor-pointer flex items-center gap-1"
+                  classList={{
+                    'border-[var(--border-accent)] bg-[var(--accent-dim)] text-[var(--accent-cyan)] font-semibold': active(),
+                    'border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]': !active(),
+                  }}
+                >
+                  <Show when={pill.id === 'arena'}>
+                    <Swords class="w-3 h-3 text-[var(--accent-amber)]" />
+                  </Show>
+                  <span>{pill.label}</span>
+                </button>
+              );
+            }}
+          </For>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-1.5 shrink-0">
+          {/* Omnia Gem / Persona Quick-Selector */}
+          <div class="flex items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-1.5 py-0.5">
+            <Sparkles class="w-3 h-3 text-[var(--accent-amber)] shrink-0" />
+            <select
+              aria-label="Omnia Gem Persona"
+              data-testid="composer-persona-select"
+              value={activePersonaId() ?? ''}
+              onChange={(e) => selectStudioPersona(e.currentTarget.value || null)}
+              class="bg-transparent text-[10.5px] text-[var(--ink-primary)] outline-none cursor-pointer max-w-[130px]"
+            >
+              <option value="" class="bg-[var(--bg-panel)]">Default Agent</option>
+              <For each={studioPersonas}>
+                {(p) => (
+                  <option value={p.id} class="bg-[var(--bg-panel)]">
+                    Gem: {p.name}
+                  </option>
+                )}
+              </For>
+            </select>
+          </div>
+
+          {/* Live Pre-Send Token & 6-Decimal USD Estimator */}
+          <span
+            data-testid="composer-pre-send-estimate"
+            class="omnia-badge font-mono-num text-[10px] text-[var(--ink-secondary)]"
+            title="Live pre-send input token & 6-decimal USD estimate"
+          >
+            ~{preSendEstimate().inputTokens} tok · ${preSendEstimate().estUsd.toFixed(6)}
+          </span>
+
+          {/* Export Thread MD / HTML / JSON */}
+          <div class="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-1 py-0.5 text-[10px] font-mono-num">
+            <Download class="w-3 h-3 text-[var(--status-emerald)] mr-0.5" />
+            <button
+              type="button"
+              class="px-1 hover:text-[var(--accent-cyan)] cursor-pointer"
+              title="Export thread as Markdown (honors Privacy Mask)"
+              onClick={() => exportActiveSession('markdown')}
+            >
+              MD
+            </button>
+            <button
+              type="button"
+              class="px-1 hover:text-[var(--accent-cyan)] cursor-pointer"
+              title="Export thread as standalone offline HTML"
+              onClick={() => exportActiveSession('html')}
+            >
+              HTML
+            </button>
+            <button
+              type="button"
+              class="px-1 hover:text-[var(--accent-cyan)] cursor-pointer"
+              title="Export thread as JSON"
+              onClick={() => exportActiveSession('json')}
+            >
+              JSON
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Live Deep Research Multi-Stage Progress Strip */}
       <Show when={researchProgress.active}>
         <button
@@ -402,10 +610,10 @@ export function Composer() {
       {/* Dual-Scope Main vs Subagent Model & 5-Level Effort Popover */}
       <Show when={modelPickerOpen()}>
         <div class="mb-2 p-3 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-[var(--shadow-md)] grid grid-cols-1 sm:grid-cols-2 gap-3 text-[12px]">
-          <div class="space-y-1.5">
+          <div class="space-y-1.5 min-w-0">
             <div class="font-semibold text-[var(--accent-cyan)] flex items-center gap-1.5">
               <Cpu class="w-3.5 h-3.5" />
-              <span>Main Agent Model & Effort</span>
+              <span>Main Agent Model &amp; Effort</span>
             </div>
             <select
               value={modelConfig.mainModel}
@@ -437,7 +645,7 @@ export function Composer() {
             </div>
           </div>
 
-          <div class="space-y-1.5">
+          <div class="space-y-1.5 min-w-0">
             <div class="font-semibold text-[var(--accent-amber)] flex items-center justify-between gap-1.5">
               <span class="flex items-center gap-1.5">
                 <GitBranch class="w-3.5 h-3.5" />
@@ -555,20 +763,32 @@ export function Composer() {
 
         {/* Composer Bottom Toolbar */}
         <div class="px-3 py-2 border-t border-[var(--border-subtle)] bg-[var(--bg-rail)] flex flex-wrap items-center justify-between gap-2">
-          <div class="flex flex-wrap items-center gap-1.5">
-            {/* Trae Chat / Builder / SOLO Progression */}
-            <div class="inline-flex rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px] font-semibold">
-              {(['chat', 'builder', 'solo'] as AgentRunMode[]).map((m) => (
+          <div class="flex flex-wrap items-center gap-1.5 min-w-0">
+            {/* Trae Chat / Builder / SOLO Progression (Default: SOLO = YOLO · Turbo · Full Access · Auto-Approve) */}
+            <div
+              class="inline-flex rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px] font-semibold"
+              title="Execution Mode — defaults to SOLO (YOLO · Turbo · Full Access · Auto-Approve)"
+            >
+              {(
+                [
+                  { id: 'chat', title: 'Chat (Conversational · Auto-Approve YOLO)' },
+                  { id: 'builder', title: 'Builder (Guided Tools · Auto-Approve YOLO)' },
+                  { id: 'solo', title: 'SOLO (YOLO · Turbo · Full Access · Auto-Approve)' },
+                ] as Array<{ id: AgentRunMode; title: string }>
+              ).map((m) => (
                 <button
                   type="button"
-                  onClick={() => setAgentRunMode(m)}
+                  data-run-mode={m.id}
+                  aria-pressed={agentRunMode() === m.id}
+                  title={m.title}
+                  onClick={() => setAgentRunMode(m.id)}
                   class="px-2 py-0.5 rounded cursor-pointer uppercase"
                   classList={{
-                    'bg-[var(--bg-elevated)] text-[var(--accent-cyan)]': agentRunMode() === m,
-                    'text-[var(--ink-muted)] hover:text-[var(--ink-primary)]': agentRunMode() !== m,
+                    'bg-[var(--bg-elevated)] text-[var(--accent-cyan)]': agentRunMode() === m.id,
+                    'text-[var(--ink-muted)] hover:text-[var(--ink-primary)]': agentRunMode() !== m.id,
                   }}
                 >
-                  {m}
+                  {m.id}
                 </button>
               ))}
             </div>
@@ -633,6 +853,20 @@ export function Composer() {
               {attachMode() === 'tray' ? <Plus class="w-3 h-3" /> : <FilePlus2 class="w-3 h-3" />}
             </button>
 
+            {/* Voice Dictation (SpeechRecognition with graceful offline fallback) */}
+            <button
+              type="button"
+              data-testid="composer-voice-btn"
+              onClick={toggleVoiceDictation}
+              class="omnia-btn px-2 py-1 text-[10.5px]"
+              classList={{
+                'border-[var(--status-coral)] text-[var(--status-coral)] bg-[var(--status-coral-dim)]': listening(),
+              }}
+              title="Voice Dictation (browser SpeechRecognition with offline fallback)"
+            >
+              {listening() ? <MicOff class="w-3.5 h-3.5" /> : <Mic class="w-3.5 h-3.5" />}
+            </button>
+
             {/* Default-ON Adaptive Intelligence Toggles: Research, Deep Think, Persistent RAG & Sources */}
             <button
               type="button"
@@ -691,7 +925,7 @@ export function Composer() {
             </button>
           </div>
 
-          <div class="flex items-center gap-1.5">
+          <div class="flex items-center gap-1.5 shrink-0">
             <Show when={composerDraft().trim().length > 0 && !isStreaming()}>
               <button
                 type="button"

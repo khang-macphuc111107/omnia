@@ -109,7 +109,13 @@ pub(crate) fn new_acp_state(
         .ok();
     let env_auto_approve = std::env::var("OMNIA_ACP_AUTO_APPROVE")
         .ok()
-        .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
+        .map(|v| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true);
     AcpSessionState {
         sessions: Arc::new(AsyncMutex::new(HashMap::new())),
         store,
@@ -714,7 +720,8 @@ pub(crate) async fn dispatch_rpc(
             };
             let opt_in_auto = params
                 .get("autoApprove")
-                .map_or(state.env_auto_approve, |v| v.as_bool().unwrap_or(false));
+                .and_then(Value::as_bool)
+                .unwrap_or(state.env_auto_approve);
             let approval_mode = match params.get("approvalMode") {
                 Some(value) => match value
                     .as_str()
@@ -733,11 +740,13 @@ pub(crate) async fn dispatch_rpc(
                 None if opt_in_auto => ApprovalMode::Yolo,
                 None => ApprovalMode::AlwaysAsk,
             };
-            let workspace_trusted = opt_in_auto
-                || params
-                    .get("workspaceTrusted")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+            let workspace_trusted = params
+                .get("workspaceTrusted")
+                .and_then(Value::as_bool)
+                .unwrap_or(matches!(
+                    approval_mode,
+                    ApprovalMode::Yolo | ApprovalMode::Write
+                ));
             let model = params
                 .get("model")
                 .and_then(|v| v.as_str())
@@ -2234,5 +2243,74 @@ mod tests {
         );
 
         srv.abort();
+    }
+
+    #[tokio::test]
+    async fn acp_default_session_uses_yolo_full_access_and_supports_strict_opt_in() {
+        let tmp = std::env::temp_dir().join(format!("acp-yolo-def-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let state = AcpSessionState {
+            sessions: Default::default(),
+            store: None,
+            secret_key: None,
+            default_model: Some("openai/offline".into()),
+            default_base_url: Some("http://127.0.0.1:1/v1".into()),
+            default_api_key: Some("fixture-offline-key".into()),
+            env_auto_approve: true,
+            history_root: None,
+            stdio_replay: false,
+            perm_emitter: None,
+            pending_perms: Default::default(),
+        };
+        let rpc = |id: u64, method: &str, params: Value| {
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        };
+
+        // Bare session/new defaults to YOLO + trusted workspace.
+        let r_def = dispatch_rpc(rpc(1, "session/new", json!({"cwd": tmp})), &state, None)
+            .await
+            .unwrap();
+        assert_eq!(r_def["result"]["modes"]["currentModeId"], "yolo");
+        let sid_def = r_def["result"]["sessionId"].as_str().unwrap();
+        {
+            let entry = state.sessions.lock().await.get(sid_def).unwrap().clone();
+            let eng = entry.0.lock().await;
+            assert_eq!(eng.tool_runtime.approval_mode, ApprovalMode::Yolo);
+            assert!(eng.tool_runtime.workspace_trusted);
+        }
+
+        // Explicit opt-in strict mode (`autoApprove: false` / `approvalMode: "plan"`) restricts cleanly.
+        let r_ask = dispatch_rpc(
+            rpc(2, "session/new", json!({"cwd": tmp, "autoApprove": false})),
+            &state,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r_ask["result"]["modes"]["currentModeId"], "default");
+        let sid_ask = r_ask["result"]["sessionId"].as_str().unwrap();
+        {
+            let entry = state.sessions.lock().await.get(sid_ask).unwrap().clone();
+            let eng = entry.0.lock().await;
+            assert_eq!(eng.tool_runtime.approval_mode, ApprovalMode::AlwaysAsk);
+            assert!(!eng.tool_runtime.workspace_trusted);
+        }
+
+        let r_plan = dispatch_rpc(
+            rpc(3, "session/new", json!({"cwd": tmp, "approvalMode": "plan"})),
+            &state,
+            None,
+        )
+        .await
+        .unwrap();
+        let sid_plan = r_plan["result"]["sessionId"].as_str().unwrap();
+        {
+            let entry = state.sessions.lock().await.get(sid_plan).unwrap().clone();
+            let eng = entry.0.lock().await;
+            assert_eq!(eng.tool_runtime.approval_mode, ApprovalMode::Plan);
+            assert!(!eng.tool_runtime.workspace_trusted);
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -12,7 +12,7 @@ use crate::edit::{
     parse_hashline_anchor, strip_accidental_hashline_prefixes,
 };
 use crate::graph_locator::verify_syntax_delta;
-use crate::path_guard::ensure_within_workspace;
+use crate::path_guard::resolve_tool_path;
 use crate::sanitizer::atomic_write_bytes;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -279,6 +279,19 @@ enum PlannedWrite {
 pub fn apply_codex_patch<F>(
     workspace_root: &Path,
     patch_text: &str,
+    authorize: F,
+) -> Result<ApplyPatchReport>
+where
+    F: FnMut(&str, &Path) -> Result<()>,
+{
+    apply_codex_patch_with_unrestricted(workspace_root, patch_text, false, authorize)
+}
+
+/// Apply an OpenAI Codex patch with explicit path containment policy (`unrestricted = true` in YOLO mode).
+pub fn apply_codex_patch_with_unrestricted<F>(
+    workspace_root: &Path,
+    patch_text: &str,
+    unrestricted: bool,
     mut authorize: F,
 ) -> Result<ApplyPatchReport>
 where
@@ -303,7 +316,7 @@ where
     for op in &ops {
         match op {
             FilePatchOp::Add { path, content } => {
-                let abs = ensure_within_workspace(workspace_root, path)?;
+                let abs = resolve_tool_path(workspace_root, path, unrestricted)?;
                 authorize("patch", &abs)?;
                 if abs.exists() && virtual_files.get(&abs).map(|o| o.is_some()).unwrap_or(true) {
                     bail!("Add File target already exists: {path}");
@@ -326,7 +339,7 @@ where
                 report.touched_paths.push(abs);
             }
             FilePatchOp::Delete { path } => {
-                let abs = ensure_within_workspace(workspace_root, path)?;
+                let abs = resolve_tool_path(workspace_root, path, unrestricted)?;
                 authorize("patch", &abs)?;
                 let exists = virtual_files
                     .get(&abs)
@@ -347,7 +360,7 @@ where
                 move_to,
                 hunks,
             } => {
-                let src_abs = ensure_within_workspace(workspace_root, path)?;
+                let src_abs = resolve_tool_path(workspace_root, path, unrestricted)?;
                 authorize("patch", &src_abs)?;
 
                 let current_text = if let Some(entry) = virtual_files.get(&src_abs) {
@@ -382,7 +395,7 @@ where
                 };
 
                 if let Some(dst_rel) = move_to {
-                    let dst_abs = ensure_within_workspace(workspace_root, dst_rel)?;
+                    let dst_abs = resolve_tool_path(workspace_root, dst_rel, unrestricted)?;
                     authorize("patch", &dst_abs)?;
                     virtual_files.insert(src_abs.clone(), None);
                     virtual_files.insert(dst_abs.clone(), Some(updated_text));
@@ -734,5 +747,29 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unrestricted_codex_patch_edits_outside_workspace_while_strict_blocks() {
+        let root = std::env::temp_dir().join(format!("omni_patch_unr_{}", uuid::Uuid::new_v4()));
+        let ws = root.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+
+        let outside_patch = "\
+*** Begin Patch
+*** Add File: ../outside_note.txt
++hello outside
+*** End Patch";
+        assert!(apply_codex_patch(&ws, outside_patch, |_, _| Ok(())).is_err());
+
+        let rep = apply_codex_patch_with_unrestricted(&ws, outside_patch, true, |_, _| Ok(()))
+            .expect("unrestricted patch must allow outside-workspace paths");
+        assert_eq!(rep.added, vec!["../outside_note.txt"]);
+        assert_eq!(
+            fs::read_to_string(root.join("outside_note.txt")).unwrap(),
+            "hello outside\n"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

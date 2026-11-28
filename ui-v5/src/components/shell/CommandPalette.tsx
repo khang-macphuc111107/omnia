@@ -15,6 +15,7 @@ import {
   privacyMask,
   refreshResearchSources,
   researchDrawerOpen,
+  setCanvasDrawerOpen,
   setCommandPaletteOpen,
   setComposerDraft,
   setResearchDrawerOpen,
@@ -72,11 +73,22 @@ export function CommandPalette() {
       { id: 'mode-browser', title: 'Switch to Isolated CDP Browser', group: 'Mode', keywords: 'browser cdp virtual cursor chrome obs remote', shortcut: '3', run: () => setTopMode('browser') },
 
       // Workbenches
+      { id: 'wb-arena', title: 'Open AI Studio & Multi-Model Arena (Gems, Elo, Get Code)', group: 'Workbench', keywords: 'ai studio arena compare models elo gems personas structured output json schema get code', run: () => openWorkbench('arena') },
       { id: 'wb-lifecycle', title: 'Open Mission Lifecycle OS (12 Artifacts & DoD)', group: 'Workbench', keywords: 'mission lifecycle goal spec blueprint plan todo progress dod handoff', run: () => openWorkbench('lifecycle') },
       { id: 'wb-atelier', title: 'Open Atelier Notebook Studio', group: 'Workbench', keywords: 'gemini notebook ke nhau artifacts btw citations whisper', run: () => openWorkbench('atelier') },
       { id: 'wb-omnidrive', title: 'Open OmniDrive Pro Downloader', group: 'Workbench', keywords: 'download chunks hls dash ffmpeg drive wal sha256', run: () => openWorkbench('omnidrive') },
       { id: 'wb-swarm', title: 'Open Peer-Mesh Swarm & Graphify', group: 'Workbench', keywords: 'peer mesh graphify traversal ast disjoint paths', run: () => openWorkbench('swarm') },
       { id: 'wb-know', title: 'Open Memory Vault, RAG & MCP/Skills', group: 'Workbench', keywords: 'memory vault erasure rag mcp skills hooks recipes cordis hipporag', run: () => openWorkbench('knowledge') },
+      {
+        id: 'act-canvas-drawer',
+        title: 'Toggle Artifact Canvas & Live Preview Drawer',
+        group: 'Canvas',
+        keywords: 'canvas artifact live preview html svg mermaid code split diff',
+        run: () => {
+          setTopMode('chat');
+          setCanvasDrawerOpen(true);
+        },
+      },
       {
         id: 'act-sources-drawer',
         title: 'Toggle Deep Research & Sources Ledger Drawer',

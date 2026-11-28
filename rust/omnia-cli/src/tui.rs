@@ -71,6 +71,159 @@ pub struct CliSavedConfig {
     pub thinking: Option<String>,
     pub theme: Option<String>,
     pub privacy_mask: Option<bool>,
+    pub focus_mode: Option<String>,
+    pub persona: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TuiFocusMode {
+    #[default]
+    Code,
+    Web,
+    Academic,
+    Rag,
+    Deep,
+}
+
+impl TuiFocusMode {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "code" | "solo" | "default" | "builder" => Some(Self::Code),
+            "web" | "perplexity" | "search" => Some(Self::Web),
+            "academic" | "papers" | "scholar" | "literature" => Some(Self::Academic),
+            "rag" | "vault" | "local" => Some(Self::Rag),
+            "deep" | "deep-research" | "research" | "think" => Some(Self::Deep),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Web => "web",
+            Self::Academic => "academic",
+            Self::Rag => "rag",
+            Self::Deep => "deep",
+        }
+    }
+
+    const fn pill(self) -> &'static str {
+        match self {
+            Self::Code => "FOCUS:CODE",
+            Self::Web => "FOCUS:WEB",
+            Self::Academic => "FOCUS:ACAD",
+            Self::Rag => "FOCUS:RAG",
+            Self::Deep => "FOCUS:DEEP",
+        }
+    }
+
+    const fn prompt_directive(self) -> Option<&'static str> {
+        match self {
+            Self::Code => None,
+            Self::Web => Some("Focus=Web: prioritize live web search, canonical URLs, and inline [S###] citations."),
+            Self::Academic => Some("Focus=Academic: prioritize arXiv/OpenAlex/Europe PMC primary papers, DOIs, and evidence grades."),
+            Self::Rag => Some("Focus=RAG: prioritize persistent Local [S###] and Global [G###] vault chunks with exact provenance."),
+            Self::Deep => Some("Focus=Deep: combine multi-wave Deep Research with multi-hypothesis Deep Think falsification."),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TuiPersona {
+    slug: &'static str,
+    name: &'static str,
+    badge: &'static str,
+    default_model: &'static str,
+    effort: &'static str,
+    focus: TuiFocusMode,
+    guidance: &'static str,
+}
+
+const BUILTIN_PERSONAS: &[TuiPersona] = &[
+    TuiPersona {
+        slug: "architect",
+        name: "Principal Architect",
+        badge: "ARC",
+        default_model: "claude-sonnet-5-5",
+        effort: "max",
+        focus: TuiFocusMode::Code,
+        guidance: "Optimize for systems invariants, zero-bloat tradeoffs, failure modes, and clean interfaces.",
+    },
+    TuiPersona {
+        slug: "researcher",
+        name: "Deep Researcher",
+        badge: "RES",
+        default_model: "gemini-4-carbon",
+        effort: "max",
+        focus: TuiFocusMode::Deep,
+        guidance: "Verify every claim with primary sources, inline [S###]/[G###] citations, and a PRISMA Sources ledger.",
+    },
+    TuiPersona {
+        slug: "reviewer",
+        name: "Code Reviewer",
+        badge: "REV",
+        default_model: "gpt-6.2-sol",
+        effort: "xhigh",
+        focus: TuiFocusMode::Code,
+        guidance: "Audit adversarially for security, concurrency races, edge cases, and exact file:line defects.",
+    },
+    TuiPersona {
+        slug: "math",
+        name: "Math & Proof Lab",
+        badge: "MTH",
+        default_model: "claude-sonnet-5-5",
+        effort: "max",
+        focus: TuiFocusMode::Academic,
+        guidance: "Provide formal derivations, tight complexity bounds, and falsifiable counterexamples.",
+    },
+];
+
+fn find_builtin_persona(raw: &str) -> Option<&'static TuiPersona> {
+    let q = raw.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+    BUILTIN_PERSONAS
+        .iter()
+        .find(|p| p.slug == q || p.name.eq_ignore_ascii_case(&q) || p.badge.eq_ignore_ascii_case(&q))
+        .or_else(|| {
+            BUILTIN_PERSONAS
+                .iter()
+                .find(|p| p.name.to_ascii_lowercase().contains(&q) || p.slug.contains(&q))
+        })
+}
+
+fn format_persona_pill(active_slug: Option<&str>) -> String {
+    match active_slug.map(str::trim).filter(|s| !s.is_empty()) {
+        None => "GEM:STD".to_string(),
+        Some(slug) => match find_builtin_persona(slug) {
+            Some(p) => format!("GEM:{}", p.badge),
+            None => format!("GEM:{}", truncate_chars(slug, 10).to_ascii_uppercase()),
+        },
+    }
+}
+
+fn compose_prompt_with_focus_and_persona(
+    raw_prompt: &str,
+    focus: TuiFocusMode,
+    persona_slug: Option<&str>,
+) -> String {
+    let mut prefixes = Vec::new();
+    if let Some(dir) = focus.prompt_directive() {
+        prefixes.push(format!("[{dir}]"));
+    }
+    if let Some(slug) = persona_slug.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(p) = find_builtin_persona(slug) {
+            prefixes.push(format!("[Persona: {} — {}]", p.name, p.guidance));
+        } else {
+            prefixes.push(format!("[Persona: {slug}]"));
+        }
+    }
+    if prefixes.is_empty() {
+        raw_prompt.to_string()
+    } else {
+        format!("{}\n\n{raw_prompt}", prefixes.join("\n"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -243,7 +396,7 @@ const SLASH_DEFS: &[SlashDef] = &[
     SlashDef {
         cmd: "/mode",
         usage: "/mode <approval>",
-        desc: "Approval mode: yolo | write | plan | always-ask",
+        desc: "Approval (default: yolo/turbo/full-access/auto-approve) | write | plan | always-ask",
     },
     SlashDef {
         cmd: "/cd",
@@ -386,6 +539,26 @@ const SLASH_DEFS: &[SlashDef] = &[
         desc: "Bilingual VN-EN BM25 + Cold Vault router, 4-stage DAG & doctor",
     },
     SlashDef {
+        cmd: "/arena",
+        usage: "/arena <m1,m2> <prompt>",
+        desc: "Parallel 2-4 model Arena compare w/ elapsed ms, tok/s & USD",
+    },
+    SlashDef {
+        cmd: "/persona",
+        usage: "/persona [list|use <name>|off]",
+        desc: "List or activate Omnia Gems / Personas in the TUI HUD",
+    },
+    SlashDef {
+        cmd: "/focus",
+        usage: "/focus <web|academic|code|rag|deep>",
+        desc: "Switch active Focus Mode pill (web|academic|code|rag|deep)",
+    },
+    SlashDef {
+        cmd: "/fork",
+        usage: "/fork [label|list|switch <id>]",
+        desc: "Fork current TUI thread snapshot & switch branched threads",
+    },
+    SlashDef {
         cmd: "/compact",
         usage: "/compact",
         desc: "Fold stale tool observations keeping Prefix-0 hot",
@@ -452,15 +625,36 @@ fn format_approval(m: ApprovalMode) -> &'static str {
     }
 }
 
+fn format_approval_badge(m: ApprovalMode) -> &'static str {
+    match m {
+        ApprovalMode::Yolo => "YOLO · AUTO",
+        ApprovalMode::Write => "WRITE",
+        ApprovalMode::Plan => "PLAN",
+        ApprovalMode::AlwaysAsk => "ASK",
+        ApprovalMode::AlwaysAskCached => "ASK-CACHED",
+    }
+}
+
 pub fn parse_approval(raw: &str) -> Option<ApprovalMode> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "yolo" | "auto" => Some(ApprovalMode::Yolo),
+        "yolo" | "turbo" | "full-access" | "full" | "unrestricted" | "auto" | "auto-approve" => {
+            Some(ApprovalMode::Yolo)
+        }
         "write" => Some(ApprovalMode::Write),
-        "plan" => Some(ApprovalMode::Plan),
+        "plan" | "read-only" | "readonly" => Some(ApprovalMode::Plan),
         "always-ask" | "ask" => Some(ApprovalMode::AlwaysAsk),
-        "always-ask-cached" => Some(ApprovalMode::AlwaysAskCached),
+        "always-ask-cached" | "cached" => Some(ApprovalMode::AlwaysAskCached),
         _ => None,
     }
+}
+
+fn resolve_tui_approval_mode(
+    cli_override: Option<ApprovalMode>,
+    saved_mode: Option<&str>,
+) -> ApprovalMode {
+    cli_override
+        .or_else(|| saved_mode.and_then(parse_approval))
+        .unwrap_or(ApprovalMode::Yolo)
 }
 
 fn mask_secret_hint(raw: Option<&str>) -> String {
@@ -486,6 +680,28 @@ fn uuid_like_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{ns:x}")
+}
+
+#[derive(Debug, Clone)]
+struct ArenaModelOutcome {
+    model: String,
+    status: String,
+    elapsed_ms: u64,
+    output_tokens: u64,
+    tps: f64,
+    cost_usd: f64,
+    preview: String,
+}
+
+#[derive(Debug, Clone)]
+struct ForkedThreadSnapshot {
+    branch_id: String,
+    label: String,
+    parent_session: String,
+    model: String,
+    focus_mode: TuiFocusMode,
+    persona: Option<String>,
+    transcript: Vec<TranscriptLine>,
 }
 
 enum UiAsyncEvent {
@@ -518,6 +734,10 @@ enum UiAsyncEvent {
         query: String,
         transcript_lines: Vec<String>,
         drawer_lines: Vec<String>,
+    },
+    ArenaCompleted {
+        prompt: String,
+        results: Vec<ArenaModelOutcome>,
     },
 }
 
@@ -598,6 +818,9 @@ struct TuiAppState {
     last_research_summary: Vec<String>,
     last_lifecycle_summary: Vec<String>,
     skill_registry: Option<SkillRegistry>,
+    focus_mode: TuiFocusMode,
+    active_persona: Option<String>,
+    forked_threads: Vec<ForkedThreadSnapshot>,
 }
 
 impl TuiAppState {
@@ -773,7 +996,7 @@ fn build_engine(
         endpoint,
         thinking,
         approval_mode,
-        approval_mode == ApprovalMode::Yolo,
+        true,
         PermissionsEngine::default_rules(),
         PluginRegistry::with_default_pillars(),
         graph,
@@ -836,7 +1059,32 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
         Span::raw(format!(" [{think_label}] ")),
         Span::styled("| ", Style::default().fg(border_col)),
         Span::styled(format!("{:?}", state.wire_api), Style::default().fg(Color::LightBlue)),
-        Span::raw(format!(" · {} ", format_approval(state.approval_mode))),
+        Span::raw(" · "),
+        Span::styled(
+            format!("{} ", format_approval_badge(state.approval_mode)),
+            if state.approval_mode == ApprovalMode::Yolo {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Yellow)
+            },
+        ),
+        Span::styled("| ", Style::default().fg(border_col)),
+        Span::styled(
+            format!(" {} ", state.focus_mode.pill()),
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!(" {} ", format_persona_pill(state.active_persona.as_deref())),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
         Span::styled("| ", Style::default().fg(border_col)),
         key_badge,
     ];
@@ -1009,10 +1257,19 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
         .map(|s| format!(" | {s}"))
         .unwrap_or_default();
     let mask_badge = if state.privacy_mask { " | MASK" } else { "" };
+    let fork_badge = if state.forked_threads.is_empty() {
+        String::new()
+    } else {
+        format!(" | forks:{}", state.forked_threads.len())
+    };
+    let persona_pill = format_persona_pill(state.active_persona.as_deref());
     let hud = Line::from(vec![
         Span::styled(
             format!(
-                " turns:{} tools:{}(err:{}) | KV:{:.1}% | {:.1} tok/s | ctx:{:.0}% | ${:.4} (saved ${:.4}) | RSS:{:.1}MiB | budget:NULL{}{} ",
+                " {} | {} | {} | turns:{} tools:{}(err:{}) | KV:{:.1}% | {:.1} tok/s | ctx:{:.0}% | ${:.4} (saved ${:.4}) | RSS:{:.1}MiB | budget:NULL{}{}{} ",
+                format_approval_badge(state.approval_mode),
+                state.focus_mode.pill(),
+                persona_pill,
                 state.total_turns,
                 state.total_tools,
                 state.tool_errors,
@@ -1022,6 +1279,7 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
                 state.cost_usd,
                 state.kv_savings_usd,
                 rss_mb,
+                fork_badge,
                 st_badge,
                 mask_badge
             ),
@@ -1351,7 +1609,7 @@ fn handle_slash_command(
             );
             state.push_line(
                 TranscriptEntryKind::System,
-                "Steer #18-20: /research /sources /rag /think | /goal /spec /blueprint /plan /todo /progress /dod /handoff /learn /lessons /skills",
+                "Steer #18-23: /research /sources /rag /think | /arena /persona /focus /fork | /goal /spec /blueprint /plan /todo /progress /dod /handoff /learn /lessons /skills",
             );
             state.push_line(
                 TranscriptEntryKind::System,
@@ -1445,16 +1703,36 @@ fn handle_slash_command(
             }
         }
         "/mode" => {
-            if let Some(mode) = parse_approval(arg) {
+            if arg.is_empty() {
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!(
+                        "Approval mode: {} ({}) — default: yolo (turbo | full-access | full | unrestricted | auto | auto-approve)",
+                        format_approval(state.approval_mode),
+                        format_approval_badge(state.approval_mode)
+                    ),
+                );
+            } else if let Some(mode) = parse_approval(arg) {
                 state.approval_mode = mode;
                 state.saved.approval_mode = Some(format_approval(mode).to_string());
                 let _ = save_config(&state.saved);
                 if let Some(ref mut eng) = state.engine {
                     eng.tool_runtime.approval_mode = mode;
+                    eng.tool_runtime.workspace_trusted = true;
                 }
-                state.push_line(TranscriptEntryKind::System, format!("Approval -> {}", format_approval(mode)));
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!(
+                        "Approval -> {} ({})",
+                        format_approval(mode),
+                        format_approval_badge(mode)
+                    ),
+                );
             } else {
-                state.push_line(TranscriptEntryKind::System, "Usage: /mode <yolo|write|plan|always-ask>");
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    "Usage: /mode <yolo|turbo|full-access|full|unrestricted|auto|auto-approve|write|plan|always-ask>",
+                );
             }
         }
         "/cd" => {
@@ -2140,9 +2418,459 @@ fn handle_slash_command(
                 state.push_line(TranscriptEntryKind::System, l);
             }
         }
+        "/arena" => {
+            state.drawer_tab = DrawerTab::Research;
+            match parse_arena_args(arg) {
+                Ok((models, prompt)) => {
+                    let header = format!(
+                        "Launching parallel Arena ({} models: {}) for `{}`...",
+                        models.len(),
+                        models.join(", "),
+                        truncate_chars(&prompt, 52)
+                    );
+                    state.last_research_summary = vec![
+                        "=== Multi-Model Parallel Arena ===".into(),
+                        header.clone(),
+                    ];
+                    state.push_line(TranscriptEntryKind::System, header);
+                    let req = ArenaRunRequest {
+                        workspace: state.workspace.clone(),
+                        base_url: state.base_url.clone(),
+                        api_key: state.api_key.clone(),
+                        wire_api: state.wire_api,
+                        thinking: state.thinking.clone(),
+                        timeout_secs: state.timeout_secs.min(90),
+                        models,
+                        prompt: compose_prompt_with_focus_and_persona(
+                            &prompt,
+                            state.focus_mode,
+                            state.active_persona.as_deref(),
+                        ),
+                        display_prompt: prompt,
+                    };
+                    let tx_arena = tx.clone();
+                    tokio::spawn(async move {
+                        let prompt_lbl = req.display_prompt.clone();
+                        let results = run_parallel_arena_task(req).await;
+                        let _ = tx_arena.send(UiAsyncEvent::ArenaCompleted {
+                            prompt: prompt_lbl,
+                            results,
+                        });
+                    });
+                }
+                Err(usage) => {
+                    state.push_line(TranscriptEntryKind::System, usage);
+                }
+            }
+        }
+        "/persona" => {
+            let trimmed = arg.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("list") {
+                for l in format_persona_list_lines(state.active_persona.as_deref()) {
+                    state.push_line(TranscriptEntryKind::System, l);
+                }
+            } else if matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "off" | "clear" | "none" | "default" | "reset"
+            ) {
+                state.active_persona = None;
+                state.saved.persona = None;
+                let _ = save_config(&state.saved);
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    "Persona -> default (GEM:STD)",
+                );
+            } else {
+                let target = trimmed
+                    .strip_prefix("use ")
+                    .or_else(|| trimmed.strip_prefix("USE "))
+                    .unwrap_or(trimmed)
+                    .trim();
+                if let Some(p) = find_builtin_persona(target) {
+                    state.active_persona = Some(p.slug.to_string());
+                    state.focus_mode = p.focus;
+                    state.thinking = Some(p.effort.to_string());
+                    state.saved.persona = state.active_persona.clone();
+                    state.saved.focus_mode = Some(p.focus.as_str().to_string());
+                    state.saved.thinking = state.thinking.clone();
+                    let _ = save_config(&state.saved);
+                    if let Some(ref mut eng) = state.engine {
+                        eng.thinking_level = state.thinking.clone();
+                    }
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!(
+                            "Persona -> {} [GEM:{}] | {} | effort:{} (recommended model: {})",
+                            p.name,
+                            p.badge,
+                            p.focus.pill(),
+                            p.effort,
+                            p.default_model
+                        ),
+                    );
+                } else {
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!(
+                            "Unknown persona `{target}`. Run `/persona list` (architect | researcher | reviewer | math | off)."
+                        ),
+                    );
+                }
+            }
+        }
+        "/focus" => {
+            if arg.is_empty() {
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!(
+                        "Active Focus: {} ({}) — options: web | academic | code | rag | deep",
+                        state.focus_mode.as_str(),
+                        state.focus_mode.pill()
+                    ),
+                );
+            } else if let Some(mode) = TuiFocusMode::parse(arg) {
+                state.focus_mode = mode;
+                state.saved.focus_mode = Some(mode.as_str().to_string());
+                let _ = save_config(&state.saved);
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    format!("Focus -> {} ({})", mode.as_str(), mode.pill()),
+                );
+            } else {
+                state.push_line(
+                    TranscriptEntryKind::System,
+                    "Usage: /focus <web|academic|code|rag|deep>",
+                );
+            }
+        }
+        "/fork" => {
+            let trimmed = arg.trim();
+            if trimmed.eq_ignore_ascii_case("list") {
+                for l in format_fork_list_lines(&state.forked_threads) {
+                    state.push_line(TranscriptEntryKind::System, l);
+                }
+            } else if let Some(target_id) = trimmed
+                .strip_prefix("switch ")
+                .or_else(|| trimmed.strip_prefix("SWITCH "))
+                .map(str::trim)
+            {
+                if let Some(snap) = state
+                    .forked_threads
+                    .iter()
+                    .find(|f| f.branch_id.eq_ignore_ascii_case(target_id))
+                    .cloned()
+                {
+                    state.transcript = snap.transcript;
+                    state.model = snap.model;
+                    state.focus_mode = snap.focus_mode;
+                    state.active_persona = snap.persona;
+                    let eng = build_engine(
+                        &state.workspace,
+                        &state.model,
+                        &state.base_url,
+                        state.api_key.as_deref(),
+                        state.wire_api,
+                        state.thinking.clone(),
+                        state.approval_mode,
+                        state.db.clone(),
+                        Arc::clone(&state.cancel_flag),
+                        Some(tx.clone()),
+                    )?;
+                    state.engine = Some(eng);
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!(
+                            "Switched to fork `{}` [{}] ({} | {})",
+                            snap.branch_id,
+                            snap.label,
+                            state.focus_mode.pill(),
+                            format_persona_pill(state.active_persona.as_deref())
+                        ),
+                    );
+                } else {
+                    state.push_line(
+                        TranscriptEntryKind::System,
+                        format!("Fork `{target_id}` not found. Run `/fork list`."),
+                    );
+                }
+            } else {
+                let parent_session = state
+                    .engine
+                    .as_ref()
+                    .map_or_else(|| "tui-root".to_string(), |e| e.session_key.clone());
+                let snap = create_fork_snapshot(
+                    state.forked_threads.len() + 1,
+                    trimmed,
+                    &parent_session,
+                    &state.model,
+                    state.focus_mode,
+                    state.active_persona.as_deref(),
+                    &state.transcript,
+                );
+                let eng = build_engine(
+                    &state.workspace,
+                    &state.model,
+                    &state.base_url,
+                    state.api_key.as_deref(),
+                    state.wire_api,
+                    state.thinking.clone(),
+                    state.approval_mode,
+                    state.db.clone(),
+                    Arc::clone(&state.cancel_flag),
+                    Some(tx.clone()),
+                )?;
+                let new_sid = eng.session_key.clone();
+                state.engine = Some(eng);
+                let msg = format!(
+                    "Forked thread -> `{}` [{}] from {} ({} lines preserved; new session `{}`; use `/fork list` or `/fork switch {}`)",
+                    snap.branch_id,
+                    snap.label,
+                    snap.parent_session,
+                    snap.transcript.len(),
+                    new_sid,
+                    snap.branch_id
+                );
+                state.forked_threads.push(snap);
+                state.push_line(TranscriptEntryKind::System, msg);
+            }
+        }
         _ => state.push_line(TranscriptEntryKind::System, format!("Unknown command `{cmd}`. Type /help.")),
     }
     Ok(false)
+}
+
+struct ArenaRunRequest {
+    workspace: PathBuf,
+    base_url: String,
+    api_key: Option<String>,
+    wire_api: WireApiMode,
+    thinking: Option<String>,
+    timeout_secs: u64,
+    models: Vec<String>,
+    prompt: String,
+    display_prompt: String,
+}
+
+fn parse_arena_args(raw: &str) -> Result<(Vec<String>, String), String> {
+    let usage = "Usage: /arena <m1,m2[,m3,m4]> <prompt> (e.g. /arena claude-sonnet-5-5,gpt-6.2-sol Compare Rust WAL vs LMDB)";
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(usage.to_string());
+    }
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let models_raw = parts.next().unwrap_or("");
+    let prompt = parts.next().unwrap_or("").trim();
+    if prompt.is_empty() {
+        return Err(usage.to_string());
+    }
+    let mut models = Vec::new();
+    for m in models_raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if !models.iter().any(|existing: &String| existing.eq_ignore_ascii_case(m)) {
+            models.push(m.to_string());
+        }
+    }
+    if models.len() < 2 {
+        return Err(format!("Arena requires 2..=4 comma-separated models. {usage}"));
+    }
+    if models.len() > 4 {
+        return Err(format!("Arena supports at most 4 models per parallel run (got {}).", models.len()));
+    }
+    Ok((models, prompt.to_string()))
+}
+
+async fn run_parallel_arena_task(req: ArenaRunRequest) -> Vec<ArenaModelOutcome> {
+    let has_key = req
+        .api_key
+        .as_deref()
+        .is_some_and(|k| !k.trim().is_empty());
+    if !has_key {
+        let est_tokens = req.prompt.len().div_ceil(4) as u64;
+        return req
+            .models
+            .into_iter()
+            .map(|m| ArenaModelOutcome {
+                model: m,
+                status: "unconfigured_provider".to_string(),
+                elapsed_ms: 0,
+                output_tokens: 0,
+                tps: 0.0,
+                cost_usd: 0.0,
+                preview: format!(
+                    "No API key configured (run `/key <secret>` or set OMNIA_API_KEY); pre-send est ~{est_tokens} input tok."
+                ),
+            })
+            .collect();
+    }
+
+    let mut set = tokio::task::JoinSet::new();
+    for (idx, model_id) in req.models.into_iter().enumerate() {
+        let ws = req.workspace.clone();
+        let base_url = req.base_url.clone();
+        let api_key = req.api_key.clone();
+        let wire_api = req.wire_api;
+        let thinking = req.thinking.clone();
+        let prompt = req.prompt.clone();
+        let timeout_secs = req.timeout_secs.clamp(10, 90);
+        set.spawn(async move {
+            let t0 = Instant::now();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let eng_res = build_engine(
+                &ws,
+                &model_id,
+                &base_url,
+                api_key.as_deref(),
+                wire_api,
+                thinking,
+                ApprovalMode::Plan,
+                None,
+                cancel,
+                None,
+            );
+            let outcome = match eng_res {
+                Ok(mut eng) => match eng.run_prompt(&prompt, 1, timeout_secs, None).await {
+                    Ok(sum) => {
+                        let cs = eng.cache_guard.snapshot();
+                        let tps = if sum.active_decode_ms > 0 {
+                            (cs.output_tokens as f64) / (sum.active_decode_ms as f64 / 1000.0)
+                        } else {
+                            0.0
+                        };
+                        ArenaModelOutcome {
+                            model: model_id,
+                            status: "ok".to_string(),
+                            elapsed_ms: t0.elapsed().as_millis() as u64,
+                            output_tokens: cs.output_tokens,
+                            tps,
+                            cost_usd: eng.total_cost_usd,
+                            preview: truncate_chars(
+                                &redact_secrets(sum.final_text.trim()).replace('\n', " "),
+                                180,
+                            ),
+                        }
+                    }
+                    Err(e) => ArenaModelOutcome {
+                        model: model_id,
+                        status: "error".to_string(),
+                        elapsed_ms: t0.elapsed().as_millis() as u64,
+                        output_tokens: 0,
+                        tps: 0.0,
+                        cost_usd: eng.total_cost_usd,
+                        preview: truncate_chars(&redact_secrets(&format!("{e:#}")), 140),
+                    },
+                },
+                Err(e) => ArenaModelOutcome {
+                    model: model_id,
+                    status: "error".to_string(),
+                    elapsed_ms: t0.elapsed().as_millis() as u64,
+                    output_tokens: 0,
+                    tps: 0.0,
+                    cost_usd: 0.0,
+                    preview: truncate_chars(&redact_secrets(&format!("{e:#}")), 140),
+                },
+            };
+            (idx, outcome)
+        });
+    }
+
+    let mut ordered = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(item) = joined {
+            ordered.push(item);
+        }
+    }
+    ordered.sort_by_key(|(idx, _)| *idx);
+    ordered.into_iter().map(|(_, o)| o).collect()
+}
+
+fn format_arena_results_lines(prompt: &str, results: &[ArenaModelOutcome]) -> Vec<String> {
+    let mut out = vec![
+        format!("=== Arena Compare ({} models) ===", results.len()),
+        format!("Prompt: {}", truncate_chars(prompt, 72)),
+    ];
+    for r in results {
+        out.push(format!(
+            "  {} [{}] {}ms | out:{}t | {:.1} tok/s | ${:.6}",
+            r.model, r.status, r.elapsed_ms, r.output_tokens, r.tps, r.cost_usd
+        ));
+        if !r.preview.is_empty() {
+            out.push(format!("    {}", truncate_chars(&r.preview, 110)));
+        }
+    }
+    out
+}
+
+fn format_persona_list_lines(active_slug: Option<&str>) -> Vec<String> {
+    let mut out = vec![format!(
+        "=== Omnia Gems / Personas (active: {}) ===",
+        format_persona_pill(active_slug)
+    )];
+    for p in BUILTIN_PERSONAS {
+        let marker = if active_slug.is_some_and(|s| s.eq_ignore_ascii_case(p.slug)) {
+            "*"
+        } else {
+            " "
+        };
+        out.push(format!(
+            " {marker} {:<10} [{}] {:<20} | {} | effort:{} | model:{}",
+            p.slug,
+            p.badge,
+            p.name,
+            p.focus.pill(),
+            p.effort,
+            p.default_model
+        ));
+        out.push(format!("    {}", truncate_chars(p.guidance, 86)));
+    }
+    out.push("Usage: /persona use <architect|researcher|reviewer|math> | /persona off".into());
+    out
+}
+
+fn create_fork_snapshot(
+    index: usize,
+    raw_label: &str,
+    parent_session: &str,
+    model: &str,
+    focus_mode: TuiFocusMode,
+    persona: Option<&str>,
+    transcript: &[TranscriptLine],
+) -> ForkedThreadSnapshot {
+    let branch_id = format!("fork-{index}");
+    let label = if raw_label.trim().is_empty() {
+        format!("branch-{index}")
+    } else {
+        truncate_chars(raw_label.trim(), 32)
+    };
+    ForkedThreadSnapshot {
+        branch_id,
+        label,
+        parent_session: parent_session.to_string(),
+        model: model.to_string(),
+        focus_mode,
+        persona: persona.map(ToString::to_string),
+        transcript: transcript.to_vec(),
+    }
+}
+
+fn format_fork_list_lines(forks: &[ForkedThreadSnapshot]) -> Vec<String> {
+    let mut out = vec![format!("=== Forked Threads ({}) ===", forks.len())];
+    if forks.is_empty() {
+        out.push("  (no forked threads yet — run `/fork [label]` to branch the current session)".into());
+    } else {
+        for f in forks {
+            out.push(format!(
+                "  {} [{}] parent:{} | {} | {} | {} | {} lines",
+                f.branch_id,
+                f.label,
+                f.parent_session,
+                f.model,
+                f.focus_mode.pill(),
+                format_persona_pill(f.persona.as_deref()),
+                f.transcript.len()
+            ));
+        }
+        out.push("Use `/fork switch <fork-id>` to restore a forked branch.".into());
+    }
+    out
 }
 
 fn truncate_chars(raw: &str, max_chars: usize) -> String {
@@ -3478,10 +4206,7 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         .or_else(|| saved.wire_api.as_deref().map(WireApiMode::parse_flag))
         .unwrap_or(WireApiMode::Auto);
     let thinking = opts.thinking.or_else(|| saved.thinking.clone());
-    let approval_mode = opts
-        .approval_mode
-        .or_else(|| saved.approval_mode.as_deref().and_then(parse_approval))
-        .unwrap_or(ApprovalMode::Write);
+    let approval_mode = resolve_tui_approval_mode(opts.approval_mode, saved.approval_mode.as_deref());
 
     let data_dir = default_omnia_data_dir();
     let db = AgentStore::open(&data_dir)
@@ -3525,6 +4250,16 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         .and_then(TuiTheme::parse)
         .unwrap_or_default();
     let init_privacy_mask = saved.privacy_mask.unwrap_or(false);
+    let init_focus = saved
+        .focus_mode
+        .as_deref()
+        .and_then(TuiFocusMode::parse)
+        .unwrap_or_default();
+    let init_persona = saved
+        .persona
+        .as_deref()
+        .and_then(find_builtin_persona)
+        .map(|p| p.slug.to_string());
     let mut state = TuiAppState {
         workspace,
         model,
@@ -3541,7 +4276,13 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         transcript: vec![
             TranscriptLine {
                 kind: TranscriptEntryKind::System,
-                text: format!("Omnia Pure-Rust Super-Harness v{} ready. Type a prompt or /help.", env!("CARGO_PKG_VERSION")),
+                text: format!(
+                    "Omnia Pure-Rust Super-Harness v{} ready [{} | {} | {}]. Type a prompt or /help.",
+                    env!("CARGO_PKG_VERSION"),
+                    format_approval_badge(approval_mode),
+                    init_focus.pill(),
+                    format_persona_pill(init_persona.as_deref())
+                ),
             },
         ],
         input: String::new(),
@@ -3581,6 +4322,9 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         last_research_summary: Vec::new(),
         last_lifecycle_summary: Vec::new(),
         skill_registry: None,
+        focus_mode: init_focus,
+        active_persona: init_persona,
+        forked_threads: Vec::new(),
     };
 
     let _guard = TerminalGuard::enter()?;
@@ -3833,6 +4577,14 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                         state.push_line(TranscriptEntryKind::System, l);
                     }
                 }
+                UiAsyncEvent::ArenaCompleted { prompt, results } => {
+                    let lines = format_arena_results_lines(&prompt, &results);
+                    state.last_research_summary = lines.clone();
+                    state.drawer_tab = DrawerTab::Research;
+                    for l in lines {
+                        state.push_line(TranscriptEntryKind::System, l);
+                    }
+                }
             }
         }
 
@@ -4035,13 +4787,18 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
                                 let tx_clone = tx.clone();
                                 let max_turns = state.max_turns;
                                 let timeout_secs = state.timeout_secs;
+                                let effective_prompt = compose_prompt_with_focus_and_persona(
+                                    &submitted,
+                                    state.focus_mode,
+                                    state.active_persona.as_deref(),
+                                );
                                 let t0 = Instant::now();
                                 tokio::spawn(async move {
                                     let sink_tx = tx_clone.clone();
                                     let sink: HarnessEventSink = Arc::new(move |ev| {
                                         let _ = sink_tx.send(UiAsyncEvent::Harness(ev));
                                     });
-                                    let res = eng.run_prompt(&submitted, max_turns, timeout_secs, Some(sink)).await;
+                                    let res = eng.run_prompt(&effective_prompt, max_turns, timeout_secs, Some(sink)).await;
                                     let cs = eng.cache_guard.snapshot();
                                     let turns = eng.total_turns;
                                     let cost_usd = eng.total_cost_usd;
@@ -4205,11 +4962,49 @@ mod tests {
 
     #[test]
     fn approval_mode_parser_handles_tui_aliases() {
-        assert_eq!(parse_approval("yolo"), Some(ApprovalMode::Yolo));
+        for alias in [
+            "yolo",
+            "turbo",
+            "full-access",
+            "full",
+            "unrestricted",
+            "auto",
+            "auto-approve",
+            " YOLO ",
+            "Full-Access",
+        ] {
+            assert_eq!(
+                parse_approval(alias),
+                Some(ApprovalMode::Yolo),
+                "expected YOLO for alias `{alias}`"
+            );
+        }
         assert_eq!(parse_approval("write"), Some(ApprovalMode::Write));
         assert_eq!(parse_approval("plan"), Some(ApprovalMode::Plan));
+        assert_eq!(parse_approval("read-only"), Some(ApprovalMode::Plan));
         assert_eq!(parse_approval("ask"), Some(ApprovalMode::AlwaysAsk));
+        assert_eq!(parse_approval("always-ask"), Some(ApprovalMode::AlwaysAsk));
+        assert_eq!(
+            parse_approval("always-ask-cached"),
+            Some(ApprovalMode::AlwaysAskCached)
+        );
         assert_eq!(parse_approval("bad"), None);
+
+        // Steer #22: bare TUI defaults to YOLO (full auto-approve) with crisp YOLO · AUTO badge.
+        assert_eq!(resolve_tui_approval_mode(None, None), ApprovalMode::Yolo);
+        assert_eq!(
+            resolve_tui_approval_mode(None, Some("turbo")),
+            ApprovalMode::Yolo
+        );
+        assert_eq!(
+            resolve_tui_approval_mode(None, Some("plan")),
+            ApprovalMode::Plan
+        );
+        assert_eq!(
+            resolve_tui_approval_mode(Some(ApprovalMode::AlwaysAsk), Some("yolo")),
+            ApprovalMode::AlwaysAsk
+        );
+        assert_eq!(format_approval_badge(ApprovalMode::Yolo), "YOLO · AUTO");
     }
 
     #[test]
@@ -4549,5 +5344,111 @@ mod tests {
         assert!(dtext.contains("12-Artifact Proactive Lifecycle"));
         assert!(dtext.contains("DoD Verified: 1/1"));
         assert!(dtext.contains("Lessons: 1 project / 1 global"));
+    }
+
+    #[test]
+    fn steer23_arena_persona_focus_fork_and_hud_pills_work() {
+        let cmds: Vec<&str> = SLASH_DEFS.iter().map(|d| d.cmd).collect();
+        for req in ["/arena", "/persona", "/focus", "/fork"] {
+            assert!(cmds.contains(&req), "missing Steer #23 slash command {req}");
+        }
+
+        // Focus Mode parser & pills
+        assert_eq!(TuiFocusMode::parse("web"), Some(TuiFocusMode::Web));
+        assert_eq!(TuiFocusMode::parse("academic"), Some(TuiFocusMode::Academic));
+        assert_eq!(TuiFocusMode::parse("code"), Some(TuiFocusMode::Code));
+        assert_eq!(TuiFocusMode::parse("rag"), Some(TuiFocusMode::Rag));
+        assert_eq!(TuiFocusMode::parse("deep"), Some(TuiFocusMode::Deep));
+        assert_eq!(TuiFocusMode::parse("unknown-mode"), None);
+        assert_eq!(TuiFocusMode::Web.pill(), "FOCUS:WEB");
+        assert_eq!(TuiFocusMode::Deep.pill(), "FOCUS:DEEP");
+
+        // Builtin Personas / Omnia Gems & HUD pill formatting
+        assert_eq!(format_persona_pill(None), "GEM:STD");
+        let arch = find_builtin_persona("Principal Architect").expect("architect gem");
+        assert_eq!(arch.slug, "architect");
+        assert_eq!(format_persona_pill(Some(arch.slug)), "GEM:ARC");
+        let res = find_builtin_persona("researcher").expect("researcher gem");
+        assert_eq!(res.focus, TuiFocusMode::Deep);
+        assert_eq!(format_persona_pill(Some(res.slug)), "GEM:RES");
+        assert!(find_builtin_persona("reviewer").is_some());
+        assert!(find_builtin_persona("math").is_some());
+        let plist = format_persona_list_lines(Some("researcher")).join("\n");
+        assert!(plist.contains("Deep Researcher"));
+        assert!(plist.contains("GEM:RES"));
+
+        // Focus + Persona prompt composition leaves default Code/none untouched
+        assert_eq!(
+            compose_prompt_with_focus_and_persona("hello", TuiFocusMode::Code, None),
+            "hello"
+        );
+        let composed = compose_prompt_with_focus_and_persona(
+            "Compare WAL",
+            TuiFocusMode::Academic,
+            Some("math"),
+        );
+        assert!(composed.contains("Focus=Academic"));
+        assert!(composed.contains("Math & Proof Lab"));
+        assert!(composed.ends_with("Compare WAL"));
+
+        // Arena parser (2..=4 models + dedup + error bounds) & formatter
+        let (models, prompt) =
+            parse_arena_args("claude-sonnet-5-5,gpt-6.2-sol,gpt-6.2-sol Compare Rust WAL")
+                .expect("valid arena args");
+        assert_eq!(models, vec!["claude-sonnet-5-5", "gpt-6.2-sol"]);
+        assert_eq!(prompt, "Compare Rust WAL");
+        assert!(parse_arena_args("only-one-model hello").is_err());
+        assert!(parse_arena_args("m1,m2,m3,m4,m5 too many").is_err());
+        assert!(parse_arena_args("m1,m2").is_err());
+
+        let arena_lines = format_arena_results_lines(
+            "Compare WAL",
+            &[
+                ArenaModelOutcome {
+                    model: "claude-sonnet-5-5".into(),
+                    status: "unconfigured_provider".into(),
+                    elapsed_ms: 0,
+                    output_tokens: 0,
+                    tps: 0.0,
+                    cost_usd: 0.0,
+                    preview: "No API key configured".into(),
+                },
+                ArenaModelOutcome {
+                    model: "gpt-6.2-sol".into(),
+                    status: "ok".into(),
+                    elapsed_ms: 412,
+                    output_tokens: 120,
+                    tps: 84.5,
+                    cost_usd: 0.001234,
+                    preview: "WAL enables concurrent readers.".into(),
+                },
+            ],
+        )
+        .join("\n");
+        assert!(arena_lines.contains("Arena Compare (2 models)"));
+        assert!(arena_lines.contains("unconfigured_provider"));
+        assert!(arena_lines.contains("$0.001234"));
+
+        // Fork thread snapshot & list formatting
+        let sample_tx = vec![TranscriptLine {
+            kind: TranscriptEntryKind::User,
+            text: "Inspect WAL".into(),
+        }];
+        let fork1 = create_fork_snapshot(
+            1,
+            "alt-branch",
+            "tui-root-1",
+            "claude-sonnet-5-5",
+            TuiFocusMode::Deep,
+            Some("architect"),
+            &sample_tx,
+        );
+        assert_eq!(fork1.branch_id, "fork-1");
+        assert_eq!(fork1.label, "alt-branch");
+        assert_eq!(fork1.transcript.len(), 1);
+        let flist = format_fork_list_lines(&[fork1]).join("\n");
+        assert!(flist.contains("fork-1"));
+        assert!(flist.contains("FOCUS:DEEP"));
+        assert!(flist.contains("GEM:ARC"));
     }
 }

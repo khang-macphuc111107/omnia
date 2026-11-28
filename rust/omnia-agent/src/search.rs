@@ -1126,10 +1126,16 @@ mod tests {
         )
         .unwrap();
 
-        let mut g = WorkspaceGraphIndex::new(&tmp);
+        // Default unrestricted index includes all 3 files.
+        let mut g_default = WorkspaceGraphIndex::new(&tmp);
+        g_default.refresh().unwrap();
+        assert_eq!(g_default.search_index().doc_count(), 3);
+
+        // Opt-in strict_safety_rules() never indexes or returns denied `.env` / `id_rsa` files.
+        let strict_rules = PermissionsEngine::strict_safety_rules();
+        let mut g = WorkspaceGraphIndex::with_options(&tmp, strict_rules.clone(), None);
         g.refresh().unwrap();
 
-        // Secret files must NEVER be indexed or returned
         assert_eq!(g.search_index().doc_count(), 1);
         let leak = g
             .search(
@@ -1139,7 +1145,7 @@ mod tests {
                 false,
                 0,
                 20,
-                &PermissionsEngine::default_rules(),
+                &strict_rules,
                 true,
                 ApprovalMode::Yolo,
             )

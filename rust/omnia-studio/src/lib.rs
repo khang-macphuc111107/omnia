@@ -9,6 +9,7 @@ pub mod history;
 pub mod http;
 pub mod mgmt_proxy;
 pub mod ops_store;
+pub mod routes_arena_studio_v5;
 pub mod routes_atelier_drive_v5;
 pub mod routes_capabilities;
 pub mod routes_downloads;
