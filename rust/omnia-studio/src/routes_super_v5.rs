@@ -785,6 +785,14 @@ fn sanitize_mcp_server_entry(name: &str, cfg: &Value, source_label: &str) -> Res
 }
 
 fn discover_mcp_configs_safe(workspace: &Path) -> (Vec<Value>, usize) {
+    let home = resolve_home_dir();
+    discover_mcp_configs_safe_with_home(workspace, home.as_deref())
+}
+
+fn discover_mcp_configs_safe_with_home(
+    workspace: &Path,
+    home: Option<&Path>,
+) -> (Vec<Value>, usize) {
     let mut sources: Vec<(PathBuf, &'static str)> = vec![
         (workspace.join(".mcp.json"), "workspace:.mcp.json"),
         (
@@ -792,7 +800,7 @@ fn discover_mcp_configs_safe(workspace: &Path) -> (Vec<Value>, usize) {
             "workspace:.omnia/mcp_config.json",
         ),
     ];
-    if let Some(home) = resolve_home_dir() {
+    if let Some(home) = home {
         sources.push((
             home.join(".gemini").join("config").join("mcp_config.json"),
             "user:~/.gemini/config/mcp_config.json",
@@ -2299,7 +2307,7 @@ mod tests {
         });
         fs::write(ws.join(".mcp.json"), mcp_json.to_string()).unwrap();
 
-        let (found, skipped) = discover_mcp_configs_safe(&ws);
+        let (found, skipped) = discover_mcp_configs_safe_with_home(&ws, Some(&tmp));
         assert_eq!(skipped, 1);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0]["name"], "omnia-local");
