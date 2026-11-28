@@ -115,7 +115,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # Internal workspace crate aliases
 omnia-winsqlite = { path = "rust/omnia-winsqlite" }
