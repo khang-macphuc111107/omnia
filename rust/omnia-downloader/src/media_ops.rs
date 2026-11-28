@@ -439,19 +439,29 @@ mod tests {
 
     #[test]
     fn ffmpeg_args_build_lossless_copy_clip_and_mov_text_soft_sub() {
+        let base = std::env::temp_dir().join(format!(
+            "omnia_media_ops_test_{}_{}",
+            std::process::id(),
+            omnia_core::now_epoch_ms()
+        ));
+        let ws = base.join("ws");
+        let ext = base.join("ext");
+        std::fs::create_dir_all(&ws).expect("create ws dir");
+        std::fs::create_dir_all(&ext).expect("create ext dir");
         let req = MediaMuxRequest {
-            video_input: PathBuf::from(r"D:\OmniaData\tmp\video.mp4"),
-            audio_input: Some(PathBuf::from(r"D:\OmniaData\tmp\audio.m4a")),
-            subtitle_input: Some(PathBuf::from(r"D:\OmniaData\tmp\subs.srt")),
+            video_input: ext.join("video.mp4"),
+            audio_input: Some(ext.join("audio.m4a")),
+            subtitle_input: Some(ext.join("subs.srt")),
             subtitle_lang: Some("eng".to_string()),
-            output_path: PathBuf::from(r"D:\OmniaData\tmp\muxed.mp4"),
+            output_path: ext.join("muxed.mp4"),
             clip_in_secs: Some(12.5),
             clip_out_secs: Some(45.0),
-            workspace_root: Some(PathBuf::from(r"D:\Omnia")),
+            workspace_root: Some(ws),
             verify_with_ffprobe: true,
             timeout_secs: Some(60),
         };
         let args = build_ffmpeg_mux_args(&req).expect("build args");
+        let _ = std::fs::remove_dir_all(&base);
         assert!(args.windows(2).any(|w| w == ["-ss", "12.500"]));
         assert!(args.windows(2).any(|w| w == ["-to", "45.000"]));
         assert!(args.windows(2).any(|w| w == ["-c", "copy"]));

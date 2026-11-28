@@ -115,8 +115,6 @@ jobs:
             tools/omnia-consolidated-audit \
             tools/omnia-skill-parity \
             tools/omnia-gemini-extractor \
-            tools/omnia-benchmark \
-            tools/omnia-benchmark/public_suites \
             tools/maintained-scripts; do
             echo "=== unittest: $dir ==="
             python3 -B -m unittest discover -s "$dir" -p "test_*.py"
@@ -196,9 +194,11 @@ jobs:
           & $exe --profile-startup
           & $exe arena "hello" --models claude-sonnet-5-5,gpt-6.2-sol --offline --json | Out-Null
 
-      - name: Run Windows packaging targets & headless Win32 native QA path-guard suite (40/40)
+      - name: Run Windows packaging targets, Windows benchmark suites & headless Win32 QA (40/40)
         shell: pwsh
         run: |
           python -B platform/validate_targets.py
           python -B -m unittest discover -s platform -p "test_*.py"
+          python -B -m unittest discover -s tools/omnia-benchmark -p "test_*.py"
+          python -B -m unittest discover -s tools/omnia-benchmark/public_suites -p "test_*.py"
           pwsh -NoProfile -File native/qa-paths.tests.ps1
