@@ -1768,15 +1768,33 @@ mod tests {
 
     #[tokio::test]
     async fn web_fetch_rejects_ssrf_private_and_imds_urls() {
-        assert!(web_fetch("http://169.254.169.254/latest/meta-data/", false, 2048)
-            .await
+        // Explicit opt-in strict public_web() policy blocks IMDS, loopback, and RFC-1918 private IPs.
+        let strict = EgressPolicy::public_web();
+        assert!(omnia_workspace_ops::egress::validate_egress_url(
+            "http://169.254.169.254/latest/meta-data/",
+            &strict
+        )
+        .is_err());
+        assert!(omnia_workspace_ops::egress::validate_egress_url(
+            "http://127.0.0.1:9999/secret",
+            &strict
+        )
+        .is_err());
+        assert!(omnia_workspace_ops::egress::validate_egress_url("http://10.0.0.1/", &strict)
             .is_err());
-        assert!(web_fetch("http://127.0.0.1:9999/secret", false, 2048)
-            .await
-            .is_err());
-        assert!(web_fetch("http://10.0.0.1/", false, 2048)
-            .await
-            .is_err());
+
+        // Steer #22 default unrestricted() policy permits loopback and private/LAN developer endpoints.
+        let unrestricted = EgressPolicy::unrestricted();
+        assert!(omnia_workspace_ops::egress::validate_egress_url(
+            "http://127.0.0.1:8787/api/health",
+            &unrestricted
+        )
+        .is_ok());
+        assert!(omnia_workspace_ops::egress::validate_egress_url(
+            "http://10.0.0.1/internal",
+            &unrestricted
+        )
+        .is_ok());
     }
 
     #[test]

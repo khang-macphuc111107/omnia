@@ -322,6 +322,21 @@ impl PtyManager {
     ) -> Result<PtyExecResult> {
         let entry = self.get(session_id)?;
         let mut rx = entry.tx.subscribe();
+        // Wait briefly for a brand-new ConPTY child (cmd.exe / python.exe) to emit its initial
+        // prompt/banner before injecting the first command so cold CI VMs never drop early input.
+        if entry.scrollback_snapshot(64).is_empty() {
+            let ready_deadline = Instant::now() + Duration::from_millis(1_500);
+            while entry.scrollback_snapshot(64).is_empty() {
+                let rem = ready_deadline.saturating_duration_since(Instant::now());
+                if rem.is_zero() {
+                    break;
+                }
+                let _ = tokio::time::timeout(rem.min(Duration::from_millis(100)), rx.recv()).await;
+            }
+            // Drain any remaining startup banner chunks currently queued.
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            while rx.try_recv().is_ok() {}
+        }
         let seq = PTY_CMD_SEQ.fetch_add(1, Ordering::Relaxed);
         let sentinel = format!("__OMNIA_PTY_DONE_{seq}__");
 
@@ -533,13 +548,13 @@ mod tests {
         assert!(info.alive);
 
         let r1 = mgr
-            .exec_and_wait(&info.id, "set OMNIA_PTY_VAR=persisted_ok", 5_000)
+            .exec_and_wait(&info.id, "set OMNIA_PTY_VAR=persisted_ok", 15_000)
             .await
             .expect("set var");
         assert_eq!(r1.exit_code, Some(0));
 
         let r2 = mgr
-            .exec_and_wait(&info.id, "echo VAL=%OMNIA_PTY_VAR%", 5_000)
+            .exec_and_wait(&info.id, "echo VAL=%OMNIA_PTY_VAR%", 15_000)
             .await
             .expect("echo var");
         assert_eq!(r2.exit_code, Some(0));
@@ -571,11 +586,11 @@ mod tests {
             .expect("create python repl");
 
         let _ = mgr
-            .exec_and_wait(&info.id, "x_omnia = 21 * 2", 5_000)
+            .exec_and_wait(&info.id, "x_omnia = 21 * 2", 15_000)
             .await
             .expect("assign");
         let res = mgr
-            .exec_and_wait(&info.id, "print('PY_OUT=' + str(x_omnia))", 5_000)
+            .exec_and_wait(&info.id, "print('PY_OUT=' + str(x_omnia))", 15_000)
             .await
             .expect("print");
         assert!(

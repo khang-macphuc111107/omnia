@@ -28,15 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Setup Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 
@@ -81,8 +81,8 @@ jobs:
           python3 -B -c '
           import json, sys
           data = json.load(open("/tmp/omnia-audit.json", encoding="utf-8"))
-          g = data["gates"]
           s = data["summary"]
+          g = s["gates"]
           required = [
               "zero_secrets_ok",
               "full_repo_hygiene_hard_gates_ok",
@@ -151,7 +151,7 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure out-of-source Cargo target directory (DOD-06)
         shell: pwsh
