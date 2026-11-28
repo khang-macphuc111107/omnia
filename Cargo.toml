@@ -28,7 +28,7 @@ publish = false
 
 [workspace.dependencies]
 # Core & async networking
-aes = "0.8"
+aes = "0.9"
 aho-corasick = "1"
 anyhow = "1"
 base64 = "0.23"
