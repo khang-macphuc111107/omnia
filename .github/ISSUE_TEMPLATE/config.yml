@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions (Announcements, Ideas & Q&A)
+    url: https://github.com/khang-macphuc111107/omnia/discussions
+    about: Ask questions, share benchmarks, or brainstorm Omnia v5.x features.
+  - name: Omnia Documentation & Wiki
+    url: https://github.com/khang-macphuc111107/omnia/tree/master/docs/wiki
+    about: Architecture, CLI/TUI reference, Flagship Studio guide, and benchmark methodology.

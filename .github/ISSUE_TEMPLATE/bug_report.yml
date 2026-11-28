@@ -1,0 +1,43 @@
+name: Bug Report
+description: Report a reproducible defect in Omnia CLI, TUI, Studio, Runtime, or Win32 Native Shell
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected Surface
+      options:
+        - omnia.exe (CLI / ratatui TUI)
+        - omnia-studio.exe + ui-v5 Web App
+        - omnia-studio.exe + fallback ui/
+        - omnia-runtime.exe
+        - omnia-native.exe (Win32 / WebView2 host)
+        - Tools / Benchmarks / Native QA
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit SHA
+      placeholder: "e.g. v5.0.0 / 087854c"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Exact Reproduction Steps
+      placeholder: "1. Run ...\n2. Observe ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs Actual Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted Logs / Receipts
+      description: "Ensure zero API keys, tokens, cookies, or private credentials are included."

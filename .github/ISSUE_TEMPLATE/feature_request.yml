@@ -1,0 +1,32 @@
+name: Feature Request
+description: Propose a new capability, workbench upgrade, or benchmark integration for Omnia
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Target Area
+      options:
+        - Agent Harness & Routing (omnia-agent / omnia-routing)
+        - Flagship Studio UI (AI Studio Arena / Canvas / Perplexity / NotebookLM++)
+        - CLI & ratatui TUI
+        - OmniDrive / Research Vault / Skills
+        - Win32 Native Shell & Cross-Platform
+        - Benchmarks & Observability
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What workflow or capability gap does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution & Verification Criteria
+      description: Describe the end-to-end Rust + UI/CLI design and how to verify it.
+    validations:
+      required: true

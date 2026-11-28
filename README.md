@@ -1,6 +1,14 @@
 # Omnia
 
-Windows-first **Full Native Rust Agentic Studio, SOTA Autonomous Harness, Multi-Provider Runtime & Win32 Desktop Shell** (`v5.0.0`, `https://github.com/khang-macphuc111107/omnia`).
+[![CI](https://github.com/khang-macphuc111107/omnia/actions/workflows/ci.yml/badge.svg)](https://github.com/khang-macphuc111107/omnia/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/khang-macphuc111107/omnia?display_name=tag)](https://github.com/khang-macphuc111107/omnia/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust 17-Crate Workspace](https://img.shields.io/badge/Rust-17%20Crates%20%7C%20Edition%202021-orange.svg)](Cargo.toml)
+[![Suite v5 Benchmark](https://img.shields.io/badge/Suite%20v5-%231%2090.79%25%20(69%2F76)-brightgreen.svg)](docs/wiki/Benchmarks-v5-Scoreboard.md)
+
+Windows-first **Full Native Rust Agentic Studio, SOTA Autonomous Harness (Default `YOLO / Turbo / Full-Access / Auto-Approve`), 6-App Flagship Web Workbench (`AI Studio Arena` + `Live Canvas` + `Perplexity Pro` + `NotebookLM++`), `ratatui` TUI & Win32 Mica Desktop Shell** (`v5.0.0`, `https://github.com/khang-macphuc111107/omnia`).
+
+> **Quick Links:** [Wiki (`docs/wiki/`)](docs/wiki/Home.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Releases](https://github.com/khang-macphuc111107/omnia/releases) · [Discussions](https://github.com/khang-macphuc111107/omnia/discussions) · [Issues](https://github.com/khang-macphuc111107/omnia/issues)
 
 Under **Steer #14 -> Steer #15 (`Wave 5`, `omnia-sota-harness`)**, Omnia runs as a **Full Native Rust 17-crate Cargo workspace** (`edition = "2021"`, `winsqlite3` FFI, `windows-sys`, zero in-tree `.cpp`/`.hpp`/`CMake*` source files) paired with the **Flagship Studio UI** ("Obsidian Kinetic Atelier" under `ui/`, evolving via `ui-v5/` OMP + Trae + VS Code fusion), **PowerShell 7** (`pwsh`) Win32 UIA/capture QA, and **Windows-native benchmark & Gemini share tooling** (`tools/omnia-benchmark/`, `tools/omnia-gemini-extractor/`). The superseded Wave 4 C++20 snapshot is backed up externally under `D:\OmniaData\backups\pre-full-rust-20261115\` (`55` files), and the earlier pre-C++20 Rust/Tauri workspace (`524/524` tests, `3/3` clean audit rounds) remains losslessly preserved on Git tag `archive/pre-cpp-rust-snapshot-20261112` (`c3033728abe6f0a4906a796bf7652c84408356d7`). Follow-up session admission ([`SESSION_ADMISSION.json`](docs/workspace/SESSION_ADMISSION.json)) remains `DEFERRED` until unified 17-crate Rust workspace tests, `7/7` `pwsh` QA, live isolated Playwright CDP checks, benchmark suites, `audit.py --strict`, and 3 consecutive frozen-snapshot cleanroom audits pass.
 
