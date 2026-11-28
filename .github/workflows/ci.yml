@@ -61,7 +61,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -B tools/omnia-consolidated-audit/audit.py --repo . --secret-scope all --out /tmp/omnia-audit.json
+          cat <<'EOF' > /tmp/ci-ownership.json
+          {
+            "schema_version": 1,
+            "branch": "master",
+            "owners": {
+              "codex_01a1d643": {
+                "owned_write_paths": ["rust/**"],
+                "forbidden_write_paths": []
+              },
+              "antigravity_f6bc937a": {
+                "owned_write_paths": ["docs/**"],
+                "forbidden_write_paths": []
+              }
+            }
+          }
+          EOF
+          python3 -B tools/omnia-consolidated-audit/audit.py --repo . --ownership /tmp/ci-ownership.json --secret-scope all --out /tmp/omnia-audit.json
           python3 -B -c '
           import json, sys
           data = json.load(open("/tmp/omnia-audit.json", encoding="utf-8"))
