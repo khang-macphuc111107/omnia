@@ -23,7 +23,7 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Configure out-of-source Cargo target directory (DOD-06)
         shell: pwsh
