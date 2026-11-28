@@ -20,18 +20,21 @@ $null = [Windows.Automation.AutomationElement]::RootElement
 [Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly(
     [Reflection.AssemblyName]::new('UIAutomationClientsideProviders'))
 $cases = [Collections.Generic.List[object]]::new()
+$mainHwnd = [IntPtr]::Zero
 function Open-App {
     # Visible live progress was explicitly requested.
     $script:process = Start-Process -FilePath $exe -ArgumentList @('--session-db', "`"$Database`"") -PassThru -WindowStyle Normal
+    $script:mainHwnd = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
         $process.Refresh()
         if ($process.HasExited) { throw 'App exited before window discovery' }
-        if ($process.MainWindowHandle -ne [IntPtr]::Zero) { break }
+        $script:mainHwnd = Find-OmniaQaMainWindow -Process $process -PreferredClass 'OmniaNativeShellClass'
+        if ($script:mainHwnd -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Window discovery timed out' }
-    $script:root = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+    if ($script:mainHwnd -eq [IntPtr]::Zero) { throw 'Window discovery timed out' }
+    $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:mainHwnd)
 }
 function Control([int]$id) {
     $item = $root.FindFirst([Windows.Automation.TreeScope]::Descendants,
@@ -67,7 +70,7 @@ function Wait-Page([int]$count,[string]$first,[bool]$hasPrevious,[bool]$hasNext)
     throw "Page timeout: count=$($rows.Count), first=$($rows[0]), status=$status"
 }
 function Close-App {
-    if (-not $process.CloseMainWindow() -or -not $process.WaitForExit(5000)) { throw 'Clean close failed' }
+    if (-not (Close-OmniaQaWindow -WindowHandle $script:mainHwnd -Process $process -TimeoutMs 5000)) { throw 'Clean close failed' }
     if ($process.ExitCode -ne 0) { throw "Nonzero close $($process.ExitCode)" }
 }
 try {
@@ -136,7 +139,7 @@ try {
     Invoke-Control 101
     $cases.Add(@{case='writer-lock-release';passed=$true;revision=2;modelReadback=$true;inputsRestored=$true})
     $image = Join-Path $out 'native-paging-cycle26-window.png'
-    $capture = Save-OmniaQaWindowCapture -WindowHandle $process.MainWindowHandle -Process $process -Path $image
+    $capture = Save-OmniaQaWindowCapture -WindowHandle $script:mainHwnd -Process $process -Path $image
     $process.Refresh()
     $receipt = @{
         schemaVersion=1;recordedAt=[DateTime]::UtcNow.ToString('o');scope='native metadata paging, synthetic125row fixture';

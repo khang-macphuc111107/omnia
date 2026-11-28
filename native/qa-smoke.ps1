@@ -38,16 +38,17 @@ $process = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -PassThr
 $cases = [Collections.Generic.List[object]]::new()
 try {
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $mainHwnd = [IntPtr]::Zero
     do {
         $process.Refresh()
         if ($process.HasExited) { throw "Native executable exited before showing a window." }
-        if ($process.MainWindowHandle -ne [IntPtr]::Zero) { break }
+        $mainHwnd = Find-OmniaQaMainWindow -Process $process -PreferredClass 'OmniaNativeShellClass'
+        if ($mainHwnd -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Window discovery timeout.' }
-    $mainHwnd = $process.MainWindowHandle
+    if ($mainHwnd -eq [IntPtr]::Zero) { throw 'Window discovery timeout.' }
     $discoveryMs = $timer.Elapsed.TotalMilliseconds
-    $root = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+    $root = [Windows.Automation.AutomationElement]::FromHandle($mainHwnd)
     $scope = [Windows.Automation.TreeScope]::Descendants
     function Find-Control([string]$type, [string]$name) {
         $controlDeadline = [DateTime]::UtcNow.AddSeconds(3)
@@ -74,7 +75,7 @@ try {
             throw 'Multiline draft (112) must expose ControlType.Document'
         }
     } catch { $uiaIssue = $_.Exception.Message }
-    $edit = [OmniaShellQa]::GetDlgItem($process.MainWindowHandle, 112)
+    $edit = [OmniaShellQa]::GetDlgItem($mainHwnd, 112)
     if ($edit -eq [IntPtr]::Zero) { throw 'Native edit HWND missing.' }
     function Read-Text([IntPtr]$hwnd) {
         $buffer = [Text.StringBuilder]::new(70000)
@@ -89,11 +90,11 @@ try {
     if ((Read-Text $edit) -ne $draft) { throw 'Initial WM_SETTEXT readback failed.' }
     foreach ($entry in @(@('Browser',102), @('IDE',103), @('Chat',101))) {
         $mode = $entry[0]
-        $button = [OmniaShellQa]::GetDlgItem($process.MainWindowHandle, $entry[1])
+        $button = [OmniaShellQa]::GetDlgItem($mainHwnd, $entry[1])
         [void][OmniaShellQa]::SendMessageW($button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
         Start-Sleep -Milliseconds 100
         $expected = if ($mode -eq 'Chat') { 'Chat / No project' } else { $mode }
-        $heading = Read-Text ([OmniaShellQa]::GetDlgItem($process.MainWindowHandle, 110))
+        $heading = Read-Text ([OmniaShellQa]::GetDlgItem($mainHwnd, 110))
         if (-not $heading.StartsWith($expected + "`n")) {
             throw "Mode header did not change to $mode"
         }
@@ -125,7 +126,7 @@ try {
     $cpuWall = $sampleStart.Elapsed.TotalMilliseconds
     $imageName = if ($KeepOpen) { 'native-shell-cycle24-window.png' } else { 'native-shell-cycle24-clean-close-window.png' }
     $imagePath = Join-Path $out $imageName
-    $capture = Save-OmniaQaWindowCapture -WindowHandle $process.MainWindowHandle -Process $process -Path $imagePath
+    $capture = Save-OmniaQaWindowCapture -WindowHandle $mainHwnd -Process $process -Path $imagePath
     $controls = @($root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition) |
         ForEach-Object { @{type=$_.Current.ControlType.ProgrammaticName;name=$_.Current.Name;enabled=$_.Current.IsEnabled} })
     $receipt = @{
@@ -141,8 +142,7 @@ try {
             'Dark mode, DPI matrix, GPU and input p95 not verified')
     }
     if (-not $KeepOpen) {
-        [void][OmniaShellQa]::PostMessageW($mainHwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
-        if (-not $process.WaitForExit(3000)) { throw 'Clean close timeout.' }
+        if (-not (Close-OmniaQaWindow -WindowHandle $mainHwnd -Process $process -TimeoutMs 5000)) { throw 'Clean close timeout.' }
         $receipt.teardown = @{state='exited';exitCode=$process.ExitCode;verifiedAfterWait=$true}
     } else {
         $receipt.teardown = @{state='left-visible';verifiedAfterWait=$false}

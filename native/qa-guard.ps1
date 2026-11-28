@@ -6,6 +6,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'qa-paths.ps1')
+. (Join-Path $PSScriptRoot 'qa-capture.ps1')
 $Database = Resolve-OmniaQaDatabase -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
     -Database $Database -MustExist
 $qaPaths = Initialize-OmniaQaPaths -RepositoryRoot (Split-Path -Parent $PSScriptRoot) `
@@ -78,10 +79,17 @@ function Answer([bool]$discard) {
     $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
     Wait-For { $null -eq (Dialog) } 'Dialog did not close'
 }
+$script:mainHwnd = [IntPtr]::Zero
 function Open-App {
     $script:process = Start-Process $exe -ArgumentList @('--session-db',"`"$Database`"") -WindowStyle Normal -PassThru
-    Wait-For { $process.Refresh(); $process.MainWindowHandle -ne [IntPtr]::Zero } 'Window missing'
-    $script:root = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+    $script:mainHwnd = [IntPtr]::Zero
+    Wait-For {
+        $process.Refresh()
+        if ($process.HasExited) { throw 'App exited before window discovery' }
+        $script:mainHwnd = Find-OmniaQaMainWindow -Process $process -PreferredClass 'OmniaNativeShellClass'
+        $script:mainHwnd -ne [IntPtr]::Zero
+    } 'Window missing'
+    $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:mainHwnd)
     Wait-For { (Control 126).Current.Name.StartsWith('Settings revision') } 'Session load failed'
 }
 try {
@@ -107,7 +115,7 @@ try {
         throw 'Cancelled selection lost fields or off-page selection'
     }
     $cases.Add(@{case='cancel-session-selection';passed=$true})
-    $null = [OmniaGuardQa]::PostMessage($process.MainWindowHandle,0x10,[IntPtr]0,[IntPtr]0)
+    $null = [OmniaGuardQa]::PostMessage($script:mainHwnd,0x10,[IntPtr]0,[IntPtr]0)
     Answer $false
     if ($process.HasExited -or (Value 122) -ne 'Unsaved Unicode 🦀') { throw 'Close cancellation lost edits' }
     $cases.Add(@{case='cancel-close';passed=$true})
@@ -139,7 +147,7 @@ try {
     if ((Value 122) -ne 'Saved guard title') { throw 'Saved baseline refresh failed' }
     if ($null -ne (Dialog)) { throw 'Saved baseline still dirty' }
     $cases.Add(@{case='effort-cancel-save-clean-refresh';passed=$true})
-    if (-not $process.CloseMainWindow() -or -not $process.WaitForExit(5000) -or $process.ExitCode -ne 0) { throw 'Clean close failed' }
+    if (-not (Close-OmniaQaWindow -WindowHandle $script:mainHwnd -Process $process -TimeoutMs 5000) -or $process.ExitCode -ne 0) { throw 'Clean close failed' }
     Open-App
     if ((Value 122) -ne 'Saved guard title') { throw 'Reopen lost saved title' }
     $cases.Add(@{case='saved-state-reopen';passed=$true})
@@ -165,7 +173,7 @@ try {
         throw 'Failed Select mismatched active selection or discarded fields'
     }
     $cases.Add(@{case='failed-select-restores-selection-preserves-form';passed=$true})
-    $null = [OmniaGuardQa]::PostMessage($process.MainWindowHandle,0x10,[IntPtr]0,[IntPtr]0)
+    $null = [OmniaGuardQa]::PostMessage($script:mainHwnd,0x10,[IntPtr]0,[IntPtr]0)
     Answer $true
     if (-not $process.WaitForExit(5000) -or $process.ExitCode -ne 0) { throw 'Explicit discard close failed' }
     Open-App
@@ -178,7 +186,7 @@ try {
         limits=@('No physical keyboard/IME/Narrator coverage','Not release build/performance evidence','No provider or full-product claim')
     }
     if ($KeepOpen) { $receipt.teardown='left-visible' } else {
-        if (-not $process.CloseMainWindow() -or -not $process.WaitForExit(5000)) { throw 'Final close failed' }
+        if (-not (Close-OmniaQaWindow -WindowHandle $script:mainHwnd -Process $process -TimeoutMs 5000)) { throw 'Final close failed' }
         $receipt.teardown=@{exitCode=$process.ExitCode}
     }
     $receipt | ConvertTo-Json -Depth 7 | Set-Content (Join-Path $out 'native-guard-cycle27-runtime.json')

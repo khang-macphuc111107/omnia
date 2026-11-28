@@ -22,18 +22,21 @@ $null = New-Item -ItemType Directory -Path $sandbox
 $db = Join-Path $sandbox 'sessions.sqlite3'
 $cases = [Collections.Generic.List[object]]::new()
 $process = $null
+$mainHwnd = [IntPtr]::Zero
 function Open-App {
     # A visible app was explicitly requested for live progress.
     $script:process = Start-Process -FilePath $exe -ArgumentList @('--session-db', "`"$db`"") -PassThru -WindowStyle Normal
+    $script:mainHwnd = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
         $process.Refresh()
         if ($process.HasExited) { throw "App exited during launch: $($process.ExitCode)" }
-        if ($process.MainWindowHandle -ne [IntPtr]::Zero) { break }
+        $script:mainHwnd = Find-OmniaQaMainWindow -Process $process -PreferredClass 'OmniaNativeShellClass'
+        if ($script:mainHwnd -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Window discovery timed out' }
-    $script:root = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+    if ($script:mainHwnd -eq [IntPtr]::Zero) { throw 'Window discovery timed out' }
+    $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:mainHwnd)
 }
 function Control([int]$id) {
     $condition = [Windows.Automation.PropertyCondition]::new(
@@ -61,8 +64,7 @@ function Wait-Status([string]$expected) {
     throw "Status timeout expecting '$expected': $status"
 }
 function Close-App {
-    if (-not $process.CloseMainWindow()) { throw 'CloseMainWindow failed' }
-    if (-not $process.WaitForExit(5000)) { throw 'Clean close timeout' }
+    if (-not (Close-OmniaQaWindow -WindowHandle $script:mainHwnd -Process $process -TimeoutMs 5000)) { throw 'Clean close timeout' }
     if ($process.ExitCode -ne 0) { throw "Unexpected exit: $($process.ExitCode)" }
 }
 try {
@@ -111,7 +113,7 @@ try {
     if (-not (Control 110).Current.Name.StartsWith("Chat / No project`n")) { throw 'Chat heading mismatch' }
     $cases.Add(@{case='mode-buttons-uia';passed=$true;method='InvokePattern + heading readback; no keyboard/IME claim'})
     $image = Join-Path $out 'native-session-cycle25-window.png'
-    $capture = Save-OmniaQaWindowCapture -WindowHandle $process.MainWindowHandle -Process $process -Path $image
+    $capture = Save-OmniaQaWindowCapture -WindowHandle $script:mainHwnd -Process $process -Path $image
     $process.Refresh()
     $receipt = @{
         schemaVersion=1;recordedAt=[DateTime]::UtcNow.ToString('o');scope='native session metadata; not provider execution';

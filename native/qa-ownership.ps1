@@ -63,9 +63,9 @@ function Open-App([string]$Role) {
     Wait-For {
         $process.Refresh()
         if ($process.HasExited) { throw "$Role exited before native window discovery." }
-        $process.MainWindowHandle -ne [IntPtr]::Zero
+        $window.hwnd = Find-OmniaQaMainWindow -Process $process -PreferredClass 'OmniaNativeShellClass'
+        $window.hwnd -ne [IntPtr]::Zero
     } "$Role window discovery timed out."
-    $window.hwnd = $process.MainWindowHandle
     $window.root = [Windows.Automation.AutomationElement]::FromHandle($window.hwnd)
     return $window
 }
@@ -100,7 +100,7 @@ function Close-App([object]$Window) {
     if ($Window.closed) { return }
     $Window.process.Refresh()
     if ($Window.process.HasExited) { throw "$($Window.role) exited before requested clean close." }
-    if (-not $Window.process.CloseMainWindow() -or -not $Window.process.WaitForExit(5000)) {
+    if (-not (Close-OmniaQaWindow -WindowHandle $Window.hwnd -Process $Window.process -TimeoutMs 5000)) {
         throw "$($Window.role) did not close cleanly within 5 seconds; window preserved."
     }
     $Window.closed = $true
