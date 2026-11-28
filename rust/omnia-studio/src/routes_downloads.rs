@@ -3,26 +3,156 @@
 use crate::http::{HttpRequest, HttpResponse};
 use crate::routes_legacy::StudioState;
 use base64::Engine as _;
+use chrono::Utc;
 use omnia_core::SecretRedactor;
 use omnia_downloader::{
-    expand_batch_pattern, parse_drive_url, parse_ef2, resolve_series_subfolder,
-    resolve_workspace_export, safe_output_filename, serialize_ef2, validate_safe_local_path,
-    verify_file_integrity, AimdBdpController, BatchItem, DownloadCategory, DownloadRequest,
-    DownloaderError, DriveAuth, DriveResolver, DriveResourceKind, Ef2Entry, HandoffReason,
-    OmnfJournal, PacingMode, PartMetaV2, PrivacyShield, ScheduleWindow, ScopedCookieJar,
-    SecurityPolicy, SiteRule, WorkspaceExportFormat, AUTO_SOLVE_PERMITTED, DEFAULT_MIN_SPLIT_BYTES, DRM_SUPPORTED, EXECUTION_MODE_MANUAL_VISIBLE_BROWSER, MAX_STREAMS,
-    MIN_STREAMS, OMNF_MAGIC,
+    classify_captured_media, expand_batch_pattern, parse_drive_url, parse_ef2,
+    resolve_series_subfolder, resolve_workspace_export, safe_output_filename, serialize_ef2,
+    validate_safe_local_path, verify_file_integrity_with_md5, BatchItem, BlobAssembler,
+    DownloadCategory, DownloadRequest, DownloaderError, DriveAuth, DriveResolver,
+    DriveResourceKind, Ef2Entry, HandoffReason, OmnfJournal, PacingMode, PartMetaV2,
+    PrivacyShield, SameSiteContext, ScheduleWindow, ScopedCookieJar, SecurityPolicy, SiteRule,
+    WorkspaceExportFormat, AUTO_SOLVE_PERMITTED, DEFAULT_MIN_SPLIT_BYTES, DRM_SUPPORTED,
+    EXECUTION_MODE_MANUAL_VISIBLE_BROWSER, MAX_STREAMS, MIN_STREAMS, OMNF_MAGIC,
 };
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use url::Url;
 
 const MAX_MEDIA_INSPECT_BYTES: usize = 4 * 1024 * 1024;
 const SSE_KEEPALIVE_SECS: u64 = 15;
+
+type SchedulerPumpEntry = (Weak<StudioState>, Arc<Notify>);
+type BlobSessionStore = Arc<StdMutex<HashMap<String, BlobAssembler>>>;
+type BlobSessionEntry = (Weak<StudioState>, BlobSessionStore);
+
+fn scheduler_pump_registry() -> &'static StdMutex<Vec<SchedulerPumpEntry>> {
+    static REG: OnceLock<StdMutex<Vec<SchedulerPumpEntry>>> = OnceLock::new();
+    REG.get_or_init(|| StdMutex::new(Vec::new()))
+}
+
+fn blob_session_registry() -> &'static StdMutex<Vec<BlobSessionEntry>> {
+    static REG: OnceLock<StdMutex<Vec<BlobSessionEntry>>> = OnceLock::new();
+    REG.get_or_init(|| StdMutex::new(Vec::new()))
+}
+
+fn blob_sessions_for_state(state: &Arc<StudioState>) -> BlobSessionStore {
+    let target_weak = Arc::downgrade(state);
+    let mut reg = blob_session_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    reg.retain(|(ws, _)| ws.strong_count() > 0);
+    if let Some((_, store)) = reg.iter().find(|(ws, _)| Weak::ptr_eq(ws, &target_weak)) {
+        return Arc::clone(store);
+    }
+    let store: BlobSessionStore = Arc::new(StdMutex::new(HashMap::new()));
+    reg.push((target_weak, Arc::clone(&store)));
+    store
+}
+
+/// Applies matching [`SitePolicyRegistry`] stream caps and default pacing to `dl_req`.
+fn apply_site_policy_to_request(state: &StudioState, dl_req: &mut DownloadRequest) {
+    let Ok(parsed) = Url::parse(&dl_req.url) else {
+        return;
+    };
+    let Some(host) = parsed.host_str() else {
+        return;
+    };
+    let Ok(reg) = state.download_site_policies.lock() else {
+        return;
+    };
+    if let Some(rule) = reg.resolve_for_host(host) {
+        let cap = rule.max_connections_per_host.clamp(MIN_STREAMS, MAX_STREAMS);
+        dl_req.streams = Some(
+            dl_req
+                .streams
+                .map_or(cap, |s| s.clamp(MIN_STREAMS, MAX_STREAMS).min(cap)),
+        );
+        if dl_req.pacing_mode.is_none() {
+            if let Some(ref raw_pacing) = rule.default_pacing {
+                if let Ok(mode) = parse_pacing_mode(raw_pacing) {
+                    dl_req.pacing_mode = Some(mode);
+                }
+            }
+        }
+    }
+}
+
+/// Hydrates WAL SQLite scheduler/policy settings once and ensures a live background Tokio pump.
+fn ensure_scheduler_pump_and_hydrate(state: &Arc<StudioState>) -> Arc<Notify> {
+    let target_weak = Arc::downgrade(state);
+    let mut reg = scheduler_pump_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    reg.retain(|(ws, _)| ws.strong_count() > 0);
+    if let Some((_, notify)) = reg.iter().find(|(ws, _)| Weak::ptr_eq(ws, &target_weak)) {
+        return Arc::clone(notify);
+    }
+
+    if let Ok(Some(persisted_cfg)) = state.downloads.store().load_scheduler_config() {
+        if let Ok(mut guard) = state.download_scheduler_config.lock() {
+            *guard = persisted_cfg.clone();
+        }
+        state.downloads.scheduler().lock().set_config(persisted_cfg);
+    }
+    if let Ok(persisted_reg) = state.downloads.store().load_site_policies() {
+        if !persisted_reg.list_rules().is_empty() {
+            if let Ok(mut guard) = state.download_site_policies.lock() {
+                *guard = persisted_reg;
+            }
+        }
+    }
+
+    let notify = Arc::new(Notify::new());
+    reg.push((target_weak.clone(), Arc::clone(&notify)));
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let task_notify = Arc::clone(&notify);
+        handle.spawn(async move {
+            run_scheduler_pump_loop(target_weak, task_notify).await;
+        });
+    }
+    notify
+}
+
+async fn run_scheduler_pump_loop(weak_state: Weak<StudioState>, notify: Arc<Notify>) {
+    loop {
+        tokio::select! {
+            _ = notify.notified() => {}
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+        let Some(state) = weak_state.upgrade() else {
+            break;
+        };
+        loop {
+            let next_item = {
+                let mut sched = state.downloads.scheduler().lock();
+                sched.next_dispatch_at(Utc::now())
+            };
+            let Some(item) = next_item else {
+                break;
+            };
+            let mut dl_req = DownloadRequest::new(item.url.clone(), item.destination_dir.clone());
+            dl_req.workspace_root = Some(state.config.workspace_root.clone());
+            dl_req.filename = item.filename.clone();
+            dl_req.expected_sha256 = item.expected_sha256.clone();
+            apply_site_policy_to_request(&state, &mut dl_req);
+            let (_job_id, handle) = state.downloads.spawn_download(dl_req);
+            let weak_for_slot = Arc::downgrade(&state);
+            let notify_for_slot = Arc::clone(&notify);
+            tokio::spawn(async move {
+                let _ = handle.await;
+                if let Some(alive) = weak_for_slot.upgrade() {
+                    alive.downloads.scheduler().lock().mark_finished();
+                    notify_for_slot.notify_one();
+                }
+            });
+        }
+    }
+}
 
 /// Returns `true` if `path` is owned by the downloader / OmniDrive v3 route table.
 #[must_use]
@@ -37,6 +167,7 @@ pub fn is_known_download_route(path: &str) -> bool {
             | "/api/downloads/pause"
             | "/api/downloads/cancel"
             | "/api/downloads/events"
+            | "/api/downloads/speed-limit"
             | "/api/omni-drive/probe"
             | "/api/omni-drive/resolve"
             | "/api/omni-drive/plan-folder"
@@ -60,6 +191,8 @@ pub fn is_known_download_route(path: &str) -> bool {
             | "/api/omni-drive/recommend"
             | "/api/omni-drive/aimd"
             | "/api/omni-drive/bundles"
+            | "/api/omni-drive/detect"
+            | "/api/omni-drive/blob/chunk"
     )
 }
 
@@ -68,6 +201,9 @@ pub async fn dispatch_download_route(
     state: &Arc<StudioState>,
     req: &HttpRequest,
 ) -> Option<HttpResponse> {
+    if is_known_download_route(&req.path) {
+        let _ = ensure_scheduler_pump_and_hydrate(state);
+    }
     match (req.method.as_str(), req.path.as_str()) {
         ("POST", "/api/downloads/probe") | ("POST", "/api/omni-drive/probe") => {
             Some(handle_downloads_probe(state, req).await)
@@ -79,6 +215,7 @@ pub async fn dispatch_download_route(
         ("POST", "/api/downloads/pause") => Some(handle_downloads_pause(state, req)),
         ("POST", "/api/downloads/cancel") => Some(handle_downloads_cancel(state, req)),
         ("GET", "/api/downloads/events") => Some(handle_downloads_events(state)),
+        ("POST", "/api/downloads/speed-limit") => Some(handle_downloads_speed_limit(state, req)),
 
         ("POST", "/api/omni-drive/resolve") => Some(handle_drive_resolve(req)),
         ("POST", "/api/omni-drive/plan-folder") => Some(handle_drive_plan_folder(state, req).await),
@@ -117,6 +254,8 @@ pub async fn dispatch_download_route(
         ("POST", "/api/omni-drive/recommend") => Some(handle_drive_recommend(state, req)),
         ("GET", "/api/omni-drive/aimd") => Some(handle_drive_aimd(state)),
         ("GET", "/api/omni-drive/bundles") => Some(handle_drive_bundles_list(state)),
+        ("POST", "/api/omni-drive/detect") => Some(handle_drive_detect(req)),
+        ("POST", "/api/omni-drive/blob/chunk") => Some(handle_drive_blob_chunk(state, req)),
 
         (_, path) if is_known_download_route(path) => Some(HttpResponse::error(
             405,
@@ -426,7 +565,47 @@ async fn handle_downloads_start(state: &Arc<StudioState>, req: &HttpRequest) -> 
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
+    dl_req.expected_md5_hex = obj
+        .get("expected_md5_hex")
+        .or_else(|| obj.get("expectedMd5Hex"))
+        .or_else(|| obj.get("expected_md5"))
+        .or_else(|| obj.get("expectedMd5"))
+        .or_else(|| obj.get("expected_md5_b64"))
+        .or_else(|| obj.get("expectedMd5B64"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    dl_req.clip_start_sec = obj
+        .get("clip_start_sec")
+        .or_else(|| obj.get("clipStartSec"))
+        .and_then(Value::as_f64);
+    dl_req.clip_end_sec = obj
+        .get("clip_end_sec")
+        .or_else(|| obj.get("clipEndSec"))
+        .and_then(Value::as_f64);
+    if let (Some(cs), Some(ce)) = (dl_req.clip_start_sec, dl_req.clip_end_sec) {
+        if !cs.is_finite() || !ce.is_finite() || cs < 0.0 || ce <= cs {
+            return HttpResponse::error(
+                400,
+                "invalid_clip_range",
+                "Field 'clipStartSec' must be >= 0 and strictly less than 'clipEndSec'.",
+            );
+        }
+    }
+    dl_req.export_format = obj
+        .get("export_format")
+        .or_else(|| obj.get("exportFormat"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
     dl_req.resume = obj.get("resume").and_then(Value::as_bool).unwrap_or(true);
+
+    let _ = ensure_scheduler_pump_and_hydrate(state);
+    apply_site_policy_to_request(state, &mut dl_req);
+    let effective_streams = dl_req.streams;
+    let effective_pacing = dl_req.pacing_mode.map(|m| m.as_str());
 
     let (job_id, _handle) = state.downloads.spawn_download(dl_req);
     HttpResponse::ok(json!({
@@ -434,6 +613,8 @@ async fn handle_downloads_start(state: &Arc<StudioState>, req: &HttpRequest) -> 
         "job_id": job_id,
         "status": "queued",
         "staging_dir": safe_staging.display().to_string(),
+        "effective_streams": effective_streams,
+        "effective_pacing": effective_pacing,
         "drm_supported": DRM_SUPPORTED,
     }))
 }
@@ -1081,6 +1262,9 @@ fn handle_drive_batch_enqueue(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
     let pending = sched.pending_len();
     let active_count = sched.active_count();
     drop(sched);
+    if !enqueued.is_empty() {
+        ensure_scheduler_pump_and_hydrate(state).notify_one();
+    }
 
     HttpResponse::ok(json!({
         "ok": true,
@@ -1193,6 +1377,7 @@ fn handle_drive_import_ef2(req: &HttpRequest) -> HttpResponse {
 }
 
 fn handle_drive_scheduler_get(state: &Arc<StudioState>) -> HttpResponse {
+    let _ = ensure_scheduler_pump_and_hydrate(state);
     let cfg = state
         .download_scheduler_config
         .lock()
@@ -1208,11 +1393,20 @@ fn handle_drive_scheduler_get(state: &Arc<StudioState>) -> HttpResponse {
         .map(|r| r.list_rules().to_vec())
         .unwrap_or_default();
 
+    let window_json = cfg.window.map(|w| {
+        json!({
+            "startHourUtc": w.start_hour_utc,
+            "endHourUtc": w.end_hour_utc,
+            "start_hour_utc": w.start_hour_utc,
+            "end_hour_utc": w.end_hour_utc,
+        })
+    });
+
     HttpResponse::ok(json!({
         "ok": true,
         "config": cfg,
         "maxConcurrentJobs": cfg.max_concurrent_jobs,
-        "window": cfg.window,
+        "window": window_json,
         "pending": pending,
         "activeCount": active_count,
         "siteRules": site_rules,
@@ -1224,6 +1418,7 @@ fn handle_drive_scheduler_post(state: &Arc<StudioState>, req: &HttpRequest) -> H
         Ok(m) => m,
         Err(resp) => return resp,
     };
+    let pump_notify = ensure_scheduler_pump_and_hydrate(state);
     let mut cfg = state
         .download_scheduler_config
         .lock()
@@ -1356,15 +1551,22 @@ fn handle_drive_scheduler_post(state: &Arc<StudioState>, req: &HttpRequest) -> H
         }
     }
 
+    if let Err(err) = state.downloads.store().save_scheduler_config(&cfg) {
+        return map_downloader_error(err);
+    }
+    if let Ok(reg) = state.download_site_policies.lock() {
+        if let Err(err) = state.downloads.store().replace_site_policies(&reg) {
+            return map_downloader_error(err);
+        }
+    }
     if let Ok(mut guard) = state.download_scheduler_config.lock() {
         *guard = cfg.clone();
     }
     {
         let mut sched = state.downloads.scheduler().lock();
-        if sched.pending_len() == 0 && sched.active_count() == 0 {
-            *sched = omnia_downloader::DownloadScheduler::new(cfg.clone());
-        }
+        sched.set_config(cfg.clone());
     }
+    pump_notify.notify_one();
 
     handle_drive_scheduler_get(state)
 }
@@ -1405,12 +1607,24 @@ async fn handle_drive_integrity_verify(req: &HttpRequest) -> HttpResponse {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
+    let expected_md5 = obj
+        .get("expectedMd5")
+        .or_else(|| obj.get("expected_md5"))
+        .or_else(|| obj.get("expectedMd5Hex"))
+        .or_else(|| obj.get("expected_md5_hex"))
+        .or_else(|| obj.get("expectedMd5B64"))
+        .or_else(|| obj.get("expected_md5_b64"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
 
     let res = tokio::task::spawn_blocking(move || {
-        verify_file_integrity(
+        verify_file_integrity_with_md5(
             &safe_path,
             expected_sha256.as_deref(),
             expected_crc32c.as_deref(),
+            expected_md5.as_deref(),
         )
     })
     .await;
@@ -1837,24 +2051,34 @@ fn handle_drive_cookies_evaluate(req: &HttpRequest) -> HttpResponse {
         }));
     }
 
+    let same_site_ctx = obj
+        .get("sameSiteContext")
+        .or_else(|| obj.get("same_site_context"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or(SameSiteContext::SameSite, SameSiteContext::parse);
+    let same_site_context_label = match same_site_ctx {
+        SameSiteContext::SameSite => "same_site",
+        SameSiteContext::CrossSiteTopLevelNav => "cross_site_top_level_nav",
+        SameSiteContext::CrossSiteSubresource => "cross_site_subresource",
+    };
+
     // Extract only cookie NAMES (never echoing raw cookie values in receipts!).
-    let matched_names: Vec<String> = jar
-        .cookie_header_for(&target_url, prev_origin.as_ref())
-        .map(|hdr| {
-            hdr.split("; ")
-                .filter_map(|pair| pair.split_once('=').map(|(n, _)| n.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let (matched_names, blocked_same_site_names) =
+        jar.evaluate_names_for_context(&target_url, prev_origin.as_ref(), same_site_ctx);
 
     HttpResponse::ok(json!({
         "ok": true,
         "sanitizedUrl": PrivacyShield::sanitize_for_receipt(raw_url),
+        "sameSiteContext": same_site_context_label,
         "storedCount": jar.len(),
         "acceptedCount": accepted_count,
         "rejectedCount": rejected_count,
         "matchedCount": matched_names.len(),
         "matchedCookieNames": matched_names,
+        "blockedBySameSiteCount": blocked_same_site_names.len(),
+        "blockedBySameSiteNames": blocked_same_site_names,
         "crossOriginStripped": prev_origin.is_some() && matched_names.is_empty() && accepted_count > 0,
         "decisions": decisions,
     }))
@@ -1935,15 +2159,19 @@ fn handle_drive_aimd(state: &Arc<StudioState>) -> HttpResponse {
         .iter()
         .filter(|j| matches!(j.status, omnia_downloader::DownloadStatus::Downloading))
         .count();
-    let controller = AimdBdpController::new(PacingMode::Adaptive, 16);
-    let metrics = controller.metrics();
+    let live = state.downloads.live_aimd_telemetry();
 
     HttpResponse::ok(json!({
         "ok": true,
-        "pacingMode": PacingMode::Adaptive.as_str(),
+        "pacingMode": live.pacing_mode.as_str(),
         "activeJobs": active_jobs,
         "totalJobs": jobs.len(),
-        "metrics": metrics,
+        "metrics": live.metrics,
+        "activeWorkers": live.active_workers,
+        "sampleCount": live.sample_count,
+        "activeJobId": live.active_job_id,
+        "updatedAtMs": live.updated_at_ms,
+        "globalSpeedLimitBps": state.downloads.global_speed_limit_bps(),
         "drmSupported": DRM_SUPPORTED,
         "autoSolvePermitted": AUTO_SOLVE_PERMITTED,
     }))
@@ -1960,6 +2188,320 @@ fn handle_drive_bundles_list(state: &Arc<StudioState>) -> HttpResponse {
         "count": bundles.len(),
         "bundles": bundles,
         "drmSupported": DRM_SUPPORTED,
+    }))
+}
+
+fn handle_downloads_speed_limit(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let raw_val = obj
+        .get("speedLimitBps")
+        .or_else(|| obj.get("speed_limit_bps"))
+        .or_else(|| obj.get("bytesPerSec"))
+        .or_else(|| obj.get("bytes_per_sec"));
+    let limit_bps = match raw_val {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(num)) => {
+            let Some(v) = num.as_u64() else {
+                return HttpResponse::error(
+                    400,
+                    "invalid_speed_limit",
+                    "Field 'speedLimitBps' must be a non-negative integer or null.",
+                );
+            };
+            (v > 0).then_some(v)
+        }
+        Some(_) => {
+            return HttpResponse::error(
+                400,
+                "invalid_speed_limit",
+                "Field 'speedLimitBps' must be an integer (bytes/sec) or null.",
+            );
+        }
+    };
+    state.downloads.set_global_speed_limit_bps(limit_bps);
+    HttpResponse::ok(json!({
+        "ok": true,
+        "globalSpeedLimitBps": state.downloads.global_speed_limit_bps(),
+    }))
+}
+
+fn handle_drive_detect(req: &HttpRequest) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let mut raw_items: Vec<(String, Option<String>, Option<u64>)> = Vec::new();
+    if let Some(arr) = obj.get("candidates").and_then(Value::as_array) {
+        for entry in arr.iter().take(512) {
+            let Some(eobj) = entry.as_object() else {
+                continue;
+            };
+            let Some(url_str) = eobj
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let mime = eobj
+                .get("mimeType")
+                .or_else(|| eobj.get("mime_type"))
+                .or_else(|| eobj.get("contentType"))
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string());
+            let len = eobj
+                .get("contentLength")
+                .or_else(|| eobj.get("content_length"))
+                .and_then(Value::as_u64);
+            raw_items.push((url_str.to_string(), mime, len));
+        }
+    } else if let Some(url_str) = obj
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let mime = obj
+            .get("mimeType")
+            .or_else(|| obj.get("mime_type"))
+            .or_else(|| obj.get("contentType"))
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string());
+        let len = obj
+            .get("contentLength")
+            .or_else(|| obj.get("content_length"))
+            .and_then(Value::as_u64);
+        raw_items.push((url_str.to_string(), mime, len));
+    } else {
+        return HttpResponse::error(
+            400,
+            "missing_url",
+            "Field 'url' or 'candidates' array is required.",
+        );
+    }
+
+    let mut detected = Vec::new();
+    let mut suppressed_count = 0usize;
+    let mut seen_dedupe = BTreeSet::new();
+    for (url_str, mime, len) in raw_items {
+        if is_unc_or_smb_path(&url_str) {
+            return unc_blocked_response();
+        }
+        if let Some(mut cand) = classify_captured_media(&url_str, mime.as_deref(), len) {
+            cand.url = PrivacyShield::sanitize_for_receipt(&cand.url);
+            cand.dedupe_key = PrivacyShield::sanitize_for_receipt(&cand.dedupe_key);
+            if seen_dedupe.insert(cand.dedupe_key.clone()) {
+                detected.push(cand);
+            } else {
+                suppressed_count += 1;
+            }
+        } else {
+            suppressed_count += 1;
+        }
+    }
+
+    HttpResponse::ok(json!({
+        "ok": true,
+        "detectedCount": detected.len(),
+        "suppressedCount": suppressed_count,
+        "candidates": detected,
+        "drmSupported": DRM_SUPPORTED,
+    }))
+}
+
+fn handle_drive_blob_chunk(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let Some(upload_id) = obj
+        .get("uploadId")
+        .or_else(|| obj.get("upload_id"))
+        .or_else(|| obj.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .map(ToString::to_string)
+    else {
+        return HttpResponse::error(400, "missing_upload_id", "Field 'uploadId' is required.");
+    };
+
+    let abort_requested = obj.get("abort").and_then(Value::as_bool).unwrap_or(false);
+    let store_arc = blob_sessions_for_state(state);
+    if abort_requested {
+        let removed = store_arc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&upload_id);
+        if let Some(asm) = removed {
+            asm.abort();
+        }
+        return HttpResponse::ok(json!({
+            "ok": true,
+            "uploadId": upload_id,
+            "aborted": true,
+        }));
+    }
+
+    let staging_dir = if let Some(raw_dir) = obj
+        .get("stagingDir")
+        .or_else(|| obj.get("staging_dir"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if is_unc_or_smb_path(raw_dir) {
+            return unc_blocked_response();
+        }
+        PathBuf::from(raw_dir)
+    } else {
+        state.downloads_staging_dir.clone()
+    };
+
+    let safe_staging =
+        match validate_safe_local_path(&staging_dir, Some(&state.config.workspace_root)) {
+            Ok(p) => p,
+            Err(err) => return map_downloader_error(err),
+        };
+    let raw_filename = obj
+        .get("filename")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("blob_capture.bin");
+    if is_unc_or_smb_path(raw_filename) {
+        return unc_blocked_response();
+    }
+
+    let total_chunks = obj
+        .get("totalChunks")
+        .or_else(|| obj.get("total_chunks"))
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
+    let chunk_idx = obj
+        .get("chunkIndex")
+        .or_else(|| obj.get("chunk_index"))
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
+    let data_b64 = obj
+        .get("dataBase64")
+        .or_else(|| obj.get("data_base64"))
+        .or_else(|| obj.get("chunkBase64"))
+        .or_else(|| obj.get("chunk_base64"))
+        .and_then(Value::as_str);
+
+    if chunk_idx.is_some() != data_b64.is_some() {
+        return HttpResponse::error(
+            400,
+            "invalid_blob_chunk",
+            "Fields 'chunkIndex' and 'dataBase64' must be provided together.",
+        );
+    }
+
+    let finalize_opt = obj.get("finalize").and_then(Value::as_bool);
+    let expected_sha256 = obj
+        .get("expectedSha256")
+        .or_else(|| obj.get("expected_sha256"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let expected_crc32c = obj
+        .get("expectedCrc32c")
+        .or_else(|| obj.get("expected_crc32c"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let expected_md5 = obj
+        .get("expectedMd5")
+        .or_else(|| obj.get("expected_md5"))
+        .or_else(|| obj.get("expectedMd5Hex"))
+        .or_else(|| obj.get("expected_md5_hex"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+
+    let finalized_asm: Option<BlobAssembler>;
+    let partial_snapshot: Option<(usize, u64, bool)>;
+    {
+        let mut sessions = store_arc.lock().unwrap_or_else(|e| e.into_inner());
+        if !sessions.contains_key(&upload_id) {
+            let asm = match BlobAssembler::new(
+                &safe_staging,
+                raw_filename,
+                Some(&state.config.workspace_root),
+            ) {
+                Ok(a) => a,
+                Err(err) => return map_downloader_error(err),
+            };
+            sessions.insert(upload_id.clone(), asm);
+        }
+        let asm = sessions
+            .get_mut(&upload_id)
+            .expect("inserted blob assembler session");
+        if let Some(total) = total_chunks {
+            if let Err(err) = asm.set_total_chunks(total) {
+                return map_downloader_error(err);
+            }
+        }
+        if let (Some(idx), Some(b64)) = (chunk_idx, data_b64) {
+            if let Err(err) = asm.push_base64_chunk(idx, b64) {
+                return map_downloader_error(err);
+            }
+        }
+        let should_finalize = finalize_opt.unwrap_or_else(|| asm.is_complete());
+        if should_finalize {
+            finalized_asm = sessions.remove(&upload_id);
+            partial_snapshot = None;
+        } else {
+            finalized_asm = None;
+            partial_snapshot = Some((
+                asm.received_count(),
+                asm.buffered_bytes(),
+                asm.is_complete(),
+            ));
+        }
+    }
+
+    if let Some((received_count, buffered_bytes, is_complete)) = partial_snapshot {
+        return HttpResponse::ok(json!({
+            "ok": true,
+            "uploadId": upload_id,
+            "finalized": false,
+            "receivedCount": received_count,
+            "bufferedBytes": buffered_bytes,
+            "isComplete": is_complete,
+        }));
+    }
+
+    let asm = finalized_asm.expect("finalized assembler removed");
+    let (out_path, written) = match asm.finalize() {
+        Ok(res) => res,
+        Err(err) => return map_downloader_error(err),
+    };
+    let report = match verify_file_integrity_with_md5(
+        &out_path,
+        expected_sha256.as_deref(),
+        expected_crc32c.as_deref(),
+        expected_md5.as_deref(),
+    ) {
+        Ok(r) => r,
+        Err(err) => return map_downloader_error(err),
+    };
+
+    HttpResponse::ok(json!({
+        "ok": true,
+        "uploadId": upload_id,
+        "finalized": true,
+        "outputPath": out_path.display().to_string(),
+        "totalBytes": written,
+        "integrity": report,
     }))
 }
 
@@ -2235,6 +2777,396 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(hex_insp.status, 200);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn p0_site_policy_md5_samesite_speed_limit_detect_and_blob_chunk_routes() {
+        let (state, tmp) = make_test_state();
+        let stage = tmp.join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+
+        // 1. Configure SitePolicyRegistry rule for `*.example.test`.
+        let sch_post = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/scheduler",
+                "",
+                json!({
+                    "maxConcurrentJobs": 2,
+                    "siteRule": {
+                        "hostPattern": "*.example.test",
+                        "maxConnectionsPerHost": 2,
+                        "defaultPacing": "polite"
+                    }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sch_post.status, 200);
+
+        // 2. `/api/downloads/start` enforces SitePolicyRegistry stream cap (16 -> 2), default pacing,
+        // and rejects invalid `clipStartSec >= clipEndSec` synchronously.
+        let bad_clip = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/downloads/start",
+                "",
+                json!({
+                    "url": "https://cdn.example.test/video.m3u8",
+                    "stagingDir": stage.to_string_lossy(),
+                    "clipStartSec": 5.0,
+                    "clipEndSec": 2.0
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(bad_clip.status, 400);
+
+        let start_ok = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/downloads/start",
+                "",
+                json!({
+                    "url": "https://cdn.example.test/archive.bin",
+                    "stagingDir": stage.to_string_lossy(),
+                    "streams": 16,
+                    "expectedMd5": "d41d8cd98f00b204e9800998ecf8427e",
+                    "exportFormat": "pdf"
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(start_ok.status, 200);
+        let sj: Value = serde_json::from_slice(&start_ok.body).unwrap();
+        assert_eq!(sj["effective_streams"], 2);
+        assert_eq!(sj["effective_pacing"], "polite");
+
+        // 3. `/api/omni-drive/integrity/verify` honors `expectedMd5` pass & 422 mismatch.
+        let sample_path = stage.join("sample_md5.bin");
+        let payload = b"Omnia Studio MD5 Verification Bytes";
+        std::fs::write(&sample_path, payload).unwrap();
+        let md5_hex = omnia_core::hex_encode(&omnia_downloader::md5_bytes(payload));
+
+        let md5_ok = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/integrity/verify",
+                "",
+                json!({
+                    "path": sample_path.to_string_lossy(),
+                    "expectedMd5": md5_hex
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(md5_ok.status, 200);
+        let mj: Value = serde_json::from_slice(&md5_ok.body).unwrap();
+        assert_eq!(mj["report"]["md5_verified"], true);
+
+        let md5_bad = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/integrity/verify",
+                "",
+                json!({
+                    "path": sample_path.to_string_lossy(),
+                    "expectedMd5": "00000000000000000000000000000000"
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(md5_bad.status, 422);
+
+        // 4. `/api/omni-drive/cookies/evaluate` enforces `sameSiteContext` cleanly without leaking values.
+        let ck_sub = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/cookies/evaluate",
+                "",
+                json!({
+                    "url": "https://cdn.example.test/api",
+                    "previousOrigin": "https://other.example.org/",
+                    "sameSiteContext": "cross_site_subresource",
+                    "cookies": [
+                        "strict_c=supersecret1; Path=/; Secure; SameSite=Strict",
+                        "lax_c=supersecret2; Path=/; Secure; SameSite=Lax",
+                        "none_c=supersecret3; Path=/; Secure; SameSite=None"
+                    ]
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ck_sub.status, 200);
+        let ck_body = String::from_utf8_lossy(&ck_sub.body);
+        assert!(!ck_body.contains("supersecret"));
+        let ckj: Value = serde_json::from_slice(&ck_sub.body).unwrap();
+        assert_eq!(ckj["sameSiteContext"], "cross_site_subresource");
+        assert_eq!(ckj["matchedCookieNames"], json!(["none_c"]));
+        assert_eq!(ckj["blockedBySameSiteCount"], 2);
+
+        // 5. `/api/downloads/speed-limit` reflects on `GET /api/omni-drive/aimd`.
+        let lim_set = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/downloads/speed-limit",
+                "",
+                json!({ "speedLimitBps": 1048576 }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(lim_set.status, 200);
+        let aimd = dispatch_download_route(
+            &state,
+            &make_req("GET", "/api/omni-drive/aimd", "", Value::Null),
+        )
+        .await
+        .unwrap();
+        assert_eq!(aimd.status, 200);
+        let aj: Value = serde_json::from_slice(&aimd.body).unwrap();
+        assert_eq!(aj["globalSpeedLimitBps"], 1048576);
+        assert!(aj.get("sampleCount").is_some());
+
+        let lim_clr = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/downloads/speed-limit",
+                "",
+                json!({ "speedLimitBps": null }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(lim_clr.status, 200);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&lim_clr.body).unwrap()["globalSpeedLimitBps"],
+            Value::Null
+        );
+
+        // 6. `/api/omni-drive/detect` classifies streams and suppresses `.ts` & tiny media.
+        let det = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/detect",
+                "",
+                json!({
+                    "candidates": [
+                        { "url": "https://cdn.example.test/live/master.m3u8?token=secret123", "mimeType": "application/vnd.apple.mpegurl" },
+                        { "url": "https://cdn.example.test/live/seg-001.ts", "mimeType": "video/mp2t", "contentLength": 400000 },
+                        { "url": "https://cdn.example.test/movie.mp4", "mimeType": "video/mp4", "contentLength": 500000 }
+                    ]
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(det.status, 200);
+        let dj: Value = serde_json::from_slice(&det.body).unwrap();
+        assert_eq!(dj["detectedCount"], 2);
+        assert_eq!(dj["suppressedCount"], 1);
+        assert!(!String::from_utf8_lossy(&det.body).contains("secret123"));
+
+        // 7. `/api/omni-drive/blob/chunk` blocks workspace-contained staging and assembles out-of-order chunks.
+        let ws_reject = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/blob/chunk",
+                "",
+                json!({
+                    "uploadId": "up-ws-fail",
+                    "stagingDir": state.config.workspace_root.to_string_lossy(),
+                    "filename": "bad.bin",
+                    "totalChunks": 1,
+                    "chunkIndex": 0,
+                    "dataBase64": base64::engine::general_purpose::STANDARD.encode(b"bad")
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ws_reject.status, 403);
+
+        let c0 = b"BlobPartZero_";
+        let c1 = b"BlobPartOne!";
+        let full_blob = [c0.as_slice(), c1.as_slice()].concat();
+        let blob_md5 = omnia_core::hex_encode(&omnia_downloader::md5_bytes(&full_blob));
+
+        let push1 = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/blob/chunk",
+                "",
+                json!({
+                    "uploadId": "up-1",
+                    "stagingDir": stage.to_string_lossy(),
+                    "filename": "capture.bin",
+                    "totalChunks": 2,
+                    "chunkIndex": 1,
+                    "dataBase64": base64::engine::general_purpose::STANDARD.encode(c1)
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(push1.status, 200);
+        assert_eq!(serde_json::from_slice::<Value>(&push1.body).unwrap()["finalized"], false);
+
+        let push0 = dispatch_download_route(
+            &state,
+            &make_req(
+                "POST",
+                "/api/omni-drive/blob/chunk",
+                "",
+                json!({
+                    "uploadId": "up-1",
+                    "stagingDir": stage.to_string_lossy(),
+                    "filename": "capture.bin",
+                    "totalChunks": 2,
+                    "chunkIndex": 0,
+                    "dataBase64": base64::engine::general_purpose::STANDARD.encode(c0),
+                    "expectedMd5": blob_md5
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(push0.status, 200);
+        let p0j: Value = serde_json::from_slice(&push0.body).unwrap();
+        assert_eq!(p0j["finalized"], true);
+        assert_eq!(p0j["integrity"]["md5_verified"], true);
+        assert_eq!(std::fs::read(stage.join("capture.bin")).unwrap(), full_blob);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn scheduler_persists_across_sqlite_reopen_and_pump_dispatches_batch_enqueue() {
+        let tmp = std::env::temp_dir().join(format!(
+            "omnia-studio-sched-pump-{}",
+            omnia_core::uuid_v4_simple()
+        ));
+        let ws = tmp.join("ws");
+        let rb = tmp.join("rb");
+        let stage = tmp.join("stage");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&rb).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        let db_file = tmp.join("studio.db");
+
+        let make_persistent_state = || {
+            let cfg = StudioConfig {
+                workspace_root: ws.clone(),
+                rollback_root: rb.clone(),
+                db_path: Some(db_file.clone()),
+                runtime_url: None,
+                ..StudioConfig::default()
+            };
+            Arc::new(StudioState::new(cfg).expect("persistent StudioState::new"))
+        };
+
+        // 1. Configure scheduler + SiteRule on instance 1, then drop instance 1.
+        {
+            let state1 = make_persistent_state();
+            let post = dispatch_download_route(
+                &state1,
+                &make_req(
+                    "POST",
+                    "/api/omni-drive/scheduler",
+                    "",
+                    json!({
+                        "maxConcurrentJobs": 7,
+                        "window": { "startHourUtc": 2, "endHourUtc": 5 },
+                        "siteRule": {
+                            "hostPattern": "*.example.org",
+                            "maxConnectionsPerHost": 3,
+                            "defaultPacing": "turbo"
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+            assert_eq!(post.status, 200);
+        }
+
+        // 2. Reopen instance 2 on the same WAL DB and verify hydration via GET /scheduler.
+        let state2 = make_persistent_state();
+        let get_after = dispatch_download_route(
+            &state2,
+            &make_req("GET", "/api/omni-drive/scheduler", "", Value::Null),
+        )
+        .await
+        .unwrap();
+        assert_eq!(get_after.status, 200);
+        let gj: Value = serde_json::from_slice(&get_after.body).unwrap();
+        assert_eq!(gj["maxConcurrentJobs"], 7);
+        assert_eq!(gj["window"]["startHourUtc"], 2);
+        assert_eq!(gj["siteRules"].as_array().unwrap().len(), 1);
+        assert_eq!(gj["siteRules"][0]["max_connections_per_host"], 3);
+
+        // 3. Open schedule window (`null`) and verify batch enqueue triggers live background pump.
+        let open_win = dispatch_download_route(
+            &state2,
+            &make_req(
+                "POST",
+                "/api/omni-drive/scheduler",
+                "",
+                json!({ "maxConcurrentJobs": 2, "window": null }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(open_win.status, 200);
+
+        let enq = dispatch_download_route(
+            &state2,
+            &make_req(
+                "POST",
+                "/api/omni-drive/batch/enqueue",
+                "",
+                json!({
+                    "urls": ["https://files.example.org/pumped_item.bin"],
+                    "stagingDir": stage.to_string_lossy()
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(enq.status, 200);
+
+        let mut dispatched = false;
+        for _ in 0..25 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let pending = state2.downloads.scheduler().lock().pending_len();
+            let jobs = state2.downloads.list_jobs().unwrap_or_default();
+            if pending == 0 && !jobs.is_empty() {
+                assert_eq!(jobs[0].streams, 3);
+                assert_eq!(jobs[0].pacing_mode, PacingMode::Turbo);
+                dispatched = true;
+                break;
+            }
+        }
+        assert!(dispatched, "background scheduler pump failed to dispatch queued batch item");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

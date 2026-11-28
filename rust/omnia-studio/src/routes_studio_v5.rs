@@ -41,7 +41,9 @@ use serde_json::{json, Value};
 
 use crate::http::{HttpRequest, HttpResponse};
 use crate::mgmt_proxy::{build_benchmark_scoreboard, handle_management_route};
-use crate::ops_store::{OpsStore, RichUsageTraceInput};
+use crate::ops_store::{
+    OpsStore, PeerMeshAgentRecord, PeerMeshEdgeRecord, RichUsageTraceInput,
+};
 use crate::routes_legacy::StudioState;
 use crate::telemetry::is_reparse_or_symlink;
 
@@ -105,6 +107,8 @@ pub fn is_known_v5_route(path: &str) -> bool {
             | "/api/workspace/write"
             | "/api/git/status"
             | "/api/git/diff"
+            | "/api/git/commit"
+            | "/api/git/worktrees"
             | "/api/ide/lsp"
             | "/api/terminal/create"
             | "/api/terminal/list"
@@ -160,6 +164,8 @@ pub fn is_known_v5_route(path: &str) -> bool {
             | "/api/kanban/status"
             | "/api/inbox"
             | "/api/routines"
+            | "/api/routines/runs"
+            | "/api/routines/tick"
             | "/api/stats/overview"
             | "/api/stats/spotlight"
             | "/api/traces"
@@ -247,6 +253,8 @@ pub async fn dispatch_v5_route(state: &Arc<StudioState>, req: &HttpRequest) -> O
         }
         ("GET", "/api/git/status") => Some(handle_git_status(state)),
         ("GET", "/api/git/diff") => Some(handle_git_diff(state, req)),
+        ("POST", "/api/git/commit") => Some(handle_git_commit(state, req)),
+        ("GET", "/api/git/worktrees") => Some(handle_git_worktrees(state)),
         ("GET", "/api/ide/lsp") | ("POST", "/api/ide/lsp") => Some(handle_ide_lsp(state, req)),
 
         ("POST", "/api/terminal/create") | ("POST", "/api/pty/create") => {
@@ -345,6 +353,8 @@ pub async fn dispatch_v5_route(state: &Arc<StudioState>, req: &HttpRequest) -> O
         ("POST", "/api/inbox") => Some(handle_inbox_add(state, req)),
         ("GET", "/api/routines") => Some(handle_routines_list(state)),
         ("POST", "/api/routines") => Some(handle_routines_upsert(state, req)),
+        ("GET", "/api/routines/runs") => Some(handle_routines_runs(state, req)),
+        ("POST", "/api/routines/tick") => Some(handle_routines_tick(state, req)),
 
         // 8. Telemetry, Traces, Scoreboard
         ("GET", "/api/stats/overview") | ("GET", "/api/stats/spotlight") => {
@@ -770,17 +780,35 @@ async fn handle_agent_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
 
 async fn handle_agent_abort(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
     let body = parse_json_body(req).unwrap_or_else(|_| json!({}));
+    let session_hint = non_empty_str(&body, &["sessionId", "tabId", "sessionKey"]);
     let Some(key) = resolve_managed_session_key(state, &body) else {
+        if let Some(sid) = session_hint {
+            let _ = state.cancel_tracked_reservations(Some(sid), "session_abort_fallback");
+        }
         return HttpResponse::error(404, "session_not_found", "No active managed agent session matched.");
     };
     state.harness.abort_session(&key);
+    let mut cancelled_reservations =
+        state.cancel_tracked_reservations(Some(&key), "agent_session_aborted");
+    if let Some(sid) = session_hint.filter(|s| *s != key) {
+        cancelled_reservations.extend(state.cancel_tracked_reservations(Some(sid), "agent_session_aborted"));
+    }
     state.event_feed.publish(
         "agent",
         "session_aborted",
         state.harness.get_session_tab_id(&key).as_deref(),
-        json!({ "sessionKey": key, "aborted": true }),
+        json!({
+            "sessionKey": key,
+            "aborted": true,
+            "cancelledReservations": cancelled_reservations,
+        }),
     );
-    HttpResponse::ok(json!({ "ok": true, "sessionKey": key, "aborted": true }))
+    HttpResponse::ok(json!({
+        "ok": true,
+        "sessionKey": key,
+        "aborted": true,
+        "cancelledReservations": cancelled_reservations,
+    }))
 }
 
 fn handle_agent_confirm(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
@@ -1672,6 +1700,189 @@ fn handle_git_diff(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse 
                 }))
             } else {
                 HttpResponse::error(400, "git_diff_failed", &msg)
+            }
+        }
+    }
+}
+
+fn handle_git_commit(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = match parse_json_body(req) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let Some(message) = non_empty_str(&body, &["message", "commitMessage", "summary"]) else {
+        return HttpResponse::error(400, "missing_commit_message", "Field 'message' is required.");
+    };
+    if message.len() > 4096 || message.contains('\0') {
+        return HttpResponse::error(
+            400,
+            "invalid_commit_message",
+            "Commit message must be <= 4096 bytes and free of NUL characters.",
+        );
+    }
+
+    let raw_files: Vec<String> = body
+        .get("files")
+        .or_else(|| body.get("paths"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut validated_rel_files = Vec::with_capacity(raw_files.len());
+    for file in &raw_files {
+        if file.starts_with('-') {
+            return HttpResponse::error(
+                400,
+                "invalid_git_path",
+                "File path arguments cannot start with '-'.",
+            );
+        }
+        let Ok(safe_abs) = ensure_within_workspace(&state.config.workspace_root, file) else {
+            return HttpResponse::error(
+                403,
+                "workspace_boundary_denied",
+                "Git commit file path outside workspace boundary.",
+            );
+        };
+        let canon_root = std::fs::canonicalize(&state.config.workspace_root)
+            .unwrap_or_else(|_| state.config.workspace_root.clone());
+        let rel = safe_abs
+            .strip_prefix(&canon_root)
+            .unwrap_or(&safe_abs)
+            .to_string_lossy()
+            .replace('\\', "/");
+        validated_rel_files.push(rel);
+    }
+
+    if !validated_rel_files.is_empty() {
+        let mut add_args = vec!["add", "--"];
+        for f in &validated_rel_files {
+            add_args.push(f.as_str());
+        }
+        if let Err(e) = run_git(&state.config.workspace_root, &add_args) {
+            return HttpResponse::error(400, "git_stage_failed", &e.to_string());
+        }
+    } else if body.get("stageAll").and_then(Value::as_bool) == Some(true)
+        || body.get("all").and_then(Value::as_bool) == Some(true)
+    {
+        if let Err(e) = run_git(&state.config.workspace_root, &["add", "-A"]) {
+            return HttpResponse::error(400, "git_stage_failed", &e.to_string());
+        }
+    }
+
+    match run_git(&state.config.workspace_root, &["commit", "-m", message]) {
+        Ok(output) => {
+            let head_sha = run_git(&state.config.workspace_root, &["rev-parse", "HEAD"])
+                .ok()
+                .map(|s| s.trim().to_string());
+            let branch = run_git(
+                &state.config.workspace_root,
+                &["rev-parse", "--abbrev-ref", "HEAD"],
+            )
+            .ok()
+            .map(|s| s.trim().to_string());
+            state.event_feed.publish(
+                "workspace",
+                "git_committed",
+                head_sha.as_deref(),
+                json!({
+                    "commitSha": head_sha,
+                    "branch": branch,
+                    "stagedFiles": validated_rel_files,
+                }),
+            );
+            HttpResponse::ok(SecretRedactor::redact_json(&json!({
+                "ok": true,
+                "committed": true,
+                "commitSha": head_sha,
+                "branch": branch,
+                "message": message,
+                "stagedFiles": validated_rel_files,
+                "output": output.trim(),
+            })))
+        }
+        Err(e) => HttpResponse::error(400, "git_commit_failed", &SecretRedactor::redact(&e.to_string())),
+    }
+}
+
+fn handle_git_worktrees(state: &Arc<StudioState>) -> HttpResponse {
+    match run_git(
+        &state.config.workspace_root,
+        &["worktree", "list", "--porcelain"],
+    ) {
+        Ok(raw) => {
+            let mut worktrees = Vec::new();
+            for stanza in raw.split("\n\n") {
+                let mut path: Option<String> = None;
+                let mut head: Option<String> = None;
+                let mut branch: Option<String> = None;
+                let mut bare = false;
+                let mut detached = false;
+                let mut locked: Option<String> = None;
+                let mut prunable: Option<String> = None;
+
+                for line in stanza.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    if let Some(p) = line.strip_prefix("worktree ") {
+                        path = Some(p.trim().to_string());
+                    } else if let Some(h) = line.strip_prefix("HEAD ") {
+                        head = Some(h.trim().to_string());
+                    } else if let Some(b) = line.strip_prefix("branch ") {
+                        branch = Some(
+                            b.trim()
+                                .strip_prefix("refs/heads/")
+                                .unwrap_or(b.trim())
+                                .to_string(),
+                        );
+                    } else if line == "bare" {
+                        bare = true;
+                    } else if line == "detached" {
+                        detached = true;
+                    } else if let Some(reason) = line.strip_prefix("locked") {
+                        locked = Some(reason.trim().to_string());
+                    } else if let Some(reason) = line.strip_prefix("prunable") {
+                        prunable = Some(reason.trim().to_string());
+                    }
+                }
+                if let Some(wt_path) = path {
+                    worktrees.push(json!({
+                        "path": wt_path,
+                        "head": head,
+                        "branch": branch,
+                        "bare": bare,
+                        "detached": detached,
+                        "locked": locked.is_some(),
+                        "lockReason": locked.filter(|s| !s.is_empty()),
+                        "prunable": prunable.is_some(),
+                        "prunableReason": prunable.filter(|s| !s.is_empty()),
+                    }));
+                }
+            }
+            HttpResponse::ok(json!({
+                "ok": true,
+                "isGitRepo": true,
+                "count": worktrees.len(),
+                "worktrees": worktrees,
+            }))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.to_ascii_lowercase().contains("not a git repository") {
+                HttpResponse::ok(json!({
+                    "ok": true,
+                    "isGitRepo": false,
+                    "count": 0,
+                    "worktrees": [],
+                    "note": msg,
+                }))
+            } else {
+                HttpResponse::error(400, "git_worktrees_failed", &msg)
             }
         }
     }
@@ -2580,6 +2791,46 @@ fn handle_routines_upsert(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRe
     }
 }
 
+fn handle_routines_runs(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let routine_id = query_param_val(req, "routineId")
+        .or_else(|| query_param_val(req, "routine_id"));
+    let limit = query_param_val(req, "limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(50);
+    match state.ops.list_routine_runs(routine_id.as_deref(), limit) {
+        Ok(runs) => HttpResponse::ok(json!({ "ok": true, "count": runs.len(), "runs": runs })),
+        Err(e) => HttpResponse::error(500, "routine_runs_failed", &e),
+    }
+}
+
+fn handle_routines_tick(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = serde_json::from_slice::<Value>(&req.body).unwrap_or_else(|_| json!({}));
+    let now_ms = body
+        .get("nowMs")
+        .or_else(|| body.get("now_ms"))
+        .and_then(Value::as_i64)
+        .unwrap_or_else(now_epoch_ms);
+    match state.ops.evaluate_due_routines(now_ms) {
+        Ok(triggered) => {
+            for run in &triggered {
+                state.event_feed.publish(
+                    "routines",
+                    "routine_triggered",
+                    Some(&run.routine_id),
+                    serde_json::to_value(run).unwrap_or_else(|_| json!({ "runId": run.run_id })),
+                );
+            }
+            HttpResponse::ok(json!({
+                "ok": true,
+                "evaluatedAtMs": now_ms,
+                "triggeredCount": triggered.len(),
+                "triggered": triggered,
+            }))
+        }
+        Err(e) => HttpResponse::error(500, "routines_tick_failed", &e),
+    }
+}
+
 // =========================================================================
 // 8. Telemetry, Traces, Scoreboard
 // =========================================================================
@@ -2791,6 +3042,27 @@ fn handle_graph_peers_register(state: &Arc<StudioState>, req: &HttpRequest) -> H
         let refs: Vec<&str> = all_ids.iter().map(String::as_str).collect();
         let _ = state.peer_mesh.connect_all_to_all(&refs, "duplex-mesh");
     }
+    let now = now_epoch_ms();
+    for ag in &all_peers {
+        let _ = state.ops.save_peer_mesh_agent(&PeerMeshAgentRecord {
+            agent_id: ag.id.clone(),
+            role: ag.role.as_str().to_string(),
+            owned_paths: ag.owned_paths.clone(),
+            excluded_paths: ag.excluded_paths.clone(),
+            epoch: ag.epoch,
+            active: ag.active,
+            last_read_seq: ag.last_read_seq,
+            updated_at_ms: now,
+        });
+    }
+    for edge in state.peer_mesh.all_edges().unwrap_or_default() {
+        let _ = state.ops.save_peer_mesh_edge(&PeerMeshEdgeRecord {
+            from_id: edge.from_id,
+            to_id: edge.to_id,
+            channel_label: edge.channel_label,
+            updated_at_ms: now,
+        });
+    }
     state.event_feed.publish(
         "swarm",
         "peers_updated",
@@ -2972,5 +3244,114 @@ mod steer22_approval_tests {
             parse_approval_mode(Some("cached")),
             ApprovalMode::AlwaysAskCached
         );
+    }
+
+    #[tokio::test]
+    async fn git_commit_worktrees_and_routines_tick_roundtrip() {
+        let sandbox = std::env::temp_dir().join(format!("omnia-git-v5-{}", uuid_v4()));
+        let dir = sandbox.join("repo");
+        let rb = sandbox.join("rollback");
+        fs::create_dir_all(&dir).expect("mkdir temp repo");
+        fs::create_dir_all(&rb).expect("mkdir temp rollback");
+        assert!(run_git(&dir, &["init"]).is_ok(), "git init");
+        assert!(run_git(&dir, &["config", "user.name", "Omnia Test"]).is_ok());
+        assert!(run_git(&dir, &["config", "user.email", "omnia-test@example.com"]).is_ok());
+        fs::write(dir.join("README.md"), "hello\n").expect("write readme");
+
+        let cfg = crate::config::StudioConfig {
+            workspace_root: dir.clone(),
+            rollback_root: rb,
+            db_path: None,
+            ..crate::config::StudioConfig::default()
+        };
+        let state = Arc::new(StudioState::new(cfg).expect("studio state"));
+
+        // 1. Path traversal in git commit files rejected with 403
+        let bad_commit = handle_git_commit(
+            &state,
+            &HttpRequest {
+                method: "POST".into(),
+                target: "/api/git/commit".into(),
+                path: "/api/git/commit".into(),
+                query: String::new(),
+                headers: std::collections::BTreeMap::new(),
+                cookie_header_count: 0,
+                body: br#"{"message":"bad","files":["../outside.txt"]}"#.to_vec(),
+            },
+        );
+        assert_eq!(bad_commit.status, 403);
+
+        // 2. Stage & commit contained file
+        let ok_commit = handle_git_commit(
+            &state,
+            &HttpRequest {
+                method: "POST".into(),
+                target: "/api/git/commit".into(),
+                path: "/api/git/commit".into(),
+                query: String::new(),
+                headers: std::collections::BTreeMap::new(),
+                cookie_header_count: 0,
+                body: br#"{"message":"feat: initial test commit","files":["README.md"]}"#.to_vec(),
+            },
+        );
+        assert_eq!(ok_commit.status, 200);
+        let cj: Value = serde_json::from_slice(&ok_commit.body).unwrap();
+        assert_eq!(cj["committed"], true);
+        assert!(cj["commitSha"].as_str().is_some_and(|s| s.len() >= 7));
+
+        // 3. Worktrees list parses main worktree cleanly
+        let wt_resp = handle_git_worktrees(&state);
+        assert_eq!(wt_resp.status, 200);
+        let wj: Value = serde_json::from_slice(&wt_resp.body).unwrap();
+        assert_eq!(wj["isGitRepo"], true);
+        assert!(wj["count"].as_u64().unwrap_or(0) >= 1);
+
+        // 4. Routines upsert + cron tick + runs list
+        let rtn_req = HttpRequest {
+            method: "POST".into(),
+            target: "/api/routines".into(),
+            path: "/api/routines".into(),
+            query: String::new(),
+            headers: std::collections::BTreeMap::new(),
+            cookie_header_count: 0,
+            body: br#"{"name":"cron-check","prompt":"audit","cronExpr":"*/5 * * * *"}"#.to_vec(),
+        };
+        let up_resp = handle_routines_upsert(&state, &rtn_req);
+        assert_eq!(up_resp.status, 200);
+        let uj: Value = serde_json::from_slice(&up_resp.body).unwrap();
+        let next_ms = uj["routine"]["nextRunAtMs"].as_i64().expect("nextRunAtMs");
+
+        let tick_resp = handle_routines_tick(
+            &state,
+            &HttpRequest {
+                method: "POST".into(),
+                target: "/api/routines/tick".into(),
+                path: "/api/routines/tick".into(),
+                query: String::new(),
+                headers: std::collections::BTreeMap::new(),
+                cookie_header_count: 0,
+                body: json!({ "nowMs": next_ms + 500 }).to_string().into_bytes(),
+            },
+        );
+        assert_eq!(tick_resp.status, 200);
+        let tj: Value = serde_json::from_slice(&tick_resp.body).unwrap();
+        assert_eq!(tj["triggeredCount"], 1);
+
+        let runs_resp = handle_routines_runs(
+            &state,
+            &HttpRequest {
+                method: "GET".into(),
+                target: "/api/routines/runs".into(),
+                path: "/api/routines/runs".into(),
+                query: String::new(),
+                headers: std::collections::BTreeMap::new(),
+                cookie_header_count: 0,
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(runs_resp.status, 200);
+        let rj: Value = serde_json::from_slice(&runs_resp.body).unwrap();
+        assert_eq!(rj["count"], 1);
+        let _ = fs::remove_dir_all(sandbox);
     }
 }

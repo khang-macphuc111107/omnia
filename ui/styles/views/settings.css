@@ -22,6 +22,11 @@
 
 .omnia .settings-kv { grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr); }
 .omnia .settings-kv--stale dd { color: var(--text-2); }
+.omnia .settings-health-row { gap: var(--sp-2); align-items: center; }
+.omnia .settings-cap-matrix { gap: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--line-1); }
+.omnia .settings-cap-table th,
+.omnia .settings-cap-table td { vertical-align: top; }
+.omnia .settings-cap-remediation { max-width: 260px; }
 
 @media (max-width: 760px) {
   .omnia .settings-page { padding: var(--sp-4); }

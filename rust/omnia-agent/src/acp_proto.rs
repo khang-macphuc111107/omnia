@@ -263,7 +263,7 @@ fn acp_mode_state(approval: ApprovalMode) -> (&'static str, Vec<(String, String)
 pub fn approval_for_mode_id(id: &str) -> Option<ApprovalMode> {
     match id.trim().to_ascii_lowercase().as_str() {
         "yolo" | "turbo" | "full" | "full-access" | "unrestricted" | "auto" | "auto-approve"
-        | "bypasspermissions" | "acceptall" => Some(ApprovalMode::Yolo),
+        | "solo" | "bypasspermissions" | "acceptall" => Some(ApprovalMode::Yolo),
         "default" | "approve" | "ask" | "always-ask" => Some(ApprovalMode::AlwaysAsk),
         "always-ask-cached" | "cached" => Some(ApprovalMode::AlwaysAskCached),
         "plan" | "read-only" | "readonly" => Some(ApprovalMode::Plan),

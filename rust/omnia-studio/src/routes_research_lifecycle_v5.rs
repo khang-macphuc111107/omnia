@@ -37,6 +37,7 @@ pub fn is_known_route(path: &str) -> bool {
             | "/api/v5/research/ingest"
             | "/api/v5/research/query"
             | "/api/v5/research/claim"
+            | "/api/v5/research/verify-citations"
             | "/api/v5/research/table"
             | "/api/v5/research/export"
             | "/api/v5/rag/query"
@@ -60,6 +61,7 @@ pub fn is_known_route(path: &str) -> bool {
             | "/api/v5/learn/capture"
             | "/api/v5/learn/promote-skill"
             | "/api/v5/learn/gap-radar"
+            | "/api/v5/learn/sync-global"
             | "/api/v5/skills/route"
             | "/api/v5/skills/vault"
             | "/api/v5/skills/dag"
@@ -92,6 +94,9 @@ pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<Htt
         | ("POST", "/api/v5/rag/query") => Some(handle_research_query(state, req)),
         ("POST", "/api/v5/rag/pin") => Some(handle_rag_pin(state, req)),
         ("POST", "/api/v5/research/claim") => Some(handle_research_claim(state, req)),
+        ("POST", "/api/v5/research/verify-citations") => {
+            Some(handle_research_verify_citations(state, req))
+        }
         ("POST", "/api/v5/research/table") => Some(handle_research_table(state, req)),
         ("GET", "/api/v5/research/export") => Some(handle_research_export(state, req)),
 
@@ -122,6 +127,7 @@ pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<Htt
         ("POST", "/api/v5/learn/promote-skill") => Some(handle_learn_promote_skill(state, req)),
         ("GET", "/api/v5/learn/gap-radar") => Some(handle_learn_gap_radar_get(state)),
         ("POST", "/api/v5/learn/gap-radar") => Some(handle_learn_gap_radar_post(state, req)),
+        ("POST", "/api/v5/learn/sync-global") => Some(handle_learn_sync_global(state, req)),
 
         // ---- Bilingual Skills, Cold Vault, 4-Stage DAG & Doctor ----
         ("GET", "/api/v5/skills/route") | ("POST", "/api/v5/skills/route") => {
@@ -749,6 +755,35 @@ fn handle_research_claim(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRes
             }))
         }
         Err(err) => HttpResponse::error(400, "research_claim_failed", &err),
+    }
+}
+
+fn handle_research_verify_citations(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let obj = match parse_obj(req) {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let Some(draft) = str_field(&obj, &["draft", "text", "content", "markdown"]) else {
+        return HttpResponse::error(
+            400,
+            "missing_draft",
+            "Field 'draft' (or 'text') is required.",
+        );
+    };
+    let strict = obj
+        .get("strict")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let report = state.research_vault.verify_citations_text(draft, strict);
+    let ok = report.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    if ok {
+        HttpResponse::ok(SecretRedactor::redact_json(&report))
+    } else {
+        let msg = report
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("citation verification failed");
+        HttpResponse::error(400, "citation_verification_failed", msg)
     }
 }
 
@@ -1908,6 +1943,25 @@ fn handle_learn_gap_radar_post(state: &Arc<StudioState>, req: &HttpRequest) -> H
     }
 }
 
+fn handle_learn_sync_global(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let _obj = match parse_obj(req) {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    match omnia_harness::artifact_os::sync_global_lessons(&state.config.workspace_root) {
+        Ok(report) => {
+            state.event_feed.publish(
+                "lifecycle",
+                "global_lessons_synced",
+                None,
+                SecretRedactor::redact_json(&report),
+            );
+            HttpResponse::ok(SecretRedactor::redact_json(&report))
+        }
+        Err(err) => HttpResponse::error(400, "learn_sync_global_failed", &err),
+    }
+}
+
 // =========================================================================
 // 5. Bilingual Skills Router, Cold Vault, 4-Stage DAG, Pipelines & Doctor
 // =========================================================================
@@ -2420,5 +2474,25 @@ mod tests {
         assert_eq!(dag.status, 200);
         let dag_json: Value = serde_json::from_slice(&dag.body).unwrap();
         assert_eq!(dag_json["stages"].as_array().unwrap().len(), 4);
+
+        // Verify 4-layer citations against seeded research vault
+        let vc = dispatch(
+            &state,
+            &make_req(
+                "POST",
+                "/api/v5/research/verify-citations",
+                "",
+                json!({
+                    "draft": "WAL mode ensures safe durability across restarts [S001].",
+                    "strict": false
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(vc.status, 200);
+        let vcj: Value = serde_json::from_slice(&vc.body).unwrap();
+        assert_eq!(vcj["ok"], true);
+        assert!(vcj.get("citationCoveragePct").is_some());
     }
 }

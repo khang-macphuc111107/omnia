@@ -189,7 +189,7 @@ class ValidateTargetsTests(unittest.TestCase):
         self.assertEqual(contract["schema"], "omnia.platform.targets.v1")
         self.assertEqual(contract["contract_id"], "INT-09")
         ids = [t["id"] for t in contract["targets"]]
-        self.assertEqual(ids, ["windows-native", "web-studio", "android-apk"])
+        self.assertEqual(ids, ["windows-native", "web-studio", "android-apk", "linux-native", "macos-native"])
         for t in contract["targets"]:
             self.assertEqual(
                 set(t["lifecycle"].keys()),
@@ -239,6 +239,16 @@ class ValidateTargetsTests(unittest.TestCase):
         self.assertFalse(android["fake_apk_claimed"])
         self.assertIn("toolchain_missing", android["blocked_reasons"])
         self.assertIn("unimplemented", android["blocked_reasons"])
+
+        linux = by_id["linux-native"]
+        self.assertEqual(linux["source_status"], "present")
+        self.assertEqual(linux["toolchain_status"], "toolchain_missing")
+        self.assertIn("x86_64-unknown-linux-gnu", linux["missing_rust_targets"])
+
+        mac = by_id["macos-native"]
+        self.assertEqual(mac["source_status"], "present")
+        self.assertEqual(mac["toolchain_status"], "toolchain_missing")
+        self.assertIn("aarch64-apple-darwin", mac["missing_rust_targets"])
 
     def test_mock_android_toolchain_present_wrapper_missing_reports_unimplemented(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

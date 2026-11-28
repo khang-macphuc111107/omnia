@@ -268,10 +268,38 @@ impl GroundingEngine {
                 .join("\n\n")
         };
 
-        let system_instructions = "Answer strictly from the grounded notebook evidence below. \
+        let mut system_instructions = "Answer strictly from the grounded notebook evidence below. \
 Every factual claim MUST carry an exact inline `[source_id:chunk_idx]` citation marker matching one of the provided evidence headers. \
 NEVER cite by ambiguous document title alone and NEVER fabricate source IDs or chunk indices."
             .to_string();
+
+        if let Ok(settings) = self.store.get_chat_settings(notebook_id) {
+            match settings.mode.as_str() {
+                "learning" => {
+                    system_instructions.push_str(
+                        "\n\nMode (Learning Guide): Explain concepts progressively, highlight key terms, and include brief self-check questions grounded in the cited passages.",
+                    );
+                }
+                "custom" if !settings.custom_prompt.trim().is_empty() => {
+                    system_instructions.push_str("\n\nCustom Notebook Instructions:\n");
+                    system_instructions.push_str(settings.custom_prompt.trim());
+                }
+                _ => {}
+            }
+            match settings.length.as_str() {
+                "shorter" => {
+                    system_instructions.push_str(
+                        "\n\nResponse Length: Keep the answer concise and high-density while preserving every required citation.",
+                    );
+                }
+                "longer" => {
+                    system_instructions.push_str(
+                        "\n\nResponse Length: Provide a thorough, deeply detailed multi-section analysis grounded in the cited passages.",
+                    );
+                }
+                _ => {}
+            }
+        }
 
         let graphify_entity_count = graphify.entities().map(|v| v.len()).unwrap_or(0);
 

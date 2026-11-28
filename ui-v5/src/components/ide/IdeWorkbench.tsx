@@ -5,6 +5,7 @@ import {
   Columns,
   FileCode2,
   FolderTree,
+  GitBranch,
   GitCompare,
   GitGraph,
   ListTree,
@@ -99,6 +100,21 @@ export function IdeWorkbench() {
   const [termTabs, setTermTabs] = createSignal<Array<{ id: string; label: string }>>([]);
   const [activeTermId, setActiveTermId] = createSignal<string | null>(null);
   const [saveNote, setSaveNote] = createSignal('');
+  const [gitWorktrees, setGitWorktrees] = createSignal<
+    Array<{
+      path: string;
+      head?: string;
+      branch?: string;
+      bare?: boolean;
+      detached?: boolean;
+      locked?: boolean;
+      prunable?: boolean;
+    }>
+  >([]);
+  const [commitMessage, setCommitMessage] = createSignal('');
+  const [commitStageAll, setCommitStageAll] = createSignal(true);
+  const [commitBusy, setCommitBusy] = createSignal(false);
+  const [gitActionNote, setGitActionNote] = createSignal('');
 
   let editorHostRef: HTMLDivElement | undefined;
   let editorView: EditorView | null = null;
@@ -110,10 +126,23 @@ export function IdeWorkbench() {
   const activeTab = () => openTabs.find((t) => t.path === activeTabPath()) ?? null;
 
   const refreshExplorer = async () => {
-    const [treeRes, gitRes, dapRes] = await Promise.all([
+    const [treeRes, gitRes, dapRes, wtRes] = await Promise.all([
       api.getWorkspaceTree('', 3),
       api.getGitStatus(),
       api.listDapSessions(),
+      api.safeJson<{
+        ok?: boolean;
+        isGitRepo?: boolean;
+        worktrees?: Array<{
+          path: string;
+          head?: string;
+          branch?: string;
+          bare?: boolean;
+          detached?: boolean;
+          locked?: boolean;
+          prunable?: boolean;
+        }>;
+      }>('/api/git/worktrees'),
     ]);
     if (treeRes.ok) {
       if (treeRes.data.root) setWorkspaceRoot(treeRes.data.root);
@@ -125,6 +154,38 @@ export function IdeWorkbench() {
     if (dapRes.ok) {
       const list = (dapRes.data.sessions ?? dapRes.data.items) as Array<Record<string, unknown>> | undefined;
       if (Array.isArray(list)) setDapSessions(list);
+    }
+    if (wtRes.ok && Array.isArray(wtRes.data.worktrees)) {
+      setGitWorktrees(wtRes.data.worktrees);
+    }
+  };
+
+  const handleGitCommit = async () => {
+    const msg = commitMessage().trim();
+    if (!msg || commitBusy()) return;
+    setCommitBusy(true);
+    setGitActionNote('Committing...');
+    const res = await api.safeJson<{
+      ok?: boolean;
+      commitSha?: string;
+      branch?: string;
+      summary?: string;
+    }>('/api/git/commit', {
+      method: 'POST',
+      body: JSON.stringify({
+        message: msg,
+        stageAll: commitStageAll(),
+      }),
+    });
+    setCommitBusy(false);
+    if (res.ok) {
+      setCommitMessage('');
+      const sha = res.data.commitSha ? String(res.data.commitSha).slice(0, 8) : 'ok';
+      const br = res.data.branch ? ` (${res.data.branch})` : '';
+      setGitActionNote(`Committed ${sha}${br}${res.data.summary ? ` — ${res.data.summary}` : ''}`);
+      await refreshExplorer();
+    } else {
+      setGitActionNote(`Commit failed (${res.error.code}): ${res.error.message}`);
     }
   };
 
@@ -477,10 +538,93 @@ export function IdeWorkbench() {
 
           <Show when={activity() === 'git'}>
             <div class="space-y-2 text-[11.5px] font-mono-num">
-              <div class="p-2 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)]">
+              <div class="p-2 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] space-y-0.5">
                 <div>Branch: <strong class="text-[var(--accent-cyan)]">{String(ideGitStatus()?.branch ?? 'unknown')}</strong></div>
-                <div>Dirty: {changedGitFiles().length} files</div>
+                <div>Dirty: {changedGitFiles().length} files · Worktrees: {gitWorktrees().length}</div>
               </div>
+
+              {/* 1-Click Git Commit Bar */}
+              <div
+                data-testid="ide-git-commit-bar"
+                class="p-2 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] space-y-1.5 font-sans"
+              >
+                <div class="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+                  1-Click Commit
+                </div>
+                <input
+                  type="text"
+                  data-testid="ide-git-commit-input"
+                  placeholder="Commit message (type(scope): summary)..."
+                  value={commitMessage()}
+                  onInput={(e) => setCommitMessage(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleGitCommit();
+                    }
+                  }}
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2 py-1 text-[11.5px] outline-none"
+                />
+                <div class="flex items-center justify-between gap-2">
+                  <label class="flex items-center gap-1 text-[10.5px] text-[var(--ink-secondary)] cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={commitStageAll()}
+                      onChange={(e) => setCommitStageAll(e.currentTarget.checked)}
+                    />
+                    <span>Stage all</span>
+                  </label>
+                  <button
+                    type="button"
+                    data-testid="ide-git-commit-btn"
+                    disabled={commitBusy() || !commitMessage().trim()}
+                    onClick={() => void handleGitCommit()}
+                    class="omnia-btn omnia-btn-primary px-2 py-0.5 text-[10.5px]"
+                  >
+                    <Check class="w-3 h-3" />
+                    <span>{commitBusy() ? 'Committing...' : 'Commit'}</span>
+                  </button>
+                </div>
+                <Show when={gitActionNote()}>
+                  <div class="text-[10.5px] font-mono-num text-[var(--status-emerald)] break-words">
+                    {maskText(gitActionNote(), privacyMask())}
+                  </div>
+                </Show>
+              </div>
+
+              {/* Active Worktrees */}
+              <Show when={gitWorktrees().length > 0}>
+                <div
+                  data-testid="ide-git-worktrees"
+                  class="p-2 rounded bg-[var(--bg-canvas)] border border-[var(--border-subtle)] space-y-1"
+                >
+                  <div class="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--ink-secondary)] flex items-center gap-1 font-sans">
+                    <GitBranch class="w-3 h-3 text-[var(--accent-cyan)]" />
+                    <span>Worktrees ({gitWorktrees().length})</span>
+                  </div>
+                  <div class="space-y-1 max-h-32 overflow-y-auto">
+                    <For each={gitWorktrees()}>
+                      {(wt) => (
+                        <div class="px-1.5 py-1 rounded bg-[var(--bg-panel)] border border-[var(--border-subtle)] text-[10.5px]">
+                          <div class="flex items-center justify-between gap-1">
+                            <span class="font-semibold text-[var(--accent-cyan)] truncate">
+                              {wt.branch || (wt.detached ? 'detached' : wt.bare ? 'bare' : 'HEAD')}
+                            </span>
+                            <span class="text-[9.5px] text-[var(--ink-muted)] shrink-0">
+                              {wt.head ? wt.head.slice(0, 7) : ''}
+                              {wt.locked ? ' · locked' : ''}
+                            </span>
+                          </div>
+                          <div class="text-[10px] text-[var(--ink-muted)] truncate">
+                            {maskText(wt.path, privacyMask())}
+                          </div>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </div>
+              </Show>
+
               <For each={changedGitFiles().slice(0, 40)}>
                 {(file) => (
                   <button
@@ -633,6 +777,19 @@ export function IdeWorkbench() {
             <Show when={saveNote()}>
               <span class="text-[11px] font-mono-num text-[var(--status-emerald)]">{saveNote()}</span>
             </Show>
+            <button
+              type="button"
+              data-testid="ide-worktree-pill"
+              class="omnia-btn text-[10.5px] font-mono-num"
+              title="Open Git Commit & Worktrees panel"
+              onClick={() => setActivity('git')}
+            >
+              <GitBranch class="w-3 h-3 text-[var(--accent-cyan)]" />
+              <span class="max-w-[110px] truncate">{String(ideGitStatus()?.branch ?? 'git')}</span>
+              <Show when={gitWorktrees().length > 0}>
+                <span class="text-[var(--ink-muted)]">({gitWorktrees().length} wt)</span>
+              </Show>
+            </button>
             <button type="button" class="omnia-btn text-[11px]" onClick={() => setDiffMode(!diffMode())}>
               <GitCompare class="w-3.5 h-3.5 text-[var(--accent-amber)]" />
               <span>Diff</span>

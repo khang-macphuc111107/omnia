@@ -253,6 +253,74 @@ const storedTheme =
   (typeof localStorage !== 'undefined' && (localStorage.getItem('omnia.studio.theme') as ThemeId)) || 'obsidian';
 export const [themePref, setThemePrefSignal] = createSignal<ThemeId>(storedTheme);
 
+export type ContrastPref = 'default' | 'more';
+export type MotionPref = 'system' | 'reduced';
+
+const storedContrast: ContrastPref =
+  typeof localStorage !== 'undefined' && localStorage.getItem('omnia.studio.contrast') === 'more'
+    ? 'more'
+    : 'default';
+export const [contrastPref, setContrastPrefSignal] = createSignal<ContrastPref>(storedContrast);
+
+const storedMotion: MotionPref =
+  typeof localStorage !== 'undefined' && localStorage.getItem('omnia.studio.motion') === 'reduced'
+    ? 'reduced'
+    : 'system';
+export const [motionPref, setMotionPrefSignal] = createSignal<MotionPref>(storedMotion);
+
+export function applyContrastMode(mode: ContrastPref): void {
+  setContrastPrefSignal(mode);
+  if (typeof document !== 'undefined') {
+    if (mode === 'more') {
+      document.documentElement.setAttribute('data-contrast', 'more');
+    } else {
+      document.documentElement.removeAttribute('data-contrast');
+    }
+  }
+  try {
+    localStorage.setItem('omnia.studio.contrast', mode);
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+export function toggleContrastMode(): void {
+  const next: ContrastPref = contrastPref() === 'more' ? 'default' : 'more';
+  applyContrastMode(next);
+  flashNotice(next === 'more' ? 'High Contrast (WCAG AAA) ON' : 'High Contrast (WCAG AAA) OFF');
+}
+
+export function applyMotionMode(mode: MotionPref): void {
+  setMotionPrefSignal(mode);
+  if (typeof document !== 'undefined') {
+    if (mode === 'reduced') {
+      document.documentElement.setAttribute('data-motion', 'reduced');
+    } else {
+      document.documentElement.removeAttribute('data-motion');
+    }
+  }
+  try {
+    localStorage.setItem('omnia.studio.motion', mode);
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+export function toggleReducedMotion(): void {
+  const next: MotionPref = motionPref() === 'reduced' ? 'system' : 'reduced';
+  applyMotionMode(next);
+  flashNotice(next === 'reduced' ? 'Reduced Motion ON (animations paused)' : 'Reduced Motion: Follow System');
+}
+
+export function isReducedMotionActive(): boolean {
+  if (motionPref() === 'reduced') return true;
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
 export function applyTheme(pref: ThemeId): void {
   setThemePrefSignal(pref);
   let resolved = pref;
@@ -475,7 +543,20 @@ export function abortActiveStream(): void {
     currentStreamController = null;
   }
   setIsStreaming(false);
-  void api.stopChat(activeSessionId());
+  const sid = activeSessionId();
+  void api.stopChat(sid);
+  void fetch('/api/router/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: sid,
+      session_id: sid,
+      cancelAllActive: false,
+      note: 'chat_stream_aborted',
+    }),
+  }).catch(() => {
+    // non-fatal best-effort reservation cancel (AUD-24)
+  });
 }
 
 export function openSourcePreview(doc: PreviewDocumentData): void {

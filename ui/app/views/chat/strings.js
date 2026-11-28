@@ -36,6 +36,9 @@ registerStrings('chat', {
     routeFenced: 'Bộ định tuyến không chọn được tuyến nào',
     routeFencedHint: 'Cần operator khôi phục hoặc giảm kích thước prompt.',
     routeError: 'Không chạy thử được định tuyến',
+    routeCancelled: 'Đã huỷ yêu cầu định tuyến theo lệnh của bạn',
+    routeCancelledHint: 'Đã gửi tín hiệu dừng và huỷ giữ chỗ; bạn có thể thử lại bất cứ lúc nào.',
+    cancelReconciled: 'Đã xác nhận huỷ trên server',
     routeInterrupted: 'Trang đã tải lại trước khi nhận kết quả; token có thể đã được giữ chỗ.',
     unkeyedRetry: 'Không thể lấy lại kết quả của lần thử cũ này. Nếu tiếp tục, token có thể được giữ chỗ lần nữa.',
     newDecision: 'Chạy định tuyến mới',
@@ -132,6 +135,7 @@ registerStrings('chat', {
     statePending: 'Đang chạy',
     stateRouted: 'Đã định tuyến',
     stateFenced: 'Bị chặn',
+    stateCancelled: 'Đã huỷ',
     stateError: 'Lỗi',
     kvReceipt: 'Receipt',
     kvRoute: 'Tuyến',
@@ -203,6 +207,7 @@ registerStrings('chat', {
     previewOff: 'Đã tắt xem trước.',
     routedAnnounce: 'Đã định tuyến thử tới {route}.',
     fencedAnnounce: 'Bộ định tuyến không chọn được tuyến nào.',
+    cancelledAnnounce: 'Đã huỷ yêu cầu định tuyến.',
     errorAnnounce: 'Không chạy thử được định tuyến.'
   },
   en: {
@@ -234,6 +239,9 @@ registerStrings('chat', {
     routeFenced: 'The router could not pick any route',
     routeFencedHint: 'An operator must recover it, or shorten the prompt.',
     routeError: 'The routing dry run failed',
+    routeCancelled: 'Routing request cancelled by you',
+    routeCancelledHint: 'Stop and reservation-cancel signals were sent; you can retry at any time.',
+    cancelReconciled: 'Server confirmed cancellation',
     routeInterrupted: 'The page reloaded before a result arrived; tokens may already be reserved.',
     unkeyedRetry: 'The result of this older attempt cannot be recovered. A new decision may reserve tokens again.',
     newDecision: 'Run a new decision',
@@ -326,6 +334,7 @@ registerStrings('chat', {
     statePending: 'Running',
     stateRouted: 'Routed',
     stateFenced: 'Fenced',
+    stateCancelled: 'Cancelled',
     stateError: 'Error',
     kvReceipt: 'Receipt',
     kvRoute: 'Route',
@@ -395,6 +404,7 @@ registerStrings('chat', {
     previewOff: 'Preview off.',
     routedAnnounce: 'Dry-run routed to {route}.',
     fencedAnnounce: 'The router could not pick any route.',
+    cancelledAnnounce: 'Routing request cancelled.',
     errorAnnounce: 'The routing dry run failed.'
   }
 });

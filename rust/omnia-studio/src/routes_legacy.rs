@@ -5,7 +5,9 @@ use crate::history::{handle_history, handle_history_messages};
 use crate::embedded_ui::load_v5_ui_asset;
 use crate::event_feed::EventFeed;
 use crate::http::{serve_static_asset, HttpRequest, HttpResponse};
-use crate::ops_store::OpsStore;
+use crate::ops_store::{
+    OpsStore, PeerMeshAgentRecord, PeerMeshEdgeRecord, PeerMeshMessageRecord,
+};
 use crate::routes_observatory_v5::ObservatoryState;
 use crate::routes_studio_v5::BrowserCdpState;
 use crate::terminal_hub::TerminalHub;
@@ -33,7 +35,7 @@ use omnia_downloader::{
     SitePolicyRegistry,
 };
 use omnia_graph::{
-    AgentGraphError, GraphifyEdge, GraphifyEntity, GraphifyIndex, PeerMeshGraph,
+    AgentGraphError, AgentRole, GraphifyEdge, GraphifyEntity, GraphifyIndex, PeerMeshGraph,
     TraversalDirection,
 };
 use omnia_harness::{
@@ -59,11 +61,21 @@ use omnia_storage::{
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_SKILL_CONTENT_CHARS: usize = 1024;
 const SKILL_PROJECTION_PREFIX: &str = "kdense-";
+
+/// Active router reservation tracked in Studio so `AUD-24` cancel/abort can release it cleanly.
+#[derive(Debug, Clone)]
+pub struct ActiveRouterReservation {
+    pub reservation_id: String,
+    pub fencing_token: u64,
+    pub candidate_id: String,
+    pub session_id: Option<String>,
+    pub created_at_ms: i64,
+}
 
 /// Shared application state backing `omnia-studio.exe`.
 pub struct StudioState {
@@ -100,6 +112,8 @@ pub struct StudioState {
     pub cordis_plugins: Arc<CordisPluginManager>,
     pub dap: Arc<DapManager>,
     pub observatory: Arc<ObservatoryState>,
+    pub active_reservations: Mutex<Vec<ActiveRouterReservation>>,
+    cron_stop: Arc<AtomicBool>,
     pub lease_owner_id: String,
     pub lease_epoch: AtomicI64,
     pub rust_files: usize,
@@ -110,6 +124,7 @@ pub struct StudioState {
 
 impl Drop for StudioState {
     fn drop(&mut self) {
+        self.cron_stop.store(true, Ordering::Relaxed);
         let epoch = self.lease_epoch.load(Ordering::Relaxed);
         if epoch > 0 {
             let _ = self
@@ -236,6 +251,63 @@ impl StudioState {
         register_configured_router_candidates(&router);
 
         let peer_mesh = PeerMeshGraph::new(4);
+        if let Ok(mesh_snap) = ops.load_peer_mesh_snapshot() {
+            for ag in &mesh_snap.agents {
+                let role = match ag.role.to_ascii_lowercase().as_str() {
+                    "coordinator" => AgentRole::Coordinator,
+                    "verifier" => AgentRole::Verifier,
+                    "specialist" => AgentRole::Specialist,
+                    "subagent" => AgentRole::Subagent,
+                    _ => AgentRole::Worker,
+                };
+                let _ = peer_mesh.register_agent(
+                    &ag.agent_id,
+                    role,
+                    ag.owned_paths.clone(),
+                    ag.excluded_paths.clone(),
+                );
+                for _ in 1..ag.epoch {
+                    let _ = peer_mesh.bump_agent_epoch(&ag.agent_id);
+                }
+            }
+            for edge in &mesh_snap.edges {
+                let _ = peer_mesh.connect_directed(&edge.from_id, &edge.to_id, &edge.channel_label);
+            }
+            for msg in &mesh_snap.messages {
+                if let Some(parent) = msg.in_reply_to_seq {
+                    let _ = peer_mesh.reply(
+                        &msg.from_id,
+                        parent,
+                        &msg.topic,
+                        &msg.payload,
+                        Some(msg.sent_at_ms),
+                    );
+                } else if msg.recipients.len() > 1 {
+                    let _ = peer_mesh.broadcast(
+                        &msg.from_id,
+                        &msg.topic,
+                        &msg.payload,
+                        Some(msg.max_hops),
+                        Some(msg.sent_at_ms),
+                    );
+                } else if let Some(to) = msg.recipients.first() {
+                    let _ = peer_mesh.send_peer(
+                        &msg.from_id,
+                        to,
+                        &msg.topic,
+                        &msg.payload,
+                        Some(msg.epoch),
+                        Some(msg.max_hops),
+                        Some(msg.sent_at_ms),
+                    );
+                }
+            }
+            for ag in &mesh_snap.agents {
+                if !ag.active {
+                    let _ = peer_mesh.set_agent_active(&ag.agent_id, false);
+                }
+            }
+        }
 
         let graphify = GraphifyIndex::new();
         let _ = graphify.index_workspace(&config.workspace_root);
@@ -351,6 +423,38 @@ impl StudioState {
         let crate_count = discover_crate_count(&config.workspace_root);
         let binary_bytes = query_current_binary_bytes();
 
+        let cron_stop = Arc::new(AtomicBool::new(false));
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let ops_cron = Arc::clone(&ops);
+            let feed_cron = Arc::clone(&event_feed);
+            let stop_cron = Arc::clone(&cron_stop);
+            rt.spawn(async move {
+                let mut elapsed_secs = 0u32;
+                while !stop_cron.load(Ordering::Relaxed) {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if stop_cron.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    elapsed_secs += 1;
+                    if elapsed_secs >= 30 {
+                        elapsed_secs = 0;
+                        let now_ms = now_epoch_ms();
+                        if let Ok(triggered) = ops_cron.evaluate_due_routines(now_ms) {
+                            for run in triggered {
+                                feed_cron.publish(
+                                    "routines",
+                                    "routine_triggered",
+                                    Some(&run.routine_id),
+                                    serde_json::to_value(&run)
+                                        .unwrap_or_else(|_| json!({ "runId": run.run_id })),
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         Ok(Self {
             config,
             runtime_proxy,
@@ -385,6 +489,8 @@ impl StudioState {
             cordis_plugins,
             dap,
             observatory,
+            active_reservations: Mutex::new(Vec::new()),
+            cron_stop,
             lease_owner_id,
             lease_epoch: AtomicI64::new(lease_epoch),
             rust_files,
@@ -392,6 +498,72 @@ impl StudioState {
             binary_bytes,
             pid,
         })
+    }
+
+    pub fn track_reservation(&self, reservation: ActiveRouterReservation) {
+        if let Ok(mut guard) = self.active_reservations.lock() {
+            guard.retain(|r| r.reservation_id != reservation.reservation_id);
+            guard.push(reservation);
+            if guard.len() > 256 {
+                let excess = guard.len() - 256;
+                guard.drain(0..excess);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn lookup_reservation_fencing_token(&self, reservation_id: &str) -> u64 {
+        self.active_reservations
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .iter()
+                    .find(|r| r.reservation_id == reservation_id)
+                    .map(|r| r.fencing_token)
+            })
+            .unwrap_or(1)
+    }
+
+    pub fn remove_tracked_reservation(&self, reservation_id: &str) {
+        if let Ok(mut guard) = self.active_reservations.lock() {
+            guard.retain(|r| r.reservation_id != reservation_id);
+        }
+    }
+
+    pub fn cancel_tracked_reservations(&self, session_id: Option<&str>, note: &str) -> Vec<Value> {
+        let now = now_epoch_ms();
+        let targets: Vec<ActiveRouterReservation> = {
+            let Ok(mut guard) = self.active_reservations.lock() else {
+                return Vec::new();
+            };
+            let mut matched = Vec::new();
+            let mut kept = Vec::with_capacity(guard.len());
+            for item in guard.drain(..) {
+                let matches_scope = match session_id {
+                    None => true,
+                    Some(sid) => item.session_id.as_deref() == Some(sid),
+                };
+                if matches_scope {
+                    matched.push(item);
+                } else {
+                    kept.push(item);
+                }
+            }
+            *guard = kept;
+            matched
+        };
+
+        let mut receipts = Vec::new();
+        for res in targets {
+            if let Ok(receipt) =
+                self.router
+                    .cancel_reservation(&res.reservation_id, res.fencing_token, note, now)
+            {
+                receipts.push(receipt.to_json());
+            }
+        }
+        receipts
     }
 }
 
@@ -510,6 +682,7 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
 
         ("GET", "/api/graph") => handle_graph(&state),
         ("GET", "/api/graph/peers") => handle_graph_peers(&state),
+        ("GET", "/api/graph/peers/poll") => handle_graph_peers_poll(&state, &req),
         ("POST", "/api/graph/send") => handle_graph_send(&state, &req),
         ("GET", "/api/graph/traverse") => handle_graph_traverse(&state, &req),
         ("GET", "/api/graph/code") => handle_graph_code(&state, &req),
@@ -580,6 +753,7 @@ pub async fn dispatch_request(state: Arc<StudioState>, req: HttpRequest) -> Http
                     | "/api/hardware/nvidia"
                     | "/api/graph"
                     | "/api/graph/peers"
+                    | "/api/graph/peers/poll"
                     | "/api/graph/send"
                     | "/api/graph/traverse"
                     | "/api/graph/code"
@@ -821,6 +995,91 @@ fn handle_graph_peers(state: &StudioState) -> HttpResponse {
     }))
 }
 
+fn handle_graph_peers_poll(state: &StudioState, req: &HttpRequest) -> HttpResponse {
+    let since_seq = req
+        .query_param("since")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let agent_filter = req
+        .query_param("agent")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let polled_messages = if let Some(ref agent_id) = agent_filter {
+        match state.peer_mesh.read_since(agent_id, since_seq) {
+            Ok(msgs) => msgs.into_iter().map(|m| m.to_json()).collect::<Vec<_>>(),
+            Err(err) => return agent_graph_error_response(err),
+        }
+    } else {
+        let in_mem = state.peer_mesh.all_messages().unwrap_or_default();
+        if !in_mem.is_empty() {
+            in_mem
+                .into_iter()
+                .filter(|m| m.seq > since_seq)
+                .map(|m| m.to_json())
+                .collect()
+        } else {
+            state
+                .ops
+                .list_peer_mesh_messages_since(since_seq)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| {
+                    SecretRedactor::redact_json(&json!({
+                        "seq": m.seq,
+                        "from_id": m.from_id,
+                        "recipients": m.recipients,
+                        "epoch": m.epoch,
+                        "hop_count": m.hop_count,
+                        "max_hops": m.max_hops,
+                        "in_reply_to_seq": m.in_reply_to_seq,
+                        "topic": SecretRedactor::redact(&m.topic),
+                        "payload": SecretRedactor::redact(&m.payload),
+                        "sent_at_ms": m.sent_at_ms,
+                    }))
+                })
+                .collect()
+        }
+    };
+
+    let now = now_epoch_ms();
+    let nodes = state.peer_mesh.agents().unwrap_or_default();
+    let links = state.peer_mesh.all_edges().unwrap_or_default();
+    let convergence = state.peer_mesh.convergence_status(now, 300_000).ok();
+    let head_seq = polled_messages
+        .iter()
+        .filter_map(|v| v.get("seq").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(since_seq);
+
+    HttpResponse::ok(json!({
+        "ok": true,
+        "state": "online",
+        "since": since_seq,
+        "headSeq": head_seq,
+        "agent": agent_filter,
+        "peerCount": nodes.len(),
+        "edgeCount": links.len(),
+        "messageCount": polled_messages.len(),
+        "nodes": nodes.into_iter().map(|a| a.to_json()).collect::<Vec<_>>(),
+        "links": links.iter().map(|e| {
+            let bidirectional = links
+                .iter()
+                .any(|rev| rev.from_id == e.to_id && rev.to_id == e.from_id);
+            json!({
+                "from": e.from_id,
+                "to": e.to_id,
+                "from_id": e.from_id,
+                "to_id": e.to_id,
+                "bidirectional": bidirectional,
+                "channel": e.channel_label,
+            })
+        }).collect::<Vec<_>>(),
+        "messages": polled_messages,
+        "convergence": convergence.map(|c| c.to_json()),
+    }))
+}
+
 fn handle_graph_send(state: &StudioState, req: &HttpRequest) -> HttpResponse {
     let body = match req.json_object() {
         Ok(b) => b,
@@ -898,6 +1157,38 @@ fn handle_graph_send(state: &StudioState, req: &HttpRequest) -> HttpResponse {
 
     match result {
         Ok(msg) => {
+            let _ = state.ops.save_peer_mesh_message(&PeerMeshMessageRecord {
+                seq: msg.seq,
+                from_id: msg.from_id.clone(),
+                recipients: msg.recipients.clone(),
+                epoch: msg.epoch,
+                hop_count: msg.hop_count,
+                max_hops: msg.max_hops,
+                in_reply_to_seq: msg.in_reply_to_seq,
+                topic: msg.topic.clone(),
+                payload: msg.payload.clone(),
+                sent_at_ms: msg.sent_at_ms,
+            });
+            for ag in state.peer_mesh.agents().unwrap_or_default() {
+                let _ = state.ops.save_peer_mesh_agent(&PeerMeshAgentRecord {
+                    agent_id: ag.id,
+                    role: ag.role.as_str().to_string(),
+                    owned_paths: ag.owned_paths,
+                    excluded_paths: ag.excluded_paths,
+                    epoch: ag.epoch,
+                    active: ag.active,
+                    last_read_seq: ag.last_read_seq,
+                    updated_at_ms: now,
+                });
+            }
+            for edge in state.peer_mesh.all_edges().unwrap_or_default() {
+                let _ = state.ops.save_peer_mesh_edge(&PeerMeshEdgeRecord {
+                    from_id: edge.from_id,
+                    to_id: edge.to_id,
+                    channel_label: edge.channel_label,
+                    updated_at_ms: now,
+                });
+            }
             let messages: Vec<Value> = state
                 .peer_mesh
                 .all_messages()
@@ -1373,6 +1664,24 @@ fn handle_router_decide(state: &StudioState, req: &HttpRequest) -> HttpResponse 
 
     match state.router.decide_and_reserve(&policy) {
         Ok(decision) => {
+            if let Some(ref res) = decision.reservation {
+                let sess_hint = body
+                    .get("sessionId")
+                    .or_else(|| body.get("session_id"))
+                    .or_else(|| body.get("runId"))
+                    .or_else(|| body.get("run_id"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
+                state.track_reservation(ActiveRouterReservation {
+                    reservation_id: res.reservation_id.clone(),
+                    fencing_token: res.fencing_token,
+                    candidate_id: res.candidate_id.clone(),
+                    session_id: sess_hint,
+                    created_at_ms: now,
+                });
+            }
             let candidates: Vec<Value> = state
                 .router
                 .snapshots(now)
@@ -2829,5 +3138,68 @@ mod tests {
             handle_session_detail(&state, "/api/sessions/..%2Fetc").status,
             400
         );
+    }
+
+    #[test]
+    fn peer_mesh_sqlite_hydration_and_cursor_poll_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("omnia-mesh-persist-{}", omnia_core::uuid_v4()));
+        let db_path = dir.join("studio.db");
+        let rb = dir.join("rollback");
+        let _ = fs::create_dir_all(&rb);
+        let cfg1 = StudioConfig {
+            db_path: Some(db_path.clone()),
+            rollback_root: rb.clone(),
+            runtime_url: None,
+            ..StudioConfig::default()
+        };
+        let s1 = StudioState::new(cfg1).expect("state 1");
+        s1.peer_mesh
+            .register_agent("coord", AgentRole::Coordinator, vec!["docs/".into()], vec![])
+            .expect("coord");
+        s1.peer_mesh
+            .register_agent("worker", AgentRole::Worker, vec!["rust/".into()], vec![])
+            .expect("worker");
+        s1.peer_mesh
+            .connect_duplex("coord", "worker", "duplex-mesh")
+            .expect("duplex");
+        let send_resp = handle_graph_send(
+            &s1,
+            &make_req(
+                "POST",
+                "/api/graph/send",
+                "",
+                json!({ "from": "coord", "to": "worker", "topic": "spec", "payload": "hydrated across restart" }),
+            ),
+        );
+        assert_eq!(send_resp.status, 200);
+        drop(s1);
+
+        // Reopen StudioState from the same SQLite DB: PeerMesh nodes, edges, and messages hydrate
+        let cfg2 = StudioConfig {
+            db_path: Some(db_path),
+            rollback_root: rb,
+            runtime_url: None,
+            ..StudioConfig::default()
+        };
+        let s2 = StudioState::new(cfg2).expect("state 2");
+        let poll_all = handle_graph_peers_poll(
+            &s2,
+            &make_req("GET", "/api/graph/peers/poll", "since=0", Value::Null),
+        );
+        assert_eq!(poll_all.status, 200);
+        let pj: Value = serde_json::from_slice(&poll_all.body).unwrap();
+        assert_eq!(pj["peerCount"], 2);
+        assert_eq!(pj["edgeCount"], 2);
+        assert_eq!(pj["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(pj["messages"][0]["payload"], "hydrated across restart");
+
+        let poll_after = handle_graph_peers_poll(
+            &s2,
+            &make_req("GET", "/api/graph/peers/poll", "since=1&agent=worker", Value::Null),
+        );
+        assert_eq!(poll_after.status, 200);
+        let paj: Value = serde_json::from_slice(&poll_after.body).unwrap();
+        assert_eq!(paj["messages"].as_array().unwrap().len(), 0);
+        let _ = fs::remove_dir_all(dir);
     }
 }

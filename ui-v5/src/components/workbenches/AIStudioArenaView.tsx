@@ -22,6 +22,7 @@ import {
   Scale,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Terminal,
   Trash2,
   Trophy,
@@ -126,6 +127,23 @@ interface StudioEstimateSnapshot {
 interface LexicalDiffToken {
   text: string;
   kind: 'same' | 'a-only' | 'b-only';
+}
+
+interface ArenaInterruptedReceipt {
+  runId: string;
+  cancelledAtIso: string;
+  elapsedMs: number;
+  models: string[];
+  arenaCancelStatus: string;
+  routerCancelStatus: string;
+  detail: string;
+}
+
+function resolveStudioOrigin(): string {
+  if (typeof window !== 'undefined' && window.location?.origin && /^https?:\/\//i.test(window.location.origin)) {
+    return window.location.origin.replace(/\/$/, '');
+  }
+  return 'http://127.0.0.1:4242';
 }
 
 const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -366,11 +384,12 @@ async function fetchJsonSafe<T = Record<string, unknown>>(
     }
     return { ok: true, data: parsed as T };
   } catch (err) {
+    const isAbort = err instanceof Error && err.name === 'AbortError';
     return {
       ok: false,
       status: 0,
-      code: 'network_unreachable',
-      message: err instanceof Error ? err.message : 'Network error',
+      code: isAbort ? 'aborted' : 'network_unreachable',
+      message: isAbort ? 'Request cancelled by user' : err instanceof Error ? err.message : 'Network error',
     };
   }
 }
@@ -662,13 +681,16 @@ function buildCodeSnippet(
   if (opts.stopSequences.length > 0) payload.stopSequences = opts.stopSequences;
   if (opts.schemaEnabled && opts.schemaObject) payload.jsonSchema = opts.schemaObject;
 
+  const origin = resolveStudioOrigin();
+  const arenaCompareUrl = `${origin}/api/v5/arena/compare`;
+  const openaiBaseUrl = `${origin}/v1`;
   const jsonBody = JSON.stringify(payload, null, 2);
 
   if (lang === 'curl') {
     const escaped = jsonBody.replace(/'/g, "'\\''");
     return [
       '# Omnia Studio v5 Parallel Arena API (loopback)',
-      'curl -sS -X POST "http://127.0.0.1:4242/api/v5/arena/compare" \\',
+      `curl -sS -X POST "${arenaCompareUrl}" \\`,
       '  -H "Content-Type: application/json" \\',
       `  -d '${escaped}'`,
     ].join('\n');
@@ -683,7 +705,7 @@ function buildCodeSnippet(
       '',
       'with httpx.Client(timeout=120.0) as client:',
       '    resp = client.post(',
-      '        "http://127.0.0.1:4242/api/v5/arena/compare",',
+      `        "${arenaCompareUrl}",`,
       '        json=payload,',
       '    )',
       '    resp.raise_for_status()',
@@ -703,7 +725,7 @@ function buildCodeSnippet(
       'from openai import OpenAI',
       '',
       'client = OpenAI(',
-      '    base_url=os.environ.get("OMNIA_BASE_URL", "http://127.0.0.1:4242/v1"),',
+      `    base_url=os.environ.get("OMNIA_BASE_URL", "${openaiBaseUrl}"),`,
       '    api_key=os.environ.get("OMNIA_API_KEY", ""),',
       ')',
       '',
@@ -731,7 +753,7 @@ function buildCodeSnippet(
     return [
       `const payload = ${jsonBody};`,
       '',
-      'const res = await fetch("http://127.0.0.1:4242/api/v5/arena/compare", {',
+      `const res = await fetch("${arenaCompareUrl}", {`,
       '  method: "POST",',
       '  headers: { "Content-Type": "application/json" },',
       '  body: JSON.stringify(payload),',
@@ -755,7 +777,7 @@ function buildCodeSnippet(
     '    let client = Client::new();',
     `    let payload: Value = serde_json::from_str(r##"${jsonBody}"##)?;`,
     '    let resp: Value = client',
-    '        .post("http://127.0.0.1:4242/api/v5/arena/compare")',
+    `        .post("${arenaCompareUrl}")`,
     '        .json(&payload)',
     '        .send()',
     '        .await?',
@@ -821,8 +843,10 @@ export function AIStudioArenaView() {
   const [prompt, setPrompt] = createSignal('');
   const [effort, setEffort] = createSignal<EffortLevel>('max');
   const [running, setRunning] = createSignal(false);
+  const [cancelling, setCancelling] = createSignal(false);
   const [runElapsedMs, setRunElapsedMs] = createSignal(0);
   const [activeRunId, setActiveRunId] = createSignal<string>('');
+  const [interruptedReceipt, setInterruptedReceipt] = createSignal<ArenaInterruptedReceipt | null>(null);
   const [results, setResults] = createSignal<ArenaModelOutput[]>([]);
   const [votedWinner, setVotedWinner] = createSignal<string | null>(null);
   const [voting, setVoting] = createSignal(false);
@@ -882,6 +906,8 @@ export function AIStudioArenaView() {
 
   let runTimer: ReturnType<typeof setInterval> | null = null;
   let estimateTimer: ReturnType<typeof setTimeout> | null = null;
+  let arenaAbortController: AbortController | null = null;
+  let runStartedAtPerf = 0;
 
   const parsedSchema = createMemo<{ valid: boolean; obj: Record<string, unknown> | null; error?: string }>(() => {
     const raw = schemaText().trim();
@@ -968,6 +994,10 @@ export function AIStudioArenaView() {
   onCleanup(() => {
     if (runTimer) clearInterval(runTimer);
     if (estimateTimer) clearTimeout(estimateTimer);
+    if (arenaAbortController) {
+      arenaAbortController.abort();
+      arenaAbortController = null;
+    }
   });
 
   // Debounced optional backend sync to POST /api/v5/studio/estimate
@@ -1083,6 +1113,70 @@ export function AIStudioArenaView() {
     setStopSeqDraft('');
   };
 
+  const cancelParallelArena = async () => {
+    if (!running() || cancelling()) return;
+    setCancelling(true);
+    const runId = activeRunId() || `arena-${Date.now()}`;
+    const models = [...selectedModels()];
+    const elapsedMs = runStartedAtPerf > 0 ? Math.round(performance.now() - runStartedAtPerf) : runElapsedMs();
+
+    if (arenaAbortController) {
+      arenaAbortController.abort();
+      arenaAbortController = null;
+    }
+    if (runTimer) {
+      clearInterval(runTimer);
+      runTimer = null;
+    }
+    setRunElapsedMs(elapsedMs);
+    setRunning(false);
+
+    const [arenaRes, routerRes] = await Promise.all([
+      fetchJsonSafe<Record<string, unknown>>('/api/v5/arena/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ runId, run_id: runId, models, note: 'user_cancelled' }),
+      }),
+      fetchJsonSafe<Record<string, unknown>>('/api/router/cancel', {
+        method: 'POST',
+        body: JSON.stringify({
+          reservationId: runId,
+          requestId: runId,
+          runId,
+          cancelAllActive: true,
+          note: 'arena_user_cancelled',
+        }),
+      }),
+    ]);
+
+    const arenaReceiptObj =
+      arenaRes.ok && arenaRes.data.receipt && typeof arenaRes.data.receipt === 'object'
+        ? (arenaRes.data.receipt as Record<string, unknown>)
+        : null;
+    const arenaCancelText = arenaRes.ok
+      ? String(arenaReceiptObj?.status ?? (arenaRes.data.cancelled ? 'cancelled' : 'acknowledged'))
+      : `${arenaRes.code} (${arenaRes.status})`;
+    const routerCancelText = routerRes.ok
+      ? `${routerRes.data.cancelled ? 'cancelled' : 'clear'} (${Number(routerRes.data.cancelledCount ?? 0)})`
+      : `${routerRes.code} (${routerRes.status})`;
+
+    const receipt: ArenaInterruptedReceipt = {
+      runId,
+      cancelledAtIso: new Date().toISOString(),
+      elapsedMs,
+      models,
+      arenaCancelStatus: arenaCancelText,
+      routerCancelStatus: routerCancelText,
+      detail:
+        arenaRes.ok || routerRes.ok
+          ? 'In-flight browser fetch aborted and backend Arena + Router reservation cancellation dispatched cleanly.'
+          : 'In-flight browser fetch aborted locally; backend cancel endpoints reported offline or unconfigured.',
+    };
+    setInterruptedReceipt(receipt);
+    setArenaError('');
+    setCancelling(false);
+    flashNotice(`Cancelled Arena run ${runId.slice(0, 14)} after ${formatMs(elapsedMs)}`);
+  };
+
   const runParallelArena = async () => {
     const cleanPrompt = prompt().trim();
     if (!cleanPrompt) {
@@ -1100,15 +1194,29 @@ export function AIStudioArenaView() {
       return;
     }
 
+    if (arenaAbortController) {
+      arenaAbortController.abort();
+    }
+    const controller = new AbortController();
+    arenaAbortController = controller;
+    const clientRunId = `arena-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    setActiveRunId(clientRunId);
     setRunning(true);
+    setCancelling(false);
     setArenaError('');
+    setInterruptedReceipt(null);
     setVotedWinner(null);
     setRunElapsedMs(0);
     const started = performance.now();
+    runStartedAtPerf = started;
     if (runTimer) clearInterval(runTimer);
     runTimer = setInterval(() => setRunElapsedMs(Math.round(performance.now() - started)), 80);
 
     const payload: Record<string, unknown> = {
+      runId: clientRunId,
+      run_id: clientRunId,
+      requestId: clientRunId,
       prompt: cleanPrompt,
       models,
       effort: effort(),
@@ -1124,8 +1232,12 @@ export function AIStudioArenaView() {
     const res = await fetchJsonSafe<Record<string, unknown>>('/api/v5/arena/compare', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
 
+    if (arenaAbortController === controller) {
+      arenaAbortController = null;
+    }
     if (runTimer) {
       clearInterval(runTimer);
       runTimer = null;
@@ -1134,12 +1246,26 @@ export function AIStudioArenaView() {
     setRunning(false);
 
     if (!res.ok) {
+      if (res.code === 'aborted') {
+        if (!interruptedReceipt()) {
+          setInterruptedReceipt({
+            runId: clientRunId,
+            cancelledAtIso: new Date().toISOString(),
+            elapsedMs: Math.round(performance.now() - started),
+            models,
+            arenaCancelStatus: 'aborted',
+            routerCancelStatus: 'requested',
+            detail: 'Parallel Arena comparison was interrupted before completion.',
+          });
+        }
+        return;
+      }
       setArenaError(`Arena API error (${res.code}): ${res.message}`);
       return;
     }
 
     const d = res.data;
-    setActiveRunId(String(d.runId ?? d.run_id ?? `run-${Date.now()}`));
+    setActiveRunId(String(d.runId ?? d.run_id ?? clientRunId));
     const rawResults = (d.results ?? d.outputs ?? []) as Array<Record<string, unknown>>;
     const normalized = Array.isArray(rawResults)
       ? rawResults.map((item, idx) => {
@@ -1631,17 +1757,30 @@ export function AIStudioArenaView() {
                   </span>
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0">
-                  <Show when={results().length > 0}>
+                  <Show when={results().length > 0 || interruptedReceipt() !== null}>
                     <button
                       type="button"
                       class="omnia-btn text-[11.5px]"
                       onClick={() => {
                         setResults([]);
                         setVotedWinner(null);
+                        setInterruptedReceipt(null);
                         setDiffOpen(false);
                       }}
                     >
                       Clear
+                    </button>
+                  </Show>
+                  <Show when={running()}>
+                    <button
+                      type="button"
+                      data-testid="arena-cancel-btn"
+                      disabled={cancelling()}
+                      onClick={() => void cancelParallelArena()}
+                      class="omnia-btn omnia-btn-danger text-[12px]"
+                    >
+                      <Square class="w-3.5 h-3.5" />
+                      <span>{cancelling() ? 'Cancelling...' : 'Cancel Run'}</span>
                     </button>
                   </Show>
                   <button
@@ -1663,6 +1802,40 @@ export function AIStudioArenaView() {
                 </div>
               </div>
             </div>
+
+            <Show when={interruptedReceipt()}>
+              {(rec) => (
+                <div
+                  data-testid="arena-interrupted-receipt"
+                  role="status"
+                  class="p-3 rounded-lg border border-[var(--accent-amber)] bg-[var(--accent-amber-dim)] text-[12px] space-y-1.5 min-w-0"
+                >
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 font-semibold text-[var(--accent-amber)]">
+                      <Square class="w-3.5 h-3.5 shrink-0" />
+                      <span>Arena Run Interrupted (AUD-24 Cancellation Receipt)</span>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Dismiss interrupted receipt"
+                      class="omnia-btn !px-1.5 !py-0.5 text-[10.5px]"
+                      onClick={() => setInterruptedReceipt(null)}
+                    >
+                      <X class="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div class="text-[11.5px] text-[var(--ink-primary)]">{rec().detail}</div>
+                  <div class="flex flex-wrap items-center gap-1.5 text-[11px] font-mono-num">
+                    <span class="omnia-badge">runId: {rec().runId}</span>
+                    <span class="omnia-badge">elapsed: {formatMs(rec().elapsedMs)}</span>
+                    <span class="omnia-badge">arena/cancel: {rec().arenaCancelStatus}</span>
+                    <span class="omnia-badge">router/cancel: {rec().routerCancelStatus}</span>
+                    <span class="omnia-badge">models: {rec().models.map(shortModelLabel).join(', ')}</span>
+                    <span class="omnia-badge">at: {rec().cancelledAtIso}</span>
+                  </div>
+                </div>
+              )}
+            </Show>
 
             <Show when={arenaError()}>
               <div class="p-3 rounded-lg border border-[var(--status-coral)] bg-[var(--status-coral-dim)] text-[12px] text-[var(--status-coral)] flex items-start gap-2">

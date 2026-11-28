@@ -1,28 +1,29 @@
-# Architecture — 17 Pure-Rust Crates
+# Architecture — 18 Pure-Rust Crates (`v5.1.0`)
 
-Omnia compiles as a unified **17-crate Rust Cargo workspace** (`edition = "2021"`, `winsqlite3` FFI, `windows-sys`) with zero C++/CMake build steps in active source.
+Omnia compiles as a unified **18-crate Rust Cargo workspace** (`edition = "2021"`, `winsqlite3` FFI with `#[cfg(not(windows))]` POSIX `libsqlite3` foundation, `windows-sys` / `windows`) with zero C++/CMake build steps in active source. *(Filename preserved as `Architecture-17-Crates.md` for existing wiki link stability.)*
 
-## Core & Subsystem Crates (13)
+## Core & Subsystem Crates (14)
 
 | Crate | Primary Responsibilities |
 | --- | --- |
-| `omnia-winsqlite` | Safe `winsqlite3` FFI, SQLite WAL mode, explicit rollback hygiene, and OS `LockFileEx` cooperative process leases. |
+| `omnia-winsqlite` | Safe `winsqlite3` FFI (`#[cfg(windows)]`) + POSIX `#[link(name = "sqlite3")]` foundation (`Issue #10`), SQLite WAL mode, explicit rollback hygiene, and OS `LockFileEx` cooperative process leases. |
 | `omnia-core` | RFC 8259 JSON parser/serializer with checked integers, UTF-8/UTF-16 & Vietnamese shorthand/typo normalization, SHA-256/BLAKE3, and secret redactor. |
-| `omnia-storage` | `SessionStore` and `HarnessStore` persistence with bounded keyset pagination. |
-| `omnia-routing` | Deterministic `DynamicProviderRouter` across all 51 catalog models (default `EffortLevel::Max`), circuit breakers, quota reservations, and zero-mutation `simulate: true`. |
+| `omnia-storage` | `SessionStore` and `HarnessStore` persistence enforcing `PRAGMA trusted_schema = OFF` & `secure_delete = ON`, bounded keyset pagination, and RFC-2104 HMAC-SHA256 graph cursors (`graph_cursor.rs`). |
+| `omnia-routing` | Deterministic `DynamicProviderRouter` across all 51 catalog models (default `EffortLevel::Max`), 4-tier `softFail` (`5s`) demotion, nested `ComboRegistry` + `ComboProbe`, `NotServedTracker`, monotonic Anthropic `cache_control` TTL validation, 3-way `DispatchOutcomeClass` safety, quota resets, and pure `std` zero-sleep `ProviderFaultHarness`. |
 | `omnia-graph` | 2-way all-to-all `PeerMeshGraph` (`A <-> B` duplex mesh, `disjoint_paths`, `max_hops`/`epoch` cycle guards) and `GraphifyIndex` (`EXTRACTED` / `INFERRED` / `AMBIGUOUS`). |
-| `omnia-harness` | `ResearchVault` (Local `[S###]` + Global `[G###]` SQLite WAL BM25+RRF RAG), `DeepThink` engine, 12-Artifact `ArtifactOS`, `MemoryGraph`, `SkillRegistry` (22 active + 1,001 Cold Vault + 24 pipelines), `RichComposer`, and additive `SteerQueue` (`token_budget = NULL`). |
+| `omnia-harness` | Pure-Rust Model2Vec seek router (`m2v_router.rs` + `GapRadar`), `ResearchVault` (Local `[S###]` + Global `[G###]` SQLite WAL BM25+RRF RAG + W3C `#:~:text=` 4-layer citation verifier), `DeepThink` engine w/ `FormalProofAudit` (`AxiomFootprintAudit` / `MultiKernelReplayCheck` / `EpistemicBucket` / `AaronsonSignId`), `ArtifactOS` (12 artifacts + 2-tier `sync_global_lessons` + admission gates), `MemoryGraph`, `SkillRegistry` (22 active + 1,001 Cold Vault + 24 pipelines), `RichComposer`, and additive `SteerQueue` (`token_budget = NULL`). |
 | `omnia-connector-gateway` | AdGuard-tolerant loopback HTTP parsing, RFC 9110 §5.3 multi-`Cookie` coalescing, `ProxyHealthState`, and external harness compatibility bridges. |
-| `omnia-workspace-ops` | `path_guard`, atomic UTF-8 LF `fs_ops`, `egress` (`Unrestricted`, `PublicOnly`, `LoopbackOnly`, `DenyAll`), `net_diag` (IP/DNS/Proxy/TLS + Speedtest/Bufferbloat `A+..F`), `hardware`, `shell_compactor`, and `process_ops`. |
-| `omnia-media-capture` | CDP browser hooks, desktop isolation, OBS v5 framing, and DPI-clamped window capture contracts (`<= 8192 px`). |
+| `omnia-workspace-ops` | `path_guard` (incl. Unicode superscript/fullwidth DOS device defense), atomic UTF-8 LF `fs_ops`, `egress` (`Unrestricted`, `PublicOnly`, `LoopbackOnly`, `DenyAll`), `net_diag` (IP/DNS/Proxy/TLS + Speedtest/Bufferbloat + RFC 5389 STUN + RFC 1035 NXDOMAIN hijack checks), `hardware`, `shell_compactor`, and `process_ops`. |
+| `omnia-media-capture` | Zero-race `--remote-debugging-port=0` CDP WebSocket engine (`browser_ws.rs`, `browser_batch`), WeakMap `[ref=eN]` ARIA/Shadow-DOM/iframe snapshots (`browser_snapshot.{js,rs}`), `2000`-entry `NetworkRing` (`browser_network.rs`), pure-Rust GIF89a + Playwright codegen (`browser_record.rs`), desktop isolation, OBS v5 framing, and DPI-clamped capture contracts (`<= 8192 px`). |
+| `omnia-computer` | Pure-Rust Windows computer-use engine: dedicated MTA COM + Per-Monitor-V2 DPI worker, 17-property cached UIA tree (`[ref=wNeM]`) + pattern-first actions, non-intrusive background control (`PrintWindow` / `ChildWindowFromPointEx` / `PostMessageW` / `SendMessageTimeoutW`), pure-Rust PNG codec/downscaler (`flate2`/`crc32fast`), WinRT `Windows.Media.Ocr`, global `KillSwitch`, `GetProcessTimes` `ProcessIdentity` PID-reuse guard, `ComputerPolicy::unrestricted_default()` YOLO default, and 21 tool specs (`66` tests). |
 | `omnia-remote-control` | Pairing, cryptographic sequencing, and replay-protected remote control primitives. |
-| `omnia-agent` | `SuperHarnessManager`, `NativeSuperEngine`, 4-tier Prefix-0 KV invariance, SSE token-progress watchdog, ACP stdio/HTTP/WS, Tree-sitter CST `WorkspaceGraphIndex`, `LazyLspManager`, Hashline/BlockDiff/`apply_patch`, `TurnCheckpointStore`, `PermissionsEngine` (default `Yolo`), QuickJS PTC sandbox, and ConPTY sessions. |
-| `omnia-downloader` | `OmniDownloader Pro` / `OmniDrive` multi-stream HTTP, Google Drive, HLS/DASH, smart clip range, `SitePolicyRegistry`, and non-bypass `VisibleHandoffManager`. |
-| `omnia-notebook` | NotebookLM++ (`Atelier`) ingestion, citation grounding, Whisper bridge, and `11/11` structured Studio artifact builders (v2 `Quiz`, `MindMap`, `AudioOverview` 2-host turns). |
+| `omnia-agent` | `SuperHarnessManager`, `NativeSuperEngine`, 4-tier Prefix-0 KV invariance, SSE token-progress watchdog, ACP stdio/HTTP/WS (`-32602` on unknown `modeId`), Windows `StartGate` + `JobObject` hook trees, hardened `lsp.rs`, compaction-safe 2-phase rewind (`checkpoint.rs`), zero-`eval()` `builtin_stem.rs` (`stem_verify`), 50 MiB zip-bomb-guarded `office_reader.rs`, weak-ref `FileMutationLocks`, `PermissionsEngine` (default `Yolo` + opt-in `--sandbox`), QuickJS PTC sandbox, offline `eval_scripted.rs`, and ConPTY sessions. |
+| `omnia-downloader` | `OmniDownloader Pro` / `OmniDrive` multi-stream HTTP, `DriveResolver`, background Tokio `DownloadScheduler`, `CoalescedDiskWriter`, DNS-pinned pool, `detect.rs`/`blob.rs` w/ RFC 1321 MD5, dual-track HLS + `moof->traf->tfdt` discontinuity splitting + DASH periods + cancellable FFmpeg `-c copy`, `SitePolicyRegistry`, and `DRM_SUPPORTED = false` / `AUTO_SOLVE_PERMITTED = false`. |
+| `omnia-notebook` | NotebookLM++ (`Atelier`) ingestion w/ 5-stage `UploadHealer` + multi-encoding `decode_text_safely`, wired `source_ids`/`only_checked`/bilingual `EffortLevel`, fail-closed `SOURCES_INCOMPLETE` (`409`), HTTP `206` WAV streaming, Whisper bridge, and `11/11` structured Studio artifact builders. |
 
 ## Executable & Shell Crates (4 -> 5 Release Binaries)
 
-- **`omnia-cli` -> `omnia.exe`** (`12.389 MiB`, `mimalloc`, standalone build LAST to prevent workspace feature unification bloat).
-- **`omnia-studio` -> `omnia-studio.exe`** (`35.695 MiB` with `--features embed-ui`, loopback HTTP/JSON-RPC/WS host serving `ui-v5` with fallback to modular `ui/`).
-- **`omnia-runtime` -> `omnia-runtime.exe`** (`15.356 MiB`, strict bound-port loopback provider/catalog runtime).
-- **`omnia-native` -> `omnia-native.exe` + `omnia_qa_seed.exe`** (`0.366 MiB` + `0.222 MiB`, Win32 + DWM Dark/Mica + Direct2D + COM UIA + `--studio` WebView2 host).
+- **`omnia-cli` -> `omnia.exe`** (`12.763 MiB`, `mimalloc`, MSVC-gated `/DELAYLOAD` without `ws2_32.dll`, standalone build LAST to prevent workspace feature unification bloat; adds `omnia learn`, `omnia proceed`, `omnia --mcp`, and opt-in `--sandbox`).
+- **`omnia-studio` -> `omnia-studio.exe`** (`36.413 MiB` with `--features embed-ui`, strict bound-port `Host`/`Origin` `AUD-02` pinning, `AUD-24` cancel routes, live 30s Vixie cron `ops_routines` executor, `ops_peer_mesh_*` cursor polling, serving `ui-v5` with fallback to modular `ui/`).
+- **`omnia-runtime` -> `omnia-runtime.exe`** (`15.757 MiB`, default `ApprovalMode::Yolo`, 512-entry `AgentEventRing`, SQLite WAL `DynamicProviderRouter`, strict bound-port loopback runtime).
+- **`omnia-native` -> `omnia-native.exe` + `omnia_qa_seed.exe`** (`0.366 MiB` + `0.222 MiB`, Win32 + DWM Dark/Mica + Direct2D + COM UIA + `--studio` dynamic WebView2 discovery).

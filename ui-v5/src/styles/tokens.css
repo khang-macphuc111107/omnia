@@ -172,6 +172,90 @@
   color-scheme: dark;
 }
 
+/* ============================================================================
+ * WCAG AAA High-Contrast Mode (data-contrast="more") — >= 7:1 calibrated tokens
+ * Zero blur, zero gradients, crisp borders across dark & light themes
+ * ============================================================================ */
+:root[data-contrast="more"] {
+  --bg-canvas: #000000;
+  --bg-rail: #05070B;
+  --bg-panel: #0A0E14;
+  --bg-elevated: #121822;
+  --bg-interactive: #1B2433;
+  --bg-code: #04060A;
+
+  --ink-primary: #FFFFFF;
+  --ink-secondary: #E6EEF8;
+  --ink-muted: #C8D6E8;
+
+  --accent-amber: #FDE047;
+  --accent-cyan: #67E8F9;
+  --accent-dim: rgba(103, 232, 249, 0.22);
+  --accent-amber-dim: rgba(253, 224, 71, 0.20);
+
+  --status-emerald: #4ADE80;
+  --status-emerald-dim: rgba(74, 222, 128, 0.18);
+  --status-coral: #FDA4AF;
+  --status-coral-dim: rgba(253, 164, 175, 0.20);
+  --status-warning: #FDE047;
+
+  --border-subtle: #64748B;
+  --border-strong: #CBD5E1;
+  --border-specular: rgba(255, 255, 255, 0.24);
+  --border-accent: #67E8F9;
+
+  --omp-user-msg-bg: #0D192B;
+  --omp-user-msg-border: #67E8F9;
+}
+
+:root[data-theme="alabaster"][data-contrast="more"] {
+  --bg-canvas: #FFFFFF;
+  --bg-rail: #F4F4F0;
+  --bg-panel: #FFFFFF;
+  --bg-elevated: #F1F1EC;
+  --bg-interactive: #E2E2DA;
+  --bg-code: #F5F5F0;
+
+  --ink-primary: #000000;
+  --ink-secondary: #111827;
+  --ink-muted: #1F2937;
+
+  --accent-amber: #663300;
+  --accent-cyan: #003B7A;
+  --accent-dim: rgba(0, 59, 122, 0.14);
+  --accent-amber-dim: rgba(102, 51, 0, 0.14);
+
+  --status-emerald: #004D30;
+  --status-emerald-dim: rgba(0, 77, 48, 0.14);
+  --status-coral: #8B001F;
+  --status-coral-dim: rgba(139, 0, 31, 0.14);
+  --status-warning: #663300;
+
+  --border-subtle: #4B5563;
+  --border-strong: #111827;
+  --border-specular: rgba(255, 255, 255, 1);
+  --border-accent: #003B7A;
+
+  --omp-user-msg-bg: #E6F0FA;
+  --omp-user-msg-border: #003B7A;
+}
+
+:root {
+  --focus-ring: var(--accent-cyan);
+  --target-inline: 32px;
+  --target-comfortable: 40px;
+}
+
+:root[data-density="compact"] {
+  --target-inline: 28px;
+  --target-comfortable: 34px;
+}
+
+:root[data-density="touch"] {
+  --target-inline: 44px;
+  --target-comfortable: 44px;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -183,11 +267,21 @@ body,
   width: 100%;
   margin: 0;
   padding: 0;
-  overflow: hidden;
+  overflow: clip;
   background-color: var(--bg-canvas);
   color: var(--ink-primary);
   font-family: "Be Vietnam Pro", "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard-only focus-visible rings (zero mouse-click clutter) */
+:where(button, a, input, select, textarea, summary, [role="button"], [role="option"], [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+:where(button, a, [role="button"], [tabindex]):focus:not(:focus-visible) {
+  outline: none;
 }
 
 ::selection {
@@ -200,15 +294,20 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* Master 3-Row 100dvh Shell */
+/* Master 3-Row 100dvh Shell — overflow: clip prevents Chromium scrollIntoView() topbar clipping */
 .omnia-shell {
   display: grid;
   grid-template-rows: 48px minmax(0, 1fr) 28px;
   height: 100dvh;
   width: 100%;
-  overflow: hidden;
+  overflow: clip;
   background-color: var(--bg-canvas);
   color: var(--ink-primary);
+}
+
+.omnia-shell :has(> [data-popover-open="true"]) {
+  overflow: visible;
+  z-index: 60;
 }
 
 .omnia-topbar {
@@ -426,12 +525,77 @@ body,
   font-weight: 600;
 }
 
+/* Dual Reduced-Motion Kill-Switch (OS preference + explicit UI toggle) */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Windows High Contrast Mode (forced-colors: active) */
+@media (forced-colors: active) {
+  :root,
+  body,
+  .omnia-shell {
+    forced-color-adjust: auto;
+    background-color: Canvas;
+    color: CanvasText;
+  }
+
+  .omnia-topbar,
+  .omnia-statusbar,
+  .omnia-surface-panel,
+  .omnia-surface-elevated,
+  .omp-segmented,
+  .omnia-alert,
+  .omnia-code-header {
+    border-color: CanvasText !important;
+    box-shadow: none !important;
+  }
+
+  .omnia-btn,
+  .omnia-badge,
+  .omnia-citation-chip,
+  .omnia-code-btn,
+  .omnia-code-tab,
+  .omp-segmented > button {
+    border: 1px solid ButtonText !important;
+    box-shadow: none !important;
+    background-color: ButtonFace;
+    color: ButtonText;
+  }
+
+  .omnia-btn-primary,
+  .omp-segmented > button[aria-pressed="true"],
+  .omnia-code-tab.active {
+    background-color: Highlight !important;
+    color: HighlightText !important;
+    border-color: Highlight !important;
+  }
+
+  .omnia-btn:disabled {
+    border-color: GrayText !important;
+    color: GrayText !important;
+    opacity: 1;
+  }
+
+  :where(button, a, input, select, textarea, summary, [role="button"], [role="option"], [tabindex]):focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
   }
 }
 

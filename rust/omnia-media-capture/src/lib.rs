@@ -4,6 +4,9 @@
 #![forbid(unsafe_code)]
 
 pub mod browser_cdp;
+pub mod browser_network;
+pub mod browser_record;
+pub mod browser_snapshot;
 pub mod browser_ws;
 pub mod capability;
 pub mod desktop_isolation;
@@ -15,6 +18,26 @@ pub use browser_cdp::{
     parse_cdp_list, parse_cdp_version, probe_cdp_endpoint, validate_cdp_url_with_policy,
     validate_loopback_cdp_url, CdpEndpointPolicy, CdpError, CdpProbeSnapshot, CdpTargetInfo,
     CdpVersionInfo, ValidatedCdpUrl,
+};
+pub use browser_network::{
+    is_non_replayable_header, is_sensitive_header_name, redact_url, ConsoleEntry, ConsoleRing,
+    DialogPolicy, DialogRecord, NetworkEntry, NetworkFilter, NetworkRing, ReplayRequestSpec,
+    CONSOLE_RING_CAPACITY, DIALOG_RING_CAPACITY, NETWORK_RING_CAPACITY,
+};
+pub use browser_record::{
+    decode_png_rgb, draw_click_marker, encode_gif, generate_playwright_spec, serialize_steps_json,
+    ElementProbe, GifFrame, RecordedAction, RecordedStep, SessionRecorder,
+    MAX_RECORDED_FRAMES, MAX_RECORDING_DURATION_MS, PROBE_ELEMENT_JS,
+};
+pub use browser_snapshot::{
+    build_snapshot_eval_js, format_snapshot_tree, parse_snapshot_json, parse_snapshot_value,
+    render_dom_snapshot, snapshot_script, DomSnapshotNode, DomSnapshotOptions, DomSnapshotResult,
+    SelectOptionInfo, SnapshotViewport,
+};
+pub use browser_ws::{
+    parse_batch_steps, parse_devtools_active_port, BrowserBatchAction, BrowserBatchReport,
+    BrowserBatchStep, BrowserBatchStepResult, BrowserTabInfo, CdpEvent, ElementTarget,
+    WaitCondition,
 };
 pub use capability::{
     is_loopback_host, probe_loopback_tcp, probe_loopback_url_tcp, probe_unconfigured_adapter,

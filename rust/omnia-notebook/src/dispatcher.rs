@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use omnia_core::{now_epoch_ms, SecretRedactor};
+use omnia_harness::fold_vietnamese_ascii;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
@@ -49,6 +50,30 @@ impl EffortLevel {
             "max" => Ok(Self::Max),
             other => Err(NotebookError::InvalidInput(format!(
                 "unsupported reasoning effort level '{other}' (expected minimal|low|medium|high|xhigh|max)"
+            ))),
+        }
+    }
+
+    /// Parse English and Vietnamese effort synonyms (e.g. `low`/`thấp`, `medium`/`trung bình`,
+    /// `high`/`cao`, `xhigh`/`rất cao`, `max`/`tối đa`, `minimal`/`tối thiểu`).
+    pub fn parse_bilingual(raw: &str) -> Result<Self, NotebookError> {
+        let folded = fold_vietnamese_ascii(raw.trim())
+            .replace(['-', '_'], " ");
+        let collapsed: String = folded.split_whitespace().collect::<Vec<_>>().join(" ");
+        match collapsed.as_str() {
+            "minimal" | "min" | "toi thieu" | "toithieu" | "nho nhat" => Ok(Self::Minimal),
+            "low" | "thap" | "nhanh" | "fast" => Ok(Self::Low),
+            "medium" | "med" | "normal" | "balanced" | "trung binh" | "trungbinh" | "vua" => {
+                Ok(Self::Medium)
+            }
+            "high" | "cao" | "sau" | "deep" => Ok(Self::High),
+            "xhigh" | "x high" | "extra high" | "very high" | "rat cao" | "ratcao" => {
+                Ok(Self::XHigh)
+            }
+            "max" | "maximum" | "ultra" | "toi da" | "toida" | "cuc dai" => Ok(Self::Max),
+            _ => Err(NotebookError::InvalidInput(format!(
+                "unsupported reasoning effort level '{}' (expected minimal|low|medium|high|xhigh|max)",
+                raw.trim()
             ))),
         }
     }

@@ -46,15 +46,17 @@ pub use grounding::{
 };
 pub use ingestion::{
     chunk_copied_text_fallback, chunk_text_semantically, clean_html_to_text,
-    clean_json_to_markdown, extract_docx_markdown, extract_epub_markdown, extract_odt_markdown,
-    extract_pptx_slides, extract_xlsx_sheets, extract_xml_text, inspect_and_extract_pdf,
-    inspect_zip_archive_safe, is_likely_binary, normalize_subtitles_to_webvtt,
-    normalize_utf8_and_lf, package_code_repository, parse_delimited_table, parse_ipynb_cells,
-    read_zip_entries_bounded, render_ipynb_to_markdown, render_sheets_to_markdown,
-    render_slides_to_markdown, strip_rtf_to_text, ExtractedNotebookCell, ExtractedSheet,
-    ExtractedSlide, HealSweepReport, IngestSourceOutcome, IngestSourceRequest, IngestionEngine,
+    clean_json_to_markdown, decode_text_safely, extract_docx_markdown, extract_epub_markdown,
+    extract_odt_markdown, extract_pptx_slides, extract_xlsx_sheets, extract_xml_text,
+    inspect_and_extract_pdf, inspect_zip_archive_safe, is_likely_binary,
+    normalize_subtitles_to_webvtt, normalize_utf8_and_lf, package_code_repository,
+    parse_delimited_table, parse_ipynb_cells, read_zip_entries_bounded, render_ipynb_to_markdown,
+    render_sheets_to_markdown, render_slides_to_markdown, strip_rtf_to_text, DecodedText,
+    ExtractedNotebookCell, ExtractedSheet, ExtractedSlide, HealStage, HealSweepReport,
+    HealedUploadOutcome, IngestSourceOutcome, IngestSourceRequest, IngestionEngine,
     IngestionStage, MultipartIngestOutcome, PackagedRepository, PdfClassification,
-    PdfExtractionResult, RepoPackageConfig, SafeZipEntry,
+    PdfExtractionResult, RepoPackageConfig, SafeZipEntry, UploadAttemptContext, UploadHealAttempt,
+    UploadHealer,
 };
 pub use interactions::{
     build_composer_quote_card, format_multi_quote_prompt, BridgeDirection, BridgeTransferReceipt,
@@ -63,14 +65,17 @@ pub use interactions::{
     PromoteBtwOutcome, QuoteRef, SelectionAction,
 };
 pub use policy::{
+    is_streamable_media_mime, normalize_drive_filename_suffix, parse_http_byte_range,
+    requires_forced_attachment, sanitize_transport_filename, strip_local_path_fields,
     validate_archive_entry_path, validate_archive_limits, validate_filename_and_mime,
     validate_xml_safety, validate_xml_safety_with_limit, AuthChallengeCircuitBreaker,
-    AuthCircuitSnapshot, AuthCircuitState, PreviewSecurityHeaders, VisibleHandoffManager,
-    VisibleHandoffStatus, VisibleHandoffTicket, ARTIFACT_INTAKE_ALLOWED_EXTENSIONS,
-    AUTH_CHALLENGE_CODE, AUTH_CHALLENGE_HTTP_STATUS, DEFAULT_MAX_SOURCES_PER_NOTEBOOK,
-    MANUAL_VISIBLE_BROWSER_ONLY, MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_ENTRIES, MAX_BINARY_PREVIEW_BYTES,
-    MAX_CHUNK_BYTES, MAX_COPIED_TEXT_BYTES, MAX_EXPANSION_RATIO, MAX_JAR_PREVIEW_CLASSES,
-    MAX_XML_BYTES,
+    AuthCircuitSnapshot, AuthCircuitState, HttpByteRange, HttpByteRangeError,
+    PreviewSecurityHeaders, VisibleHandoffManager, VisibleHandoffStatus, VisibleHandoffTicket,
+    ARTIFACT_INTAKE_ALLOWED_EXTENSIONS, AUTH_CHALLENGE_CODE, AUTH_CHALLENGE_HTTP_STATUS,
+    DEFAULT_MAX_SOURCES_PER_NOTEBOOK, MANUAL_VISIBLE_BROWSER_ONLY, MAX_ARCHIVE_DEPTH,
+    MAX_ARCHIVE_ENTRIES, MAX_BINARY_PREVIEW_BYTES, MAX_CHAT_CUSTOM_PROMPT_CHARS, MAX_CHUNK_BYTES,
+    MAX_COPIED_TEXT_BYTES, MAX_EXPANSION_RATIO, MAX_JAR_PREVIEW_CLASSES,
+    MAX_TRANSPORT_FILENAME_LEN, MAX_XML_BYTES,
 };
 pub use preview::{
     detect_code_language, format_hex_dump, ArchiveTreeEntry, MediaAssetMetadata, PreviewContent,
@@ -82,17 +87,18 @@ pub use llm_client::{
 };
 pub use share_import::{PublicShareImporter, ShareImportOutcome, ShareImporterConfig};
 pub use source_library::{
-    ClearSourcesReceipt, CreateNotebookRequest, NotebookRecord, RemoteReconcileReport,
-    RemoteSyncItem, ResolvedCitationTarget, SourceBatchDedupReport, SourceChunkRecord,
-    SourceFilter, SourceKind, SourceLibrary, SourceRecord, SourceRegistrationInput,
-    SourceRegistrationOutcome,
+    ChatSettings, ClearSourcesReceipt, CreateNotebookRequest, NotebookRecord,
+    RemoteReconcileReport, RemoteSyncItem, ResolvedCitationTarget, SourceBatchDedupReport,
+    SourceChunkRecord, SourceFilter, SourceKind, SourceLibrary, SourceRecord,
+    SourceRegistrationInput, SourceRegistrationOutcome,
 };
 pub use store::{
     Bm25ChunkHit, NotebookStore, NotebookTurnRecord, StoredArtifactRow, StoredBridgeRow,
     StoredBtwRow, SyncTombstoneRow,
 };
 pub use studio_artifacts::{
-    GenerateArtifactRequest, StudioArtifactKind, StudioArtifactRecord, StudioArtifactService,
+    synthesize_audio_overview_wav, GenerateArtifactRequest, StudioArtifactKind,
+    StudioArtifactRecord, StudioArtifactService,
 };
 pub use whisper_bridge::{
     discover_whisper_runner, transcribe_and_ingest, validate_local_media_path,
@@ -317,6 +323,36 @@ impl NotebookEngine {
         self.store.delete_notebook(notebook_id)
     }
 
+    pub fn rename_notebook(
+        &self,
+        notebook_id: &str,
+        new_title: &str,
+    ) -> Result<NotebookRecord, NotebookError> {
+        self.library.rename_notebook(notebook_id, new_title)
+    }
+
+    pub fn get_chat_settings(&self, notebook_id: &str) -> Result<ChatSettings, NotebookError> {
+        self.library.get_chat_settings(notebook_id)
+    }
+
+    pub fn set_chat_settings(
+        &self,
+        notebook_id: &str,
+        settings: ChatSettings,
+    ) -> Result<ChatSettings, NotebookError> {
+        self.library.set_chat_settings(notebook_id, settings)
+    }
+
+    pub fn set_source_checked(
+        &self,
+        notebook_id: &str,
+        source_id_or_remote: &str,
+        checked: bool,
+    ) -> Result<SourceRecord, NotebookError> {
+        self.library
+            .set_source_checked(notebook_id, source_id_or_remote, checked)
+    }
+
     pub fn set_notebook_model_effort(
         &self,
         notebook_id: &str,
@@ -443,6 +479,27 @@ impl NotebookEngine {
         self.ingestion.heal_sources(notebook_id)
     }
 
+    /// Execute the 5-stage `UploadHealer` recovery ladder (Stage 0 -> Stage 5) with a custom
+    /// transport/upload validator closure and automatic zero-red-rows purging between retries.
+    pub fn heal_upload_with_ladder<F>(
+        &self,
+        req: IngestSourceRequest,
+        upload_validator: F,
+    ) -> Result<HealedUploadOutcome, NotebookError>
+    where
+        F: FnMut(&UploadAttemptContext) -> Result<(), String>,
+    {
+        UploadHealer::new().heal_and_ingest(&self.ingestion, req, upload_validator)
+    }
+
+    /// Execute the 5-stage `UploadHealer` recovery ladder locally (auto-escalating on parse failures).
+    pub fn heal_upload_local(
+        &self,
+        req: IngestSourceRequest,
+    ) -> Result<HealedUploadOutcome, NotebookError> {
+        UploadHealer::new().heal_ingest_local(&self.ingestion, req)
+    }
+
     pub fn preview_bytes(
         &self,
         filename: &str,
@@ -543,13 +600,47 @@ impl NotebookEngine {
         max_chunks: usize,
         llm_cfg: &NotebookLlmConfig,
     ) -> Result<AskNotebookOutcome, NotebookError> {
-        let pack = self.build_grounded_prompt(notebook_id, query, filter, max_chunks)?;
-        let llm_resp = complete_prompt(
+        self.ask_notebook_with_preset_and_llm(
+            notebook_id,
+            surface,
+            query,
+            None,
+            filter,
+            max_chunks,
             llm_cfg,
-            &pack.system_instructions,
-            &format!("Question: {}\n\n{}", pack.query, pack.assembled_context),
         )
-        .await?;
+        .await
+    }
+
+    /// Executes Grounded Q&A / Chat with an optional [`ContextualAskPreset`] (`explain|verify|summarize|code`),
+    /// honoring `filter.source_ids`, `filter.only_checked`, notebook `ChatSettings`, and `llm_cfg.effort`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ask_notebook_with_preset_and_llm(
+        &self,
+        notebook_id: &str,
+        surface: InteractionSurface,
+        query: &str,
+        preset: Option<ContextualAskPreset>,
+        filter: &SourceFilter,
+        max_chunks: usize,
+        llm_cfg: &NotebookLlmConfig,
+    ) -> Result<AskNotebookOutcome, NotebookError> {
+        let mut pack = self.build_grounded_prompt(notebook_id, query, filter, max_chunks)?;
+        if let Some(p) = preset {
+            pack.system_instructions
+                .push_str(&format!("\n\nContextual Ask Preset ({p:?}): {}", p.instruction()));
+        }
+        let user_prompt = if let Some(p) = preset {
+            format!(
+                "Preset ({p:?}): {}\n\nQuestion: {}\n\n{}",
+                p.instruction(),
+                pack.query,
+                pack.assembled_context
+            )
+        } else {
+            format!("Question: {}\n\n{}", pack.query, pack.assembled_context)
+        };
+        let llm_resp = complete_prompt(llm_cfg, &pack.system_instructions, &user_prompt).await?;
         let verification = self.verify_citations(notebook_id, &llm_resp.text)?;
         let cited_markers: Vec<String> = verification
             .verified_citations
@@ -682,6 +773,46 @@ impl NotebookEngine {
         self.artifacts.delete_artifact(artifact_id)
     }
 
+    /// Fetch a single Studio artifact by `artifact_id`.
+    pub fn get_artifact(&self, artifact_id: &str) -> Result<StudioArtifactRecord, NotebookError> {
+        let row = self
+            .store
+            .get_artifact(artifact_id)?
+            .ok_or_else(|| NotebookError::NotFound {
+                entity: "artifact",
+                id: artifact_id.to_string(),
+            })?;
+        Ok(StudioArtifactRecord {
+            artifact_id: row.artifact_id,
+            notebook_id: row.notebook_id,
+            kind: StudioArtifactKind::from_str_lossy(&row.kind),
+            title: row.title,
+            content_markdown: row.content_markdown,
+            structured_json: row.structured_json,
+            cited_source_ids: row.cited_source_ids,
+            created_at_ms: row.created_at_ms,
+            updated_at_ms: row.updated_at_ms,
+        })
+    }
+
+    /// Synthesize/resolve playable RIFF/WAVE bytes for an `AudioOverview` artifact inside `notebook_id`.
+    pub fn render_audio_overview_wav(
+        &self,
+        notebook_id: &str,
+        artifact_id: &str,
+    ) -> Result<(StudioArtifactRecord, Vec<u8>), NotebookError> {
+        let _ = self.library.require_notebook(notebook_id)?;
+        let artifact = self.get_artifact(artifact_id)?;
+        if artifact.notebook_id != notebook_id {
+            return Err(NotebookError::NotFound {
+                entity: "artifact",
+                id: artifact_id.to_string(),
+            });
+        }
+        let wav = synthesize_audio_overview_wav(&artifact)?;
+        Ok((artifact, wav))
+    }
+
     // -------------------------------------------------------------------------
     // Unified `Quote + BTW` (`R11`) & Bidirectional Cross-Bridge (`/api/btw/*`, `/api/bridge`)
     // -------------------------------------------------------------------------
@@ -712,6 +843,10 @@ impl NotebookEngine {
 
     pub fn list_btw_threads(&self, notebook_id: &str) -> Result<Vec<BtwThread>, NotebookError> {
         self.interactions.list_btw_threads(notebook_id)
+    }
+
+    pub fn delete_btw_thread(&self, btw_id: &str) -> Result<bool, NotebookError> {
+        self.interactions.delete_btw_thread(btw_id)
     }
 
     pub fn promote_btw_to_source(

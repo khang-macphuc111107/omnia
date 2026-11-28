@@ -106,6 +106,8 @@ pub fn is_known_route(path: &str) -> bool {
             | "/api/v5/router/decide"
             | "/api/v5/router/trip"
             | "/api/v5/router/reset"
+            | "/api/v5/router/cancel"
+            | "/api/router/cancel"
             | "/api/v5/router/receipt"
             | "/api/router/breaker"
             | "/api/v5/creds"
@@ -156,6 +158,9 @@ pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<Htt
         ("POST", "/api/v5/router/decide") => handle_router_v5_decide(state, req),
         ("POST", "/api/v5/router/trip") => handle_router_breaker(state, req, Some("trip")),
         ("POST", "/api/v5/router/reset") => handle_router_breaker(state, req, Some("reset")),
+        ("POST", "/api/router/cancel") | ("POST", "/api/v5/router/cancel") => {
+            handle_router_cancel(state, req)
+        }
         ("POST", "/api/router/breaker") => handle_router_breaker(state, req, None),
         ("GET", "/api/v5/router/receipt") => handle_router_receipt(state, req),
 
@@ -1060,6 +1065,88 @@ fn handle_router_breaker(
     )
 }
 
+fn handle_router_cancel(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let reservation_id = pick_str(&body, &["reservationId", "reservation_id"]);
+    let session_id = pick_str(&body, &["sessionId", "session_id", "runId", "run_id"]);
+    let explicit_token = body
+        .get("fencingToken")
+        .or_else(|| body.get("fencing_token"))
+        .and_then(Value::as_u64);
+    let note = pick_str(&body, &["note", "reason"]).unwrap_or("operator_cancelled_aud24");
+    let now = now_epoch_ms();
+
+    if let Some(res_id) = reservation_id {
+        let token = explicit_token.unwrap_or_else(|| state.lookup_reservation_fencing_token(res_id));
+        return match state.router.cancel_reservation(res_id, token, note, now) {
+            Ok(receipt) => {
+                state.remove_tracked_reservation(res_id);
+                state.event_feed.publish(
+                    "router",
+                    "reservation_cancelled",
+                    session_id,
+                    json!({
+                        "reservationId": res_id,
+                        "fencingToken": token,
+                        "note": note,
+                    }),
+                );
+                json_ok_masked(
+                    req,
+                    json!({
+                        "ok": true,
+                        "cancelled": true,
+                        "interrupted": true,
+                        "status": "cancelled",
+                        "cancelledCount": 1,
+                        "reservationId": res_id,
+                        "receipt": receipt.to_json(),
+                        "receipts": [receipt.to_json()],
+                    }),
+                )
+            }
+            Err(err) => {
+                let status = if err.to_string().to_ascii_lowercase().contains("fencing") {
+                    409
+                } else {
+                    404
+                };
+                HttpResponse::error(status, "router_cancel_failed", &err.to_string())
+            }
+        };
+    }
+
+    let receipts = state.cancel_tracked_reservations(session_id, note);
+    let cancelled_count = receipts.len();
+    if cancelled_count > 0 {
+        state.event_feed.publish(
+            "router",
+            "reservation_cancelled",
+            session_id,
+            json!({
+                "cancelledCount": cancelled_count,
+                "note": note,
+            }),
+        );
+    }
+    json_ok_masked(
+        req,
+        json!({
+            "ok": true,
+            "cancelled": cancelled_count > 0,
+            "interrupted": true,
+            "status": if cancelled_count > 0 { "cancelled" } else { "no_active_reservations" },
+            "cancelledCount": cancelled_count,
+            "sessionId": session_id,
+            "receipt": receipts.first().cloned().unwrap_or(Value::Null),
+            "receipts": receipts,
+        }),
+    )
+}
+
 fn handle_router_receipt(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
     let want_id = req.query_param("id").or_else(|| req.query_param("decisionId"));
     let receipts = state.router.decision_receipts().unwrap_or_default();
@@ -1798,7 +1885,14 @@ mod tests {
     }
 
     fn make_test_state() -> Arc<StudioState> {
+        let tmp = std::env::temp_dir().join(format!(
+            "omnia-studio-obs-test-{}",
+            omnia_core::uuid_v4_simple()
+        ));
+        let rb = tmp.join("rb");
+        let _ = std::fs::create_dir_all(&rb);
         let cfg = StudioConfig {
+            rollback_root: rb,
             db_path: None,
             runtime_url: None,
             ..StudioConfig::default()
@@ -1958,5 +2052,75 @@ mod tests {
         assert_eq!(sys.status, 200);
         let sys_json: Value = serde_json::from_slice(&sys.body).expect("sys");
         assert!(sys_json["host"]["hardware"]["logical_cpus"].as_u64().unwrap_or(0) >= 1);
+
+        // 6. AUD-24 POST /api/router/cancel releases active tracked reservation cleanly
+        {
+            let now_ms = omnia_core::now_epoch_ms();
+            let cand = omnia_routing::RouteCandidate {
+                candidate_id: "cancel-fixture:model-a".to_string(),
+                provider_id: "cancel-fixture".to_string(),
+                model_id: "model-a".to_string(),
+                auth_boundary: "workspace:default".to_string(),
+                region: "local".to_string(),
+                privacy_tier: omnia_routing::PrivacyTier::ZeroDataRetention,
+                capabilities: omnia_routing::ModelCapabilities::standard_candidate(),
+                context_limit_tokens: 128_000,
+                max_output_tokens: 8_192,
+                quality_tier: 3,
+                pricing_version: "fixture".to_string(),
+                input_cost_per_million_microunits: Some(1_000),
+                output_cost_per_million_microunits: Some(2_000),
+                credential_present: true,
+                enabled: true,
+                route_priority: 10,
+                supported_roles: Vec::new(),
+            };
+            let st = omnia_routing::CandidateResourceState {
+                quota: omnia_routing::QuotaState::Known {
+                    remaining_tokens: 500_000,
+                    remaining_requests: 100,
+                    window_capacity_tokens: 500_000,
+                    window_duration_ms: 60_000,
+                    window_reset_at_ms: Some(now_ms + 60_000),
+                    freshness_timestamp_ms: Some(now_ms),
+                    max_staleness_ms: 600_000,
+                },
+                ..omnia_routing::CandidateResourceState::default()
+            };
+            state.router.upsert_candidate(cand, st).expect("upsert cancel fixture");
+        }
+        let dec = dispatch_request(
+            Arc::clone(&state),
+            make_req(
+                "POST",
+                "/api/router/decide",
+                br#"{"sessionId":"sess_cancel_1","estimatedTokens":1000}"#,
+            ),
+        )
+        .await;
+        assert_eq!(dec.status, 200);
+        let dj: Value = serde_json::from_slice(&dec.body).expect("decide json");
+        let res_id = dj["receipt"]["reservationId"]
+            .as_str()
+            .or_else(|| dj["reservation"]["reservation_id"].as_str())
+            .or_else(|| dj["reservation"]["reservationId"].as_str())
+            .expect("reservationId")
+            .to_string();
+        let cancel_res = dispatch_request(
+            Arc::clone(&state),
+            make_req(
+                "POST",
+                "/api/router/cancel",
+                json!({ "reservationId": res_id, "reason": "aud24_unit_test" })
+                    .to_string()
+                    .as_bytes(),
+            ),
+        )
+        .await;
+        assert_eq!(cancel_res.status, 200);
+        let crj: Value = serde_json::from_slice(&cancel_res.body).expect("cancel json");
+        assert_eq!(crj["cancelled"], true);
+        assert_eq!(crj["status"], "cancelled");
+        assert_eq!(crj["cancelledCount"], 1);
     }
 }

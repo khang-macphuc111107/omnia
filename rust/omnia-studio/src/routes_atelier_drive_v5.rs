@@ -11,14 +11,16 @@ use omnia_downloader::{
     validate_safe_local_path, CaptureBundle, DownloadRequest, MediaMuxRequest, PacingMode,
 };
 use omnia_notebook::{
-    InteractionSurface, RemoteSyncItem, SourceFilter, WhisperTranscribeRequest,
+    ContextualAskPreset, InteractionSurface, RemoteSyncItem, SourceFilter, WhisperTranscribeRequest,
 };
 use serde_json::{json, Value};
 
 use crate::http::{HttpRequest, HttpResponse};
 use crate::routes_downloads::map_downloader_error;
 use crate::routes_legacy::StudioState;
-use crate::routes_notebooks::{build_notebook_llm_config, map_notebook_error};
+use crate::routes_notebooks::{
+    build_notebook_llm_config, is_dynamic_notebook_route, map_notebook_error, ok_sanitized,
+};
 
 #[must_use]
 pub fn is_known_route(path: &str) -> bool {
@@ -26,6 +28,9 @@ pub fn is_known_route(path: &str) -> bool {
         return true;
     }
     if path == "/api/omnidrive" || path.starts_with("/api/omnidrive/") {
+        return true;
+    }
+    if is_dynamic_notebook_route(path) {
         return true;
     }
     matches!(
@@ -36,6 +41,13 @@ pub fn is_known_route(path: &str) -> bool {
             | "/api/notebooks/transcribe"
             | "/api/notebooks/sources/transcribe"
             | "/api/notebooks/sources/delete"
+            | "/api/notebooks/sources/ingest-batch"
+            | "/api/notebooks/sources/checked"
+            | "/api/notebooks/ingest-repo"
+            | "/api/notebooks/rename"
+            | "/api/notebooks/chat-settings"
+            | "/api/notebooks/audio"
+            | "/api/btw/delete"
             | "/api/notebooks/sync/tombstones"
             | "/api/notebooks/sync/clear"
             | "/api/notebooks/sync/reconcile"
@@ -97,6 +109,11 @@ async fn dispatch_atelier(state: &Arc<StudioState>, req: &HttpRequest) -> Option
         ("GET", "/api/notebooks/sync/tombstones") => Some(handle_sync_tombstones(state, req)),
         ("POST", "/api/notebooks/sync/clear") => Some(handle_sync_clear_tombstone(state, req)),
         ("POST", "/api/notebooks/sync/reconcile") => Some(handle_sync_reconcile(state, req)),
+        _ if req.path.starts_with("/api/atelier/btw/") => {
+            let mut aliased = req.clone();
+            aliased.path = format!("/api/btw/{}", &req.path["/api/atelier/btw/".len()..]);
+            crate::routes_notebooks::dispatch_notebook_route(state, &aliased).await
+        }
         _ if req.path == "/api/atelier" || req.path.starts_with("/api/atelier/") => {
             let mut aliased = req.clone();
             aliased.path = norm;
@@ -240,6 +257,44 @@ async fn handle_notebook_ask(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
         .or_else(|| obj.get("pure_documents_only"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let only_checked = obj
+        .get("onlyChecked")
+        .or_else(|| obj.get("only_checked"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let source_ids = obj
+        .get("sourceIds")
+        .or_else(|| obj.get("source_ids"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty());
+    let preset = match obj
+        .get("preset")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw_preset) => match ContextualAskPreset::parse_lossy(raw_preset) {
+            Some(p) => Some(p),
+            None => {
+                return HttpResponse::error(
+                    400,
+                    "invalid_preset",
+                    &format!(
+                        "Unsupported preset '{raw_preset}'; expected explain, verify, summarize, or code."
+                    ),
+                );
+            }
+        },
+        None => None,
+    };
     let filter = SourceFilter {
         exclude_videos,
         pure_documents_only,
@@ -249,22 +304,34 @@ async fn handle_notebook_ask(state: &Arc<StudioState>, req: &HttpRequest) -> Htt
             .or_else(|| obj.get("source_query"))
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        source_ids,
+        only_checked,
     };
     let llm_cfg = build_notebook_llm_config(&obj, state);
 
     match state
         .notebooks
-        .ask_notebook_with_llm(&notebook_id, surface, &query, &filter, max_chunks, &llm_cfg)
+        .ask_notebook_with_preset_and_llm(
+            &notebook_id,
+            surface,
+            &query,
+            preset,
+            &filter,
+            max_chunks,
+            &llm_cfg,
+        )
         .await
     {
         Ok(outcome) => {
+            let mut event_val = serde_json::to_value(&outcome).unwrap_or_else(|_| json!({}));
+            omnia_notebook::strip_local_path_fields(&mut event_val);
             state.event_feed.publish(
                 "atelier",
                 "grounded_answer",
                 Some(&notebook_id),
-                serde_json::to_value(&outcome).unwrap_or_else(|_| json!({})),
+                event_val,
             );
-            HttpResponse::ok(json!({ "ok": true, "result": outcome }))
+            ok_sanitized(json!({ "ok": true, "result": outcome }))
         }
         Err(err) => map_notebook_error(err),
     }
@@ -285,7 +352,7 @@ async fn handle_btw_ask(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResp
     };
     let llm_cfg = build_notebook_llm_config(&obj, state);
     match state.notebooks.ask_btw_with_llm(&btw_id, &question, &llm_cfg).await {
-        Ok(outcome) => HttpResponse::ok(json!({ "ok": true, "result": outcome })),
+        Ok(outcome) => ok_sanitized(json!({ "ok": true, "result": outcome })),
         Err(err) => map_notebook_error(err),
     }
 }
@@ -332,7 +399,7 @@ async fn handle_notebook_transcribe(state: &Arc<StudioState>, req: &HttpRequest)
         output_dir: Some(state.downloads_staging_dir.join("whisper")),
     };
     match state.notebooks.transcribe_and_ingest_media(wreq).await {
-        Ok(out) => HttpResponse::ok(json!({ "ok": true, "outcome": out })),
+        Ok(out) => ok_sanitized(json!({ "ok": true, "outcome": out })),
         Err(err) => map_notebook_error(err),
     }
 }

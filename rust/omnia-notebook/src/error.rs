@@ -53,6 +53,10 @@ pub enum NotebookError {
         existing_source_id: String,
     },
 
+    /// Remote source snapshot is incomplete; fail-closed guard refuses partial reconciliation.
+    #[error("remote sources snapshot incomplete for notebook '{notebook_id}': {reason}")]
+    SourcesIncomplete { notebook_id: String, reason: String },
+
     /// Security invariant violated (XXE, zip bomb, archive depth, XML cap, encrypted PDF, MIME allowlist, path traversal).
     #[error("security policy rejected ({code}): {reason}")]
     SecurityRejected { code: &'static str, reason: String },
@@ -120,6 +124,7 @@ impl NotebookError {
             Self::AmbiguousCitation { .. } => "AMBIGUOUS_CITATION",
             Self::OverflowDisallowed { .. } => "OVERFLOW_NOTEBOOK_DISALLOWED",
             Self::RemoteIdConflict { .. } => "REMOTE_ID_CONFLICT",
+            Self::SourcesIncomplete { .. } => "SOURCES_INCOMPLETE",
             Self::SecurityRejected { code, .. } => code,
             Self::PolicyBlocked { code, .. } => code,
             Self::AuthChallengeRequired { code, .. } => code,
@@ -141,7 +146,8 @@ impl NotebookError {
             Self::InvalidInput(_) | Self::Serialization(_) => 400,
             Self::AmbiguousCitation { .. }
             | Self::OverflowDisallowed { .. }
-            | Self::RemoteIdConflict { .. } => 409,
+            | Self::RemoteIdConflict { .. }
+            | Self::SourcesIncomplete { .. } => 409,
             Self::SecurityRejected { .. }
             | Self::PolicyBlocked { .. }
             | Self::Intake(ArtifactIntakeError::PolicyBlocked { .. })

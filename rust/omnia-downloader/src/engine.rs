@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::Write as _;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -32,11 +33,12 @@ use reqwest::header::{
     RETRY_AFTER, USER_AGENT,
 };
 use reqwest::{redirect, Client};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use tokio::time::sleep;
-use url::Url;
+use url::{Host, Url};
 
-use crate::batch::{BatchPlanner, DownloadScheduler, SchedulerConfig};
+use crate::batch::{BatchPlanner, DownloadScheduler};
 use crate::capture_bundle::{CaptureBundle, ContentAddressableBlobStore};
 use crate::chunker::{
     normalize_completed_intervals, record_completed_interval, total_interval_bytes, Chunker,
@@ -44,29 +46,36 @@ use crate::chunker::{
 use crate::crawlers::{
     crawl_moodle_course, crawl_web_tree, inspect_youtube_url, CrawlReport, YouTubeInspectResult,
 };
+use crate::drive::{
+    extract_drive_confirm_url, parse_drive_url, resolve_workspace_export, DriveResourceKind,
+    WorkspaceExportFormat,
+};
 use crate::handoff::{classify_http_response, VisibleHandoffManager};
-use crate::integrity::{parse_x_goog_hash, verify_file_integrity};
+use crate::integrity::{parse_x_goog_hash, verify_file_integrity_with_md5};
 use crate::journal::{
     omnf_journal_path_for, part_meta_path_for, OmnfJournal, OmnfRecord, PartMetaV2,
 };
-use crate::media_box::{inspect_media_bytes, inspect_media_file, MediaBoxReport};
+use crate::media_box::{extract_moof_tfdt_timestamps, inspect_media_bytes, inspect_media_file, MediaBoxReport};
 use crate::media_ops::{
-    convert_or_clip_media, run_ffprobe, FfprobeReport, MediaMuxOutcome, MediaMuxRequest,
+    convert_or_clip_media, mux_or_skip_if_missing_cancellable, run_ffprobe,
+    slice_segments_for_clip_range, FfprobeReport, MediaMuxOutcome, MediaMuxRequest,
 };
-use crate::pacing::{AimdBdpController, PacingMode, TokenBucketLimiter};
+use crate::pacing::{AimdBdpController, CongestionMetrics, PacingMode, TokenBucketLimiter};
 use crate::privacy::{PrivacyShield, ProviderRegistry, ScopedCookieJar};
 use crate::schema_drift::{compare_schema_snapshots, SchemaDriftReport};
 use crate::store::DownloadStore;
 use crate::streaming::{
-    decrypt_hls_aes128_cbc, hls_sequence_iv, parse_dash_manifest, parse_hls_manifest,
-    DashManifest, HlsManifest,
+    decrypt_hls_aes128_cbc, hls_audio_rendition_for, hls_sequence_iv, parse_dash_manifest,
+    parse_hls_manifest, select_dash_tracks, select_hls_variant, DashManifest, HlsManifest,
+    StreamQuality,
 };
 use crate::types::{
-    current_epoch_ms, safe_output_filename, validate_safe_local_path, ChunkRange,
-    CompletedDownload, DownloadConfig, DownloadJobSnapshot, DownloadProgressEvent,
-    DownloadRequest, DownloadStatus, DownloaderError, ProbeInfo, SecurityPolicy, DRM_SUPPORTED,
+    check_redirect_https_downgrade, current_epoch_ms, safe_output_filename,
+    validate_and_resolve_addrs, validate_safe_local_path, ChunkRange, CompletedDownload,
+    DownloadConfig, DownloadJobSnapshot, DownloadProgressEvent, DownloadRequest, DownloadStatus,
+    DownloaderError, ProbeInfo, SecurityPolicy, DRM_SUPPORTED,
 };
-use crate::writer::PositionalWriter;
+use crate::writer::{CoalescedDiskWriter, PositionalWriter, DEFAULT_COALESCE_BYTES};
 
 /// Control signal sent to an active download job via `tokio::sync::watch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,9 +85,37 @@ pub enum JobControl {
     Cancel,
 }
 
+/// Live AIMD + BDP telemetry snapshot observed across active/completed multi-stream transfers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AimdTelemetrySnapshot {
+    pub active_job_id: Option<String>,
+    pub pacing_mode: PacingMode,
+    pub metrics: CongestionMetrics,
+    pub active_workers: usize,
+    pub sample_count: u64,
+    pub updated_at_ms: u64,
+}
+
+impl Default for AimdTelemetrySnapshot {
+    fn default() -> Self {
+        let init = AimdBdpController::new(PacingMode::Adaptive, 16).metrics();
+        Self {
+            active_job_id: None,
+            pacing_mode: PacingMode::Adaptive,
+            metrics: init,
+            active_workers: 0,
+            sample_count: 0,
+            updated_at_ms: 0,
+        }
+    }
+}
+
+type PinnedClientCache = HashMap<(String, u16), (Instant, Client)>;
+
 /// Core async multi-stream segmented HTTP Range download engine.
 pub struct DownloadEngine {
     client: Client,
+    pinned_clients: Arc<RwLock<PinnedClientCache>>,
     config: DownloadConfig,
     policy: SecurityPolicy,
     handoffs: Arc<VisibleHandoffManager>,
@@ -130,6 +167,7 @@ impl DownloadEngine {
         let client = builder.build()?;
         Ok(Self {
             client,
+            pinned_clients: Arc::new(RwLock::new(HashMap::new())),
             config,
             policy,
             handoffs,
@@ -138,8 +176,42 @@ impl DownloadEngine {
         })
     }
 
-    /// Issues an SSRF-checked HTTP request manually following up to 10 redirects while
-    /// enforcing [`SecurityPolicy`] on every hop and stripping cross-origin credentials/cookies.
+    /// Returns a pooled HTTP client with verified DNS addresses pinned via `resolve_to_addrs`
+    /// to eliminate TOCTOU DNS-rebinding windows on domain targets.
+    fn client_for_pinned_target(
+        &self,
+        parsed: &Url,
+        addrs: &[SocketAddr],
+    ) -> Result<Client, DownloaderError> {
+        let Some(Host::Domain(host)) = parsed.host() else {
+            return Ok(self.client.clone());
+        };
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        let cache_key = (host.to_ascii_lowercase(), port);
+        if let Some((cached_at, cached)) = self.pinned_clients.read().get(&cache_key) {
+            if cached_at.elapsed() < Duration::from_secs(15) {
+                return Ok(cached.clone());
+            }
+        }
+        let mut builder = Client::builder()
+            .user_agent(&self.config.user_agent)
+            .connect_timeout(Duration::from_secs(self.config.timeout_secs.clamp(3, 15)))
+            .redirect(redirect::Policy::none())
+            .resolve_to_addrs(host, addrs);
+        if self.config.no_proxy {
+            builder = builder.no_proxy();
+        }
+        let built = builder.build()?;
+        let mut guard = self.pinned_clients.write();
+        if guard.len() > 64 {
+            guard.clear();
+        }
+        guard.insert(cache_key, (Instant::now(), built.clone()));
+        Ok(built)
+    }
+
+    /// Issues an SSRF-checked, DNS-pinned HTTP request manually following up to 10 redirects while
+    /// enforcing [`SecurityPolicy`] & HTTPS downgrade refusal on every hop and stripping cross-origin credentials/cookies.
     async fn send_checked(
         &self,
         method: reqwest::Method,
@@ -154,9 +226,8 @@ impl DownloadEngine {
         let mut prev_url: Option<Url> = None;
 
         for hop in 0..=10usize {
-            self.policy.validate_url(&current_url)?;
-            let parsed_cur = Url::parse(&current_url)
-                .map_err(|e| DownloaderError::InvalidInput(format!("invalid URL: {e}")))?;
+            let (parsed_cur, addrs) = validate_and_resolve_addrs(&current_url, self.policy).await?;
+            let client = self.client_for_pinned_target(&parsed_cur, &addrs)?;
 
             let filtered =
                 PrivacyShield::filter_headers_for_target(extra_headers, &origin_parsed, &parsed_cur);
@@ -193,8 +264,7 @@ impl DownloadEngine {
                 }
             }
 
-            let resp = self
-                .client
+            let resp = client
                 .request(method.clone(), &current_url)
                 .headers(hdrs)
                 .send()
@@ -225,6 +295,7 @@ impl DownloadEngine {
                 let next_parsed = parsed_cur.join(loc).map_err(|e| {
                     DownloaderError::InvalidInput(format!("invalid redirect Location `{loc}`: {e}"))
                 })?;
+                check_redirect_https_downgrade(&parsed_cur, &next_parsed)?;
                 let next_str = PrivacyShield::sanitize_live_url(next_parsed.as_str());
                 // Check redirect URL immediately for /sorry/ or accounts login walls!
                 let redir_gate = classify_http_response(status, &next_str, None, "");
@@ -431,6 +502,21 @@ impl DownloadEngine {
         events_tx: Option<broadcast::Sender<DownloadProgressEvent>>,
         control_rx: watch::Receiver<JobControl>,
     ) -> Result<CompletedDownload, DownloaderError> {
+        self.execute_download_with_runtime(job_id, req, store, events_tx, control_rx, None, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_download_with_runtime(
+        &self,
+        job_id: String,
+        mut req: DownloadRequest,
+        store: Option<Arc<DownloadStore>>,
+        events_tx: Option<broadcast::Sender<DownloadProgressEvent>>,
+        control_rx: watch::Receiver<JobControl>,
+        global_limiter: Option<Arc<TokenBucketLimiter>>,
+        aimd_telemetry: Option<Arc<RwLock<AimdTelemetrySnapshot>>>,
+    ) -> Result<CompletedDownload, DownloaderError> {
         let created_at = current_epoch_ms();
         self.policy.validate_url(&req.url)?;
         let safe_staging = validate_safe_local_path(&req.staging_dir, req.workspace_root.as_deref())?;
@@ -447,6 +533,85 @@ impl DownloadEngine {
             .unwrap_or(self.config.min_split_bytes)
             .max(1);
 
+        // Wire `drive::parse_drive_url`, Workspace export, and confirm-token extraction into execution!
+        let mut parsed_drive_ref = None;
+        if let Ok(dref) = parse_drive_url(&req.url) {
+            if dref.kind == DriveResourceKind::Folder {
+                return Err(DownloaderError::InvalidInput(
+                    "Google Drive URL points to a folder; use /api/omni-drive/plan-folder to list & batch folder contents".into(),
+                ));
+            }
+            let export_pref = match req
+                .export_format
+                .as_deref()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("pdf") => WorkspaceExportFormat::Pdf,
+                Some("md" | "markdown") => WorkspaceExportFormat::Markdown,
+                Some("txt" | "plain_text" | "text") => WorkspaceExportFormat::PlainText,
+                Some("csv") => WorkspaceExportFormat::Csv,
+                Some("svg") => WorkspaceExportFormat::Svg,
+                _ => WorkspaceExportFormat::OfficeNative,
+            };
+            let export_kind_info = match dref.kind {
+                DriveResourceKind::GoogleDoc => Some((
+                    "document",
+                    resolve_workspace_export("application/vnd.google-apps.document", export_pref),
+                )),
+                DriveResourceKind::GoogleSheet => Some((
+                    "spreadsheets",
+                    resolve_workspace_export("application/vnd.google-apps.spreadsheet", export_pref),
+                )),
+                DriveResourceKind::GoogleSlides => Some((
+                    "presentation",
+                    resolve_workspace_export("application/vnd.google-apps.presentation", export_pref),
+                )),
+                DriveResourceKind::GoogleDrawing => Some((
+                    "drawings",
+                    resolve_workspace_export("application/vnd.google-apps.drawing", export_pref),
+                )),
+                _ => None,
+            };
+            if let Some((seg, Some(exp))) = export_kind_info {
+                let mut export_url = Url::parse(&format!(
+                    "https://docs.google.com/{seg}/d/{}/export",
+                    dref.file_id
+                ))
+                .map_err(|e| DownloaderError::InvalidInput(e.to_string()))?;
+                {
+                    let mut q = export_url.query_pairs_mut();
+                    q.append_pair("format", &exp.extension);
+                    if let Some(ref rk) = dref.resource_key {
+                        q.append_pair("resourcekey", rk);
+                    }
+                    if let Some(au) = dref.auth_user {
+                        q.append_pair("authuser", &au.to_string());
+                    }
+                }
+                req.url = export_url.to_string();
+                if req.filename.is_none() {
+                    req.filename = Some(format!("drive_{}.{}", dref.file_id, exp.extension));
+                }
+            } else if dref.kind == DriveResourceKind::File {
+                let mut uc_url = Url::parse("https://drive.google.com/uc")
+                    .map_err(|e| DownloaderError::InvalidInput(e.to_string()))?;
+                {
+                    let mut q = uc_url.query_pairs_mut();
+                    q.append_pair("id", &dref.file_id);
+                    q.append_pair("export", "download");
+                    if let Some(ref rk) = dref.resource_key {
+                        q.append_pair("resourcekey", rk);
+                    }
+                    if let Some(au) = dref.auth_user {
+                        q.append_pair("authuser", &au.to_string());
+                    }
+                }
+                req.url = uc_url.to_string();
+                parsed_drive_ref = Some(dref);
+            }
+        }
+
         // Fast-path manifest URLs (.m3u8 / .mpd) directly to HLS/DASH streaming execution.
         if url_looks_like_manifest(&req.url) {
             return self
@@ -458,16 +623,42 @@ impl DownloadEngine {
                     sanitized_url,
                     provider_id,
                     pacing_mode,
+                    requested_streams,
                     store,
                     events_tx,
                     control_rx,
+                    global_limiter,
                     created_at,
                 )
                 .await;
         }
 
         // Emit probing status
-        let probe = self.probe(&req.url, &req.headers).await?;
+        let mut probe = self.probe(&req.url, &req.headers).await?;
+
+        // If a Google Drive public download returned an HTML virus-scan confirm prompt, extract
+        // the sanctioned `drive.usercontent.google.com/download?confirm=...` URL and re-probe!
+        if let Some(ref dref) = parsed_drive_ref {
+            let is_html = probe
+                .content_type
+                .as_deref()
+                .is_some_and(|ct| ct.to_ascii_lowercase().contains("text/html"));
+            if is_html {
+                let (_, _, html_bytes) = self
+                    .fetch_guarded_bytes(&req.url, &req.headers, None, 512 * 1024)
+                    .await?;
+                let html = String::from_utf8_lossy(&html_bytes);
+                if let Some(confirmed_url) = extract_drive_confirm_url(
+                    &html,
+                    &dref.file_id,
+                    dref.resource_key.as_deref(),
+                    &self.handoffs,
+                )? {
+                    req.url = confirmed_url;
+                    probe = self.probe(&req.url, &req.headers).await?;
+                }
+            }
+        }
 
         if content_type_is_manifest(probe.content_type.as_deref()) {
             return self
@@ -479,9 +670,11 @@ impl DownloadEngine {
                     sanitized_url,
                     provider_id,
                     pacing_mode,
+                    requested_streams,
                     store,
                     events_tx,
                     control_rx,
+                    global_limiter,
                     created_at,
                 )
                 .await;
@@ -637,6 +830,8 @@ impl DownloadEngine {
         let limiter = Arc::new(TokenBucketLimiter::new(
             req.speed_limit_bps.or(self.config.speed_limit_bps),
         ));
+        let global_lim = global_limiter
+            .unwrap_or_else(|| Arc::new(TokenBucketLimiter::new(None)));
         let downloaded_counter = Arc::new(AtomicU64::new(resumed_bytes));
         let start_instant = Instant::now();
         let mut fallback_to_single_stream = false;
@@ -659,6 +854,8 @@ impl DownloadEngine {
                         &omnf_path,
                         writer.clone(),
                         Arc::clone(&limiter),
+                        Arc::clone(&global_lim),
+                        aimd_telemetry.clone(),
                         Arc::clone(&downloaded_counter),
                         start_instant,
                         store.clone(),
@@ -781,8 +978,14 @@ impl DownloadEngine {
         let part_for_hash = part_path.clone();
         let exp_sha = req.expected_sha256.clone();
         let exp_crc = expected_crc32c.clone();
+        let exp_md5 = req.expected_md5_hex.clone();
         let integrity = tokio::task::spawn_blocking(move || {
-            verify_file_integrity(&part_for_hash, exp_sha.as_deref(), exp_crc.as_deref())
+            verify_file_integrity_with_md5(
+                &part_for_hash,
+                exp_sha.as_deref(),
+                exp_crc.as_deref(),
+                exp_md5.as_deref(),
+            )
         })
         .await
         .map_err(|e| DownloaderError::InvalidInput(format!("integrity task failed: {e}")))?;
@@ -878,6 +1081,8 @@ impl DownloadEngine {
         omnf_path: &Path,
         writer: PositionalWriter,
         limiter: Arc<TokenBucketLimiter>,
+        global_limiter: Arc<TokenBucketLimiter>,
+        aimd_telemetry: Option<Arc<RwLock<AimdTelemetrySnapshot>>>,
         downloaded_counter: Arc<AtomicU64>,
         start_instant: Instant,
         store: Option<Arc<DownloadStore>>,
@@ -897,6 +1102,15 @@ impl DownloadEngine {
             controller: AimdBdpController::new(pacing_mode, requested_streams),
             max_active_chunks_seen: worker_count,
         }));
+        if let Some(ref telem) = aimd_telemetry {
+            let init_metrics = shared_state.lock().controller.metrics();
+            let mut guard = telem.write();
+            guard.active_job_id = Some(job_id.to_string());
+            guard.pacing_mode = pacing_mode;
+            guard.metrics = init_metrics;
+            guard.active_workers = worker_count;
+            guard.updated_at_ms = current_epoch_ms();
+        }
 
         let range_violated = Arc::new(AtomicBool::new(false));
         let abort_flag = Arc::new(AtomicBool::new(false));
@@ -906,6 +1120,7 @@ impl DownloadEngine {
         let mut handles = Vec::with_capacity(worker_count);
         for worker_idx in 0..worker_count {
             let client_engine_client = self.client.clone();
+            let pinned_clients = Arc::clone(&self.pinned_clients);
             let config_clone = self.config.clone();
             let policy = self.policy;
             let handoffs = Arc::clone(&self.handoffs);
@@ -916,8 +1131,10 @@ impl DownloadEngine {
             let total_size = probe.total_size;
             let if_range_clone = if_range_val.clone();
             let shared = Arc::clone(&shared_state);
-            let writer_ref = writer.clone();
+            let writer_ref = CoalescedDiskWriter::new(writer.clone(), DEFAULT_COALESCE_BYTES);
             let limiter_ref = Arc::clone(&limiter);
+            let global_limiter_ref = Arc::clone(&global_limiter);
+            let telemetry_ref = aimd_telemetry.clone();
             let counter_ref = Arc::clone(&downloaded_counter);
             let meta_path_buf = meta_path.to_path_buf();
             let omnf_path_buf = omnf_path.to_path_buf();
@@ -932,6 +1149,7 @@ impl DownloadEngine {
 
             let worker_engine = DownloadEngine {
                 client: client_engine_client,
+                pinned_clients,
                 config: config_clone,
                 policy,
                 handoffs,
@@ -1042,11 +1260,22 @@ impl DownloadEngine {
                                     break 'retry;
                                 }
                                 attempts += 1;
-                                let backoff = shared.lock().controller.on_congestion(
-                                    503,
-                                    None,
-                                    current_epoch_ms(),
-                                );
+                                let backoff = {
+                                    let mut st = shared.lock();
+                                    let d = st.controller.on_congestion(
+                                        503,
+                                        None,
+                                        current_epoch_ms(),
+                                    );
+                                    record_aimd_telemetry(
+                                        &telemetry_ref,
+                                        &job_id_owned,
+                                        pacing_mode,
+                                        worker_count,
+                                        &st.controller,
+                                    );
+                                    d
+                                };
                                 sleep(backoff.min(Duration::from_secs(5))).await;
                                 continue 'retry;
                             }
@@ -1091,11 +1320,22 @@ impl DownloadEngine {
                                 break 'retry;
                             }
                             attempts += 1;
-                            let backoff = shared.lock().controller.on_congestion(
-                                status,
-                                retry_after_hdr.as_deref(),
-                                current_epoch_ms(),
-                            );
+                            let backoff = {
+                                let mut st = shared.lock();
+                                let d = st.controller.on_congestion(
+                                    status,
+                                    retry_after_hdr.as_deref(),
+                                    current_epoch_ms(),
+                                );
+                                record_aimd_telemetry(
+                                    &telemetry_ref,
+                                    &job_id_owned,
+                                    pacing_mode,
+                                    worker_count,
+                                    &st.controller,
+                                );
+                                d
+                            };
                             sleep(backoff.min(Duration::from_secs(10))).await;
                             continue 'retry;
                         }
@@ -1110,11 +1350,22 @@ impl DownloadEngine {
                                 break 'retry;
                             }
                             attempts += 1;
-                            let backoff = shared.lock().controller.on_congestion(
-                                status,
-                                retry_after_hdr.as_deref(),
-                                current_epoch_ms(),
-                            );
+                            let backoff = {
+                                let mut st = shared.lock();
+                                let d = st.controller.on_congestion(
+                                    status,
+                                    retry_after_hdr.as_deref(),
+                                    current_epoch_ms(),
+                                );
+                                record_aimd_telemetry(
+                                    &telemetry_ref,
+                                    &job_id_owned,
+                                    pacing_mode,
+                                    worker_count,
+                                    &st.controller,
+                                );
+                                d
+                            };
                             sleep(backoff.min(Duration::from_secs(10))).await;
                             continue 'retry;
                         }
@@ -1132,10 +1383,14 @@ impl DownloadEngine {
                             break 'retry;
                         }
 
-                        // Validate Content-Range starts at `cur_start`.
+                        // Validate exact Content-Range `(start, end, total)` bounds (`http.rs` guard).
                         if let Some(cr) = resp.headers().get(CONTENT_RANGE).and_then(|v| v.to_str().ok()) {
-                            if let Some((cr_start, _cr_end, cr_total)) = parse_content_range_bounds(cr) {
-                                if cr_start != cur_start || cr_total != total_size {
+                            if let Some((cr_start, cr_end, cr_total)) = parse_content_range_bounds(cr) {
+                                if cr_start != cur_start
+                                    || cr_total != total_size
+                                    || cr_end < cr_start
+                                    || cr_end >= total_size
+                                {
                                     abort_ref.store(true, Ordering::Relaxed);
                                     fatal_ref.lock().get_or_insert(DownloaderError::InvalidInput(
                                         format!(
@@ -1149,6 +1404,7 @@ impl DownloadEngine {
 
                         let mut stream = resp.bytes_stream();
                         let mut chunk_bytes_received = 0u64;
+                        let mut buffered_ranges: Vec<(u64, u64)> = Vec::new();
 
                         while let Some(item) = stream.next().await {
                             if abort_ref.load(Ordering::Relaxed)
@@ -1177,13 +1433,32 @@ impl DownloadEngine {
                             let data = match item {
                                 Ok(b) => b,
                                 Err(net_err) => {
+                                    let _ = writer_ref.flush_async().await;
+                                    if !buffered_ranges.is_empty() {
+                                        let mut st = shared.lock();
+                                        for (bs, be) in buffered_ranges.drain(..) {
+                                            st.meta.add_completed_range(bs, be);
+                                            st.pending_omnf.push((bs, be));
+                                        }
+                                    }
                                     if attempts < worker_engine.config.max_retries {
                                         attempts += 1;
-                                        let backoff = shared.lock().controller.on_congestion(
-                                            503,
-                                            None,
-                                            current_epoch_ms(),
-                                        );
+                                        let backoff = {
+                                            let mut st = shared.lock();
+                                            let d = st.controller.on_congestion(
+                                                503,
+                                                None,
+                                                current_epoch_ms(),
+                                            );
+                                            record_aimd_telemetry(
+                                                &telemetry_ref,
+                                                &job_id_owned,
+                                                pacing_mode,
+                                                worker_count,
+                                                &st.controller,
+                                            );
+                                            d
+                                        };
                                         sleep(backoff.min(Duration::from_secs(5))).await;
                                         continue 'retry;
                                     }
@@ -1223,9 +1498,9 @@ impl DownloadEngine {
                                 (write_offset, allowed, done_now)
                             };
 
-                            // Step 2 (off-executor blocking pool, ZERO mutex held): write to disk!
+                            // Step 2 (user-space coalescing + off-executor blocking write): buffer contiguous writes up to 512 KiB.
                             if let Err(io_err) = writer_ref
-                                .write_at_async(write_offset, data.slice(..allowed))
+                                .write_at_coalesced(write_offset, data.slice(..allowed))
                                 .await
                             {
                                 abort_ref.store(true, Ordering::Relaxed);
@@ -1235,30 +1510,42 @@ impl DownloadEngine {
 
                             let write_len = allowed as u64;
                             let seg_end = write_offset + write_len - 1;
+                            buffered_ranges.push((write_offset, seg_end));
                             chunk_bytes_received = chunk_bytes_received.saturating_add(write_len);
                             let total_done =
                                 counter_ref.fetch_add(write_len, Ordering::Relaxed) + write_len;
 
-                            // Step 3 (in-RAM only): record confirmed on-disk interval and decide
-                            // whether a throttled (~250ms / first write / chunk completion) flush is due.
+                            let should_flush_now = chunk_finished_now || {
+                                let st = shared.lock();
+                                st.last_flush
+                                    .is_none_or(|t| t.elapsed() >= Duration::from_millis(250))
+                            };
+                            if should_flush_now {
+                                if let Err(io_err) = writer_ref.flush_async().await {
+                                    abort_ref.store(true, Ordering::Relaxed);
+                                    fatal_ref.lock().get_or_insert(io_err);
+                                    break 'retry;
+                                }
+                            }
+
+                            // Step 3 (in-RAM only): record confirmed on-disk intervals after flush
+                            // and prepare atomic sidecar + OMNF + SQLite updates.
                             let (completed_ranges_for_evt, flush_payload) = {
                                 let mut st = shared.lock();
-                                st.meta.add_completed_range(write_offset, seg_end);
-                                st.pending_omnf.push((write_offset, seg_end));
-                                let should_flush = chunk_finished_now
-                                    || st
-                                        .last_flush
-                                        .is_none_or(|t| t.elapsed() >= Duration::from_millis(250));
-                                let ranges_copy = st.meta.completed_ranges.clone();
-                                if should_flush {
+                                if should_flush_now {
+                                    for (bs, be) in buffered_ranges.drain(..) {
+                                        st.meta.add_completed_range(bs, be);
+                                        st.pending_omnf.push((bs, be));
+                                    }
                                     st.last_flush = Some(Instant::now());
+                                    let ranges_copy = st.meta.completed_ranges.clone();
                                     let pending = std::mem::take(&mut st.pending_omnf);
                                     (
                                         ranges_copy,
                                         Some((st.meta.clone(), pending, st.chunks.clone())),
                                     )
                                 } else {
-                                    (ranges_copy, None)
+                                    (st.meta.completed_ranges.clone(), None)
                                 }
                             };
 
@@ -1302,6 +1589,7 @@ impl DownloadEngine {
                             );
 
                             limiter_ref.acquire(write_len).await;
+                            global_limiter_ref.acquire(write_len).await;
                             if pacing_mode == PacingMode::Polite
                                 && worker_engine.config.polite_segment_delay_ms > 0
                             {
@@ -1312,11 +1600,32 @@ impl DownloadEngine {
                             }
                         }
 
+                        // Ensure any trailing coalesced bytes for this worker slice hit disk cleanly!
+                        if let Err(io_err) = writer_ref.flush_async().await {
+                            abort_ref.store(true, Ordering::Relaxed);
+                            fatal_ref.lock().get_or_insert(io_err);
+                            break 'retry;
+                        }
+                        if !buffered_ranges.is_empty() {
+                            let mut st = shared.lock();
+                            for (bs, be) in buffered_ranges.drain(..) {
+                                st.meta.add_completed_range(bs, be);
+                                st.pending_omnf.push((bs, be));
+                            }
+                        }
+
                         // Check if chunk finished (or was shortened to completion via midpoint steal).
                         let finished_chunk = {
                             let mut st = shared.lock();
                             st.controller
                                 .on_chunk_success(chunk_bytes_received, req_started.elapsed());
+                            record_aimd_telemetry(
+                                &telemetry_ref,
+                                &job_id_owned,
+                                pacing_mode,
+                                worker_count,
+                                &st.controller,
+                            );
                             st.chunks
                                 .iter()
                                 .find(|c| c.chunk_id == chunk_id)
@@ -1575,12 +1884,26 @@ impl DownloadEngine {
         sanitized_url: String,
         provider_id: String,
         pacing_mode: PacingMode,
+        requested_streams: usize,
         store: Option<Arc<DownloadStore>>,
         events_tx: Option<broadcast::Sender<DownloadProgressEvent>>,
         control_rx: watch::Receiver<JobControl>,
+        global_limiter: Option<Arc<TokenBucketLimiter>>,
         created_at: u64,
     ) -> Result<CompletedDownload, DownloaderError> {
+        #[derive(Clone)]
+        struct SegmentPlanItem {
+            uri: String,
+            range_hdr: Option<String>,
+            aes_key: Option<(String, [u8; 16])>,
+            discontinuity: bool,
+        }
+
         let start_instant = Instant::now();
+        let concurrency = match pacing_mode {
+            PacingMode::Polite | PacingMode::LinearRateGuarded => 1,
+            _ => requested_streams.clamp(1, 12),
+        };
         let (_, ct, manifest_bytes) = self
             .fetch_guarded_bytes(&req.url, &req.headers, None, 8 * 1024 * 1024)
             .await?;
@@ -1613,7 +1936,7 @@ impl DownloadEngine {
             "stream_hls.ts".to_string()
         };
         let safe_name = safe_output_filename(&default_name)?;
-        let final_dest = safe_staging.join(&safe_name);
+        let mut final_dest = safe_staging.join(&safe_name);
         let part_path = safe_staging.join(format!("{safe_name}.part"));
 
         let mut job_snap = DownloadJobSnapshot {
@@ -1626,7 +1949,7 @@ impl DownloadEngine {
             downloaded_bytes: 0,
             status: DownloadStatus::Downloading,
             pacing_mode,
-            streams: 1,
+            streams: concurrency,
             etag: probe.and_then(|p| p.etag.clone()),
             last_modified: probe.and_then(|p| p.last_modified.clone()),
             validator_strength: HttpValidatorStrength::None,
@@ -1644,65 +1967,146 @@ impl DownloadEngine {
             let _ = st.upsert_job(&job_snap);
         }
 
-        type SegmentPlanItem = (String, Option<String>, Option<(String, [u8; 16])>);
-        let segment_plan: Vec<SegmentPlanItem> = if is_dash {
-            let dash: DashManifest = parse_dash_manifest(&manifest_text, &req.url)?;
-            dash.enforce_no_drm()?;
-            let rep = pick_best_dash_representation(&dash).ok_or_else(|| {
-                DownloaderError::InvalidInput("DASH manifest contains no playable representations".into())
-            })?;
+        let build_hls_plan = |hls: &HlsManifest, clip_start: Option<f64>, clip_end: Option<f64>| {
             let mut items = Vec::new();
-            if let Some(init_uri) = &rep.init_uri {
-                items.push((init_uri.clone(), None, None));
-            }
-            for seg in &rep.segments {
-                items.push((seg.uri.clone(), None, None));
-            }
-            items
-        } else {
-            let mut hls: HlsManifest = parse_hls_manifest(&manifest_text, &req.url)?;
-            if hls.is_master {
-                let best = hls
-                    .variants
-                    .iter()
-                    .max_by_key(|v| v.bandwidth.unwrap_or(0))
-                    .ok_or_else(|| {
-                        DownloaderError::InvalidInput("HLS master playlist contains no variants".into())
-                    })?;
-                let (_, _, sub_bytes) = self
-                    .fetch_guarded_bytes(&best.uri, &req.headers, None, 8 * 1024 * 1024)
-                    .await?;
-                let sub_text = String::from_utf8_lossy(&sub_bytes);
-                hls = parse_hls_manifest(&sub_text, &best.uri)?;
-            }
-            let mut items = Vec::new();
-            let mut seen_init: Option<String> = None;
-            for seg in &hls.segments {
+            let (slice_start, slice_end) = if clip_start.is_some() || clip_end.is_some() {
+                let durs: Vec<f64> = hls.segments.iter().map(|s| s.duration_secs).collect();
+                slice_segments_for_clip_range(&durs, clip_start, clip_end)
+            } else {
+                (0, hls.segments.len())
+            };
+            let mut seen_init: Option<(String, Option<crate::streaming::HlsByteRange>)> = None;
+            for seg in &hls.segments[slice_start.min(hls.segments.len())..slice_end.min(hls.segments.len())] {
+                let key_pair = seg.aes128_key.as_ref().map(|k| {
+                    let iv = k.explicit_iv.unwrap_or_else(|| hls_sequence_iv(seg.sequence));
+                    (k.uri.clone(), iv)
+                });
                 if let Some(init_uri) = &seg.init_map_uri {
-                    if seen_init.as_deref() != Some(init_uri.as_str()) {
-                        items.push((init_uri.clone(), None, None));
-                        seen_init = Some(init_uri.clone());
+                    let key_tag = (init_uri.clone(), seg.init_map_byte_range);
+                    if seen_init.as_ref() != Some(&key_tag) {
+                        let map_range = seg.init_map_byte_range.map(|r| {
+                            format!("bytes={}-{}", r.offset, r.offset + r.length.saturating_sub(1))
+                        });
+                        items.push(SegmentPlanItem {
+                            uri: init_uri.clone(),
+                            range_hdr: map_range,
+                            aes_key: key_pair.clone(),
+                            discontinuity: false,
+                        });
+                        seen_init = Some(key_tag);
                     }
                 }
                 let range_hdr = seg
                     .byte_range
                     .map(|r| format!("bytes={}-{}", r.offset, r.offset + r.length.saturating_sub(1)));
-                let key_pair = seg.aes128_key.as_ref().map(|k| {
-                    let iv = k.explicit_iv.unwrap_or_else(|| hls_sequence_iv(seg.sequence));
-                    (k.uri.clone(), iv)
+                items.push(SegmentPlanItem {
+                    uri: seg.uri.clone(),
+                    range_hdr,
+                    aes_key: key_pair,
+                    discontinuity: seg.discontinuity,
                 });
-                items.push((seg.uri.clone(), range_hdr, key_pair));
             }
             items
         };
 
-        if segment_plan.is_empty() {
+        let build_dash_plan = |rep: &crate::streaming::DashRepresentation,
+                               clip_start: Option<f64>,
+                               clip_end: Option<f64>| {
+            let mut items = Vec::new();
+            if let Some(ref single) = rep.single_file_uri {
+                items.push(SegmentPlanItem {
+                    uri: single.clone(),
+                    range_hdr: None,
+                    aes_key: None,
+                    discontinuity: false,
+                });
+                return items;
+            }
+            if let Some(init_uri) = &rep.init_uri {
+                items.push(SegmentPlanItem {
+                    uri: init_uri.clone(),
+                    range_hdr: None,
+                    aes_key: None,
+                    discontinuity: false,
+                });
+            }
+            let timescale = rep.timescale.unwrap_or(1).max(1) as f64;
+            let (slice_start, slice_end) = if clip_start.is_some() || clip_end.is_some() {
+                let durs: Vec<f64> = rep
+                    .segments
+                    .iter()
+                    .map(|s| s.duration.unwrap_or(0) as f64 / timescale)
+                    .collect();
+                slice_segments_for_clip_range(&durs, clip_start, clip_end)
+            } else {
+                (0, rep.segments.len())
+            };
+            for seg in &rep.segments[slice_start.min(rep.segments.len())..slice_end.min(rep.segments.len())] {
+                let range_hdr = seg
+                    .byte_range
+                    .map(|r| format!("bytes={}-{}", r.offset, r.offset + r.length.saturating_sub(1)));
+                items.push(SegmentPlanItem {
+                    uri: seg.uri.clone(),
+                    range_hdr,
+                    aes_key: None,
+                    discontinuity: false,
+                });
+            }
+            items
+        };
+
+        let (video_plan, audio_plan): (Vec<SegmentPlanItem>, Vec<SegmentPlanItem>) = if is_dash {
+            let dash: DashManifest = parse_dash_manifest(&manifest_text, &req.url)?;
+            dash.enforce_no_drm()?;
+            let (video_rep_opt, audio_rep_opt) = select_dash_tracks(&dash, StreamQuality::Best);
+            let v_rep = video_rep_opt
+                .or(audio_rep_opt)
+                .ok_or_else(|| DownloaderError::InvalidInput("DASH manifest contains no playable representations".into()))?;
+            let v_items = build_dash_plan(v_rep, req.clip_start_sec, req.clip_end_sec);
+            let a_items = match audio_rep_opt {
+                Some(a_rep) if !std::ptr::eq(a_rep, v_rep) => {
+                    build_dash_plan(a_rep, req.clip_start_sec, req.clip_end_sec)
+                }
+                _ => Vec::new(),
+            };
+            (v_items, a_items)
+        } else {
+            let mut hls: HlsManifest = parse_hls_manifest(&manifest_text, &req.url)?;
+            hls.enforce_no_drm()?;
+            let mut audio_items = Vec::new();
+            if hls.is_master {
+                let best = select_hls_variant(&hls, StreamQuality::Best).ok_or_else(|| {
+                    DownloaderError::InvalidInput("HLS master playlist contains no variants".into())
+                })?;
+                if let Some(aud_rend) = hls_audio_rendition_for(&hls, best) {
+                    if let Some(ref aud_uri) = aud_rend.uri {
+                        let (_, _, aud_bytes) = self
+                            .fetch_guarded_bytes(aud_uri, &req.headers, None, 8 * 1024 * 1024)
+                            .await?;
+                        let aud_text = String::from_utf8_lossy(&aud_bytes);
+                        let aud_hls = parse_hls_manifest(&aud_text, aud_uri)?;
+                        aud_hls.enforce_no_drm()?;
+                        audio_items = build_hls_plan(&aud_hls, req.clip_start_sec, req.clip_end_sec);
+                    }
+                }
+                let (_, _, sub_bytes) = self
+                    .fetch_guarded_bytes(&best.uri, &req.headers, None, 8 * 1024 * 1024)
+                    .await?;
+                let sub_text = String::from_utf8_lossy(&sub_bytes);
+                hls = parse_hls_manifest(&sub_text, &best.uri)?;
+                hls.enforce_no_drm()?;
+            }
+            let v_items = build_hls_plan(&hls, req.clip_start_sec, req.clip_end_sec);
+            (v_items, audio_items)
+        };
+
+        if video_plan.is_empty() {
             let err = DownloaderError::InvalidInput("streaming manifest contained 0 media segments".into());
             Self::record_terminal_error(&store, &mut job_snap, &err);
             return Err(err);
         }
 
-        let seg_count = segment_plan.len();
+        let seg_count = video_plan.len() + audio_plan.len();
         let mut seg_rows: Vec<ChunkRange> = (0..seg_count)
             .map(|i| ChunkRange::new(i, i as u64, i as u64))
             .collect();
@@ -1710,101 +2114,259 @@ impl DownloadEngine {
             let _ = st.replace_segments(&job_id, &seg_rows);
         }
 
-        let mut part_file = File::create(&part_path)?;
-        let mut key_cache: HashMap<String, [u8; 16]> = HashMap::new();
-        let mut downloaded_bytes = 0u64;
-        let mut completed_ranges: Vec<(u64, u64)> = Vec::new();
+        let limiter = Arc::new(TokenBucketLimiter::new(
+            req.speed_limit_bps.or(self.config.speed_limit_bps),
+        ));
+        let global_lim = global_limiter
+            .unwrap_or_else(|| Arc::new(TokenBucketLimiter::new(None)));
+        let shared_downloaded = Arc::new(AtomicU64::new(0));
+        let completed_count = Arc::new(AtomicU64::new(0));
+        let key_cache: Arc<tokio::sync::Mutex<HashMap<String, [u8; 16]>>> =
+            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
-        for (idx, (seg_url, range_hdr, aes_opt)) in segment_plan.iter().enumerate() {
-            match *control_rx.borrow() {
-                JobControl::Pause => {
-                    let err = DownloaderError::Paused {
-                        job_id: job_id.clone(),
-                    };
-                    Self::record_terminal_error(&store, &mut job_snap, &err);
-                    return Err(err);
-                }
-                JobControl::Cancel => {
-                    let err = DownloaderError::Cancelled {
-                        job_id: job_id.clone(),
-                    };
-                    Self::record_terminal_error(&store, &mut job_snap, &err);
-                    return Err(err);
-                }
-                JobControl::Run => {}
-            }
+        let has_separate_audio = !audio_plan.is_empty();
+        let audio_part_path = safe_staging.join(format!("{safe_name}.audio.part"));
 
-            let (_, _, raw_seg) = self
-                .fetch_guarded_bytes(seg_url, &req.headers, range_hdr.as_deref(), 64 * 1024 * 1024)
-                .await
-                .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?;
+        let fetch_track_to_file = |items: Vec<SegmentPlanItem>, out_path: PathBuf, seg_idx_offset: usize| {
+            let worker = Arc::new(DownloadEngine {
+                client: self.client.clone(),
+                pinned_clients: Arc::clone(&self.pinned_clients),
+                config: self.config.clone(),
+                policy: self.policy,
+                handoffs: Arc::clone(&self.handoffs),
+                cookie_jar: Arc::clone(&self.cookie_jar),
+                providers: Arc::clone(&self.providers),
+            });
+            let hdrs = Arc::new(req.headers.clone());
+            let ctrl = control_rx.clone();
+            let lim = Arc::clone(&limiter);
+            let glim = Arc::clone(&global_lim);
+            let kcache = Arc::clone(&key_cache);
+            let dl_bytes = Arc::clone(&shared_downloaded);
+            let done_cnt = Arc::clone(&completed_count);
+            let ev_tx = events_tx.clone();
+            let jid = Arc::new(job_id.clone());
 
-            let plain_seg = if let Some((key_uri, iv)) = aes_opt {
-                let key = if let Some(cached) = key_cache.get(key_uri) {
-                    *cached
-                } else {
-                    let (_, _, key_bytes) = self
-                        .fetch_guarded_bytes(key_uri, &req.headers, None, 1024)
-                        .await
-                        .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?;
-                    if key_bytes.len() != 16 {
-                        let err = DownloaderError::InvalidInput(format!(
-                            "HLS AES-128 key must be 16 bytes, got {}",
-                            key_bytes.len()
-                        ));
-                        Self::record_terminal_error(&store, &mut job_snap, &err);
-                        return Err(err);
+            async move {
+                let jid_loop = Arc::clone(&jid);
+                let jid_ref = jid_loop.as_str();
+
+                // `.buffered(concurrency)` downloads up to `concurrency` segments in parallel
+                // while yielding decrypted buffers strictly in index order `0..N`!
+                let mut stream = futures_util::stream::iter(items.into_iter().enumerate().map(
+                    move |(local_idx, item)| {
+                        let worker_item = Arc::clone(&worker);
+                        let hdrs_item = Arc::clone(&hdrs);
+                        let kcache_item = Arc::clone(&kcache);
+                        let lim_item = Arc::clone(&lim);
+                        let glim_item = Arc::clone(&glim);
+                        let ctrl_item = ctrl.clone();
+                        let jid_item = Arc::clone(&jid);
+                        async move {
+                            match *ctrl_item.borrow() {
+                                JobControl::Pause => {
+                                    return Err(DownloaderError::Paused {
+                                        job_id: jid_item.as_ref().clone(),
+                                    });
+                                }
+                                JobControl::Cancel => {
+                                    return Err(DownloaderError::Cancelled {
+                                        job_id: jid_item.as_ref().clone(),
+                                    });
+                                }
+                                JobControl::Run => {}
+                            }
+                            let (_, _, raw_seg) = worker_item
+                                .fetch_guarded_bytes(
+                                    &item.uri,
+                                    hdrs_item.as_ref(),
+                                    item.range_hdr.as_deref(),
+                                    64 * 1024 * 1024,
+                                )
+                                .await?;
+
+                            let plain = if let Some((ref key_uri, iv)) = item.aes_key {
+                                let cached_opt = kcache_item.lock().await.get(key_uri).copied();
+                                let key = match cached_opt {
+                                    Some(k) => k,
+                                    None => {
+                                        let (_, _, key_bytes) = worker_item
+                                            .fetch_guarded_bytes(
+                                                key_uri,
+                                                hdrs_item.as_ref(),
+                                                None,
+                                                1024,
+                                            )
+                                            .await?;
+                                        if key_bytes.len() != 16 {
+                                            return Err(DownloaderError::InvalidInput(format!(
+                                                "HLS AES-128 key must be 16 bytes, got {}",
+                                                key_bytes.len()
+                                            )));
+                                        }
+                                        let mut arr = [0u8; 16];
+                                        arr.copy_from_slice(&key_bytes);
+                                        kcache_item.lock().await.insert(key_uri.clone(), arr);
+                                        arr
+                                    }
+                                };
+                                decrypt_hls_aes128_cbc(&raw_seg, &key, &iv)?
+                            } else {
+                                raw_seg
+                            };
+                            let n = plain.len() as u64;
+                            lim_item.acquire(n).await;
+                            glim_item.acquire(n).await;
+                            Ok::<_, DownloaderError>((local_idx + seg_idx_offset, item.discontinuity, plain))
+                        }
+                    },
+                ))
+                .buffered(concurrency);
+
+                let mut out_file = File::create(&out_path)?;
+                let mut track_ranges = Vec::new();
+                let mut track_offset = 0u64;
+                let mut last_tfdt: Option<u64> = None;
+
+                while let Some(seg_res) = stream.next().await {
+                    let (global_idx, is_disc, plain_seg) = seg_res?;
+                    if is_disc {
+                        let tfdts = extract_moof_tfdt_timestamps(&plain_seg);
+                        if let Some(&(_, first_dts)) = tfdts.first() {
+                            if last_tfdt.is_some_and(|prev| first_dts < prev) {
+                                tracing::info!(
+                                    job_id = %jid_ref,
+                                    segment_idx = global_idx,
+                                    prev_tfdt = ?last_tfdt,
+                                    new_tfdt = first_dts,
+                                    "HLS EXT-X-DISCONTINUITY fMP4 tfdt reset detected"
+                                );
+                            }
+                            last_tfdt = Some(first_dts);
+                        }
                     }
-                    let mut arr = [0u8; 16];
-                    arr.copy_from_slice(&key_bytes);
-                    key_cache.insert(key_uri.clone(), arr);
-                    arr
-                };
-                decrypt_hls_aes128_cbc(&raw_seg, &key, iv)
-                    .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?
-            } else {
-                raw_seg
-            };
+                    out_file.write_all(&plain_seg)?;
+                    let seg_len = plain_seg.len() as u64;
+                    let total_now = dl_bytes.fetch_add(seg_len, Ordering::Relaxed) + seg_len;
+                    let done_segs = done_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+                    let est_total =
+                        ((total_now * (seg_count as u64)) / done_segs.max(1)).max(total_now);
+                    if seg_len > 0 {
+                        record_completed_interval(
+                            &mut track_ranges,
+                            track_offset,
+                            track_offset + seg_len - 1,
+                            est_total.max(track_offset + seg_len),
+                        );
+                    }
+                    track_offset = track_offset.saturating_add(seg_len);
 
-            let start_off = downloaded_bytes;
-            part_file.write_all(&plain_seg)?;
-            downloaded_bytes = downloaded_bytes.saturating_add(plain_seg.len() as u64);
-            let est_total = ((downloaded_bytes * (seg_count as u64)) / ((idx as u64) + 1)).max(downloaded_bytes);
-            if downloaded_bytes > start_off {
-                record_completed_interval(&mut completed_ranges, start_off, downloaded_bytes - 1, est_total);
+                    let elapsed = start_instant.elapsed().as_secs_f64().max(0.001);
+                    emit_progress(
+                        &ev_tx,
+                        jid_ref,
+                        DownloadStatus::Downloading,
+                        total_now,
+                        est_total,
+                        (total_now as f64 / elapsed) as u64,
+                        concurrency,
+                        track_ranges.clone(),
+                        false,
+                        None,
+                    );
+                }
+                out_file.sync_all()?;
+                Ok::<_, DownloaderError>((track_offset, track_ranges))
             }
-            if let Some(seg) = seg_rows.get_mut(idx) {
-                seg.downloaded = plain_seg.len() as u64;
-                seg.is_completed = true;
-            }
-            if let Some(ref st) = store {
-                let _ = st.replace_segments(&job_id, &seg_rows);
-            }
+        };
 
-            let elapsed = start_instant.elapsed().as_secs_f64().max(0.001);
-            let speed_bps = (downloaded_bytes as f64 / elapsed) as u64;
-            job_snap.downloaded_bytes = downloaded_bytes;
-            job_snap.total_bytes = est_total;
-            job_snap.updated_at_ms = current_epoch_ms();
-            if let Some(ref st) = store {
-                let _ = st.upsert_job(&job_snap);
+        let video_count = video_plan.len();
+        let track_res = if has_separate_audio {
+            tokio::try_join!(
+                fetch_track_to_file(video_plan, part_path.clone(), 0),
+                fetch_track_to_file(audio_plan, audio_part_path.clone(), video_count)
+            )
+        } else {
+            fetch_track_to_file(video_plan, part_path.clone(), 0)
+                .await
+                .map(|r| (r, (0, Vec::new())))
+        };
+
+        let ((_, mut completed_ranges), _) = match track_res {
+            Ok(ok) => ok,
+            Err(err) => {
+                Self::record_terminal_error(&store, &mut job_snap, &err);
+                return Err(err);
             }
-            emit_progress(
-                &events_tx,
-                &job_id,
-                DownloadStatus::Downloading,
-                downloaded_bytes,
-                est_total.max(downloaded_bytes),
-                speed_bps,
-                1,
-                completed_ranges.clone(),
-                false,
-                None,
-            );
+        };
+
+        for row in &mut seg_rows {
+            row.is_completed = true;
+            row.downloaded = 1;
+        }
+        if let Some(ref st) = store {
+            let _ = st.replace_segments(&job_id, &seg_rows);
         }
 
-        part_file.sync_all()?;
-        drop(part_file);
+        // Auto-wire FFmpeg `-c copy` when combining dual video+audio tracks OR explicit clip range!
+        let needs_mux_or_clip = has_separate_audio
+            || req.clip_start_sec.is_some()
+            || req.clip_end_sec.is_some();
+        if needs_mux_or_clip {
+            let mux_dest = if final_dest
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("ts"))
+            {
+                final_dest.with_extension("mp4")
+            } else {
+                final_dest.clone()
+            };
+            let mux_req = MediaMuxRequest {
+                video_input: part_path.clone(),
+                audio_input: has_separate_audio.then(|| audio_part_path.clone()),
+                subtitle_input: None,
+                subtitle_lang: None,
+                output_path: mux_dest.clone(),
+                clip_in_secs: req.clip_start_sec,
+                clip_out_secs: req.clip_end_sec,
+                workspace_root: req.workspace_root.clone(),
+                verify_with_ffprobe: false,
+                timeout_secs: Some(180),
+            };
+            match mux_or_skip_if_missing_cancellable(mux_req, Some(control_rx.clone())).await {
+                Ok(outcome) => {
+                    if !outcome.mux_skipped {
+                        let _ = fs::remove_file(&part_path);
+                        if has_separate_audio {
+                            let _ = fs::remove_file(&audio_part_path);
+                        }
+                        if outcome.output_path != final_dest {
+                            if final_dest.exists() {
+                                let _ = fs::remove_file(&final_dest);
+                            }
+                            final_dest = outcome.output_path;
+                            job_snap.destination_path = final_dest.clone();
+                        }
+                    } else {
+                        // Graceful MuxSkipped fallback: finalize video file cleanly while retaining audio track side-by-side!
+                        if final_dest.exists() {
+                            let _ = fs::remove_file(&final_dest);
+                        }
+                        fs::rename(&part_path, &final_dest)?;
+                    }
+                }
+                Err(err) => {
+                    Self::record_terminal_error(&store, &mut job_snap, &err);
+                    return Err(err);
+                }
+            }
+        } else {
+            if final_dest.exists() {
+                let _ = fs::remove_file(&final_dest);
+            }
+            fs::rename(&part_path, &final_dest)?;
+        }
 
         job_snap.status = DownloadStatus::Verifying;
         job_snap.updated_at_ms = current_epoch_ms();
@@ -1812,24 +2374,30 @@ impl DownloadEngine {
             let _ = st.upsert_job(&job_snap);
         }
 
-        let part_for_hash = part_path.clone();
+        let dest_for_hash = final_dest.clone();
         let exp_sha = req.expected_sha256.clone();
         let exp_crc = req.expected_crc32c_b64.clone();
+        let exp_md5 = req.expected_md5_hex.clone();
         let integrity = tokio::task::spawn_blocking(move || {
-            verify_file_integrity(&part_for_hash, exp_sha.as_deref(), exp_crc.as_deref())
+            verify_file_integrity_with_md5(
+                &dest_for_hash,
+                exp_sha.as_deref(),
+                exp_crc.as_deref(),
+                exp_md5.as_deref(),
+            )
         })
         .await
         .map_err(|e| DownloaderError::InvalidInput(format!("integrity task failed: {e}")))?
         .inspect_err(|err| Self::record_terminal_error(&store, &mut job_snap, err))?;
 
-        if final_dest.exists() {
-            let _ = fs::remove_file(&final_dest);
+        if completed_ranges.is_empty() && integrity.total_bytes > 0 {
+            completed_ranges.push((0, integrity.total_bytes - 1));
         }
-        fs::rename(&part_path, &final_dest)?;
 
         job_snap.status = DownloadStatus::Completed;
         job_snap.total_bytes = integrity.total_bytes;
         job_snap.downloaded_bytes = integrity.total_bytes;
+        job_snap.streams = concurrency;
         job_snap.sha256_actual = Some(integrity.sha256_hex.clone());
         job_snap.crc32c_actual = Some(integrity.crc32c_b64.clone());
         job_snap.error_code = None;
@@ -1858,7 +2426,7 @@ impl DownloadEngine {
             total_bytes: integrity.total_bytes,
             sha256_hex: integrity.sha256_hex,
             crc32c_b64: integrity.crc32c_b64,
-            streams_used: 1,
+            streams_used: concurrency,
             resumed_bytes: 0,
             fallback_to_single_stream: false,
             drm_supported: DRM_SUPPORTED,
@@ -1881,23 +2449,6 @@ fn content_type_is_manifest(ct: Option<&str>) -> bool {
     };
     let low = raw.to_ascii_lowercase();
     low.contains("mpegurl") || low.contains("dash+xml")
-}
-
-fn pick_best_dash_representation(manifest: &DashManifest) -> Option<&crate::streaming::DashRepresentation> {
-    let preferred_set = manifest
-        .adaptation_sets
-        .iter()
-        .find(|s| {
-            s.content_type.as_deref() == Some("video")
-                || s.mime_type
-                    .as_deref()
-                    .is_some_and(|m| m.starts_with("video/"))
-        })
-        .or_else(|| manifest.adaptation_sets.first())?;
-    preferred_set
-        .representations
-        .iter()
-        .max_by_key(|r| r.bandwidth.unwrap_or(0))
 }
 
 struct SharedRangeState {
@@ -1983,28 +2534,115 @@ fn parse_content_range_bounds(header: &str) -> Option<(u64, u64, u64)> {
     ))
 }
 
-fn extract_content_disposition_filename(header: &str) -> Option<String> {
-    for part in header.split(';') {
-        let trimmed = part.trim();
-        let low = trimmed.to_ascii_lowercase();
-        if let Some(rest) = low.strip_prefix("filename*=") {
-            let orig_rest = &trimmed[trimmed.len() - rest.len()..];
-            if let Some((_, encoded)) = orig_rest.rsplit_once("''") {
-                return Some(percent_decode_basic(encoded.trim_matches('"')));
+fn split_header_params_quote_safe(header: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let bytes = header.as_bytes();
+    let mut start = 0usize;
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (idx, &b) in bytes.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if b == b'\\' && in_quotes {
+            escaped = true;
+            continue;
+        }
+        if b == b'"' {
+            in_quotes = !in_quotes;
+            continue;
+        }
+        if b == b';' && !in_quotes {
+            parts.push(&header[start..idx]);
+            start = idx + 1;
+        }
+    }
+    if start <= header.len() {
+        parts.push(&header[start..]);
+    }
+    parts
+}
+
+fn unquote_disposition_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(next_c) = chars.next() {
+                    out.push(next_c);
+                }
+            } else {
+                out.push(c);
             }
         }
-        if let Some(rest) = low.strip_prefix("filename=") {
-            let orig_rest = &trimmed[trimmed.len() - rest.len()..];
-            let val = orig_rest.trim().trim_matches('"');
+        out
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn record_aimd_telemetry(
+    telemetry_ref: &Option<Arc<RwLock<AimdTelemetrySnapshot>>>,
+    job_id: &str,
+    pacing_mode: PacingMode,
+    worker_count: usize,
+    controller: &AimdBdpController,
+) {
+    if let Some(telem) = telemetry_ref {
+        let mut tg = telem.write();
+        tg.active_job_id = Some(job_id.to_string());
+        tg.pacing_mode = pacing_mode;
+        tg.metrics = controller.metrics();
+        tg.active_workers = worker_count;
+        tg.sample_count = tg.sample_count.saturating_add(1);
+        tg.updated_at_ms = current_epoch_ms();
+    }
+}
+
+fn decode_rfc5987_ext_value(ext_val: &str) -> String {
+    if let Some((charset_lang, encoded)) = ext_val.split_once("''") {
+        let charset = charset_lang
+            .split('\'')
+            .next()
+            .unwrap_or("utf-8")
+            .trim()
+            .to_ascii_lowercase();
+        let bytes = percent_decode_bytes(encoded.trim_matches('"'));
+        if charset == "iso-8859-1" || charset == "latin1" || charset == "latin-1" {
+            return bytes.into_iter().map(char::from).collect();
+        }
+        return String::from_utf8_lossy(&bytes).into_owned();
+    }
+    percent_decode_basic(ext_val.trim_matches('"'))
+}
+
+fn extract_content_disposition_filename(header: &str) -> Option<String> {
+    let mut fallback_filename: Option<String> = None;
+    for part in split_header_params_quote_safe(header) {
+        let trimmed = part.trim();
+        let Some((k_raw, v_raw)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key_low = k_raw.trim().to_ascii_lowercase();
+        if key_low == "filename*" {
+            let decoded = decode_rfc5987_ext_value(v_raw.trim());
+            if !decoded.is_empty() {
+                return Some(decoded);
+            }
+        } else if key_low == "filename" && fallback_filename.is_none() {
+            let val = unquote_disposition_value(v_raw);
             if !val.is_empty() {
-                return Some(val.to_string());
+                fallback_filename = Some(val);
             }
         }
     }
-    None
+    fallback_filename
 }
 
-fn percent_decode_basic(input: &str) -> String {
+fn percent_decode_bytes(input: &str) -> Vec<u8> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -2019,7 +2657,11 @@ fn percent_decode_basic(input: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
+}
+
+fn percent_decode_basic(input: &str) -> String {
+    String::from_utf8_lossy(&percent_decode_bytes(input)).into_owned()
 }
 
 fn from_hex(b: u8) -> Option<u8> {
@@ -2033,7 +2675,7 @@ fn from_hex(b: u8) -> Option<u8> {
 
 /// High-level Wave 3 Studio & CLI download manager owning persistent SQLite storage,
 /// live SSE progress broadcast, pause/resume/cancel handles, `VisibleHandoffManager`,
-/// `ProviderRegistry`, `ScopedCookieJar`, and `DownloadScheduler`.
+/// `ProviderRegistry`, `ScopedCookieJar`, global bandwidth limiter, live AIMD telemetry, and `DownloadScheduler`.
 pub struct DownloadManager {
     engine: Arc<DownloadEngine>,
     store: Arc<DownloadStore>,
@@ -2042,6 +2684,8 @@ pub struct DownloadManager {
     providers: Arc<ProviderRegistry>,
     cas: Arc<ContentAddressableBlobStore>,
     scheduler: Arc<Mutex<DownloadScheduler>>,
+    global_limiter: Arc<TokenBucketLimiter>,
+    aimd_telemetry: Arc<RwLock<AimdTelemetrySnapshot>>,
     controls: Arc<RwLock<HashMap<String, watch::Sender<JobControl>>>>,
     events_tx: broadcast::Sender<DownloadProgressEvent>,
 }
@@ -2080,6 +2724,13 @@ impl DownloadManager {
         let cookie_jar = Arc::new(ScopedCookieJar::new());
         let providers = Arc::new(ProviderRegistry::new());
         let cas = Arc::new(ContentAddressableBlobStore::in_memory());
+        let global_limiter = Arc::new(TokenBucketLimiter::new(config.speed_limit_bps));
+        let aimd_telemetry = Arc::new(RwLock::new(AimdTelemetrySnapshot {
+            pacing_mode: config.pacing_mode,
+            metrics: AimdBdpController::new(config.pacing_mode, config.default_streams).metrics(),
+            ..AimdTelemetrySnapshot::default()
+        }));
+        let loaded_sched_cfg = store.load_scheduler_config().ok().flatten().unwrap_or_default();
         let engine = Arc::new(DownloadEngine::with_components(
             config,
             policy,
@@ -2095,9 +2746,9 @@ impl DownloadManager {
             cookie_jar,
             providers,
             cas,
-            scheduler: Arc::new(Mutex::new(DownloadScheduler::new(
-                SchedulerConfig::default(),
-            ))),
+            scheduler: Arc::new(Mutex::new(DownloadScheduler::new(loaded_sched_cfg))),
+            global_limiter,
+            aimd_telemetry,
             controls: Arc::new(RwLock::new(HashMap::new())),
             events_tx,
         })
@@ -2107,6 +2758,29 @@ impl DownloadManager {
     #[must_use]
     pub fn subscribe_events(&self) -> broadcast::Receiver<DownloadProgressEvent> {
         self.events_tx.subscribe()
+    }
+
+    /// Returns the live [`AimdTelemetrySnapshot`] updated by active/recent ranged workers.
+    #[must_use]
+    pub fn live_aimd_telemetry(&self) -> AimdTelemetrySnapshot {
+        self.aimd_telemetry.read().clone()
+    }
+
+    /// Dynamically sets or clears the global cross-job bandwidth cap (`bytes/sec`).
+    pub fn set_global_speed_limit_bps(&self, rate_bps: Option<u64>) {
+        self.global_limiter.set_rate_bps(rate_bps);
+    }
+
+    /// Returns the currently active global cross-job bandwidth cap (`bytes/sec`), if set.
+    #[must_use]
+    pub fn global_speed_limit_bps(&self) -> Option<u64> {
+        self.global_limiter.rate_bps()
+    }
+
+    /// Exposes the persistent [`DownloadStore`] for SQLite scheduler & site-policy synchronization.
+    #[must_use]
+    pub fn store(&self) -> &Arc<DownloadStore> {
+        &self.store
     }
 
     /// Probes a URL without writing files to disk (`/api/downloads/plan`).
@@ -2137,12 +2811,14 @@ impl DownloadManager {
         self.controls.write().insert(job_id.clone(), ctrl_tx);
         let result = self
             .engine
-            .execute_download(
+            .execute_download_with_runtime(
                 job_id.clone(),
                 req,
                 Some(Arc::clone(&self.store)),
                 Some(self.events_tx.clone()),
                 ctrl_rx,
+                Some(Arc::clone(&self.global_limiter)),
+                Some(Arc::clone(&self.aimd_telemetry)),
             )
             .await;
         self.controls.write().remove(&job_id);
@@ -2158,25 +2834,72 @@ impl DownloadManager {
         tokio::task::JoinHandle<Result<CompletedDownload, DownloaderError>>,
     ) {
         let job_id = uuid_v4();
+        let created_at = current_epoch_ms();
+        let pacing_mode = req.pacing_mode.unwrap_or(self.engine.config.pacing_mode);
+        let requested_streams = pacing_mode.effective_max_streams(
+            req.streams.unwrap_or(self.engine.config.default_streams),
+        );
+        let placeholder_name = req
+            .filename
+            .as_deref()
+            .and_then(|n| safe_output_filename(n).ok())
+            .unwrap_or_else(|| "pending.download".to_string());
+        let initial_snap = DownloadJobSnapshot {
+            job_id: job_id.clone(),
+            sanitized_url: PrivacyShield::sanitize_for_receipt(&req.url),
+            provider_id: self.engine.providers.resolve_url(&req.url).id.clone(),
+            destination_path: req.staging_dir.join(&placeholder_name),
+            part_path: req.staging_dir.join(format!("{placeholder_name}.part")),
+            total_bytes: 0,
+            downloaded_bytes: 0,
+            status: DownloadStatus::Queued,
+            pacing_mode,
+            streams: requested_streams,
+            etag: None,
+            last_modified: None,
+            validator_strength: HttpValidatorStrength::None,
+            sha256_expected: req.expected_sha256.clone(),
+            sha256_actual: None,
+            crc32c_expected: req.expected_crc32c_b64.clone(),
+            crc32c_actual: None,
+            error_code: None,
+            error_message: None,
+            drm_supported: DRM_SUPPORTED,
+            created_at_ms: created_at,
+            updated_at_ms: created_at,
+        };
+        let _ = self.store.upsert_job(&initial_snap);
+
         let (ctrl_tx, ctrl_rx) = watch::channel(JobControl::Run);
         self.controls.write().insert(job_id.clone(), ctrl_tx);
 
         let engine = Arc::clone(&self.engine);
         let store = Arc::clone(&self.store);
         let events_tx = self.events_tx.clone();
+        let global_limiter = Arc::clone(&self.global_limiter);
+        let aimd_telemetry = Arc::clone(&self.aimd_telemetry);
         let controls = Arc::clone(&self.controls);
         let id_clone = job_id.clone();
 
         let handle = tokio::spawn(async move {
             let res = engine
-                .execute_download(
+                .execute_download_with_runtime(
                     id_clone.clone(),
                     req,
-                    Some(store),
+                    Some(Arc::clone(&store)),
                     Some(events_tx),
                     ctrl_rx,
+                    Some(global_limiter),
+                    Some(aimd_telemetry),
                 )
                 .await;
+            if let Err(ref err) = res {
+                if let Ok(Some(mut snap)) = store.get_job(&id_clone) {
+                    if matches!(snap.status, DownloadStatus::Queued | DownloadStatus::Probing) {
+                        DownloadEngine::record_terminal_error(&Some(store), &mut snap, err);
+                    }
+                }
+            }
             controls.write().remove(&id_clone);
             res
         });
@@ -2428,5 +3151,235 @@ mod stream_tests {
 
         let _ = fs::remove_dir_all(&stage);
         srv.abort();
+    }
+
+    #[tokio::test]
+    async fn engine_executes_dash_number_template_md5_fairplay_reject_dual_hls_and_live_aimd() {
+        let seg1_v = b"VIDEO_SEG_1_PAYLOAD";
+        let seg2_v = b"VIDEO_SEG_2_PAYLOAD";
+        let seg1_a = b"AUDIO_SEG_1_PAYLOAD";
+        let seg2_a = b"AUDIO_SEG_2_PAYLOAD";
+        let dash_init = b"INIT_";
+        let dash_s1 = b"D1_";
+        let dash_s2 = b"D2";
+        let dash_full = [dash_init.as_slice(), dash_s1.as_slice(), dash_s2.as_slice()].concat();
+        let dash_md5_hex = omnia_core::hex_encode(&crate::integrity::md5_bytes(&dash_full));
+
+        let range_payload = vec![b'Z'; 4096];
+        let range_payload_srv = range_payload.clone();
+
+        let vid0_hit = Arc::new(AtomicBool::new(false));
+        let vid_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let aud_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let vid0_hit_s = Arc::clone(&vid0_hit);
+        let vid_hits_s = Arc::clone(&vid_hits);
+        let aud_hits_s = Arc::clone(&aud_hits);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{addr}");
+
+        let master_m3u8 = format!(
+            "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"English\",DEFAULT=YES,URI=\"{base_url}/audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=2400000,AUDIO=\"aud\"\n{base_url}/video.m3u8\n"
+        );
+        let video_m3u8 = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\n{base_url}/vid0.ts\n#EXTINF:2.0,\n{base_url}/vid1.ts\n#EXTINF:2.0,\n{base_url}/vid2.ts\n#EXT-X-ENDLIST\n"
+        );
+        let audio_m3u8 = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\n{base_url}/aud0.aac\n#EXTINF:2.0,\n{base_url}/aud1.aac\n#EXTINF:2.0,\n{base_url}/aud2.aac\n#EXT-X-ENDLIST\n"
+        );
+        let drm_m3u8 = format!(
+            "#EXTM3U\n#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\",URI=\"skd://example.test/key\"\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\n{base_url}/vid1.ts\n#EXT-X-ENDLIST\n"
+        );
+        let dash_mpd = format!(
+            "<?xml version=\"1.0\"?><MPD type=\"static\" mediaPresentationDuration=\"PT6S\"><Period><AdaptationSet mimeType=\"video/mp4\"><Representation id=\"v1\" bandwidth=\"900000\"><SegmentTemplate initialization=\"{base_url}/dash-init.mp4\" media=\"{base_url}/dash-$Number%05d$.m4s\" timescale=\"1\" duration=\"3\" startNumber=\"1\"><SegmentTimeline><S d=\"3\" r=\"-1\"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"
+        );
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let vid0_hit_c = Arc::clone(&vid0_hit_s);
+                let vid_hits_c = Arc::clone(&vid_hits_s);
+                let aud_hits_c = Arc::clone(&aud_hits_s);
+                let master = master_m3u8.clone();
+                let video = video_m3u8.clone();
+                let audio = audio_m3u8.clone();
+                let drm = drm_m3u8.clone();
+                let mpd = dash_mpd.clone();
+                let rp = range_payload_srv.clone();
+                tokio::spawn(async move {
+                    let mut req_buf = [0u8; 4096];
+                    let n = sock.read(&mut req_buf).await.unwrap_or(0);
+                    let req_str = String::from_utf8_lossy(&req_buf[..n]);
+                    let mut lines = req_str.lines();
+                    let req_line = lines.next().unwrap_or("");
+                    let method = req_line.split_whitespace().next().unwrap_or("GET");
+                    let path = req_line.split_whitespace().nth(1).unwrap_or("/");
+                    let range_hdr = lines
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .map(|l| l.to_string());
+
+                    if path == "/ranged.bin" {
+                        if method == "HEAD" {
+                            let head = format!(
+                                "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nETag: \"r1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                rp.len()
+                            );
+                            let _ = sock.write_all(head.as_bytes()).await;
+                            return;
+                        }
+                        if let Some(rh) = range_hdr {
+                            let spec = rh.split_once(':').map(|x| x.1.trim()).unwrap_or("");
+                            if let Some(nums) = spec.strip_prefix("bytes=") {
+                                let (a, b) = nums.split_once('-').unwrap_or(("0", ""));
+                                let s: usize = a.parse().unwrap_or(0);
+                                let e: usize = b.parse().unwrap_or(rp.len() - 1).min(rp.len() - 1);
+                                let slice = &rp[s..=e];
+                                let head = format!(
+                                    "HTTP/1.1 206 Partial Content\r\nAccept-Ranges: bytes\r\nETag: \"r1\"\r\nContent-Range: bytes {s}-{e}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                    rp.len(),
+                                    slice.len()
+                                );
+                                let _ = sock.write_all(head.as_bytes()).await;
+                                let _ = sock.write_all(slice).await;
+                                return;
+                            }
+                        }
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            rp.len()
+                        );
+                        let _ = sock.write_all(head.as_bytes()).await;
+                        let _ = sock.write_all(&rp).await;
+                        return;
+                    }
+
+                    let (ct, body): (&str, Vec<u8>) = match path {
+                        "/master.m3u8" => ("application/vnd.apple.mpegurl", master.into_bytes()),
+                        "/video.m3u8" => ("application/vnd.apple.mpegurl", video.into_bytes()),
+                        "/audio.m3u8" => ("application/vnd.apple.mpegurl", audio.into_bytes()),
+                        "/drm.m3u8" => ("application/vnd.apple.mpegurl", drm.into_bytes()),
+                        "/vid0.ts" => {
+                            vid0_hit_c.store(true, Ordering::SeqCst);
+                            ("video/mp2t", b"SKIP_0".to_vec())
+                        }
+                        "/vid1.ts" => {
+                            vid_hits_c.fetch_add(1, Ordering::SeqCst);
+                            ("video/mp2t", seg1_v.to_vec())
+                        }
+                        "/vid2.ts" => {
+                            vid_hits_c.fetch_add(1, Ordering::SeqCst);
+                            ("video/mp2t", seg2_v.to_vec())
+                        }
+                        "/aud0.aac" => ("audio/aac", b"SKIP_A0".to_vec()),
+                        "/aud1.aac" => {
+                            aud_hits_c.fetch_add(1, Ordering::SeqCst);
+                            ("audio/aac", seg1_a.to_vec())
+                        }
+                        "/aud2.aac" => {
+                            aud_hits_c.fetch_add(1, Ordering::SeqCst);
+                            ("audio/aac", seg2_a.to_vec())
+                        }
+                        "/template.mpd" => ("application/dash+xml", mpd.into_bytes()),
+                        "/dash-init.mp4" => ("video/mp4", dash_init.to_vec()),
+                        "/dash-00001.m4s" => ("video/mp4", dash_s1.to_vec()),
+                        "/dash-00002.m4s" => ("video/mp4", dash_s2.to_vec()),
+                        _ => ("text/plain", b"not-found".to_vec()),
+                    };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                });
+            }
+        });
+
+        let mgr = DownloadManager::in_memory_for_tests(DownloadConfig::default()).unwrap();
+        mgr.set_global_speed_limit_bps(Some(4 * 1024 * 1024));
+        assert_eq!(mgr.global_speed_limit_bps(), Some(4 * 1024 * 1024));
+
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let stage = std::env::temp_dir().join(format!("omnia-dl-sota-test-{nanos}"));
+        fs::create_dir_all(&stage).unwrap();
+
+        // 1. HLS FairPlay `#EXT-X-SESSION-KEY` must fail closed immediately with `DrmUnsupported`.
+        let drm_err = mgr
+            .download_now(DownloadRequest::new(format!("{base_url}/drm.m3u8"), &stage))
+            .await
+            .unwrap_err();
+        assert!(matches!(drm_err, DownloaderError::DrmUnsupported { .. }));
+
+        // 2. DASH `$Number%05d$` + `r="-1"` + exact MD5 pass + mismatched MD5 fail closed.
+        let mut ok_dash = DownloadRequest::new(format!("{base_url}/template.mpd"), &stage);
+        ok_dash.filename = Some("dash_ok.mp4".to_string());
+        ok_dash.expected_md5_hex = Some(dash_md5_hex);
+        let dash_done = mgr.download_now(ok_dash).await.expect("DASH template MD5 pass");
+        assert_eq!(fs::read(&dash_done.output_path).unwrap(), dash_full);
+
+        let mut bad_dash = DownloadRequest::new(format!("{base_url}/template.mpd"), &stage);
+        bad_dash.filename = Some("dash_bad.mp4".to_string());
+        bad_dash.expected_md5_hex = Some("00000000000000000000000000000000".to_string());
+        let md5_err = mgr.download_now(bad_dash).await.unwrap_err();
+        assert!(matches!(md5_err, DownloaderError::IntegrityMismatch { .. }));
+
+        // 3. HLS dual-track master + clip slicing [2.5s..5.5s] skips seg 0 and downloads video+audio 1..2.
+        let mut hls_req = DownloadRequest::new(format!("{base_url}/master.m3u8"), &stage);
+        hls_req.filename = Some("dual.ts".to_string());
+        hls_req.clip_start_sec = Some(2.5);
+        hls_req.clip_end_sec = Some(5.5);
+        let _ = mgr.download_now(hls_req).await;
+        assert!(!vid0_hit.load(Ordering::SeqCst), "clip slicing must skip out-of-range segment 0");
+        assert_eq!(vid_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(aud_hits.load(Ordering::SeqCst), 2);
+
+        // 4. Ranged download populates live AIMD telemetry snapshot.
+        let mut range_req = DownloadRequest::new(format!("{base_url}/ranged.bin"), &stage);
+        range_req.streams = Some(2);
+        range_req.min_split_bytes = Some(1024);
+        let ranged_done = mgr.download_now(range_req).await.expect("ranged download");
+        assert_eq!(ranged_done.total_bytes, 4096);
+        let telem = mgr.live_aimd_telemetry();
+        assert!(telem.sample_count >= 1);
+        assert_eq!(telem.active_job_id.as_deref(), Some(ranged_done.job_id.as_str()));
+
+        let _ = fs::remove_dir_all(&stage);
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn drive_folder_rejection_and_content_disposition_edge_cases() {
+        assert_eq!(
+            extract_content_disposition_filename(r#"attachment; filename="a;b\"c.pdf"; x=1"#).as_deref(),
+            Some("a;b\"c.pdf")
+        );
+        assert_eq!(
+            extract_content_disposition_filename("attachment; filename*=UTF-8''hello%20world.txt").as_deref(),
+            Some("hello world.txt")
+        );
+        assert_eq!(
+            extract_content_disposition_filename("attachment; filename*=ISO-8859-1''caf%E9.txt").as_deref(),
+            Some("café.txt")
+        );
+
+        let mgr = DownloadManager::in_memory_for_tests(DownloadConfig::default()).unwrap();
+        let stage = std::env::temp_dir().join(format!(
+            "omnia-dl-drive-test-{}",
+            omnia_core::uuid_v4_simple()
+        ));
+        fs::create_dir_all(&stage).unwrap();
+        let err = mgr
+            .download_now(DownloadRequest::new(
+                "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz",
+                &stage,
+            ))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DownloaderError::InvalidInput(_)));
+        let _ = fs::remove_dir_all(&stage);
     }
 }

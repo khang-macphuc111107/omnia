@@ -20,9 +20,28 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
+
+/// Cold-start timeout for the first request after spawning a language server (indexing headroom).
+pub const LSP_FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Warm steady-state request timeout after the language server has served its first request.
+pub const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Handshake timeout for `initialize`.
+const LSP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Idle reaper threshold shutting down unused language servers after 10 minutes.
+pub const LSP_IDLE_SHUTDOWN: Duration = Duration::from_secs(10 * 60);
+/// Maximum bounded retry attempts on LSP busy errors (`-32801` / `-32802`).
+const LSP_BUSY_RETRY_MAX: usize = 8;
+/// Backoff interval between retries when the server reports `ContentModified` / `ServerCancelled`.
+const LSP_BUSY_RETRY_STEP: Duration = Duration::from_millis(400);
+/// Quiet window used to settle rapid `publishDiagnostics` bursts before returning.
+const LSP_DIAG_SETTLE_QUIET: Duration = Duration::from_millis(120);
+/// LSP JSON-RPC error code: `ContentModified`.
+const LSP_ERR_CONTENT_MODIFIED: i64 = -32801;
+/// LSP JSON-RPC error code: `ServerCancelled`.
+const LSP_ERR_SERVER_CANCELLED: i64 = -32802;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -109,15 +128,174 @@ pub struct LspRenameOutcome {
     pub summary: String,
 }
 
+#[derive(Default)]
+struct DiagStore {
+    generation: u64,
+    by_uri: HashMap<String, (u64, Vec<LspDiagnosticItem>)>,
+}
+
+impl DiagStore {
+    fn publish(&mut self, uri_key: String, items: Vec<LspDiagnosticItem>) -> u64 {
+        self.generation = self.generation.saturating_add(1);
+        let next_gen = self.generation;
+        self.by_uri.insert(uri_key, (next_gen, items));
+        next_gen
+    }
+
+    fn current_generation(&self, uri_key: &str) -> u64 {
+        self.by_uri.get(uri_key).map_or(0, |(g, _)| *g)
+    }
+
+    fn items_for(&self, uri_key: &str) -> Vec<LspDiagnosticItem> {
+        self.by_uri
+            .get(uri_key)
+            .map(|(_, items)| items.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Builds a JSON-RPC 2.0 response for a server-to-client LSP request so servers such as
+/// `rust-analyzer`, `pyright`, `gopls`, or `typescript-language-server` never deadlock on
+/// `workspace/configuration`, capability registration, progress creation, or refresh calls.
+fn build_server_request_reply(
+    id: &Value,
+    method: &str,
+    params: Option<&Value>,
+    root_uri: &str,
+) -> Value {
+    match method {
+        "workspace/configuration" => {
+            let count = params
+                .and_then(|p| p.get("items"))
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let nulls = vec![Value::Null; count];
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": nulls,
+            })
+        }
+        "client/registerCapability"
+        | "client/unregisterCapability"
+        | "window/workDoneProgress/create"
+        | "workspace/diagnostic/refresh"
+        | "workspace/inlayHint/refresh"
+        | "workspace/semanticTokens/refresh"
+        | "workspace/codeLens/refresh" => {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": Value::Null,
+            })
+        }
+        "workspace/workspaceFolders" => {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": [{ "uri": root_uri, "name": "workspace" }],
+            })
+        }
+        _ => {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32601,
+                    "message": format!("Method not found: {method}"),
+                },
+            })
+        }
+    }
+}
+
+/// Returns `true` when an LSP JSON-RPC error represents a transient busy state (`-32801` / `-32802`).
+#[must_use]
+fn is_retryable_busy_error(err: &Value) -> bool {
+    matches!(
+        err.get("code").and_then(Value::as_i64),
+        Some(LSP_ERR_CONTENT_MODIFIED | LSP_ERR_SERVER_CANCELLED)
+    )
+}
+
+/// Builds the LSP `$/cancelRequest` notification emitted when a pending client request times out.
+#[must_use]
+fn build_cancel_notification(id: i64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "$/cancelRequest",
+        "params": { "id": id },
+    })
+}
+
+/// Waits on `diag_signal` until `uri_key` receives a generation strictly greater than `since_gen`
+/// and then settles through rapid diagnostic bursts until `settle_quiet` elapses or `wait_budget` expires.
+fn wait_diagnostics_settled(
+    diag_signal: &(Mutex<DiagStore>, Condvar),
+    uri_key: &str,
+    since_gen: u64,
+    wait_budget: Duration,
+    settle_quiet: Duration,
+) -> Vec<LspDiagnosticItem> {
+    let deadline = Instant::now() + wait_budget;
+    let (lock, cvar) = diag_signal;
+    let Ok(mut store) = lock.lock() else {
+        return Vec::new();
+    };
+
+    // Phase 1: wait for first publication newer than `since_gen`.
+    while store.current_generation(uri_key) <= since_gen {
+        let now = Instant::now();
+        if now >= deadline {
+            return store.items_for(uri_key);
+        }
+        let rem = deadline.saturating_duration_since(now);
+        match cvar.wait_timeout(store, rem) {
+            Ok((guard, _)) => store = guard,
+            Err(_) => return Vec::new(),
+        }
+    }
+
+    // Phase 2: settle burst publications until a quiet window passes without newer updates.
+    let mut observed_gen = store.current_generation(uri_key);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let step = settle_quiet.min(deadline.saturating_duration_since(now));
+        if step.is_zero() {
+            break;
+        }
+        match cvar.wait_timeout(store, step) {
+            Ok((guard, _)) => {
+                store = guard;
+                let cur_gen = store.current_generation(uri_key);
+                if cur_gen > observed_gen {
+                    observed_gen = cur_gen;
+                    continue;
+                }
+                break;
+            }
+            Err(_) => return Vec::new(),
+        }
+    }
+
+    store.items_for(uri_key)
+}
+
 struct LiveLspClient {
     server_name: String,
     lang: LspLanguage,
     _workspace_root: PathBuf,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<i64, std::sync::mpsc::Sender<Value>>>>,
-    diagnostics: Arc<Mutex<HashMap<String, Vec<LspDiagnosticItem>>>>,
+    diagnostics: Arc<(Mutex<DiagStore>, Condvar)>,
     doc_versions: Mutex<HashMap<String, i32>>,
     next_id: AtomicI64,
+    served_request: AtomicBool,
+    last_used: Mutex<Instant>,
+    shutting_down: AtomicBool,
     _child: Mutex<Child>,
     supervisor: ProcessSupervisor,
 }
@@ -144,35 +322,58 @@ impl LiveLspClient {
 
         let (mut child, supervisor) = spawn_supervised_command(&mut cmd)
             .with_context(|| format!("failed to spawn LSP `{exe}`"))?;
-        let stdin = child.stdin.take().context("LSP missing stdin")?;
+        let stdin = Arc::new(Mutex::new(child.stdin.take().context("LSP missing stdin")?));
         let stdout = child.stdout.take().context("LSP missing stdout")?;
 
         let pending: Arc<Mutex<HashMap<i64, std::sync::mpsc::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let diagnostics: Arc<Mutex<HashMap<String, Vec<LspDiagnosticItem>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let diagnostics: Arc<(Mutex<DiagStore>, Condvar)> =
+            Arc::new((Mutex::new(DiagStore::default()), Condvar::new()));
 
+        let root_uri = path_to_file_uri(workspace_root);
         let pending_reader = Arc::clone(&pending);
         let diags_reader = Arc::clone(&diagnostics);
+        let stdin_reader = Arc::clone(&stdin);
+        let root_uri_reader = root_uri.clone();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             while let Ok(Some(msg)) = read_lsp_message(&mut reader) {
-                if let Some(id) = msg.get("id").and_then(Value::as_i64) {
+                let method_opt = msg.get("method").and_then(Value::as_str);
+                let id_opt = msg.get("id");
+
+                // Server-to-client request: carries BOTH `id` and `method`.
+                if let (Some(req_id), Some(method)) = (id_opt, method_opt) {
+                    let reply = build_server_request_reply(
+                        req_id,
+                        method,
+                        msg.get("params"),
+                        &root_uri_reader,
+                    );
+                    let _ = write_lsp_message(&stdin_reader, &reply);
+                    continue;
+                }
+
+                // Response to a client-initiated request.
+                if let Some(id) = id_opt.and_then(Value::as_i64) {
                     if let Ok(mut map) = pending_reader.lock() {
                         if let Some(tx) = map.remove(&id) {
                             let _ = tx.send(msg);
                         }
                     }
-                } else if msg.get("method").and_then(Value::as_str)
-                    == Some("textDocument/publishDiagnostics")
-                {
+                    continue;
+                }
+
+                // Server notification (`textDocument/publishDiagnostics`).
+                if method_opt == Some("textDocument/publishDiagnostics") {
                     if let Some(params) = msg.get("params") {
                         let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
                         if !uri.is_empty() {
                             let key = normalize_uri_key(uri);
                             let items = parse_lsp_diagnostics(params.get("diagnostics"));
-                            if let Ok(mut g) = diags_reader.lock() {
-                                g.insert(key, items);
+                            let (lock, cvar) = &*diags_reader;
+                            if let Ok(mut g) = lock.lock() {
+                                g.publish(key, items);
+                                cvar.notify_all();
                             }
                         }
                     }
@@ -184,22 +385,32 @@ impl LiveLspClient {
             server_name: exe.to_owned(),
             lang,
             _workspace_root: workspace_root.to_path_buf(),
-            stdin: Arc::new(Mutex::new(stdin)),
+            stdin,
             pending,
             diagnostics,
             doc_versions: Mutex::new(HashMap::new()),
             next_id: AtomicI64::new(1),
+            served_request: AtomicBool::new(false),
+            last_used: Mutex::new(Instant::now()),
+            shutting_down: AtomicBool::new(false),
             _child: Mutex::new(child),
             supervisor,
         });
 
-        let root_uri = path_to_file_uri(workspace_root);
-        let _ = client.request(
+        let _ = client.request_once(
             "initialize",
-            json!({
+            &json!({
                 "processId": std::process::id(),
                 "rootUri": root_uri,
+                "workspaceFolders": [{ "uri": root_uri, "name": "workspace" }],
                 "capabilities": {
+                    "workspace": {
+                        "configuration": true,
+                        "workspaceFolders": true
+                    },
+                    "window": {
+                        "workDoneProgress": true
+                    },
                     "textDocument": {
                         "definition": { "dynamicRegistration": false },
                         "references": { "dynamicRegistration": false },
@@ -211,13 +422,35 @@ impl LiveLspClient {
                     }
                 }
             }),
-            Duration::from_secs(5),
+            LSP_INITIALIZE_TIMEOUT,
         )?;
         client.notify("initialized", json!({}))?;
         Ok(client)
     }
 
-    fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+    fn touch(&self) {
+        if let Ok(mut ts) = self.last_used.lock() {
+            *ts = Instant::now();
+        }
+    }
+
+    fn idle_elapsed(&self) -> Duration {
+        self.last_used
+            .lock()
+            .map(|ts| ts.elapsed())
+            .unwrap_or(Duration::ZERO)
+    }
+
+    fn shutdown(&self) {
+        if self.shutting_down.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = self.request_once("shutdown", &Value::Null, Duration::from_millis(1_500));
+        let _ = self.notify("exit", Value::Null);
+    }
+
+    fn request_once(&self, method: &str, params: &Value, timeout: Duration) -> Result<Value> {
+        self.touch();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = std::sync::mpsc::channel();
         if let Ok(mut map) = self.pending.lock() {
@@ -229,17 +462,64 @@ impl LiveLspClient {
             "method": method,
             "params": params,
         });
-        write_lsp_message(&self.stdin, &body)?;
-        let resp = rx
-            .recv_timeout(timeout)
-            .with_context(|| format!("LSP `{method}` timed out after {:?}", timeout))?;
-        if let Some(err) = resp.get("error") {
-            bail!("LSP `{method}` error: {err}");
+        if let Err(err) = write_lsp_message(&self.stdin, &body) {
+            if let Ok(mut map) = self.pending.lock() {
+                map.remove(&id);
+            }
+            return Err(err);
         }
-        Ok(resp.get("result").cloned().unwrap_or(Value::Null))
+        match rx.recv_timeout(timeout) {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                if let Ok(mut map) = self.pending.lock() {
+                    map.remove(&id);
+                }
+                let _ = write_lsp_message(&self.stdin, &build_cancel_notification(id));
+                Err(anyhow::anyhow!(
+                    "LSP `{method}` timed out after {:?}: {err}",
+                    timeout
+                ))
+            }
+        }
+    }
+
+    fn request(&self, method: &str, params: Value, override_timeout: Option<Duration>) -> Result<Value> {
+        let budget = override_timeout.unwrap_or_else(|| {
+            if self.served_request.load(Ordering::Acquire) {
+                LSP_REQUEST_TIMEOUT
+            } else {
+                LSP_FIRST_REQUEST_TIMEOUT
+            }
+        });
+        let deadline = Instant::now() + budget;
+
+        for attempt in 0..LSP_BUSY_RETRY_MAX {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!("LSP `{method}` exceeded deadline ({:?}) after {attempt} retry(s)", budget);
+            }
+            let resp = self.request_once(method, &params, remaining)?;
+            if let Some(err) = resp.get("error") {
+                if is_retryable_busy_error(err) && attempt + 1 < LSP_BUSY_RETRY_MAX {
+                    let sleep_for = LSP_BUSY_RETRY_STEP
+                        .min(deadline.saturating_duration_since(Instant::now()));
+                    if !sleep_for.is_zero() {
+                        std::thread::sleep(sleep_for);
+                        continue;
+                    }
+                }
+                bail!("LSP `{method}` error: {err}");
+            }
+            self.served_request.store(true, Ordering::Release);
+            self.touch();
+            return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
+        }
+
+        bail!("LSP `{method}` exhausted {LSP_BUSY_RETRY_MAX} busy-retry attempts")
     }
 
     fn notify(&self, method: &str, params: Value) -> Result<()> {
+        self.touch();
         let body = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -249,6 +529,7 @@ impl LiveLspClient {
     }
 
     fn sync_document(&self, path: &Path, text: &str) -> Result<String> {
+        self.touch();
         let uri = path_to_file_uri(path);
         let key = normalize_uri_key(&uri);
         let mut versions = self
@@ -297,29 +578,34 @@ impl LiveLspClient {
         text: &str,
         wait_ms: u64,
     ) -> Result<Vec<LspDiagnosticItem>> {
+        let pre_uri = path_to_file_uri(path);
+        let key = normalize_uri_key(&pre_uri);
+        let since_gen = self
+            .diagnostics
+            .0
+            .lock()
+            .map(|g| g.current_generation(&key))
+            .unwrap_or(0);
+
         let uri = self.sync_document(path, text)?;
         // Try LSP 3.17 pull diagnostic first cleanly.
         if let Ok(pull) = self.request(
             "textDocument/diagnostic",
             json!({ "textDocument": { "uri": uri } }),
-            Duration::from_millis(wait_ms.clamp(200, 2_500)),
+            Some(Duration::from_millis(wait_ms.clamp(200, 2_500))),
         ) {
             if let Some(items) = pull.get("items").and_then(Value::as_array) {
                 return Ok(parse_lsp_diagnostics(Some(&Value::Array(items.clone()))));
             }
         }
-        // Fallback: wait briefly for `textDocument/publishDiagnostics` push.
-        let key = normalize_uri_key(&uri);
-        let deadline = Instant::now() + Duration::from_millis(wait_ms.clamp(150, 2_000));
-        while Instant::now() < deadline {
-            if let Ok(guard) = self.diagnostics.lock() {
-                if let Some(items) = guard.get(&key) {
-                    return Ok(items.clone());
-                }
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        Ok(Vec::new())
+        // Fallback: wait on Condvar generation counter + settle rapid push bursts cleanly.
+        Ok(wait_diagnostics_settled(
+            &self.diagnostics,
+            &key,
+            since_gen,
+            Duration::from_millis(wait_ms.clamp(150, 2_500)),
+            LSP_DIAG_SETTLE_QUIET,
+        ))
     }
 }
 
@@ -328,6 +614,7 @@ impl LiveLspClient {
 pub struct LazyLspManager {
     workspace_root: PathBuf,
     clients: Arc<Mutex<HashMap<LspLanguage, Arc<LiveLspClient>>>>,
+    reaper_started: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for LazyLspManager {
@@ -341,12 +628,13 @@ impl std::fmt::Debug for LazyLspManager {
 }
 
 impl LazyLspManager {
-    /// Construct manager with zero spawned processes (`0 ms` startup).
+    /// Construct manager with zero spawned processes and zero background threads (`0 ms` startup).
     #[must_use]
     pub fn new(workspace_root: PathBuf) -> Self {
         Self {
             workspace_root,
             clients: Arc::new(Mutex::new(HashMap::new())),
+            reaper_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -361,9 +649,46 @@ impl LazyLspManager {
         None
     }
 
+    fn ensure_idle_reaper(&self) {
+        if self
+            .reaper_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let weak_clients: Weak<Mutex<HashMap<LspLanguage, Arc<LiveLspClient>>>> =
+            Arc::downgrade(&self.clients);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            let Some(clients) = weak_clients.upgrade() else {
+                break;
+            };
+            let _ = sweep_idle_clients(&clients, LSP_IDLE_SHUTDOWN);
+        });
+    }
+
+    /// Shuts down and evicts any language server idle for at least `max_idle`.
+    #[must_use]
+    pub fn sweep_idle(&self, max_idle: Duration) -> usize {
+        sweep_idle_clients(&self.clients, max_idle)
+    }
+
+    /// Politely shuts down every active language server managed by this instance.
+    pub fn shutdown_all(&self) {
+        let drained: Vec<Arc<LiveLspClient>> = match self.clients.lock() {
+            Ok(mut guard) => guard.drain().map(|(_, c)| c).collect(),
+            Err(_) => Vec::new(),
+        };
+        for client in drained {
+            client.shutdown();
+        }
+    }
+
     fn get_or_spawn(&self, lang: LspLanguage) -> Option<Arc<LiveLspClient>> {
         if let Ok(guard) = self.clients.lock() {
             if let Some(existing) = guard.get(&lang) {
+                existing.touch();
                 return Some(Arc::clone(existing));
             }
         }
@@ -372,6 +697,7 @@ impl LazyLspManager {
         if let Ok(mut guard) = self.clients.lock() {
             guard.insert(lang, Arc::clone(&client));
         }
+        self.ensure_idle_reaper();
         Some(client)
     }
 
@@ -453,8 +779,7 @@ impl LazyLspManager {
                                     "position": pos
                                 }),
                             };
-                            if let Ok(raw) = client.request(method, params, Duration::from_secs(3))
-                            {
+                            if let Ok(raw) = client.request(method, params, None) {
                                 if action == "hover" {
                                     let hover_txt = extract_hover_text(&raw);
                                     return LspQueryResult {
@@ -570,7 +895,7 @@ impl LazyLspManager {
                 "position": { "line": lsp_pos.0, "character": lsp_pos.1 },
                 "newName": new_name,
             }),
-            Duration::from_secs(5),
+            None,
         )?;
 
         let mut edits_by_file: WorkspaceEditsMap = BTreeMap::new();
@@ -986,6 +1311,29 @@ fn file_uri_to_contained_path(uri: &str, root: &Path) -> Option<PathBuf> {
     None
 }
 
+fn sweep_idle_clients(
+    clients: &Mutex<HashMap<LspLanguage, Arc<LiveLspClient>>>,
+    max_idle: Duration,
+) -> usize {
+    let stale: Vec<Arc<LiveLspClient>> = {
+        let Ok(mut guard) = clients.lock() else {
+            return 0;
+        };
+        let keys: Vec<LspLanguage> = guard
+            .iter()
+            .filter_map(|(&lang, c)| (c.idle_elapsed() >= max_idle).then_some(lang))
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| guard.remove(&k))
+            .collect()
+    };
+    let count = stale.len();
+    for client in stale {
+        client.shutdown();
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1004,6 +1352,7 @@ mod tests {
     fn lsp_manager_starts_with_zero_processes_and_falls_back_to_ast() {
         let mgr = LazyLspManager::new(std::env::temp_dir());
         assert_eq!(mgr.clients.lock().expect("lock").len(), 0);
+        assert_eq!(mgr.sweep_idle(Duration::ZERO), 0);
         let tmp = std::env::temp_dir().join(format!("omnia_lsp_diags_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let broken = tmp.join("bad.py");
@@ -1011,5 +1360,95 @@ mod tests {
         let diags = mgr.diagnostics_for_file(&broken, 100);
         assert!(!diags.is_empty(), "expected immediate tree-sitter diagnostic");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn server_request_responder_handles_configuration_and_refresh_calls() {
+        let cfg = build_server_request_reply(
+            &json!(7),
+            "workspace/configuration",
+            Some(&json!({ "items": [{ "section": "rust-analyzer" }, { "section": "files" }] })),
+            "file:///workspace",
+        );
+        assert_eq!(cfg["id"], 7);
+        assert_eq!(cfg["result"], json!([null, null]));
+
+        let reg = build_server_request_reply(
+            &json!("srv-1"),
+            "client/registerCapability",
+            None,
+            "file:///workspace",
+        );
+        assert_eq!(reg["id"], "srv-1");
+        assert_eq!(reg["result"], Value::Null);
+
+        let unknown = build_server_request_reply(
+            &json!(9),
+            "custom/unsupported",
+            None,
+            "file:///workspace",
+        );
+        assert_eq!(unknown["error"]["code"], -32601);
+
+        assert!(is_retryable_busy_error(&json!({ "code": -32801 })));
+        assert!(is_retryable_busy_error(&json!({ "code": -32802 })));
+        assert!(!is_retryable_busy_error(&json!({ "code": -32601 })));
+
+        let cancel = build_cancel_notification(42);
+        assert_eq!(cancel["method"], "$/cancelRequest");
+        assert_eq!(cancel["params"]["id"], 42);
+    }
+
+    #[test]
+    fn diagnostic_burst_settle_waits_for_final_generation() {
+        let signal = Arc::new((Mutex::new(DiagStore::default()), Condvar::new()));
+        let uri_key = "file:///workspace/src/main.rs".to_owned();
+        let writer = Arc::clone(&signal);
+        let key_w = uri_key.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            {
+                let (lock, cvar) = &*writer;
+                let mut st = lock.lock().unwrap();
+                st.publish(
+                    key_w.clone(),
+                    vec![LspDiagnosticItem {
+                        severity: "warning".into(),
+                        line: 1,
+                        column: 1,
+                        message: "transient burst 1".into(),
+                        source: Some("test-lsp".into()),
+                    }],
+                );
+                cvar.notify_all();
+            }
+            std::thread::sleep(Duration::from_millis(30));
+            {
+                let (lock, cvar) = &*writer;
+                let mut st = lock.lock().unwrap();
+                st.publish(
+                    key_w,
+                    vec![LspDiagnosticItem {
+                        severity: "error".into(),
+                        line: 5,
+                        column: 3,
+                        message: "settled final diagnostic".into(),
+                        source: Some("test-lsp".into()),
+                    }],
+                );
+                cvar.notify_all();
+            }
+        });
+
+        let settled = wait_diagnostics_settled(
+            &signal,
+            &uri_key,
+            0,
+            Duration::from_millis(800),
+            Duration::from_millis(90),
+        );
+        assert_eq!(settled.len(), 1);
+        assert_eq!(settled[0].message, "settled final diagnostic");
     }
 }

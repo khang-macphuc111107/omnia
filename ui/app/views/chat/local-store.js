@@ -3,8 +3,8 @@
 //   localStorage key  omnia.ui.chat.<sessionId>
 //   value             { v: 1, messages: [{ id, role:'user', markdown, attachments:[…], createdAt, route }],
 //                       draft: { text, rev, attachments:[{ id, name, size, mime, sha256, placement }] } }
-//   route             { state:'pending'|'routed'|'fenced'|'error', selectedCandidateId, receipt, status,
-//                       errorCode, policy }
+//   route             { state:'pending'|'routed'|'fenced'|'cancelled'|'error', selectedCandidateId, receipt, status,
+//                       errorCode, policy, cancelledAt, cancelAck }
 // Only the newest 200 messages are kept. The pure helpers below never touch storage.
 
 import { storage } from '../../core/store.js';
@@ -13,7 +13,7 @@ import { hasLatex } from '../../lib/markdown.js';
 export const KEY_PREFIX = 'omnia.ui.chat.';
 export const SCHEMA_VERSION = 1;
 export const MAX_MESSAGES = 200;
-export const ROUTE_STATES = ['pending', 'routed', 'fenced', 'error'];
+export const ROUTE_STATES = ['pending', 'routed', 'fenced', 'cancelled', 'error'];
 export const PLACEMENTS = ['inline', 'tray', 'both'];
 
 export const chatKey = (sessionId) => `${KEY_PREFIX}${sessionId}`;
@@ -50,7 +50,9 @@ export function sanitizeRoute(value) {
     receipt: isObject(route.receipt) ? route.receipt : null,
     status: text(route.status),
     errorCode: text(route.errorCode),
-    policy: isObject(route.policy) ? route.policy : null
+    policy: isObject(route.policy) ? route.policy : null,
+    cancelledAt: count(route.cancelledAt),
+    cancelAck: isObject(route.cancelAck) ? route.cancelAck : null
   };
 }
 
@@ -133,7 +135,20 @@ export function messagePolicy(sessionId, messageId, markdown) {
 }
 
 export function pendingRoute(policy) {
-  return { state: 'pending', selectedCandidateId: null, receipt: null, status: '', errorCode: '', policy };
+  return { state: 'pending', selectedCandidateId: null, receipt: null, status: '', errorCode: '', policy, cancelledAt: 0, cancelAck: null };
+}
+
+export function cancelledRoute(policy, cancelAck = null) {
+  return {
+    state: 'cancelled',
+    selectedCandidateId: null,
+    receipt: null,
+    status: 'CANCELLED_BY_USER',
+    errorCode: 'aborted',
+    policy,
+    cancelledAt: Date.now(),
+    cancelAck: isObject(cancelAck) ? cancelAck : null
+  };
 }
 
 /** decide() answers HTTP 200 with ok:false or allowed:false when every route is fenced. */
@@ -146,18 +161,23 @@ export function routeFromResponse(payload, policy) {
     receipt: payload && isObject(payload.receipt) ? payload.receipt : null,
     status: payload && typeof payload.status === 'string' ? payload.status : '',
     errorCode: '',
-    policy
+    policy,
+    cancelledAt: 0,
+    cancelAck: null
   };
 }
 
 export function routeFromError(error, policy) {
+  if (error && error.code === 'aborted') return cancelledRoute(policy);
   return {
     state: 'error',
     selectedCandidateId: null,
     receipt: null,
     status: '',
     errorCode: (error && typeof error.code === 'string' && error.code) || 'unknown',
-    policy
+    policy,
+    cancelledAt: 0,
+    cancelAck: null
   };
 }
 

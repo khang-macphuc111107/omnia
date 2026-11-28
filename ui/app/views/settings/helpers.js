@@ -97,7 +97,7 @@ export function diagnosticRows(health, host = '') {
   ].filter((row) => host || row.id !== 'host');
 }
 
-/** connection.status → chip presentation. */
+/** connection.status → transport reachability chip presentation. */
 export function connectionMeta(status) {
   switch (status) {
     case 'online':
@@ -107,6 +107,125 @@ export function connectionMeta(status) {
     default:
       return { variant: 'warn', icon: 'clock', labelKey: 'settings.connConnecting' };
   }
+}
+
+/** Separate service health presentation from transport reachability (AUD-25). */
+export function serviceHealthMeta(conn) {
+  const state = conn && typeof conn === 'object' ? conn : {};
+  if (state.status === 'offline') {
+    return { variant: 'danger', icon: 'wifi-off', labelKey: 'settings.healthUnknown', state: 'unknown' };
+  }
+  const healthState =
+    state.serviceHealth && state.serviceHealth !== 'unknown'
+      ? state.serviceHealth
+      : state.status === 'online' && state.health
+        ? state.health.ok === false
+          ? 'degraded'
+          : 'healthy'
+        : 'unknown';
+  switch (healthState) {
+    case 'healthy':
+      return { variant: 'ok', icon: 'check-circle', labelKey: 'settings.healthHealthy', state: 'healthy' };
+    case 'degraded':
+      return { variant: 'warn', icon: 'alert', labelKey: 'settings.healthDegraded', state: 'degraded' };
+    case 'unhealthy':
+      return { variant: 'danger', icon: 'stop', labelKey: 'settings.healthUnhealthy', state: 'unhealthy' };
+    default:
+      return { variant: 'warn', icon: 'clock', labelKey: 'settings.healthUnknown', state: 'unknown' };
+  }
+}
+
+/** Status badge presentation for a capability matrix row. */
+export function capabilityStatusMeta(status) {
+  switch (status) {
+    case 'ready':
+      return { variant: 'ok', icon: 'check-circle', labelKey: 'settings.capStatusReady' };
+    case 'degraded':
+      return { variant: 'warn', icon: 'alert', labelKey: 'settings.capStatusDegraded' };
+    case 'disabled':
+      return { variant: 'warn', icon: 'stop', labelKey: 'settings.capStatusDisabled' };
+    default:
+      return { variant: 'danger', icon: 'stop', labelKey: 'settings.capStatusUnavailable' };
+  }
+}
+
+/** Normalises GET /api/capabilities into structured Capability Matrix rows with remediation. */
+export function normalizeCapabilityRows(payload, fetchedAt = 0) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.capabilities)) return [];
+  const sourceFallback = typeof payload.schema === 'string' && payload.schema ? payload.schema : 'omnia.capabilities.v1';
+  const tsFallback = Number(payload.checkedAt ?? payload.checkedAtMs ?? fetchedAt ?? 0) || 0;
+  return payload.capabilities
+    .map((cap) => {
+      if (!cap || typeof cap !== 'object') return null;
+      const id = String(cap.id ?? cap.name ?? '').trim();
+      if (!id) return null;
+      const rawStatus = typeof (cap.status ?? cap.readiness) === 'string' ? String(cap.status ?? cap.readiness).trim().toLowerCase() : '';
+      const enabled =
+        typeof cap.enabled === 'boolean'
+          ? cap.enabled
+          : typeof cap.ready === 'boolean'
+            ? cap.ready
+            : typeof cap.available === 'boolean'
+              ? cap.available
+              : rawStatus === 'ready' || rawStatus === 'enabled' || rawStatus === 'ok' || rawStatus === 'available';
+      let status = rawStatus;
+      if (!status || status === 'enabled' || status === 'ok' || status === 'available') {
+        status = enabled ? 'ready' : 'unavailable';
+      } else if (status === 'off' || status === 'false') {
+        status = 'disabled';
+      }
+      if (!['ready', 'degraded', 'unavailable', 'disabled'].includes(status)) {
+        status = enabled ? 'ready' : 'unavailable';
+      }
+      const detailParts = [];
+      if (typeof cap.detail === 'string' && cap.detail.trim()) detailParts.push(cap.detail.trim());
+      else if (typeof cap.reason === 'string' && cap.reason.trim()) detailParts.push(cap.reason.trim());
+      else {
+        if (cap.backend) detailParts.push(String(cap.backend));
+        if (cap.mode) detailParts.push(String(cap.mode));
+        if (cap.schema) detailParts.push(String(cap.schema));
+        if (cap.invariant) detailParts.push(String(cap.invariant));
+        if (Array.isArray(cap.directions) && cap.directions.length) detailParts.push(cap.directions.join('/'));
+        if (Number.isFinite(cap.timeoutMs)) detailParts.push(`${cap.timeoutMs}ms`);
+        if (cap.erasureReceipts === true) detailParts.push('erasureReceipts');
+      }
+      const rawRemediation = typeof cap.remediation === 'string' ? cap.remediation.trim() : '';
+      const remediationKey =
+        status === 'ready'
+          ? ''
+          : rawRemediation
+            ? ''
+            : id === 'runtime_proxy'
+              ? 'settings.capRemediateRuntime'
+              : 'settings.capRemediateGeneric';
+      return {
+        id,
+        name: String(cap.name ?? id),
+        endpoint: typeof cap.endpoint === 'string' ? cap.endpoint : '',
+        enabled,
+        status,
+        meta: capabilityStatusMeta(status),
+        source: typeof cap.source === 'string' && cap.source ? cap.source : sourceFallback,
+        detail: detailParts.join(' · '),
+        remediation: rawRemediation,
+        remediationKey,
+        checkedAt: Number(cap.checkedAt ?? cap.checkedAtMs ?? cap.updatedAt ?? tsFallback ?? 0) || 0
+      };
+    })
+    .filter(Boolean);
+}
+
+export function summarizeCapabilities(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let ready = 0;
+  let degraded = 0;
+  let unavailable = 0;
+  for (const row of list) {
+    if (row.status === 'ready') ready += 1;
+    else if (row.status === 'degraded') degraded += 1;
+    else unavailable += 1;
+  }
+  return { total: list.length, ready, degraded, unavailable };
 }
 
 /** Palette → section ids, shared by the commands and the view. */

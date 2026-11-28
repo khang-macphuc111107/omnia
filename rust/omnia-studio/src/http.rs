@@ -304,6 +304,7 @@ impl StudioServer {
                                         conn_state,
                                         conn_dispatch,
                                         conn_shutdown,
+                                        addr.port(),
                                     )
                                     .await;
                                 });
@@ -356,6 +357,12 @@ impl StudioServer {
 /// Validates a `Host` header against loopback-only hostnames (`127.0.0.1`, `localhost`, `[::1]`).
 #[must_use]
 pub fn is_allowed_loopback_host(raw: &str) -> bool {
+    is_allowed_loopback_host_for_port(raw, None)
+}
+
+/// Validates an HTTP `Host` header against loopback names and optionally pins to `bound_port`.
+#[must_use]
+pub fn is_allowed_loopback_host_for_port(raw: &str, bound_port: Option<u16>) -> bool {
     let trimmed = raw.trim();
     if trimmed.is_empty()
         || trimmed.len() > 256
@@ -364,39 +371,65 @@ pub fn is_allowed_loopback_host(raw: &str) -> bool {
     {
         return false;
     }
-    let host_part = if let Some(rest) = trimmed.strip_prefix('[') {
+    let (host_part, port_num): (&str, Option<u16>) = if let Some(rest) = trimmed.strip_prefix('[') {
         let Some((inner, tail)) = rest.split_once(']') else {
             return false;
         };
-        if !tail.is_empty() {
-            let Some(port) = tail.strip_prefix(':') else {
+        let port = if tail.is_empty() {
+            None
+        } else {
+            let Some(port_str) = tail.strip_prefix(':') else {
                 return false;
             };
-            if !is_valid_port_str(port) {
+            if !is_valid_port_str(port_str) {
                 return false;
             }
-        }
-        inner
-    } else if let Some((h, port)) = trimmed.split_once(':') {
+            match port_str.parse::<u16>() {
+                Ok(p) => Some(p),
+                Err(_) => return false,
+            }
+        };
+        (inner, port)
+    } else if let Some((h, port_str)) = trimmed.split_once(':') {
         if h.contains(':') {
-            return trimmed == "::1";
+            if trimmed != "::1" {
+                return false;
+            }
+            ("::1", None)
+        } else {
+            if !is_valid_port_str(port_str) {
+                return false;
+            }
+            let Ok(p) = port_str.parse::<u16>() else {
+                return false;
+            };
+            (h, Some(p))
         }
-        if !is_valid_port_str(port) {
-            return false;
-        }
-        h
     } else {
-        trimmed
+        (trimmed, None)
     };
 
-    host_part.eq_ignore_ascii_case("127.0.0.1")
+    let is_loopback = host_part.eq_ignore_ascii_case("127.0.0.1")
         || host_part.eq_ignore_ascii_case("localhost")
-        || host_part == "::1"
+        || host_part == "::1";
+    if !is_loopback {
+        return false;
+    }
+    if let Some(expected_port) = bound_port {
+        return port_num.unwrap_or(80) == expected_port;
+    }
+    true
 }
 
 /// Validates an HTTP `Origin` header (`""` allowed for direct/CLI requests; `"null"` rejected).
 #[must_use]
 pub fn is_allowed_loopback_origin(raw: &str) -> bool {
+    is_allowed_loopback_origin_for_port(raw, None)
+}
+
+/// Validates an HTTP `Origin` header and optionally pins it strictly to `bound_port`.
+#[must_use]
+pub fn is_allowed_loopback_origin_for_port(raw: &str, bound_port: Option<u16>) -> bool {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return true;
@@ -426,12 +459,20 @@ pub fn is_allowed_loopback_origin(raw: &str) -> bool {
             return false;
         }
     }
-    match parsed.host() {
+    let is_loopback = match parsed.host() {
         Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
         Some(Host::Ipv4(ip)) => ip.is_loopback(),
         Some(Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
+    };
+    if !is_loopback {
+        return false;
     }
+    if let Some(expected_port) = bound_port {
+        let origin_port = parsed.port_or_known_default().unwrap_or(80);
+        return origin_port == expected_port;
+    }
+    true
 }
 
 /// Serves a static UI asset strictly contained inside `ui_root` with MIME & reparse guards.
@@ -538,6 +579,14 @@ pub fn serve_static_asset(ui_root: &Path, request_path: &str) -> HttpResponse {
 /// `Cookie:` headers) plus any residual already-buffered body bytes.
 pub fn parse_http_head_and_remainder(
     raw: &[u8],
+) -> Result<(HttpRequest, Option<usize>, bool, Vec<u8>), HttpResponse> {
+    parse_http_head_and_remainder_for_port(raw, None)
+}
+
+/// Parses an HTTP/1.x request head block and enforces strict `bound_port` loopback pinning when provided.
+pub fn parse_http_head_and_remainder_for_port(
+    raw: &[u8],
+    bound_port: Option<u16>,
 ) -> Result<(HttpRequest, Option<usize>, bool, Vec<u8>), HttpResponse> {
     let Some(header_end_pos) = find_header_end(raw) else {
         return Err(HttpResponse::error(
@@ -762,20 +811,20 @@ pub fn parse_http_head_and_remainder(
         ));
     }
     if let Some(host) = headers.get("host") {
-        if !is_allowed_loopback_host(host) {
+        if !is_allowed_loopback_host_for_port(host, bound_port) {
             return Err(HttpResponse::error(
                 403,
                 "forbidden_host",
-                "Non-loopback Host header rejected.",
+                "Non-loopback or mismatched-port Host header rejected.",
             ));
         }
     }
     if let Some(origin) = headers.get("origin") {
-        if !is_allowed_loopback_origin(origin) {
+        if !is_allowed_loopback_origin_for_port(origin, bound_port) {
             return Err(HttpResponse::error(
                 403,
                 "forbidden_origin",
-                "Origin header outside loopback allowlist rejected.",
+                "Origin header outside bound loopback allowlist rejected.",
             ));
         }
     }
@@ -804,6 +853,7 @@ pub fn parse_http_head_and_remainder(
 async fn read_http_request<R>(
     stream: &mut R,
     shutdown_rx: &mut watch::Receiver<bool>,
+    bound_port: u16,
 ) -> Result<HttpRequest, HttpResponse>
 where
     R: AsyncRead + Unpin,
@@ -865,7 +915,7 @@ where
     }
 
     let (mut req, content_length, is_chunked, mut remainder) =
-        parse_http_head_and_remainder(&buffer)?;
+        parse_http_head_and_remainder_for_port(&buffer, Some(bound_port))?;
     let body_deadline = time::Instant::now() + CLIENT_BODY_TOTAL_TIMEOUT;
 
     if is_chunked {
@@ -1027,13 +1077,14 @@ async fn serve_connection<S, F, Fut>(
     state: Arc<S>,
     dispatcher: F,
     mut shutdown_rx: watch::Receiver<bool>,
+    bound_port: u16,
 ) -> io::Result<()>
 where
     S: Send + Sync + 'static,
     F: Fn(Arc<S>, HttpRequest) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = HttpResponse> + Send + 'static,
 {
-    let req_result = read_http_request(&mut stream, &mut shutdown_rx).await;
+    let req_result = read_http_request(&mut stream, &mut shutdown_rx, bound_port).await;
     let (mut response, req_origin) = match req_result {
         Ok(req) => {
             let origin = req.header("origin").map(ToOwned::to_owned);
@@ -1057,7 +1108,8 @@ where
     };
 
     if let Some(origin) = req_origin.as_deref() {
-        if is_allowed_loopback_origin(origin) && !origin.trim().is_empty() {
+        if is_allowed_loopback_origin_for_port(origin, Some(bound_port)) && !origin.trim().is_empty()
+        {
             response.headers.push((
                 "Access-Control-Allow-Origin".to_string(),
                 origin.trim().to_string(),
@@ -1401,9 +1453,41 @@ mod tests {
         let err = parse_http_head_and_remainder(raw_long.as_bytes()).unwrap_err();
         assert_eq!(err.status, 414);
 
-        // 8. Port 0 rejected in Host & Origin.
+        // 8. Port 0 rejected in Host & Origin, plus strict bound_port pinning (AUD-02).
         assert!(!is_allowed_loopback_host("127.0.0.1:0"));
         assert!(!is_allowed_loopback_origin("http://127.0.0.1:0"));
         assert!(is_allowed_loopback_origin("http://localhost:3000"));
+
+        assert!(is_allowed_loopback_host_for_port("127.0.0.1:8787", Some(8787)));
+        assert!(is_allowed_loopback_host_for_port("[::1]:8787", Some(8787)));
+        assert!(!is_allowed_loopback_host_for_port("127.0.0.1:3000", Some(8787)));
+        assert!(!is_allowed_loopback_host_for_port("localhost", Some(8787)));
+        assert!(is_allowed_loopback_host_for_port("localhost", Some(80)));
+
+        assert!(is_allowed_loopback_origin_for_port("http://localhost:8787", Some(8787)));
+        assert!(is_allowed_loopback_origin_for_port("http://[::1]:8787", Some(8787)));
+        assert!(!is_allowed_loopback_origin_for_port("http://localhost:3000", Some(8787)));
+        assert!(!is_allowed_loopback_origin_for_port("http://127.0.0.1:9999", Some(8787)));
+        assert!(!is_allowed_loopback_origin_for_port("http://localhost", Some(8787)));
+        assert!(is_allowed_loopback_origin_for_port("http://localhost", Some(80)));
+
+        let err = parse_http_head_and_remainder_for_port(
+            b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:3000\r\n\r\n",
+            Some(8787),
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 403);
+        let err = parse_http_head_and_remainder_for_port(
+            b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://localhost:3000\r\n\r\n",
+            Some(8787),
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 403);
+        let ok = parse_http_head_and_remainder_for_port(
+            b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nOrigin: http://localhost:8787\r\n\r\n",
+            Some(8787),
+        )
+        .expect("exact bound_port Host+Origin succeeds");
+        assert_eq!(ok.0.path, "/api/health");
     }
 }

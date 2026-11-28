@@ -325,7 +325,7 @@ def parse_harness_stream(harness: str, stdout_events: List[Tuple[float, str]], t
         "doom_loop_detected": _detect_doom_loop(tool_sigs),
         "tool_histogram": hist,
         "harness_errors": errors[:10],
-        "final_assistant_text": final_text[:2500],
+        "final_assistant_text": final_text[:8000],
     }
 
 

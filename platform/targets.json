@@ -239,6 +239,108 @@
         "capability": "Blocked until Android SDK/NDK toolchain and platform/android wrapper project are implemented",
         "recovery": "Clean external Gradle/NDK build root; zero in-tree APK or Gradle cache outputs"
       }
+    },
+    {
+      "id": "linux-native",
+      "display_name": "Linux Full Native Rust Headless CLI & Runtime (POSIX libsqlite3 Fallback)",
+      "supported_hosts": [
+        "linux-x64",
+        "linux-arm64"
+      ],
+      "required_source_inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust/omnia-core/Cargo.toml",
+        "rust/omnia-storage/Cargo.toml",
+        "rust/omnia-winsqlite/Cargo.toml",
+        "rust/omnia-agent/Cargo.toml",
+        "rust/omnia-cli/Cargo.toml",
+        "rust/omnia-runtime/Cargo.toml"
+      ],
+      "required_toolchains": [
+        "cargo",
+        "rustc"
+      ],
+      "required_rust_targets": [
+        "x86_64-unknown-linux-gnu"
+      ],
+      "expected_artifacts": [
+        {
+          "name": "omnia",
+          "role": "Full Native Rust ultra-lightweight headless CLI and ratatui TUI on POSIX",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug"
+          ]
+        },
+        {
+          "name": "omnia-runtime",
+          "role": "Full Native Rust async HTTP/SSE provider runtime on POSIX",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug"
+          ]
+        }
+      ],
+      "lifecycle": {
+        "build": "cargo build --workspace --locked --release --target-dir ../OmniaData/build/omnia-rust-workspace (links system libsqlite3 or sqlite3 pkg-config)",
+        "install": "Externalized portable ELF binaries under ../OmniaData/build/omnia-rust-workspace/{release,debug}",
+        "launch": "<build_dir>/release/omnia or <build_dir>/release/omnia-runtime --root . --port 8787",
+        "version": "0.1.0 (Omnia Full Native Rust POSIX)",
+        "capability": "Headless CLI, ratatui TUI, Rust PeerMesh/Graphify/DynamicRouter/MemoryGraph, loopback HTTP/JSON-RPC and async SSE runtime with POSIX libsqlite3 WAL",
+        "recovery": "POSIX flock store lease, SQLite WAL recovery, clean external out-of-source Cargo rebuild"
+      }
+    },
+    {
+      "id": "macos-native",
+      "display_name": "macOS Full Native Rust Headless CLI & Runtime (POSIX libsqlite3 Fallback)",
+      "supported_hosts": [
+        "darwin-arm64",
+        "darwin-x64"
+      ],
+      "required_source_inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust/omnia-core/Cargo.toml",
+        "rust/omnia-storage/Cargo.toml",
+        "rust/omnia-winsqlite/Cargo.toml",
+        "rust/omnia-agent/Cargo.toml",
+        "rust/omnia-cli/Cargo.toml",
+        "rust/omnia-runtime/Cargo.toml"
+      ],
+      "required_toolchains": [
+        "cargo",
+        "rustc"
+      ],
+      "required_rust_targets": [
+        "aarch64-apple-darwin"
+      ],
+      "expected_artifacts": [
+        {
+          "name": "omnia",
+          "role": "Full Native Rust ultra-lightweight headless CLI and ratatui TUI on macOS",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug"
+          ]
+        },
+        {
+          "name": "omnia-runtime",
+          "role": "Full Native Rust async HTTP/SSE provider runtime on macOS",
+          "search_roots": [
+            "omnia-rust-workspace/release",
+            "omnia-rust-workspace/debug"
+          ]
+        }
+      ],
+      "lifecycle": {
+        "build": "cargo build --workspace --locked --release --target-dir ../OmniaData/build/omnia-rust-workspace (links macOS system libsqlite3)",
+        "install": "Externalized portable Mach-O binaries under ../OmniaData/build/omnia-rust-workspace/{release,debug}",
+        "launch": "<build_dir>/release/omnia or <build_dir>/release/omnia-runtime --root . --port 8787",
+        "version": "0.1.0 (Omnia Full Native Rust macOS)",
+        "capability": "Headless CLI, ratatui TUI, Rust PeerMesh/Graphify/DynamicRouter/MemoryGraph, loopback HTTP/JSON-RPC and async SSE runtime with POSIX libsqlite3 WAL",
+        "recovery": "POSIX flock store lease, SQLite WAL recovery, clean external out-of-source Cargo rebuild"
+      }
     }
   ]
 }

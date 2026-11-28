@@ -16,6 +16,7 @@ pub mod acp_http;
 pub mod acp_proto;
 pub mod agent_store;
 pub mod ast_edit;
+pub mod builtin_stem;
 pub mod cache_guard;
 pub mod checkpoint;
 pub mod context;
@@ -23,6 +24,7 @@ pub mod dap;
 pub mod dynamic_plugins;
 pub mod edit;
 pub mod engine;
+pub mod eval_scripted;
 pub mod git_forensics;
 pub mod graph_locator;
 pub mod hooks;
@@ -31,6 +33,7 @@ pub mod lsp;
 pub mod mcp_client;
 pub mod memory_engine;
 pub mod merkle;
+pub mod office_reader;
 pub mod output_compressor;
 pub mod patch;
 pub mod path_guard;
@@ -61,12 +64,21 @@ pub use agent_store::{
     default_omnia_data_dir, read_models_config, AgentStore, CachedAstRow, CachedMerkleRow,
     ModelCost, ModelEntryConfig, PlaybookEntry, ProviderConfig,
 };
+pub use builtin_stem::{
+    analyze_redos, check_syntax_balance, dispatch_stem_verify, eval_math_expr,
+    has_unsafe_redos_construct, solve_boolean_sat, solve_matrix, solve_ode_rk4, solve_root,
+    stem_verify_tool_spec, validate_and_next_cron, verify_claims, BooleanSatResult, ClaimSource,
+    ClaimVerificationReport, CronReport, MatrixResult, OdeRk4Result, RedosReport, RootResult,
+    SyntaxBalanceReport,
+};
 pub use cache_guard::{
     blake3_hex, canonicalize_json, canonicalize_openai_tools, sha256_hex, HarnessCacheStats,
     PrefixCacheGuard, BASE_SYSTEM_PROMPT,
 };
 pub use checkpoint::{
-    parse_test_pass_counts, TestOutcomeTransition, TestPassCounts, TurnCheckpoint,
+    canonical_path_identity, parse_test_pass_counts, CompactionRebaseOutcome,
+    CompactionTimelineEntry, PartialRollbackReport, PendingConversationRewind,
+    RecoveryArchiveEntry, TestOutcomeTransition, TestPassCounts, TurnCheckpoint,
     TurnCheckpointStore,
 };
 pub use context::{DiscoveredRule, SkillMetadata, WorkspaceContextBundle};
@@ -94,6 +106,10 @@ pub use lakeview::{
 pub use lsp::{LazyLspManager, LspLanguage, LspLocation, LspQueryResult};
 pub use memory_engine::{MemoryEngine, RecallQuery, RecallResponse, RetainItemInput};
 pub use merkle::{HarnessMerkleStatus, MerkleFileEntry, MerkleIndex, MerkleRefreshDelta};
+pub use office_reader::{
+    extract_document_text, extract_document_text_with_limit, is_supported_document_extension,
+    OFFICE_MAX_UNCOMPRESSED_BYTES,
+};
 pub use output_compressor::{
     compress_text_output, compress_tool_output, strip_ansi_and_progress, CompressedOutput,
     CompressionStats, OutputCompressor, OutputCompressorConfig,
@@ -126,8 +142,8 @@ pub use test_time_scaling::{
     run_best_of_n, run_mcts_tree_search, run_tex_cross_validation, TestTimeScalingConfig,
 };
 pub use tools::{
-    compact_shell_output, detect_default_shell, ExtensionToolHandler, InteractiveApprover,
-    ToolExecOutput, ToolRuntime,
+    compact_shell_output, detect_default_shell, ExtensionToolHandler, FileMutationLocks,
+    InteractiveApprover, ToolExecOutput, ToolRuntime,
 };
 pub use trajectory::{TrajectoryEvent, TrajectoryRecorder};
 

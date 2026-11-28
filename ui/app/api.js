@@ -36,8 +36,10 @@ export class ApiError extends Error {
 // ---------------------------------------------------------------------------
 
 export const connection = createStore({
-  status: 'connecting', // 'connecting' | 'online' | 'offline'
+  status: 'connecting', // transport reachability: 'connecting' | 'online' | 'offline'
+  serviceHealth: 'unknown', // service health: 'unknown' | 'healthy' | 'degraded' | 'unhealthy'
   health: null,         // last /api/health body
+  healthCheckedAt: 0,   // timestamp of last /api/health probe
   lastOkAt: 0,
   lastError: null,
   retryAt: 0
@@ -404,6 +406,64 @@ function normalizeRagPayload(data) {
   };
 }
 
+function normalizeCapabilityEntry(cap, fallbackCheckedAt = 0, fallbackSource = '') {
+  if (!cap || typeof cap !== 'object') return null;
+  const id = String(cap.id ?? cap.name ?? '').trim();
+  if (!id) return null;
+  const rawStatus = typeof (cap.status ?? cap.readiness) === 'string' ? String(cap.status ?? cap.readiness).trim().toLowerCase() : '';
+  const enabled =
+    typeof cap.enabled === 'boolean'
+      ? cap.enabled
+      : typeof cap.ready === 'boolean'
+        ? cap.ready
+        : typeof cap.available === 'boolean'
+          ? cap.available
+          : rawStatus === 'ready' || rawStatus === 'enabled' || rawStatus === 'ok' || rawStatus === 'available';
+  let status = rawStatus;
+  if (!status || status === 'enabled' || status === 'ok' || status === 'available') {
+    status = enabled ? 'ready' : 'unavailable';
+  } else if (status === 'off' || status === 'false') {
+    status = 'disabled';
+  }
+  const detailParts = [];
+  if (typeof cap.detail === 'string' && cap.detail.trim()) detailParts.push(cap.detail.trim());
+  else if (typeof cap.reason === 'string' && cap.reason.trim()) detailParts.push(cap.reason.trim());
+  else {
+    if (cap.backend) detailParts.push(String(cap.backend));
+    if (cap.mode) detailParts.push(String(cap.mode));
+    if (cap.schema) detailParts.push(String(cap.schema));
+    if (cap.invariant) detailParts.push(String(cap.invariant));
+    if (Array.isArray(cap.directions) && cap.directions.length) detailParts.push(cap.directions.join('/'));
+    if (Number.isFinite(cap.timeoutMs)) detailParts.push(`${cap.timeoutMs}ms`);
+    if (cap.erasureReceipts === true) detailParts.push('erasureReceipts');
+  }
+  return {
+    ...cap,
+    id,
+    name: String(cap.name ?? id),
+    enabled,
+    status,
+    endpoint: typeof cap.endpoint === 'string' ? cap.endpoint : '',
+    source: typeof cap.source === 'string' && cap.source ? cap.source : fallbackSource,
+    detail: detailParts.join(' · '),
+    remediation: typeof cap.remediation === 'string' ? cap.remediation : '',
+    checkedAt: Number(cap.checkedAt ?? cap.checkedAtMs ?? cap.updatedAt ?? fallbackCheckedAt ?? 0) || 0
+  };
+}
+
+function normalizeCapabilitiesPayload(data) {
+  if (!data || typeof data !== 'object') return data;
+  const checkedAt = Number(data.checkedAt ?? data.checkedAtMs ?? data.updatedAt ?? 0) || 0;
+  const source = typeof data.schema === 'string' ? data.schema : 'omnia.capabilities.v1';
+  const rawList = Array.isArray(data.capabilities) ? data.capabilities : [];
+  return {
+    ...data,
+    schema: source,
+    checkedAt,
+    capabilities: rawList.map((entry) => normalizeCapabilityEntry(entry, checkedAt, source)).filter(Boolean)
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Endpoints (shapes in the spec §4)
 // ---------------------------------------------------------------------------
@@ -411,6 +471,14 @@ function normalizeRagPayload(data) {
 export const api = {
   /** → { ok, engine, compiler, crateCount, rustFiles, httpStack, sqliteBackend, pid, workingSetBytes, binaryBytes, skillCount, peerCount } */
   health: (opts) => get('/api/health', null, opts),
+
+  /** → { ok, schema, listener, checkedAt, capabilities:[{ id, name, enabled, status, endpoint, source, detail, remediation, checkedAt }] } */
+  capabilities: async (opts) => normalizeCapabilitiesPayload(await get('/api/capabilities', null, opts)),
+
+  chat: {
+    /** Abort an active chat/agent run on the server (best-effort cancellation). */
+    stop: (body = {}, opts) => post('/api/chat/stop', body, opts)
+  },
 
   sessions: {
     /** Bounded keyset page → { ok, sessions, totalCount, nextCursor, activeLease }. */
@@ -467,7 +535,9 @@ export const api = {
           ? { ...policy, task_class: policy.taskClass }
           : policy;
       return normalizeRouterPayload(await post('/api/router/decide', payload, opts));
-    }
+    },
+    /** Cancel/release an in-flight or reserved router decision. */
+    cancel: async (body = {}, opts) => normalizeRouterPayload(await post('/api/router/cancel', body, opts))
   },
 
   memory: {
@@ -549,22 +619,34 @@ function scheduleHealth(delay) {
   healthTimer = setTimeout(checkHealth, delay);
 }
 
-async function checkHealth() {
+export async function checkHealth() {
   clearTimeout(healthTimer);
+  const checkedAt = Date.now();
   try {
     const health = await api.health({ timeout: 6000 });
     failures = 0;
-    connection.set({ status: 'online', health, lastOkAt: Date.now(), lastError: null, retryAt: 0 });
-    healthTimer = setTimeout(checkHealth, healthEvery);
+    const healthy = Boolean(health && health.ok !== false);
+    connection.set({
+      status: 'online',
+      serviceHealth: healthy ? 'healthy' : 'degraded',
+      health,
+      healthCheckedAt: checkedAt,
+      lastOkAt: healthy ? checkedAt : connection.get().lastOkAt,
+      lastError: healthy ? null : new ApiError({ code: health?.error || 'health_degraded', path: '/api/health' }),
+      retryAt: 0
+    });
+    if (monitorStarted) healthTimer = setTimeout(checkHealth, healthEvery);
   } catch (error) {
     failures += 1;
     const delay = Math.min(30000, 2000 * 2 ** Math.min(failures - 1, 4));
     connection.set({
       status: error.isNetwork ? 'offline' : 'online',
+      serviceHealth: error.isNetwork ? 'unknown' : 'unhealthy',
+      healthCheckedAt: checkedAt,
       lastError: error,
       retryAt: Date.now() + delay
     });
-    healthTimer = setTimeout(checkHealth, delay);
+    if (monitorStarted) healthTimer = setTimeout(checkHealth, delay);
   }
 }
 
@@ -577,7 +659,7 @@ export function startHealthMonitor({ every = 15000 } = {}) {
 /** Re-check the server now (used by "Thử lại" buttons). */
 export function retryConnection() {
   failures = 0;
-  checkHealth();
+  return checkHealth();
 }
 
 const pollers = new Set();

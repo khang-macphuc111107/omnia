@@ -20,8 +20,8 @@ use omnia_agent::{
     default_omnia_data_dir, process_tree_rss_bytes, redact_secrets, resolve_model_endpoint,
     run_acp_http_server, run_acp_stdio_server, run_super_eval, sanitize_windows_path, AgentStore,
     ApprovalMode, FileReadTracker, HarnessEventSink, HarnessStreamEvent, NativeSuperEngine,
-    PermissionsEngine, PluginRegistry, SuperEvalOptions, TurnCheckpointStore, WireApiMode,
-    WorkspaceGraphIndex,
+    PermissionRule, PermissionsEngine, PluginRegistry, SuperEvalOptions, TurnCheckpointStore,
+    WireApiMode, WorkspaceGraphIndex,
 };
 use omnia_core::PrivacyMask;
 use omnia_workspace_ops::hardware::collect_host_system_snapshot;
@@ -40,6 +40,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+mod mcp_server;
+mod super_cmds;
 mod tui;
 
 #[global_allocator]
@@ -85,6 +87,13 @@ fn main() -> ExitCode {
             }
         },
         "--acp" | "acp" => run_acp_stdio_from_args(&args[1..]),
+        "--mcp" | "mcp" => match run_mcp_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia --mcp error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
         "--acp-http" | "acp-http" => {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -220,6 +229,20 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        "learn" => match run_learn_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia learn error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
+        "proceed" => match run_proceed_cmd(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("omnia proceed error: {}", redact_secrets(&format!("{e:#}")));
+                ExitCode::FAILURE
+            }
+        },
         "arena" => match run_arena_cmd(&args[1..]) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -275,6 +298,7 @@ USAGE:
   omnia run --workspace <dir> --model <id> --base-url <url> [OPTIONS] \"<prompt>\"
   omnia --acp [--model <id>] [--base-url <url>] [--api-key <key>]
   omnia --acp-http [--host <ip>] [--port <n>] [--secret <key>]
+  omnia --mcp [--workspace <dir>]
   omnia rewind --workspace <dir> --turn <n> [--session <id>] [--preview]
   omnia net [--dns] [--proxy] [--all] [--offline] [--json] [--privacy-mask]
   omnia speedtest [--quick | --standard] [--url <override>] [--json] [--privacy-mask]
@@ -283,6 +307,8 @@ USAGE:
   omnia rag <query|sources|ingest|pin|export> [--workspace <dir>] [--tier local|global|both] [--json] ...
   omnia lifecycle <status|list|upsert|link|todo|dod|handoff|learn|lessons|gap-radar|super-state|verify> [--workspace <dir>] [--json]
   omnia skills <route|vault|dag|pipelines|doctor|codify> [--workspace <dir>] [--json] ...
+  omnia learn <add|sync|status> [\"<lesson>\"] [--global] [--workspace <dir>] [--json]
+  omnia proceed [status|on|off|recommended-only|full] [--workspace <dir>] [--json]
   omnia arena \"<prompt>\" --models <m1,m2[,m3,m4]> [--effort max] [--temperature 0.7] [--json]
 
 RUN OPTIONS:
@@ -299,6 +325,7 @@ RUN OPTIONS:
   --output-format <fmt>          stream-json | json | text (default: text)
   --auto-approve                 Run with ApprovalMode::Yolo (default — full auto-approve)
   --approval-mode <mode>         yolo|turbo|full-access|unrestricted|auto-approve (default: yolo) | write | plan | always-ask | always-ask-cached
+  --sandbox                      Strictly opt-in restricted sandbox (enables strict safety rules & untrusted workspace gate; default remains YOLO)
   --max-turns <n>                Maximum agent turns (default: 50)
   --timeout-secs, --timeout <s>  Run timeout in seconds (default: 300)
   --prompt-file <path>           Read prompt from UTF-8 file instead of positional arg
@@ -371,6 +398,9 @@ fn extract_positional_prompt(args: &[String]) -> Option<String> {
         "--models",
         "--temperature",
         "--system-prompt",
+        "--cause",
+        "--invariant",
+        "--verify",
     ];
     let mut i = 0;
     let mut positionals = Vec::new();
@@ -489,13 +519,19 @@ fn launch_tui_from_args(args: &[String]) -> ExitCode {
         }
     }
 
+    let sandbox_enabled = args.iter().any(|a| a == "--sandbox");
     let wire_api = arg_value(args, "--wire-api").map(|s| WireApiMode::parse_flag(&s));
     let thinking = resolve_effort_arg(args);
-    let approval_mode = resolve_approval_mode(args).ok().filter(|_| {
-        args.iter().any(|a| {
-            a == "--auto-approve" || a == "--approval-mode" || a.starts_with("--approval-mode=")
-        })
+    let has_explicit_approval = args.iter().any(|a| {
+        a == "--auto-approve" || a == "--approval-mode" || a.starts_with("--approval-mode=")
     });
+    let approval_mode = if has_explicit_approval {
+        resolve_approval_mode(args).ok()
+    } else if sandbox_enabled {
+        Some(ApprovalMode::Write)
+    } else {
+        None
+    };
     let max_turns = arg_value(args, "--max-turns")
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(50);
@@ -522,6 +558,7 @@ fn launch_tui_from_args(args: &[String]) -> ExitCode {
         wire_api,
         thinking,
         approval_mode,
+        sandbox: sandbox_enabled,
         max_turns,
         timeout_secs,
     })) {
@@ -597,7 +634,8 @@ async fn run_agent_cmd(args: &[String]) -> Result<bool> {
         .unwrap_or_else(|| "text".into())
         .to_ascii_lowercase();
 
-    let approval_mode = resolve_approval_mode(args)?;
+    let (approval_mode, workspace_trusted, permission_rules, sandbox_enabled) =
+        resolve_run_security_policy(args)?;
 
     let prompt = if let Some(pf) = arg_value(args, "--prompt-file") {
         fs::read_to_string(&pf).with_context(|| format!("failed to read --prompt-file {pf}"))?
@@ -634,6 +672,7 @@ async fn run_agent_cmd(args: &[String]) -> Result<bool> {
             "workspace": cwd.to_string_lossy(),
             "model": model,
             "wireApi": format!("{wire_api:?}").to_ascii_lowercase(),
+            "sandbox": sandbox_enabled,
         }));
     }
 
@@ -739,8 +778,8 @@ async fn run_agent_cmd(args: &[String]) -> Result<bool> {
         model,
         prompt,
         approval_mode,
-        workspace_trusted: true,
-        permission_rules: PermissionsEngine::default_rules(),
+        workspace_trusted,
+        permission_rules,
         thinking_level,
         config_dir,
         api_base,
@@ -1624,6 +1663,227 @@ fn run_skills_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn run_mcp_cmd(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia --mcp [--workspace <dir>]\n\nStarts the lightweight stdio JSON-RPC 2.0 MCP server exposing:\n  - omni_search_skills\n  - omni_load_skill (< 15.5 KB safe ceiling)\n  - graphify_query\n  - rag_search"
+        );
+        return Ok(());
+    }
+    let workspace = resolve_workspace_arg(args);
+    mcp_server::run_mcp_stdio_server(&workspace)
+}
+
+fn run_learn_cmd(args: &[String]) -> Result<()> {
+    use omnia_harness::artifact_os::LessonRecord;
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia learn <add|sync|status> [\"<lesson>\"] [--global] [--title <t>] [--cause <c>] [--invariant <i>] [--verify <cmd>] [--workspace <dir>] [--json]"
+        );
+        return Ok(());
+    }
+    let (sub, rest) = match args.first().map(String::as_str) {
+        None => ("status", args),
+        Some("status") => ("status", &args[1..]),
+        Some("add") => ("add", &args[1..]),
+        Some("sync") => ("sync", &args[1..]),
+        Some(flag) if flag.starts_with("--") => ("status", args),
+        Some(_) => ("add", args),
+    };
+    let workspace = resolve_workspace_arg(rest);
+    let json_out = rest.iter().any(|a| a == "--json");
+    let aos = open_cli_artifact_os(&workspace)?;
+    let global_path = super_cmds::global_lessons_path();
+
+    match sub {
+        "status" => {
+            let lessons = aos.list_lessons(None).map_err(|e| anyhow::anyhow!(e))?;
+            let proj_count = lessons.iter().filter(|l| l.scope != "global").count();
+            let glob_count = lessons.iter().filter(|l| l.scope == "global").count();
+            let proj_path = super_cmds::project_lessons_path(&workspace);
+            let payload = json!({
+                "ok": true,
+                "totalLessons": lessons.len(),
+                "projectLessons": proj_count,
+                "globalLessons": glob_count,
+                "projectMirrorPath": proj_path.display().to_string(),
+                "projectMirrorExists": proj_path.is_file(),
+                "globalMirrorPath": global_path.display().to_string(),
+                "globalMirrorExists": global_path.is_file(),
+                "cap": super_cmds::GLOBAL_LESSONS_MAX_ENTRIES,
+                "recent": lessons.iter().take(10).collect::<Vec<_>>(),
+            });
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                println!(
+                    "Omnia Learn Status | total={} (project={} / global={}) | global_mirror={} (exists={})",
+                    lessons.len(),
+                    proj_count,
+                    glob_count,
+                    global_path.display(),
+                    global_path.is_file()
+                );
+            }
+        }
+        "add" => {
+            let is_global = rest.iter().any(|a| a == "--global" || a == "-g")
+                || arg_value(rest, "--scope")
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("global"));
+            let scope = if is_global { "global" } else { "project" };
+            let positional = extract_positional_prompt(rest);
+            let title = arg_value(rest, "--title")
+                .or_else(|| positional.clone())
+                .context("omnia learn add requires lesson text or --title <text>")?;
+            let cause = arg_value(rest, "--cause")
+                .or_else(|| arg_value(rest, "--content"))
+                .unwrap_or_else(|| title.clone());
+            let invariant = arg_value(rest, "--invariant")
+                .or(positional)
+                .unwrap_or_else(|| title.clone());
+            let verify_cmd = arg_value(rest, "--verify").unwrap_or_default();
+            let rec = LessonRecord {
+                id: format!("lsn-{}", &omnia_core::uuid_v4()[..8]),
+                scope: scope.to_string(),
+                title,
+                symptom: cause.clone(),
+                root_cause: cause,
+                invariant,
+                anti_pattern: String::new(),
+                verify_cmd,
+                tags: vec!["cli".to_string(), scope.to_string()],
+                provenance_sha: String::new(),
+                promoted_skill_slug: None,
+                overlap_warning: None,
+                created_at_ms: omnia_core::now_epoch_ms(),
+            };
+            let saved = aos
+                .capture_lesson(rec, !is_global)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let mirror_count = if is_global {
+                let globals = aos
+                    .list_lessons(Some("global"))
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let c = super_cmds::mirror_lessons_markdown(
+                    &global_path,
+                    "Omnia Global Lessons",
+                    &globals,
+                    super_cmds::GLOBAL_LESSONS_MAX_ENTRIES,
+                )?;
+                if let Some(ch) = super_cmds::discover_cross_host_lessons_path() {
+                    let _ = super_cmds::mirror_lessons_markdown(
+                        &ch,
+                        "Omnia Global Lessons",
+                        &globals,
+                        super_cmds::GLOBAL_LESSONS_MAX_ENTRIES,
+                    );
+                }
+                c
+            } else {
+                0
+            };
+            let payload = json!({
+                "ok": true,
+                "lesson": saved,
+                "globalMirrorPath": if is_global { Some(global_path.display().to_string()) } else { None },
+                "globalMirrorCount": mirror_count,
+            });
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                println!(
+                    "Captured {} lesson `{}` ({}){}",
+                    saved.scope,
+                    saved.title,
+                    saved.id,
+                    if is_global {
+                        format!(" -> mirrored to {}", global_path.display())
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+        }
+        "sync" => {
+            let cross = super_cmds::discover_cross_host_lessons_path();
+            let rep =
+                super_cmds::sync_lessons_to_paths(&aos, &workspace, &global_path, cross.as_deref())?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&rep)?);
+            } else {
+                println!(
+                    "Synced lessons | total={} (project={} / global={}) | imported={} | global_mirror={} ({} entries)",
+                    rep["totalLessons"].as_u64().unwrap_or(0),
+                    rep["projectLessons"].as_u64().unwrap_or(0),
+                    rep["globalLessons"].as_u64().unwrap_or(0),
+                    rep["importedFromDisk"].as_u64().unwrap_or(0),
+                    rep["globalMirrorPath"].as_str().unwrap_or("-"),
+                    rep["globalMirrorCount"].as_u64().unwrap_or(0),
+                );
+            }
+        }
+        other => bail!("unknown omnia learn subcommand `{other}` (expected: add | sync | status)"),
+    }
+    Ok(())
+}
+
+fn run_proceed_cmd(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "Usage: omnia proceed [status|on|off|recommended-only|full] [--workspace <dir>] [--json]"
+        );
+        return Ok(());
+    }
+    let workspace = resolve_workspace_arg(args);
+    let json_out = args.iter().any(|a| a == "--json");
+    let action_owned = extract_positional_prompt(args).unwrap_or_else(|| "status".to_string());
+    let action = action_owned.split_whitespace().next().unwrap_or("status");
+
+    if action.eq_ignore_ascii_case("status") {
+        let state = super_cmds::read_engine_state(&workspace);
+        let path = super_cmds::engine_state_path(&workspace);
+        let payload = json!({
+            "ok": true,
+            "path": path.display().to_string(),
+            "exists": path.is_file(),
+            "state": state,
+        });
+        if json_out {
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            println!(
+                "Omnia Auto-Proceed | mode={} | autoProceed={} (enabled={}) | tokenBudget=null | {}",
+                state.mode,
+                state.auto_proceed.as_str(),
+                state.auto_proceed_enabled,
+                path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    let mode = super_cmds::AutoProceedMode::try_parse(action)?;
+    let (state, path) = super_cmds::set_auto_proceed(&workspace, mode)?;
+    let payload = json!({
+        "ok": true,
+        "path": path.display().to_string(),
+        "state": state,
+    });
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!(
+            "Updated autoProceed -> {} (enabled={}, tokenBudget=null) in {}",
+            state.auto_proceed.as_str(),
+            state.auto_proceed_enabled,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn parse_cli_arena_models(raw: Option<&str>) -> Result<Vec<String>> {
     let default_pair = "claude-sonnet-5-5,gpt-6.2-sol";
     let src = raw.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(default_pair);
@@ -1925,6 +2185,37 @@ fn resolve_approval_mode(args: &[String]) -> Result<ApprovalMode> {
     Ok(ApprovalMode::Yolo)
 }
 
+/// Resolves `(approval_mode, workspace_trusted, permission_rules, sandbox_enabled)`.
+/// Default remains `ApprovalMode::Yolo` + trusted workspace + empty default rules (`Z-01`/`Z-02`).
+/// `--sandbox` is strictly opt-in and enables `PermissionsEngine::strict_safety_rules()` + untrusted workspace gate.
+fn resolve_run_security_policy(
+    args: &[String],
+) -> Result<(ApprovalMode, bool, Vec<PermissionRule>, bool)> {
+    let sandbox_enabled = args.iter().any(|a| a == "--sandbox");
+    if !sandbox_enabled {
+        return Ok((
+            resolve_approval_mode(args)?,
+            true,
+            PermissionsEngine::default_rules(),
+            false,
+        ));
+    }
+    let has_explicit_approval = args.iter().any(|a| {
+        a == "--auto-approve" || a == "--approval-mode" || a.starts_with("--approval-mode=")
+    });
+    let approval_mode = if has_explicit_approval {
+        resolve_approval_mode(args)?
+    } else {
+        ApprovalMode::Write
+    };
+    Ok((
+        approval_mode,
+        false,
+        PermissionsEngine::strict_safety_rules(),
+        true,
+    ))
+}
+
 fn resolve_effort_arg(args: &[String]) -> Option<String> {
     let raw = arg_value(args, "--effort")
         .or_else(|| arg_value(args, "--reasoning-effort"))
@@ -2133,5 +2424,36 @@ mod tests {
         assert!(diag["inputTokens"].as_u64().unwrap_or(0) >= 1);
         assert!(diag["estimatedCostUsd"].as_f64().unwrap_or(-1.0) >= 0.0);
         assert!(diag["text"].is_null());
+    }
+
+    #[test]
+    fn cli_sandbox_flag_is_strictly_opt_in_and_preserves_yolo_default() {
+        let bare: Vec<String> = vec!["Fix bug".into()];
+        let (mode, trusted, rules, sandbox) = resolve_run_security_policy(&bare).unwrap();
+        assert_eq!(mode, ApprovalMode::Yolo);
+        assert!(trusted);
+        assert!(rules.is_empty());
+        assert!(!sandbox);
+
+        let sandboxed: Vec<String> = vec!["--sandbox".into(), "Fix bug".into()];
+        let (s_mode, s_trusted, s_rules, s_on) = resolve_run_security_policy(&sandboxed).unwrap();
+        assert_eq!(s_mode, ApprovalMode::Write);
+        assert!(!s_trusted);
+        assert!(!s_rules.is_empty());
+        assert!(s_on);
+
+        // Explicit --approval-mode still works with --sandbox while strict deny rules stay active.
+        let sandbox_yolo: Vec<String> = vec![
+            "--sandbox".into(),
+            "--approval-mode".into(),
+            "yolo".into(),
+            "Fix bug".into(),
+        ];
+        let (sy_mode, sy_trusted, sy_rules, sy_on) =
+            resolve_run_security_policy(&sandbox_yolo).unwrap();
+        assert_eq!(sy_mode, ApprovalMode::Yolo);
+        assert!(!sy_trusted);
+        assert_eq!(sy_rules.len(), PermissionsEngine::strict_safety_rules().len());
+        assert!(sy_on);
     }
 }

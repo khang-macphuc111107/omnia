@@ -8,9 +8,12 @@
 //! Honest Provider Invariant: missing provider API keys return an explicit `unconfigured_provider`
 //! diagnostic card — NEVER fabricated model completions.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+use tokio::sync::watch;
 
 use futures_util::future::join_all;
 use omnia_agent::web_tools::{web_search_multi, WebSearchOptions, WebSearchScope};
@@ -32,12 +35,29 @@ const RESEARCH_WEB_TIMEOUT: Duration = Duration::from_secs(8);
 const RESEARCH_FETCH_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_ARENA_MODELS: usize = 4;
 
+static ACTIVE_ARENA_RUNS: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
+
+fn active_arena_runs() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
+    ACTIVE_ARENA_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct ArenaRunCleanupGuard {
+    run_id: String,
+}
+
+impl Drop for ArenaRunCleanupGuard {
+    fn drop(&mut self) {
+        active_arena_runs().lock().remove(&self.run_id);
+    }
+}
+
 /// Returns `true` if `path` belongs to the Steer #23 Arena / Studio / Branches / Research Answer surface.
 #[must_use]
 pub fn is_known_route(path: &str) -> bool {
     if matches!(
         path,
         "/api/v5/arena/compare"
+            | "/api/v5/arena/cancel"
             | "/api/v5/arena/vote"
             | "/api/v5/arena/leaderboard"
             | "/api/v5/arena/runs"
@@ -87,6 +107,7 @@ pub async fn dispatch(state: &Arc<StudioState>, req: &HttpRequest) -> Option<Htt
 
     match (req.method.as_str(), req.path.as_str()) {
         ("POST", "/api/v5/arena/compare") => Some(handle_arena_compare(state, req).await),
+        ("POST", "/api/v5/arena/cancel") => Some(handle_arena_cancel(state, req)),
         ("POST", "/api/v5/arena/vote") => Some(handle_arena_vote(state, req)),
         ("GET", "/api/v5/arena/leaderboard") => Some(handle_arena_leaderboard(state)),
         ("GET", "/api/v5/arena/runs") => Some(handle_arena_runs(state, req)),
@@ -1045,6 +1066,16 @@ async fn handle_arena_compare(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
         live,
     };
 
+    let run_id = str_field(&obj, &["runId", "run_id"])
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("arn_{}", uuid_v4()));
+
+    let (cancel_tx, mut cancel_rx) = watch::channel(false);
+    active_arena_runs().lock().insert(run_id.clone(), cancel_tx);
+    let _cleanup_guard = ArenaRunCleanupGuard {
+        run_id: run_id.clone(),
+    };
+
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(ARENA_MODEL_TIMEOUT)
@@ -1054,7 +1085,39 @@ async fn handle_arena_compare(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
     let futs = dedup_models
         .iter()
         .map(|m| run_single_arena_model(client.clone(), m.clone(), call_params.clone()));
-    let results: Vec<Value> = join_all(futs).await;
+    let results: Vec<Value> = tokio::select! {
+        res = join_all(futs) => res,
+        _ = cancel_rx.changed() => {
+            let router_receipts = state.cancel_tracked_reservations(Some(&run_id), "arena_run_cancelled");
+            let cancelled_at_ms = now_epoch_ms();
+            let interrupted_receipt = json!({
+                "runId": run_id,
+                "status": "interrupted",
+                "cancelled": true,
+                "models": dedup_models,
+                "cancelledAtMs": cancelled_at_ms,
+                "routerCancellations": router_receipts,
+            });
+            state.event_feed.publish(
+                "arena",
+                "arena_compare_cancelled",
+                Some(&run_id),
+                interrupted_receipt.clone(),
+            );
+            return HttpResponse::ok(SecretRedactor::redact_json(&json!({
+                "ok": true,
+                "state": "interrupted",
+                "status": "interrupted",
+                "cancelled": true,
+                "interrupted": true,
+                "runId": run_id,
+                "models": dedup_models,
+                "results": [],
+                "outputs": [],
+                "receipt": interrupted_receipt,
+            })));
+        }
+    };
 
     let params_json = json!({
         "effort": effort,
@@ -1066,7 +1129,6 @@ async fn handle_arena_compare(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
         "live": live,
     });
 
-    let run_id = format!("arn_{}", uuid_v4());
     let saved = state.ops.save_arena_run(&ArenaRunInput {
         run_id: Some(run_id.clone()),
         prompt: prompt.to_string(),
@@ -1099,6 +1161,56 @@ async fn handle_arena_compare(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
         "results": results,
         "outputs": results,
         "leaderboard": leaderboard,
+    })))
+}
+
+fn handle_arena_cancel(state: &Arc<StudioState>, req: &HttpRequest) -> HttpResponse {
+    let obj = parse_obj(req).unwrap_or_default();
+    let target_run_id = str_field(&obj, &["runId", "run_id"]).map(ToString::to_string);
+    let reason = str_field(&obj, &["reason", "note"]).unwrap_or("user_cancelled_arena_run");
+    let mut cancelled_run_ids = Vec::new();
+    {
+        let guard = active_arena_runs().lock();
+        if let Some(ref rid) = target_run_id {
+            if let Some(tx) = guard.get(rid) {
+                let _ = tx.send(true);
+                cancelled_run_ids.push(rid.clone());
+            }
+        } else {
+            for (rid, tx) in guard.iter() {
+                let _ = tx.send(true);
+                cancelled_run_ids.push(rid.clone());
+            }
+        }
+    }
+    let router_receipts =
+        state.cancel_tracked_reservations(target_run_id.as_deref(), reason);
+    let cancelled_at_ms = now_epoch_ms();
+    let interrupted_receipt = json!({
+        "runId": target_run_id,
+        "cancelledRunIds": cancelled_run_ids,
+        "status": "interrupted",
+        "cancelled": true,
+        "reason": reason,
+        "cancelledAtMs": cancelled_at_ms,
+        "routerCancellations": router_receipts,
+    });
+    state.event_feed.publish(
+        "arena",
+        "arena_cancel_requested",
+        target_run_id.as_deref(),
+        interrupted_receipt.clone(),
+    );
+    HttpResponse::ok(SecretRedactor::redact_json(&json!({
+        "ok": true,
+        "state": "interrupted",
+        "status": "interrupted",
+        "cancelled": true,
+        "interrupted": true,
+        "runId": target_run_id,
+        "cancelledRunIds": cancelled_run_ids,
+        "activeMatchCancelled": !cancelled_run_ids.is_empty(),
+        "receipt": interrupted_receipt,
     })))
 }
 
@@ -2314,5 +2426,24 @@ mod tests {
         assert!(aj["answer_markdown"].as_str().unwrap().contains("[S001]"));
         assert!(!aj["related_questions"].as_array().unwrap().is_empty());
         assert!(!aj["plan_steps"].as_array().unwrap().is_empty());
+
+        // 7. AUD-24 Arena cancel produces clean interrupted receipt & cancels active watch channel
+        let cancel_resp = dispatch(
+            &state,
+            &make_req(
+                "POST",
+                "/api/v5/arena/cancel",
+                "",
+                json!({ "runId": "arn_test_cancel_1", "reason": "operator_abort" }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cancel_resp.status, 200);
+        let cj: Value = serde_json::from_slice(&cancel_resp.body).unwrap();
+        assert_eq!(cj["ok"], true);
+        assert_eq!(cj["cancelled"], true);
+        assert_eq!(cj["status"], "interrupted");
+        assert_eq!(cj["receipt"]["status"], "interrupted");
     }
 }

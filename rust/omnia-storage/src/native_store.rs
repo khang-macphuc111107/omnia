@@ -135,6 +135,7 @@ impl HarnessStore {
 
         let ownership = StoreOwnership::acquire(&path)?;
         let conn = Connection::open_read_write(&path)?;
+        crate::apply_connection_security_pragmas(&conn)?;
         bootstrap_schema(&conn)?;
 
         Ok(Self {
@@ -147,6 +148,7 @@ impl HarnessStore {
     /// Open an isolated in-memory `HarnessStore` without an OS file lock (for unit tests).
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
+        crate::apply_connection_security_pragmas(&conn)?;
         bootstrap_schema(&conn)?;
         Ok(Self {
             db_path: PathBuf::from(":memory:"),

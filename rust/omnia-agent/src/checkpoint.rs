@@ -64,6 +64,75 @@ pub struct TurnCheckpoint {
     pub test_summary: Option<TestPassCounts>,
 }
 
+/// Monotonic compaction-safe checkpoint point anchored into the live transcript timeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionTimelineEntry {
+    pub key: u64,
+    pub turn_idx: u32,
+    pub transcript_index: usize,
+    pub summary: String,
+}
+
+/// Quarantined pre-compaction file snapshot retained in `RecoveryArchive` when transcript
+/// compaction crosses a checkpoint boundary so raw rollback data is never silently discarded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryArchiveEntry {
+    pub key: u64,
+    pub turn_idx: u32,
+    pub pre_files: BTreeMap<String, Option<String>>,
+    pub reason: String,
+}
+
+/// Result summary emitted by [`TurnCheckpointStore::rebase_compaction`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionRebaseOutcome {
+    pub rebased_entries: usize,
+    pub archived_entries: usize,
+    pub summary_anchor: Option<String>,
+    pub ambiguous_before: Option<u64>,
+}
+
+/// Phase-1 staged conversation rewind waiting for [`TurnCheckpointStore::confirm_history`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingConversationRewind {
+    pub target_key: u64,
+    pub target_turn: u32,
+    pub target_transcript_index: usize,
+    pub target_summary: String,
+    pub pruned_keys: Vec<u64>,
+}
+
+/// Per-file outcome of [`TurnCheckpointStore::rollback_to_turn_partial`] preserving failed
+/// snapshot entries so the caller can resolve locks/permissions and retry cleanly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialRollbackReport {
+    pub target_turn: u32,
+    pub restored: Vec<String>,
+    pub failed: Vec<(String, String)>,
+    pub checkpoints_retained_for_retry: bool,
+}
+
+/// Normalizes a relative workspace path for deduplication (`/` separators, strips leading `./`,
+/// and folds ASCII case on Windows NTFS/FAT so `Src/Foo.rs` and `src/foo.rs` never double-record).
+#[must_use]
+pub fn canonical_path_identity(rel_path: &str) -> String {
+    let norm = rel_path.trim().replace('\\', "/");
+    let stripped = norm.trim_start_matches("./");
+    #[cfg(windows)]
+    {
+        stripped.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        stripped.to_owned()
+    }
+}
+
 #[derive(Clone)]
 pub struct TurnCheckpointStore {
     session_id: String,
@@ -72,6 +141,19 @@ pub struct TurnCheckpointStore {
     turns: BTreeMap<u32, TurnCheckpoint>,
     /// Best verified green/highest-pass state observed: `(turn_idx, passed, failed)`
     pub best_verified: Option<(u32, u32, u32)>,
+    /// Strictly monotonic compaction-safe timeline key generator.
+    next_key: u64,
+    /// Compaction-safe timeline mapping monotonic `key` -> live transcript anchor.
+    timeline: BTreeMap<u64, CompactionTimelineEntry>,
+    /// Optional latest compaction summary anchor text/id recorded across `rebase_compaction`.
+    summary_anchor: Option<String>,
+    /// Barrier key: timeline keys `< ambiguous_before` crossed compaction and cannot be
+    /// conversation-rewound directly (their file snapshots live in `recovery_archive`).
+    ambiguous_before: Option<u64>,
+    /// Quarantined file snapshots preserved across compaction boundaries.
+    recovery_archive: Vec<RecoveryArchiveEntry>,
+    /// Active Phase-1 staged conversation rewind awaiting `confirm_history`.
+    pending_rewind: Option<PendingConversationRewind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +176,12 @@ impl TurnCheckpointStore {
             mem_blobs: FxHashMap::default(),
             turns: BTreeMap::new(),
             best_verified: None,
+            next_key: 1,
+            timeline: BTreeMap::new(),
+            summary_anchor: None,
+            ambiguous_before: None,
+            recovery_archive: Vec::new(),
+            pending_rewind: None,
         }
     }
 
@@ -113,7 +201,205 @@ impl TurnCheckpointStore {
             mem_blobs: FxHashMap::default(),
             turns,
             best_verified: None,
+            next_key: 1,
+            timeline: BTreeMap::new(),
+            summary_anchor: None,
+            ambiguous_before: None,
+            recovery_archive: Vec::new(),
+            pending_rewind: None,
         })
+    }
+
+    /// Allocates a strictly monotonic compaction-safe checkpoint key anchored at `transcript_index`.
+    pub fn record_timeline_point(
+        &mut self,
+        turn_idx: u32,
+        transcript_index: usize,
+        summary: impl Into<String>,
+    ) -> u64 {
+        let key = self.next_key;
+        self.next_key = self.next_key.saturating_add(1);
+        self.timeline.insert(
+            key,
+            CompactionTimelineEntry {
+                key,
+                turn_idx,
+                transcript_index,
+                summary: summary.into(),
+            },
+        );
+        key
+    }
+
+    /// Rebases live timeline anchors after context compaction dropped messages before
+    /// `kept_from_transcript_index` and prepended `prefix_offset` summary message(s).
+    /// Entries falling behind the compaction boundary are quarantined in `recovery_archive`
+    /// and fenced behind `ambiguous_before` so stale indices can never mis-rewind history.
+    pub fn rebase_compaction(
+        &mut self,
+        kept_from_transcript_index: usize,
+        prefix_offset: usize,
+        summary_anchor: Option<String>,
+    ) -> CompactionRebaseOutcome {
+        let mut quarantined_keys = Vec::new();
+        let mut rebased_entries = 0usize;
+
+        for (&key, entry) in &mut self.timeline {
+            if entry.transcript_index < kept_from_transcript_index {
+                quarantined_keys.push((key, entry.turn_idx));
+            } else {
+                entry.transcript_index =
+                    (entry.transcript_index - kept_from_transcript_index).saturating_add(prefix_offset);
+                rebased_entries += 1;
+            }
+        }
+
+        let mut archived_entries = 0usize;
+        for (key, turn_idx) in quarantined_keys {
+            self.timeline.remove(&key);
+            let barrier = key.saturating_add(1);
+            self.ambiguous_before = Some(
+                self.ambiguous_before
+                    .map_or(barrier, |prev| prev.max(barrier)),
+            );
+            let pre_files = self
+                .turns
+                .get(&turn_idx)
+                .map(|cp| cp.pre_files.clone())
+                .unwrap_or_default();
+            self.recovery_archive.push(RecoveryArchiveEntry {
+                key,
+                turn_idx,
+                pre_files,
+                reason: "compaction_boundary_crossed".into(),
+            });
+            archived_entries += 1;
+        }
+
+        if summary_anchor.is_some() {
+            self.summary_anchor = summary_anchor.clone();
+        }
+        // Invalidate any in-flight Phase-1 rewind staged against pre-compaction indices.
+        self.pending_rewind = None;
+
+        CompactionRebaseOutcome {
+            rebased_entries,
+            archived_entries,
+            summary_anchor: self.summary_anchor.clone(),
+            ambiguous_before: self.ambiguous_before,
+        }
+    }
+
+    /// Explicitly quarantines timeline checkpoints strictly older than `before_key` into
+    /// `recovery_archive` and raises the `ambiguous_before` barrier.
+    pub fn quarantine_recovery(&mut self, before_key: u64, reason: impl Into<String>) -> usize {
+        let reason_str = reason.into();
+        let stale: Vec<(u64, u32)> = self
+            .timeline
+            .iter()
+            .filter(|(&k, _)| k < before_key)
+            .map(|(&k, e)| (k, e.turn_idx))
+            .collect();
+        let count = stale.len();
+        for (key, turn_idx) in stale {
+            self.timeline.remove(&key);
+            let pre_files = self
+                .turns
+                .get(&turn_idx)
+                .map(|cp| cp.pre_files.clone())
+                .unwrap_or_default();
+            self.recovery_archive.push(RecoveryArchiveEntry {
+                key,
+                turn_idx,
+                pre_files,
+                reason: reason_str.clone(),
+            });
+        }
+        self.ambiguous_before = Some(
+            self.ambiguous_before
+                .map_or(before_key, |prev| prev.max(before_key)),
+        );
+        self.pending_rewind = None;
+        count
+    }
+
+    /// Phase 1 of 2-phase conversation rewind: validates `target_key` against the compaction
+    /// `ambiguous_before` barrier and stages the rewind WITHOUT mutating timeline or turns until
+    /// [`Self::confirm_history`] commits after the caller successfully persists truncated history.
+    pub fn prepare_conversation_rewind(&mut self, target_key: u64) -> Result<PendingConversationRewind> {
+        if let Some(barrier) = self.ambiguous_before {
+            if target_key < barrier {
+                anyhow::bail!(
+                    "checkpoint key {target_key} lies behind compaction barrier {barrier} (quarantined in RecoveryArchive)"
+                );
+            }
+        }
+        let entry = self
+            .timeline
+            .get(&target_key)
+            .cloned()
+            .with_context(|| format!("unknown checkpoint key {target_key}"))?;
+        let pruned_keys: Vec<u64> = self
+            .timeline
+            .keys()
+            .copied()
+            .filter(|&k| k > target_key)
+            .collect();
+        let staged = PendingConversationRewind {
+            target_key,
+            target_turn: entry.turn_idx,
+            target_transcript_index: entry.transcript_index,
+            target_summary: entry.summary,
+            pruned_keys,
+        };
+        self.pending_rewind = Some(staged.clone());
+        Ok(staged)
+    }
+
+    /// Phase 2 of 2-phase conversation rewind: commits the staged rewind after transcript history
+    /// truncation has succeeded, pruning post-target timeline points cleanly.
+    pub fn confirm_history(&mut self, expected_target_key: u64) -> Result<PendingConversationRewind> {
+        let Some(staged) = self.pending_rewind.take() else {
+            anyhow::bail!("no pending conversation rewind staged for confirmation");
+        };
+        if staged.target_key != expected_target_key {
+            self.pending_rewind = Some(staged);
+            anyhow::bail!("pending rewind target mismatch for key {expected_target_key}");
+        }
+        for k in &staged.pruned_keys {
+            self.timeline.remove(k);
+        }
+        Ok(staged)
+    }
+
+    /// Cancels a staged Phase-1 rewind cleanly with zero mutation.
+    pub fn cancel_pending_rewind(&mut self) {
+        self.pending_rewind = None;
+    }
+
+    #[must_use]
+    pub fn summary_anchor(&self) -> Option<&str> {
+        self.summary_anchor.as_deref()
+    }
+
+    #[must_use]
+    pub fn ambiguous_before(&self) -> Option<u64> {
+        self.ambiguous_before
+    }
+
+    #[must_use]
+    pub fn recovery_archive(&self) -> &[RecoveryArchiveEntry] {
+        &self.recovery_archive
+    }
+
+    #[must_use]
+    pub fn timeline(&self) -> &BTreeMap<u64, CompactionTimelineEntry> {
+        &self.timeline
+    }
+
+    #[must_use]
+    pub fn pending_rewind(&self) -> Option<&PendingConversationRewind> {
+        self.pending_rewind.as_ref()
     }
 
     /// Detailed test transition tracker powering BOTH `[Regression Alert]` AND
@@ -166,13 +452,15 @@ impl TurnCheckpointStore {
     }
 
     /// Snapshot original bytes BEFORE a file is modified/created/deleted in `turn_idx`.
-    /// Idempotent per `(turn_idx, rel_path)` so multiple edits to the same file in one turn
-    /// always preserve its true pre-turn state.
+    /// Idempotent per `(turn_idx, canonical_path_identity(rel_path))` so multiple edits—including
+    /// Windows case aliases (`Src/Foo.rs` vs `src/foo.rs`)—always preserve the true pre-turn state.
     pub fn record_pre_mutation(&mut self, turn_idx: u32, rel_path: &str, abs_path: &Path) {
         let norm = rel_path.trim().replace('\\', "/");
+        let norm = norm.trim_start_matches("./").to_owned();
         if norm.is_empty() {
             return;
         }
+        let target_id = canonical_path_identity(&norm);
         let cp = self
             .turns
             .entry(turn_idx)
@@ -182,7 +470,11 @@ impl TurnCheckpointStore {
                 pre_files: BTreeMap::new(),
                 test_summary: None,
             });
-        if cp.pre_files.contains_key(&norm) {
+        if cp
+            .pre_files
+            .keys()
+            .any(|existing| canonical_path_identity(existing) == target_id)
+        {
             return;
         }
 
@@ -247,21 +539,26 @@ impl TurnCheckpointStore {
         workspace_root: &Path,
         tracker: &FileReadTracker,
     ) -> Result<Vec<String>> {
-        // Walk turns > target_turn in reverse chronological order so earliest pre-state wins!
+        // Walk turns > target_turn in reverse chronological order so earliest pre-state wins,
+        // deduplicating Windows case aliases onto a single canonical identity!
         let later_turns: Vec<u32> = self
             .turns
             .keys()
             .copied()
             .filter(|&t| t > target_turn)
             .collect();
-        let mut restore_plan: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let mut restore_by_id: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
         for &t in later_turns.iter().rev() {
             if let Some(cp) = self.turns.get(&t) {
                 for (rel, pre_hash) in &cp.pre_files {
-                    restore_plan.insert(rel.clone(), pre_hash.clone());
+                    restore_by_id.insert(
+                        canonical_path_identity(rel),
+                        (rel.clone(), pre_hash.clone()),
+                    );
                 }
             }
         }
+        let restore_plan: BTreeMap<String, Option<String>> = restore_by_id.into_values().collect();
 
         let mut restored = Vec::new();
         for (rel, pre_hash_opt) in restore_plan {
@@ -300,6 +597,102 @@ impl TurnCheckpointStore {
             }
         }
         Ok(restored)
+    }
+
+    /// Partial-restore-safe rewind: restores every file independently and, if any file fails
+    /// (e.g. transient lock or missing blob), retains ONLY the failed snapshots inside `turns`
+    /// so the caller can resolve the failure and retry cleanly without losing rollback state.
+    pub fn rollback_to_turn_partial(
+        &mut self,
+        target_turn: u32,
+        workspace_root: &Path,
+        tracker: &FileReadTracker,
+    ) -> PartialRollbackReport {
+        let later_turns: Vec<u32> = self
+            .turns
+            .keys()
+            .copied()
+            .filter(|&t| t > target_turn)
+            .collect();
+        let mut restore_by_id: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+        for &t in later_turns.iter().rev() {
+            if let Some(cp) = self.turns.get(&t) {
+                for (rel, pre_hash) in &cp.pre_files {
+                    restore_by_id.insert(
+                        canonical_path_identity(rel),
+                        (rel.clone(), pre_hash.clone()),
+                    );
+                }
+            }
+        }
+
+        let mut restored = Vec::new();
+        let mut failed = Vec::new();
+        let mut failed_ids = std::collections::HashSet::new();
+
+        for (id, (rel, pre_hash_opt)) in restore_by_id {
+            let outcome: Result<()> = (|| {
+                let abs = ensure_within_workspace(workspace_root, &rel)?;
+                match pre_hash_opt {
+                    Some(hex) => {
+                        let compressed = self
+                            .mem_blobs
+                            .get(&hex)
+                            .cloned()
+                            .or_else(|| {
+                                self.db
+                                    .as_ref()
+                                    .and_then(|d| d.get_checkpoint_blob(&hex).ok().flatten())
+                            })
+                            .with_context(|| format!("missing checkpoint blob {hex} for '{rel}'"))?;
+                        let raw = inflate_bytes(&compressed)?;
+                        atomic_write_bytes(&abs, &raw)?;
+                        tracker.record_read(&abs, &raw);
+                    }
+                    None => {
+                        if abs.exists() {
+                            fs::remove_file(&abs)
+                                .with_context(|| format!("failed removing created file '{rel}'"))?;
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            match outcome {
+                Ok(()) => restored.push(rel),
+                Err(err) => {
+                    failed_ids.insert(id);
+                    failed.push((rel, err.to_string()));
+                }
+            }
+        }
+
+        let retained = !failed.is_empty();
+        for t in later_turns {
+            if !retained {
+                self.turns.remove(&t);
+            } else if let Some(cp) = self.turns.get_mut(&t) {
+                cp.pre_files
+                    .retain(|rel, _| failed_ids.contains(&canonical_path_identity(rel)));
+                if cp.pre_files.is_empty() {
+                    self.turns.remove(&t);
+                }
+            }
+        }
+        if !retained {
+            if let Some((bt, _, _)) = self.best_verified {
+                if bt > target_turn {
+                    self.best_verified = None;
+                }
+            }
+        }
+
+        PartialRollbackReport {
+            target_turn,
+            restored,
+            failed,
+            checkpoints_retained_for_retry: retained,
+        }
     }
 
     pub fn checkpoint_count(&self) -> usize {
@@ -816,6 +1209,94 @@ mod tests {
         );
         assert!(f_new.exists());
         assert_eq!(store.checkpoint_count(), 1);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn compaction_rebase_quarantine_and_two_phase_rewind_preserve_safety() {
+        let tmp = std::env::temp_dir().join(format!("omni_cp_compact_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("app.rs");
+        fs::write(&file, "fn v1() {}\n").unwrap();
+
+        let mut store = TurnCheckpointStore::new("sess-compact", None);
+        let k1 = store.record_timeline_point(1, 2, "turn 1");
+        store.record_pre_mutation(1, "app.rs", &file);
+        fs::write(&file, "fn v2() {}\n").unwrap();
+
+        let k2 = store.record_timeline_point(2, 6, "turn 2");
+        store.record_pre_mutation(2, "app.rs", &file);
+        fs::write(&file, "fn v3() {}\n").unwrap();
+
+        let k3 = store.record_timeline_point(3, 9, "turn 3");
+        assert_eq!((k1, k2, k3), (1, 2, 3));
+
+        // Compaction drops transcript messages 0..5 and prepends 1 summary message.
+        let outcome = store.rebase_compaction(5, 1, Some("summary-anchor-v1".into()));
+        assert_eq!(outcome.archived_entries, 1);
+        assert_eq!(outcome.rebased_entries, 2);
+        assert_eq!(store.summary_anchor(), Some("summary-anchor-v1"));
+        assert_eq!(store.ambiguous_before(), Some(2));
+        assert_eq!(store.recovery_archive().len(), 1);
+        assert_eq!(store.timeline()[&k2].transcript_index, 2);
+        assert_eq!(store.timeline()[&k3].transcript_index, 5);
+
+        // Rewinding behind the compaction barrier fails closed.
+        assert!(store.prepare_conversation_rewind(k1).is_err());
+
+        // Phase 1 stages without pruning; cancel leaves timeline untouched.
+        let staged = store.prepare_conversation_rewind(k2).unwrap();
+        assert_eq!(staged.target_transcript_index, 2);
+        assert_eq!(staged.pruned_keys, vec![k3]);
+        assert!(store.timeline().contains_key(&k3));
+        store.cancel_pending_rewind();
+        assert!(store.pending_rewind().is_none());
+
+        // Phase 1 + Phase 2 confirm commits pruning atomically.
+        let _ = store.prepare_conversation_rewind(k2).unwrap();
+        let committed = store.confirm_history(k2).unwrap();
+        assert_eq!(committed.target_key, k2);
+        assert!(!store.timeline().contains_key(&k3));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn windows_case_alias_dedup_and_partial_rollback_retry() {
+        let tmp = std::env::temp_dir().join(format!("omni_cp_partial_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let f_ok = tmp.join("good.rs");
+        fs::write(&f_ok, "const V: u32 = 1;\n").unwrap();
+
+        let mut store = TurnCheckpointStore::new("sess-partial", None);
+        store.record_pre_mutation(2, "good.rs", &f_ok);
+        fs::write(&f_ok, "const V: u32 = 2;\n").unwrap();
+        // On Windows, `GOOD.rs` aliases `good.rs` and must NOT overwrite the v1 pre-turn snapshot.
+        #[cfg(windows)]
+        {
+            store.record_pre_mutation(2, "GOOD.rs", &f_ok);
+            assert_eq!(store.turns[&2].pre_files.len(), 1);
+        }
+
+        // Inject a synthetic missing-blob entry alongside `good.rs` to verify partial rollback retention.
+        store
+            .turns
+            .get_mut(&2)
+            .unwrap()
+            .pre_files
+            .insert("missing_blob.rs".into(), Some("deadbeef".into()));
+
+        let tracker = FileReadTracker::new();
+        let rep = store.rollback_to_turn_partial(1, &tmp, &tracker);
+        assert_eq!(rep.restored, vec!["good.rs".to_owned()]);
+        assert_eq!(rep.failed.len(), 1);
+        assert_eq!(rep.failed[0].0, "missing_blob.rs");
+        assert!(rep.checkpoints_retained_for_retry);
+        assert_eq!(fs::read_to_string(&f_ok).unwrap(), "const V: u32 = 1;\n");
+        // Only the failed entry remains retained for retry; restored entry was cleared.
+        assert_eq!(store.turns[&2].pre_files.len(), 1);
+        assert!(store.turns[&2].pre_files.contains_key("missing_blob.rs"));
+
         let _ = fs::remove_dir_all(&tmp);
     }
 }

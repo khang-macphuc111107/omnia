@@ -18,7 +18,7 @@ use std::sync::Arc;
 use flate2::read::ZlibDecoder;
 use ignore::WalkBuilder;
 use omnia_connector_gateway::find_unsafe_prototype_key;
-use omnia_core::SecretRedactor;
+use omnia_core::{sha256_hex, SecretRedactor};
 use omnia_workspace_ops::is_reparse_point_metadata;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -28,9 +28,11 @@ use zip::ZipArchive;
 
 use crate::error::NotebookError;
 use crate::policy::{
-    extract_extension_lower, validate_archive_entry_path, validate_archive_limits,
-    validate_filename_and_mime, validate_xml_safety, MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_ENTRIES,
-    MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES, MAX_CHUNK_BYTES, MAX_COPIED_TEXT_BYTES,
+    extract_extension_lower, infer_mime_from_extension, normalize_drive_filename_suffix,
+    sanitize_transport_filename, strip_local_path_fields, validate_archive_entry_path,
+    validate_archive_limits, validate_filename_and_mime, validate_xml_safety, MAX_ARCHIVE_DEPTH,
+    MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES, MAX_CHUNK_BYTES,
+    MAX_COPIED_TEXT_BYTES, MAX_TRANSPORT_FILENAME_LEN,
 };
 use crate::source_library::{
     SourceChunkRecord, SourceKind, SourceLibrary, SourceRecord, SourceRegistrationInput,
@@ -221,10 +223,11 @@ impl IngestionEngine {
         &self,
         req: IngestSourceRequest,
     ) -> Result<IngestSourceOutcome, NotebookError> {
-        // Stage 1: Native validation (MIME allowlist, safe filename, notebook presence).
+        // Stage 1: Native validation (Drive suffix normalization, MIME allowlist, safe filename, notebook presence).
         let _ = self.library.require_notebook(&req.notebook_id)?;
+        let normalized_input_filename = normalize_drive_filename_suffix(&req.filename);
         let (safe_filename, resolved_mime) =
-            validate_filename_and_mime(&req.filename, req.mime_type.as_deref(), false)?;
+            validate_filename_and_mime(&normalized_input_filename, req.mime_type.as_deref(), false)?;
         let ext = extract_extension_lower(&safe_filename);
         let mut warnings = Vec::new();
         let mut source_kind_override: Option<SourceKind> = None;
@@ -345,6 +348,7 @@ impl IngestionEngine {
         } else {
             json!({})
         };
+        strip_local_path_fields(&mut metadata);
         if let Some(obj) = metadata.as_object_mut() {
             obj.insert(
                 "ingestion_warnings".to_string(),
@@ -2497,45 +2501,193 @@ pub fn split_utf8_by_max_bytes(text: &str, max_bytes: usize) -> Vec<String> {
     out
 }
 
-/// Decode UTF-8 / UTF-16 BOM text cleanly, strip unsafe control chars, and normalize line endings to LF.
+/// Result of encoding-safe text decoding (`decode_text_safely`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecodedText {
+    pub text: String,
+    pub detected_encoding: String,
+    pub stripped_nuls: usize,
+    pub stripped_controls: usize,
+}
+
+/// Pure-Rust Windows-1252 single-byte lookup for `0x80..=0x9F` (rest maps 1:1 to Unicode Latin-1).
+const CP1252_80_9F: [char; 32] = [
+    '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
+    '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
+];
+
+fn detect_bomless_utf16(bytes: &[u8]) -> Option<&'static str> {
+    let sample_len = bytes.len().min(4_096) & !1;
+    if sample_len < 4 {
+        return None;
+    }
+    let pairs = sample_len / 2;
+    let mut even_nuls = 0usize;
+    let mut odd_nuls = 0usize;
+    for pair in bytes[..sample_len].as_chunks::<2>().0 {
+        if pair[0] == 0 {
+            even_nuls += 1;
+        }
+        if pair[1] == 0 {
+            odd_nuls += 1;
+        }
+    }
+    let odd_ratio = (odd_nuls as f64) / (pairs as f64);
+    let even_ratio = (even_nuls as f64) / (pairs as f64);
+    if odd_ratio >= 0.40 && even_ratio <= 0.08 {
+        Some("utf-16le-bomless")
+    } else if even_ratio >= 0.40 && odd_ratio <= 0.08 {
+        Some("utf-16be-bomless")
+    } else {
+        None
+    }
+}
+
+fn decode_cp1252(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            0x00 => {}
+            0x80..=0x9F => out.push(CP1252_80_9F[(b - 0x80) as usize]),
+            _ => out.push(char::from(b)),
+        }
+    }
+    out
+}
+
+/// Multi-encoding text decoder safely handling UTF-8 (with/without BOM), UTF-16LE/BE (BOM &
+/// BOM-less NUL-stride heuristic), UTF-32LE/BE BOM, stray-NUL UTF-8 (`<25%` NULs), and
+/// Windows-1252 / Latin-1 fallback while normalizing CRLF/CR to LF and stripping unsafe controls.
 #[must_use]
-pub fn normalize_utf8_and_lf(bytes: &[u8]) -> String {
-    let raw = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        String::from_utf8_lossy(&bytes[3..]).into_owned()
+pub fn decode_text_safely(bytes: &[u8]) -> DecodedText {
+    if bytes.is_empty() {
+        return DecodedText {
+            text: String::new(),
+            detected_encoding: "utf-8".to_string(),
+            stripped_nuls: 0,
+            stripped_controls: 0,
+        };
+    }
+
+    let mut stripped_nuls = 0usize;
+    let (raw, encoding): (String, &str) = if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00])
+        && bytes.len() >= 4
+    {
+        let decoded: String = bytes[4..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter_map(|&c| char::from_u32(u32::from_le_bytes(c)))
+            .collect();
+        (decoded, "utf-32le")
+    } else if bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) && bytes.len() >= 4 {
+        let decoded: String = bytes[4..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter_map(|&c| char::from_u32(u32::from_be_bytes(c)))
+            .collect();
+        (decoded, "utf-32be")
+    } else if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let rest = &bytes[3..];
+        match std::str::from_utf8(rest) {
+            Ok(s) => (s.to_string(), "utf-8-bom"),
+            Err(_) => (decode_cp1252(rest), "windows-1252"),
+        }
     } else if bytes.starts_with(&[0xFF, 0xFE]) && bytes.len() >= 2 {
         let units: Vec<u16> = bytes[2..]
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|c| u16::from_le_bytes(*c))
+            .map(|&c| u16::from_le_bytes(c))
             .collect();
-        String::from_utf16_lossy(&units)
+        (String::from_utf16_lossy(&units), "utf-16le")
     } else if bytes.starts_with(&[0xFE, 0xFF]) && bytes.len() >= 2 {
         let units: Vec<u16> = bytes[2..]
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|c| u16::from_be_bytes(*c))
+            .map(|&c| u16::from_be_bytes(c))
             .collect();
-        String::from_utf16_lossy(&units)
+        (String::from_utf16_lossy(&units), "utf-16be")
+    } else if let Some(bomless) = detect_bomless_utf16(bytes) {
+        if bomless == "utf-16le-bomless" {
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_le_bytes(c))
+                .collect();
+            (String::from_utf16_lossy(&units), bomless)
+        } else {
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_be_bytes(c))
+                .collect();
+            (String::from_utf16_lossy(&units), bomless)
+        }
     } else {
-        String::from_utf8_lossy(bytes).into_owned()
+        let nul_count = bytes.iter().filter(|&&b| b == 0).count();
+        if nul_count > 0 && nul_count * 4 < bytes.len() {
+            stripped_nuls = nul_count;
+            let cleaned: Vec<u8> = bytes.iter().copied().filter(|&b| b != 0).collect();
+            match std::str::from_utf8(&cleaned) {
+                Ok(s) => (s.to_string(), "utf-8-nul-cleaned"),
+                Err(_) => (decode_cp1252(&cleaned), "windows-1252"),
+            }
+        } else {
+            match std::str::from_utf8(bytes) {
+                Ok(s) => (s.to_string(), "utf-8"),
+                Err(_) => (decode_cp1252(bytes), "windows-1252"),
+            }
+        }
     };
 
     let lf = raw.replace("\r\n", "\n").replace('\r', "\n");
-    lf.chars()
-        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
-        .collect()
+    let mut stripped_controls = 0usize;
+    let mut clean = String::with_capacity(lf.len());
+    for ch in lf.chars() {
+        if ch == '\0' {
+            stripped_nuls += 1;
+        } else if ch == '\u{FEFF}' || (ch.is_control() && ch != '\n' && ch != '\t') {
+            stripped_controls += 1;
+        } else {
+            clean.push(ch);
+        }
+    }
+
+    DecodedText {
+        text: clean,
+        detected_encoding: encoding.to_string(),
+        stripped_nuls,
+        stripped_controls,
+    }
 }
 
-/// Heuristic binary detector inspecting the first 8 KiB for NUL bytes or excessive non-printable bytes.
+/// Decode UTF-8 / UTF-16 / UTF-32 / Windows-1252 text cleanly, strip unsafe control chars,
+/// and normalize line endings to LF.
+#[must_use]
+pub fn normalize_utf8_and_lf(bytes: &[u8]) -> String {
+    decode_text_safely(bytes).text
+}
+
+/// Heuristic binary detector inspecting the first 8 KiB for NUL bytes or excessive non-printable bytes
+/// (recognizing UTF-16LE/BE with or without BOM and UTF-32 BOM as textual encodings).
 #[must_use]
 pub fn is_likely_binary(bytes: &[u8]) -> bool {
     let sample = &bytes[..bytes.len().min(8_192)];
     if sample.is_empty() {
         return false;
     }
-    if sample.starts_with(&[0xFF, 0xFE]) || sample.starts_with(&[0xFE, 0xFF]) {
+    if sample.starts_with(&[0xFF, 0xFE])
+        || sample.starts_with(&[0xFE, 0xFF])
+        || sample.starts_with(&[0x00, 0x00, 0xFE, 0xFF])
+        || detect_bomless_utf16(sample).is_some()
+    {
         return false;
     }
     if sample.contains(&0) {
@@ -2546,6 +2698,622 @@ pub fn is_likely_binary(bytes: &[u8]) -> bool {
         .filter(|&&b| b < 0x09 || (0x0E..0x20).contains(&b))
         .count();
     suspicious * 10 > sample.len() * 3
+}
+
+/// Explicit stage identifier for the 5-stage `UploadHealer` recovery ladder (Stage 0 -> Stage 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealStage {
+    Stage0Direct,
+    Stage1SanitizedRetry,
+    Stage2DeepConvertSplit,
+    Stage3PlainTxtChunks,
+    Stage4CopiedTextMicroChunks,
+    Stage5MetadataInventory,
+}
+
+impl HealStage {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stage0Direct => "stage0_direct",
+            Self::Stage1SanitizedRetry => "stage1_sanitized_retry",
+            Self::Stage2DeepConvertSplit => "stage2_deep_convert_split",
+            Self::Stage3PlainTxtChunks => "stage3_plain_txt_chunks",
+            Self::Stage4CopiedTextMicroChunks => "stage4_copied_text_micro_chunks",
+            Self::Stage5MetadataInventory => "stage5_metadata_inventory",
+        }
+    }
+
+    #[must_use]
+    pub const fn stage_number(self) -> u8 {
+        match self {
+            Self::Stage0Direct => 0,
+            Self::Stage1SanitizedRetry => 1,
+            Self::Stage2DeepConvertSplit => 2,
+            Self::Stage3PlainTxtChunks => 3,
+            Self::Stage4CopiedTextMicroChunks => 4,
+            Self::Stage5MetadataInventory => 5,
+        }
+    }
+}
+
+/// Payload context passed to the caller's upload/transport validator on each `UploadHealer` stage.
+#[derive(Debug, Clone)]
+pub struct UploadAttemptContext {
+    pub stage: HealStage,
+    pub filename: String,
+    pub mime_type: String,
+    pub part_index: usize,
+    pub total_parts: usize,
+    pub bytes: Vec<u8>,
+}
+
+/// Audit entry recorded for each stage attempted by [`UploadHealer`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadHealAttempt {
+    pub stage: HealStage,
+    pub filename: String,
+    pub parts_attempted: usize,
+    pub succeeded: bool,
+    pub purged_failed_rows: usize,
+    pub error: Option<String>,
+}
+
+/// Final outcome returned by [`UploadHealer::heal_and_ingest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HealedUploadOutcome {
+    pub notebook_id: String,
+    pub final_stage: HealStage,
+    pub normalized_filename: String,
+    pub sources: Vec<SourceRecord>,
+    pub attempts: Vec<UploadHealAttempt>,
+    pub total_purged_failed_rows: usize,
+    pub warnings: Vec<String>,
+}
+
+/// 5-Stage Upload Recovery Ladder (`Stage 0` Direct -> `Stage 1` Sanitized `<= 88`-char retry ->
+/// `Stage 2` Deep Convert & Split `<= 120 KiB` -> `Stage 3` Plain `.txt` chunks `<= 120 KiB` ->
+/// `Stage 4` Copied-Text micro-chunks `<= 40 KiB` -> `Stage 5` Metadata Inventory fallback)
+/// enforcing zero-red-rows failed-source purge before every retry and atomic sibling rollback.
+#[derive(Debug, Clone, Default)]
+pub struct UploadHealer;
+
+impl UploadHealer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Run the 5-stage recovery ladder using a local always-accept validator.
+    pub fn heal_ingest_local(
+        &self,
+        engine: &IngestionEngine,
+        req: IngestSourceRequest,
+    ) -> Result<HealedUploadOutcome, NotebookError> {
+        self.heal_and_ingest(engine, req, |_| Ok(()))
+    }
+
+    /// Execute the 5-stage self-healing upload ladder against `engine` and an external/remote
+    /// `upload_validator` closure. Security/policy/capacity errors fail closed immediately;
+    /// transport or conversion failures purge failed rows, roll back partial siblings, and
+    /// escalate deterministically through Stages 0 -> 5.
+    pub fn heal_and_ingest<F>(
+        &self,
+        engine: &IngestionEngine,
+        req: IngestSourceRequest,
+        mut upload_validator: F,
+    ) -> Result<HealedUploadOutcome, NotebookError>
+    where
+        F: FnMut(&UploadAttemptContext) -> Result<(), String>,
+    {
+        let _ = engine.library.require_notebook(&req.notebook_id)?;
+        let notebook_id = req.notebook_id.clone();
+        let normalized_filename = normalize_drive_filename_suffix(&req.filename);
+        let ext = extract_extension_lower(&normalized_filename);
+        const BLOCKED_EXECUTABLE_EXTS: &[&str] = &[
+            "exe", "dll", "sys", "msi", "msp", "scr", "com", "pif", "lnk", "vbs", "vbe", "hta",
+            "reg", "cpl", "ocx", "drv", "inf", "apk", "dmg", "pkg", "deb", "rpm",
+        ];
+        if BLOCKED_EXECUTABLE_EXTS.contains(&ext.as_str()) {
+            return Err(NotebookError::SecurityRejected {
+                code: "DISALLOWED_EXTENSION",
+                reason: format!("executable/installer extension '.{ext}' is strictly blocked"),
+            });
+        }
+        let original_mime = req
+            .mime_type
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| infer_mime_from_extension(&ext).to_string());
+        let sanitized_name =
+            sanitize_transport_filename(&normalized_filename, MAX_TRANSPORT_FILENAME_LEN);
+        let stem_base = sanitized_name
+            .rsplit_once('.')
+            .map_or(sanitized_name.as_str(), |(s, _)| s)
+            .to_string();
+        let original_sha256 = sha256_hex(&req.bytes);
+        let original_len = req.bytes.len();
+        let base_title = req
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| normalized_filename.clone());
+        let mut base_meta = if req.metadata.is_object() {
+            req.metadata.clone()
+        } else {
+            json!({})
+        };
+        strip_local_path_fields(&mut base_meta);
+
+        let mut attempts = Vec::new();
+        let mut warnings = Vec::new();
+        let mut total_purged = 0usize;
+
+        let shared = HealStageShared {
+            notebook_id: &notebook_id,
+            normalized_filename: &normalized_filename,
+            sanitized_name: &sanitized_name,
+            original_sha256: &original_sha256,
+            base_meta: &base_meta,
+            copied_text_fallback: req.copied_text_fallback.as_deref(),
+            max_chunk_bytes: req.max_chunk_bytes,
+        };
+
+        // Stage 0: Direct upload with Drive suffix normalization.
+        if let Some(done) = run_heal_stage(
+            engine,
+            &shared,
+            HealStage::Stage0Direct,
+            vec![(
+                normalized_filename.clone(),
+                base_title.clone(),
+                original_mime.clone(),
+                req.bytes.clone(),
+            )],
+            req.remote_id.clone(),
+            &mut upload_validator,
+            &mut attempts,
+            &mut warnings,
+            &mut total_purged,
+        )? {
+            return Ok(done);
+        }
+
+        // Stage 1: Sanitized `<= 88`-char ASCII filename + safe text normalization retry.
+        let stage1_bytes = if is_likely_binary(&req.bytes) {
+            req.bytes.clone()
+        } else {
+            decode_text_safely(&req.bytes).text.into_bytes()
+        };
+        if let Some(done) = run_heal_stage(
+            engine,
+            &shared,
+            HealStage::Stage1SanitizedRetry,
+            vec![(
+                sanitized_name.clone(),
+                base_title.clone(),
+                original_mime.clone(),
+                stage1_bytes,
+            )],
+            req.remote_id.clone(),
+            &mut upload_validator,
+            &mut attempts,
+            &mut warnings,
+            &mut total_purged,
+        )? {
+            return Ok(done);
+        }
+
+        // Extract recoverable text for Stages 2..4 (security errors fail closed immediately).
+        let (extracted_md, detected_enc) = extract_healable_text(
+            &ext,
+            &normalized_filename,
+            &req.bytes,
+            req.copied_text_fallback.as_deref(),
+        )?;
+
+        // Stage 2: Deep convert & split into `<= 120 KiB` Markdown parts with atomic rollback.
+        if !extracted_md.trim().is_empty() {
+            let md_limit = req
+                .max_chunk_bytes
+                .unwrap_or(MAX_CHUNK_BYTES)
+                .clamp(256, MAX_CHUNK_BYTES);
+            let md_slices = chunk_text_semantically(&extracted_md, md_limit);
+            let md_parts: Vec<(String, String, String, Vec<u8>)> = md_slices
+                .into_iter()
+                .enumerate()
+                .map(|(i, (heading, body))| {
+                    let fname = sanitize_transport_filename(
+                        &format!("{stem_base}-p{:02}.md", i + 1),
+                        MAX_TRANSPORT_FILENAME_LEN,
+                    );
+                    let title = format!("{base_title} (Part {})", i + 1);
+                    let payload = format!("# {heading}\n\n{body}");
+                    (fname, title, "text/markdown".to_string(), payload.into_bytes())
+                })
+                .collect();
+            if !md_parts.is_empty() {
+                if let Some(done) = run_heal_stage(
+                    engine,
+                    &shared,
+                    HealStage::Stage2DeepConvertSplit,
+                    md_parts,
+                    None,
+                    &mut upload_validator,
+                    &mut attempts,
+                    &mut warnings,
+                    &mut total_purged,
+                )? {
+                    return Ok(done);
+                }
+            }
+
+            // Stage 3: Plain UTF-8 `.txt` chunks (`<= 120 KiB` each, sanitized `<= 88`-char names).
+            let plain_text = strip_markdown_to_plain(&extracted_md);
+            let txt_slices = split_utf8_by_max_bytes(&plain_text, md_limit);
+            let txt_parts: Vec<(String, String, String, Vec<u8>)> = txt_slices
+                .into_iter()
+                .enumerate()
+                .map(|(i, piece)| {
+                    let fname = sanitize_transport_filename(
+                        &format!("{stem_base}-txt-{:02}.txt", i + 1),
+                        MAX_TRANSPORT_FILENAME_LEN,
+                    );
+                    let title = format!("{base_title} (Plain Part {})", i + 1);
+                    (fname, title, "text/plain".to_string(), piece.into_bytes())
+                })
+                .collect();
+            if !txt_parts.is_empty() {
+                if let Some(done) = run_heal_stage(
+                    engine,
+                    &shared,
+                    HealStage::Stage3PlainTxtChunks,
+                    txt_parts,
+                    None,
+                    &mut upload_validator,
+                    &mut attempts,
+                    &mut warnings,
+                    &mut total_purged,
+                )? {
+                    return Ok(done);
+                }
+            }
+
+            // Stage 4: Copied-text micro-chunks strictly `<= 40 KiB` (`MAX_COPIED_TEXT_BYTES`).
+            let micro_slices = chunk_copied_text_fallback(&plain_text);
+            let micro_parts: Vec<(String, String, String, Vec<u8>)> = micro_slices
+                .into_iter()
+                .enumerate()
+                .map(|(i, (heading, piece))| {
+                    let fname = sanitize_transport_filename(
+                        &format!("{stem_base}-micro-{:02}.txt", i + 1),
+                        MAX_TRANSPORT_FILENAME_LEN,
+                    );
+                    let title = format!("{base_title} ({heading})");
+                    (fname, title, "text/plain".to_string(), piece.into_bytes())
+                })
+                .collect();
+            if !micro_parts.is_empty() {
+                if let Some(done) = run_heal_stage(
+                    engine,
+                    &shared,
+                    HealStage::Stage4CopiedTextMicroChunks,
+                    micro_parts,
+                    None,
+                    &mut upload_validator,
+                    &mut attempts,
+                    &mut warnings,
+                    &mut total_purged,
+                )? {
+                    return Ok(done);
+                }
+            }
+        }
+
+        // Stage 5: Final deterministic metadata-inventory `.txt` fallback.
+        let stage_summary = attempts
+            .iter()
+            .map(|a| {
+                format!(
+                    "- {}: {}",
+                    a.stage.as_str(),
+                    a.error.as_deref().unwrap_or("unknown failure")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let inventory_body = format!(
+            "# Source Metadata Inventory\n\
+             Original Filename: {normalized_filename}\n\
+             Sanitized Filename: {sanitized_name}\n\
+             MIME Type: {original_mime}\n\
+             Byte Size: {original_len}\n\
+             SHA-256: {original_sha256}\n\
+             Detected Encoding: {detected_enc}\n\n\
+             ## Prior Stage Diagnostics\n\
+             {stage_summary}\n"
+        );
+        let inv_name = sanitize_transport_filename(
+            &format!("{stem_base}-inventory.txt"),
+            MAX_TRANSPORT_FILENAME_LEN,
+        );
+        if let Some(done) = run_heal_stage(
+            engine,
+            &shared,
+            HealStage::Stage5MetadataInventory,
+            vec![(
+                inv_name,
+                format!("{base_title} (Metadata Inventory)"),
+                "text/plain".to_string(),
+                inventory_body.into_bytes(),
+            )],
+            None,
+            &mut upload_validator,
+            &mut attempts,
+            &mut warnings,
+            &mut total_purged,
+        )? {
+            return Ok(done);
+        }
+
+        Err(NotebookError::IngestionFailed {
+            stage: HealStage::Stage5MetadataInventory.as_str().to_string(),
+            detail: format!(
+                "all 6 UploadHealer stages (0..5) rejected for '{normalized_filename}'"
+            ),
+            rolled_back_siblings: 0,
+        })
+    }
+}
+
+struct HealStageShared<'a> {
+    notebook_id: &'a str,
+    normalized_filename: &'a str,
+    sanitized_name: &'a str,
+    original_sha256: &'a str,
+    base_meta: &'a Value,
+    copied_text_fallback: Option<&'a str>,
+    max_chunk_bytes: Option<usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_heal_stage<F>(
+    engine: &IngestionEngine,
+    shared: &HealStageShared<'_>,
+    stage: HealStage,
+    parts: Vec<(String, String, String, Vec<u8>)>,
+    remote_id_first: Option<String>,
+    upload_validator: &mut F,
+    attempts: &mut Vec<UploadHealAttempt>,
+    warnings: &mut Vec<String>,
+    total_purged: &mut usize,
+) -> Result<Option<HealedUploadOutcome>, NotebookError>
+where
+    F: FnMut(&UploadAttemptContext) -> Result<(), String>,
+{
+    let purged = if stage == HealStage::Stage0Direct {
+        0
+    } else {
+        engine.store.purge_failed_sources(shared.notebook_id)?
+    };
+    *total_purged += purged;
+
+    let total_parts = parts.len();
+    let first_name = parts
+        .first()
+        .map(|p| p.0.clone())
+        .unwrap_or_else(|| shared.sanitized_name.to_string());
+    let mut inserted_new_ids = Vec::new();
+    let mut created_sources = Vec::new();
+    let mut stage_warnings = Vec::new();
+
+    for (idx, (part_filename, part_title, part_mime, part_bytes)) in parts.into_iter().enumerate() {
+        let ctx = UploadAttemptContext {
+            stage,
+            filename: part_filename.clone(),
+            mime_type: part_mime.clone(),
+            part_index: idx,
+            total_parts,
+            bytes: part_bytes.clone(),
+        };
+        if let Err(reason) = upload_validator(&ctx) {
+            let _ = engine.store.delete_sources_by_ids(&inserted_new_ids)?;
+            let post_purged = engine.store.purge_failed_sources(shared.notebook_id)?;
+            *total_purged += post_purged;
+            attempts.push(UploadHealAttempt {
+                stage,
+                filename: part_filename,
+                parts_attempted: idx + 1,
+                succeeded: false,
+                purged_failed_rows: purged + post_purged,
+                error: Some(reason.clone()),
+            });
+            warnings.push(format!("{} rejected: {reason}", stage.as_str()));
+            return Ok(None);
+        }
+
+        let mut part_meta = shared.base_meta.clone();
+        if let Some(map) = part_meta.as_object_mut() {
+            map.insert("heal_stage".to_string(), json!(stage.as_str()));
+            map.insert("heal_part_index".to_string(), json!(idx));
+            map.insert("heal_total_parts".to_string(), json!(total_parts));
+            map.insert("original_sha256".to_string(), json!(shared.original_sha256));
+        }
+        let ingest_req = IngestSourceRequest {
+            notebook_id: shared.notebook_id.to_string(),
+            title: Some(part_title),
+            filename: part_filename.clone(),
+            mime_type: Some(part_mime),
+            remote_id: if idx == 0 {
+                remote_id_first.clone()
+            } else {
+                None
+            },
+            bytes: part_bytes,
+            copied_text_fallback: if stage == HealStage::Stage0Direct
+                || stage == HealStage::Stage1SanitizedRetry
+            {
+                shared.copied_text_fallback.map(ToString::to_string)
+            } else {
+                None
+            },
+            max_chunk_bytes: shared.max_chunk_bytes,
+            metadata: part_meta,
+        };
+
+        match engine.ingest_source(ingest_req) {
+            Ok(outcome) => {
+                if !outcome.deduplicated {
+                    inserted_new_ids.push(outcome.source.source_id.clone());
+                }
+                stage_warnings.extend(outcome.warnings);
+                created_sources.push(outcome.source);
+            }
+            Err(err @ NotebookError::SecurityRejected { .. })
+            | Err(err @ NotebookError::PolicyBlocked { .. })
+            | Err(err @ NotebookError::OverflowDisallowed { .. }) => {
+                let _ = engine.store.delete_sources_by_ids(&inserted_new_ids)?;
+                return Err(err);
+            }
+            Err(err) => {
+                let _ = engine.store.delete_sources_by_ids(&inserted_new_ids)?;
+                attempts.push(UploadHealAttempt {
+                    stage,
+                    filename: part_filename,
+                    parts_attempted: idx + 1,
+                    succeeded: false,
+                    purged_failed_rows: purged,
+                    error: Some(err.to_string()),
+                });
+                warnings.push(format!("{} failed: {err}", stage.as_str()));
+                return Ok(None);
+            }
+        }
+    }
+
+    attempts.push(UploadHealAttempt {
+        stage,
+        filename: first_name,
+        parts_attempted: total_parts,
+        succeeded: true,
+        purged_failed_rows: purged,
+        error: None,
+    });
+    warnings.extend(stage_warnings);
+    Ok(Some(HealedUploadOutcome {
+        notebook_id: shared.notebook_id.to_string(),
+        final_stage: stage,
+        normalized_filename: shared.normalized_filename.to_string(),
+        sources: created_sources,
+        attempts: attempts.clone(),
+        total_purged_failed_rows: *total_purged,
+        warnings: warnings.clone(),
+    }))
+}
+
+fn extract_healable_text(
+    ext: &str,
+    safe_filename: &str,
+    bytes: &[u8],
+    copied_fallback: Option<&str>,
+) -> Result<(String, String), NotebookError> {
+    let extracted = match ext {
+        "docx" => extract_docx_markdown(bytes, 0),
+        "xlsx" => extract_xlsx_sheets(bytes, 0).map(|s| render_sheets_to_markdown(&s)),
+        "pptx" => extract_pptx_slides(bytes, 0).map(|s| render_slides_to_markdown(&s)),
+        "epub" => extract_epub_markdown(bytes, 0),
+        "odt" => extract_odt_markdown(bytes, 0),
+        "rtf" => Ok(strip_rtf_to_text(&normalize_utf8_and_lf(bytes))),
+        "pdf" => {
+            let pdf = inspect_and_extract_pdf(bytes);
+            if pdf.is_encrypted || pdf.classification == PdfClassification::Encrypted {
+                return Err(NotebookError::SecurityRejected {
+                    code: "ENCRYPTED_PDF",
+                    reason: format!("encrypted PDF '{safe_filename}' rejected by UploadHealer"),
+                });
+            }
+            Ok(pdf.extracted_text)
+        }
+        "csv" => {
+            let dec = decode_text_safely(bytes);
+            return Ok((
+                render_sheets_to_markdown(&[parse_delimited_table(safe_filename, &dec.text, b',')]),
+                dec.detected_encoding,
+            ));
+        }
+        "tsv" => {
+            let dec = decode_text_safely(bytes);
+            return Ok((
+                render_sheets_to_markdown(&[parse_delimited_table(
+                    safe_filename,
+                    &dec.text,
+                    b'\t',
+                )]),
+                dec.detected_encoding,
+            ));
+        }
+        "ipynb" => parse_ipynb_cells(bytes).map(|c| render_ipynb_to_markdown(&c)),
+        "html" | "htm" | "xhtml" => {
+            let dec = decode_text_safely(bytes);
+            return Ok((clean_html_to_text(&dec.text), dec.detected_encoding));
+        }
+        "xml" | "svg" => {
+            validate_xml_safety(bytes, safe_filename)?;
+            extract_xml_text(bytes, safe_filename)
+        }
+        "json" => clean_json_to_markdown(bytes),
+        "zip" | "jar" => inspect_zip_archive_safe(bytes, 0, safe_filename).map(|entries| {
+            let mut lines = vec![format!("# Archive: {safe_filename}")];
+            for entry in entries {
+                lines.push(format!(
+                    "- `{}` ({} bytes)",
+                    entry.path, entry.uncompressed_bytes
+                ));
+            }
+            lines.join("\n")
+        }),
+        _ => {
+            if is_likely_binary(bytes) {
+                Ok(String::new())
+            } else {
+                let dec = decode_text_safely(bytes);
+                return Ok((dec.text, dec.detected_encoding));
+            }
+        }
+    };
+
+    match extracted {
+        Ok(text) if !text.trim().is_empty() => Ok((text, "utf-8".to_string())),
+        Err(err @ NotebookError::SecurityRejected { .. })
+        | Err(err @ NotebookError::PolicyBlocked { .. }) => Err(err),
+        _ => {
+            if let Some(fb) = copied_fallback.map(str::trim).filter(|s| !s.is_empty()) {
+                Ok((normalize_utf8_and_lf(fb.as_bytes()), "copied-text".to_string()))
+            } else {
+                Ok((String::new(), "binary".to_string()))
+            }
+        }
+    }
+}
+
+fn strip_markdown_to_plain(md: &str) -> String {
+    let mut lines = Vec::new();
+    for line in md.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            continue;
+        }
+        let cleaned = trimmed
+            .trim_start_matches('#')
+            .trim_start_matches('>')
+            .trim()
+            .replace('`', "");
+        if !cleaned.is_empty() {
+            lines.push(cleaned);
+        }
+    }
+    lines.join("\n")
 }
 
 fn local_xml_name(raw: &[u8]) -> &str {

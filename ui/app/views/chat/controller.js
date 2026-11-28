@@ -13,9 +13,9 @@ import { openPalette } from '../../core/palette.js';
 import { toast, announce, copyText, rovingFocus } from '../../core/overlay.js';
 import { api, poll, describeError } from '../../api.js';
 import {
-  emptyChat, loadChat, saveChat, trimMessages, newMessageId, messagePolicy, pendingRoute,
-  routeFromResponse, routeFromError
+  emptyChat, loadChat, saveChat, trimMessages, newMessageId, messagePolicy, pendingRoute
 } from './local-store.js';
+import { createRunTracker } from './run-control.js';
 import { threadHtml } from './thread.js';
 import { inspectorHtml } from './inspector.js';
 import { composerHtml, footerHtml, previewInnerHtml, applyEditorState, replaceRange, autosize } from './composer.js';
@@ -34,7 +34,7 @@ const NARROW = '(max-width: 1279px)';
 // Module-level state shared by every mount (requests outlive the view)
 // ---------------------------------------------------------------------------
 
-const INFLIGHT = new Set(); // `${sessionId}:${messageId}` while api.router.decide is running
+const tracker = createRunTracker({ client: api });
 export const templateCache = { status: 'idle', items: [], error: null, promise: null };
 let active = null;
 
@@ -69,7 +69,7 @@ function patchRoute(sessionId, messageId, route) {
     active.patchRoute(messageId, route);
     return;
   }
-  const chat = loadChat(sessionId, (id) => INFLIGHT.has(`${sessionId}:${id}`));
+  const chat = loadChat(sessionId, (id) => tracker.isInflight(sessionId, id));
   const message = chat.messages.find((m) => m.id === messageId);
   if (!message) return;
   message.route = route;
@@ -77,22 +77,25 @@ function patchRoute(sessionId, messageId, route) {
 }
 
 /** The only caller of api.router.decide: send and retry. Reserves tokens on the server. */
-async function runDecide(sessionId, messageId, policy) {
-  const key = `${sessionId}:${messageId}`;
-  if (INFLIGHT.has(key)) return;
-  INFLIGHT.add(key);
-  let route;
-  try {
-    route = routeFromResponse(await api.router.decide(policy), policy);
-  } catch (error) {
-    route = routeFromError(error, policy);
-  } finally {
-    INFLIGHT.delete(key);
-  }
-  patchRoute(sessionId, messageId, route);
-  if (route.state === 'routed') announce(t('chat.routedAnnounce', { route: route.selectedCandidateId }));
-  else if (route.state === 'fenced') announce(t('chat.fencedAnnounce'));
-  else announce(t('chat.errorAnnounce'));
+function runDecide(sessionId, messageId, policy) {
+  return tracker.runDecide(sessionId, messageId, policy, {
+    onUpdate: patchRoute,
+    onSettled(route) {
+      if (route.state === 'routed') announce(t('chat.routedAnnounce', { route: route.selectedCandidateId }));
+      else if (route.state === 'fenced') announce(t('chat.fencedAnnounce'));
+      else if (route.state === 'cancelled') announce(t('chat.cancelledAnnounce'));
+      else announce(t('chat.errorAnnounce'));
+    }
+  });
+}
+
+function cancelDecide(sessionId, messageId) {
+  return tracker.cancelRoute(sessionId, messageId, {
+    onUpdate: patchRoute,
+    onCancelled() {
+      announce(t('chat.cancelledAnnounce'));
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +320,7 @@ export function createChat(host, initialRoute) {
 
   function enterSession(id) {
     if (S.loadedFor) leaveSession();
-    S.chat = loadChat(id, (messageId) => INFLIGHT.has(`${id}:${messageId}`));
+    S.chat = loadChat(id, (messageId) => tracker.isInflight(id, messageId));
     S.loadedFor = id;
     S.textFor = null;
     S.dirty = false;
@@ -492,7 +495,7 @@ export function createChat(host, initialRoute) {
 
   function retry(messageId) {
     const message = S.chat.messages.find((m) => m.id === messageId);
-    if (!message || message.route.state !== 'error' || INFLIGHT.has(`${S.loadedFor}:${messageId}`)) return;
+    if (!message || (message.route.state !== 'error' && message.route.state !== 'cancelled') || tracker.isInflight(S.loadedFor, messageId)) return;
     const policy = messagePolicy(S.loadedFor, messageId, message.markdown);
     patchRouteInState(messageId, pendingRoute(policy));
     runDecide(S.loadedFor, messageId, policy);
@@ -728,6 +731,9 @@ export function createChat(host, initialRoute) {
       case 'receipt-latest':
         S.receiptFocus = null;
         paintInspector();
+        break;
+      case 'cancel-route':
+        void cancelDecide(S.loadedFor, el.getAttribute('data-id'));
         break;
       case 'retry-route':
         retry(el.getAttribute('data-id'));

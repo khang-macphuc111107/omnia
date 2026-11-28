@@ -27,6 +27,24 @@ use crate::research_vault::{atomic_write_with_retry, ResearchVault};
 /// Default external Global Lessons directory (never inside tracked repository tree).
 pub const DEFAULT_GLOBAL_MEMORY_DIR: &str = r"D:\OmniaData\memory";
 
+/// Canonical Antigravity global lessons mirror path synchronized by [`sync_global_lessons`].
+pub const DEFAULT_AGY_GLOBAL_LESSONS_PATH: &str =
+    r"C:\Users\khang\.gemini\config\skills\global-lessons\references\lessons.md";
+
+/// Default LRU cap for unified 2-tier global lessons.
+pub const GLOBAL_LESSONS_CAP: usize = 100;
+
+/// All 7 mandatory follow-up session admission gate IDs (`SESSION-G01..G07`).
+pub const REQUIRED_SESSION_GATE_IDS: [&str; 7] = [
+    "SESSION-G01",
+    "SESSION-G02",
+    "SESSION-G03",
+    "SESSION-G04",
+    "SESSION-G05",
+    "SESSION-G06",
+    "SESSION-G07",
+];
+
 const AGENT_NOTES_START: &str = "<!-- AGENT_NOTES_START -->";
 const AGENT_NOTES_END: &str = "<!-- AGENT_NOTES_END -->";
 
@@ -1265,6 +1283,11 @@ impl ArtifactOs {
         Ok(count)
     }
 
+    /// Synchronizes this workspace's pending global lessons with the 2-tier Omnia <-> AGY mirrors.
+    pub fn sync_global_lessons(&self) -> Result<Value, String> {
+        sync_global_lessons(&self.workspace_root)
+    }
+
     fn get_artifact_by_id(&self, id: &str) -> Result<Option<LifecycleArtifact>, String> {
         let conn = self.conn.lock().map_err(|_| "artifact_os lock poisoned".to_string())?;
         let mut stmt = conn
@@ -1424,6 +1447,458 @@ fn relative_luminance((r, g, b): (u8, u8, u8)) -> f64 {
 #[allow(dead_code)]
 fn _touch_memory_enums(_k: MemoryKind, _s: MemoryScope, _p: MemoryProvenance, _t: MemoryTier) {}
 
+// =========================================================================
+// Unified 2-Tier Global Lessons Mirror & SESSION-G01..G07 Admission Gates
+// =========================================================================
+
+/// Receipt emitted after synchronizing Omnia & Antigravity global lessons mirrors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalLessonsSyncReport {
+    pub omnia_path: String,
+    pub agy_path: String,
+    pub pending_path: String,
+    pub merged_count: usize,
+    pub pending_drained: usize,
+    pub deduped_count: usize,
+    pub evicted_lru_count: usize,
+    pub secrets_redacted: usize,
+    pub sha256_hex: String,
+}
+
+/// Synchronizes `D:\OmniaData\memory\global_lessons.md` `<->`
+/// `C:\Users\khang\.gemini\config\skills\global-lessons\references\lessons.md` atomically,
+/// draining `<workspace_root>/.agents/memory/pending-global-lessons.md`, redacting secrets,
+/// deduplicating lexically, and enforcing the cap-100 LRU ceiling. Returns a JSON receipt
+/// (`{ ok, syncedCount, globalPath, agyPath, ... }`) for Studio/CLI routes.
+pub fn sync_global_lessons(workspace_root: &Path) -> Result<Value, String> {
+    let rep = sync_global_lessons_report(workspace_root)?;
+    Ok(json!({
+        "ok": true,
+        "syncedCount": rep.merged_count,
+        "globalPath": rep.omnia_path,
+        "omniaPath": rep.omnia_path,
+        "agyPath": rep.agy_path,
+        "pendingPath": rep.pending_path,
+        "mergedCount": rep.merged_count,
+        "pendingDrained": rep.pending_drained,
+        "dedupedCount": rep.deduped_count,
+        "evictedLruCount": rep.evicted_lru_count,
+        "secretsRedacted": rep.secrets_redacted,
+        "sha256Hex": rep.sha256_hex,
+    }))
+}
+
+/// Typed-report variant of [`sync_global_lessons`].
+pub fn sync_global_lessons_report(workspace_root: &Path) -> Result<GlobalLessonsSyncReport, String> {
+    let omnia_path = PathBuf::from(DEFAULT_GLOBAL_MEMORY_DIR).join("global_lessons.md");
+    let agy_path = PathBuf::from(DEFAULT_AGY_GLOBAL_LESSONS_PATH);
+    sync_global_lessons_with_paths(workspace_root, &omnia_path, &agy_path, GLOBAL_LESSONS_CAP)
+}
+
+/// Configurable-path implementation of [`sync_global_lessons`] (used by tests & custom roots).
+pub fn sync_global_lessons_with_paths(
+    workspace_root: &Path,
+    omnia_lessons_path: &Path,
+    agy_lessons_path: &Path,
+    cap: usize,
+) -> Result<GlobalLessonsSyncReport, String> {
+    let max_entries = cap.max(1);
+    let pending_path = workspace_root
+        .join(".agents")
+        .join("memory")
+        .join("pending-global-lessons.md");
+
+    let agy_raw = read_markdown_bullets(agy_lessons_path);
+    let omnia_raw = read_markdown_bullets(omnia_lessons_path);
+    let pending_raw = read_markdown_bullets(&pending_path);
+    let pending_drained = pending_raw.len();
+
+    // Order: existing AGY mirror -> existing Omnia mirror -> newly drained pending queue
+    // (later occurrences refresh recency for LRU retention!).
+    let mut ordered: Vec<(String, String)> = Vec::new();
+    let mut deduped_count = 0usize;
+    let mut secrets_redacted = 0usize;
+
+    for raw_bullet in agy_raw
+        .into_iter()
+        .chain(omnia_raw)
+        .chain(pending_raw)
+    {
+        let trimmed = raw_bullet.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let redacted = SecretRedactor::redact(trimmed);
+        if redacted != trimmed {
+            secrets_redacted += 1;
+        }
+        let normalized_line = if redacted.starts_with("- ") {
+            redacted.trim_end().to_string()
+        } else {
+            format!("- {}", redacted.trim_start_matches(['-', '*', ' ']).trim_end())
+        };
+        let key = lesson_lexical_key(&normalized_line);
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(pos) = ordered.iter().position(|(k, _)| k == &key) {
+            let (_, prev_line) = ordered.remove(pos);
+            deduped_count += 1;
+            // Keep richer/updated wording while refreshing LRU position to newest.
+            let chosen = if normalized_line.len() >= prev_line.len() {
+                normalized_line
+            } else {
+                prev_line
+            };
+            ordered.push((key, chosen));
+        } else {
+            ordered.push((key, normalized_line));
+        }
+    }
+
+    let evicted_lru_count = ordered.len().saturating_sub(max_entries);
+    if evicted_lru_count > 0 {
+        ordered.drain(0..evicted_lru_count);
+    }
+
+    let mut rendered = format!(
+        "# Global Cross-Project Lessons (Cap: {max_entries} Entries)\n\n\
+         <!-- Unified 2-tier global lessons mirror (Omnia <-> Antigravity, UTF-8 LF, secret-redacted, LRU capped). -->\n\n"
+    );
+    for (_, line) in &ordered {
+        rendered.push_str(line.trim_end());
+        rendered.push('\n');
+    }
+
+    let digest = sha256_hex(rendered.as_bytes());
+    atomic_write_with_retry(omnia_lessons_path, rendered.as_bytes())?;
+    atomic_write_with_retry(agy_lessons_path, rendered.as_bytes())?;
+
+    if pending_drained > 0 && pending_path.is_file() {
+        let cleared = "# Pending Global Lessons Queue\n\n<!-- Drained by sync_global_lessons -->\n";
+        atomic_write_with_retry(&pending_path, cleared.as_bytes())?;
+    }
+
+    Ok(GlobalLessonsSyncReport {
+        omnia_path: omnia_lessons_path.to_string_lossy().replace('\\', "/"),
+        agy_path: agy_lessons_path.to_string_lossy().replace('\\', "/"),
+        pending_path: pending_path.to_string_lossy().replace('\\', "/"),
+        merged_count: ordered.len(),
+        pending_drained,
+        deduped_count,
+        evicted_lru_count,
+        secrets_redacted,
+        sha256_hex: digest,
+    })
+}
+
+fn read_markdown_bullets(path: &Path) -> Vec<String> {
+    let Ok(bytes) = fs::read(path) else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let clean = text
+        .strip_prefix('\u{FEFF}')
+        .unwrap_or(&text)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let mut out = Vec::new();
+    for line in clean.lines() {
+        let t = line.trim();
+        if t.starts_with("- ") || t.starts_with("* ") {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+fn lesson_lexical_key(line: &str) -> String {
+    let stripped = line.trim_start_matches(['-', '*', ' ']).trim();
+    let folded = crate::proactive_rag::fold_vietnamese_ascii(stripped);
+    let mut key = String::with_capacity(folded.len());
+    let mut prev_ws = true;
+    for ch in folded.chars() {
+        if ch.is_ascii_alphanumeric() {
+            key.push(ch);
+            prev_ws = false;
+        } else if !prev_ws {
+            key.push(' ');
+            prev_ws = true;
+        }
+    }
+    key.trim().to_string()
+}
+
+/// Evaluation status for one gate inside `SESSION_ADMISSION.json` (`SESSION-G01..G07`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAdmissionGateStatus {
+    pub id: String,
+    pub required: String,
+    pub state: String,
+    pub passed: bool,
+    pub reason: Option<String>,
+}
+
+/// Configuration input for [`evaluate_session_admission_gates`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAdmissionEvalInput {
+    pub admission_json_path: Option<PathBuf>,
+    pub next_session_prompt_path: Option<PathBuf>,
+    pub expected_commit: Option<String>,
+    pub expected_tree: Option<String>,
+    pub expected_prompt_sha256: Option<String>,
+    pub check_git_state: bool,
+}
+
+impl Default for SessionAdmissionEvalInput {
+    fn default() -> Self {
+        Self {
+            admission_json_path: None,
+            next_session_prompt_path: None,
+            expected_commit: None,
+            expected_tree: None,
+            expected_prompt_sha256: None,
+            check_git_state: true,
+        }
+    }
+}
+
+/// Machine-checked evaluation of `SESSION-G01..G07` + `HEAD`/`tree`/`NEXT_SESSION_PROMPT.md` drift.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAdmissionReport {
+    pub prior_decision: String,
+    pub decision: String,
+    pub reverted_to_deferred: bool,
+    pub all_gates_passed: bool,
+    pub candidate_commit: Option<String>,
+    pub live_head_commit: Option<String>,
+    pub candidate_tree: Option<String>,
+    pub live_head_tree: Option<String>,
+    pub working_tree_clean: Option<bool>,
+    pub expected_prompt_sha256: Option<String>,
+    pub actual_prompt_sha256: Option<String>,
+    pub drift_reasons: Vec<String>,
+    pub gates: Vec<SessionAdmissionGateStatus>,
+}
+
+/// Evaluates `SESSION-G01..G07` from `SESSION_ADMISSION.json`, checks `NEXT_SESSION_PROMPT.md`
+/// SHA-256 parity and optional live Git `HEAD`/`HEAD^{tree}`/dirty status (using `CREATE_NO_WINDOW`
+/// + `--no-optional-locks`), and automatically reverts `READY -> DEFERRED` on any drift or open gate.
+pub fn evaluate_session_admission_gates(
+    workspace_root: &Path,
+    input: &SessionAdmissionEvalInput,
+) -> Result<SessionAdmissionReport, String> {
+    let admission_path = input.admission_json_path.clone().unwrap_or_else(|| {
+        workspace_root
+            .join("docs")
+            .join("workspace")
+            .join("SESSION_ADMISSION.json")
+    });
+    let prompt_path = input.next_session_prompt_path.clone().unwrap_or_else(|| {
+        workspace_root
+            .join("docs")
+            .join("workspace")
+            .join("NEXT_SESSION_PROMPT.md")
+    });
+
+    let raw = fs::read_to_string(&admission_path)
+        .map_err(|e| format!("read {}: {e}", admission_path.display()))?;
+    let doc: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("parse {}: {e}", admission_path.display()))?;
+
+    let prior_decision = doc
+        .get("decision")
+        .and_then(Value::as_str)
+        .unwrap_or("DEFERRED")
+        .trim()
+        .to_ascii_uppercase();
+    let candidate_commit = input.expected_commit.clone().or_else(|| {
+        doc.get("candidateCommit")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+    });
+    let candidate_tree = input.expected_tree.clone().or_else(|| {
+        doc.get("candidateTree")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+    });
+    let expected_prompt_sha256 = input.expected_prompt_sha256.clone().or_else(|| {
+        doc.get("launch")
+            .and_then(|l| l.get("promptSha256"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_lowercase)
+    });
+
+    let mut gate_map: BTreeMap<String, (String, String)> = BTreeMap::new();
+    if let Some(arr) = doc.get("gates").and_then(Value::as_array) {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                let req = item
+                    .get("required")
+                    .and_then(Value::as_str)
+                    .unwrap_or("PASS")
+                    .trim()
+                    .to_string();
+                let state = item
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("MISSING")
+                    .trim()
+                    .to_string();
+                gate_map.insert(id.trim().to_string(), (req, state));
+            }
+        }
+    }
+
+    let mut gates = Vec::with_capacity(REQUIRED_SESSION_GATE_IDS.len());
+    let mut all_gates_passed = true;
+    for req_id in REQUIRED_SESSION_GATE_IDS {
+        if let Some((required, state)) = gate_map.get(req_id) {
+            let passed = state == required
+                || (required.starts_with("PASS") && state.starts_with("PASS") && state == required);
+            if !passed {
+                all_gates_passed = false;
+            }
+            gates.push(SessionAdmissionGateStatus {
+                id: req_id.to_string(),
+                required: required.clone(),
+                state: state.clone(),
+                passed,
+                reason: if passed {
+                    None
+                } else {
+                    Some(format!("expected `{required}`, observed `{state}`"))
+                },
+            });
+        } else {
+            all_gates_passed = false;
+            gates.push(SessionAdmissionGateStatus {
+                id: req_id.to_string(),
+                required: "PASS".to_string(),
+                state: "MISSING".to_string(),
+                passed: false,
+                reason: Some("mandatory gate missing from SESSION_ADMISSION.json".to_string()),
+            });
+        }
+    }
+
+    let mut drift_reasons = Vec::new();
+    let actual_prompt_sha256 = match fs::read(&prompt_path) {
+        Ok(bytes) => Some(sha256_hex(&bytes)),
+        Err(e) => {
+            drift_reasons.push(format!(
+                "NEXT_SESSION_PROMPT.md unreadable at {}: {e}",
+                prompt_path.display()
+            ));
+            None
+        }
+    };
+    if let (Some(exp), Some(act)) = (&expected_prompt_sha256, &actual_prompt_sha256) {
+        if !exp.eq_ignore_ascii_case(act) {
+            drift_reasons.push(format!(
+                "NEXT_SESSION_PROMPT.md SHA-256 drift (expected {exp}, actual {act})"
+            ));
+        }
+    } else if expected_prompt_sha256.is_none() {
+        drift_reasons.push("launch.promptSha256 missing in SESSION_ADMISSION.json".to_string());
+    }
+
+    let mut live_head_commit = None;
+    let mut live_head_tree = None;
+    let mut working_tree_clean = None;
+
+    if input.check_git_state {
+        if let Some(head) = run_git_query_no_window(workspace_root, &["rev-parse", "HEAD"]) {
+            if let Some(ref exp_c) = candidate_commit {
+                if !head.eq_ignore_ascii_case(exp_c) {
+                    drift_reasons.push(format!(
+                        "git HEAD drift (expected {exp_c}, live {head})"
+                    ));
+                }
+            }
+            live_head_commit = Some(head);
+        } else if candidate_commit.is_some() {
+            drift_reasons.push("unable to verify live git HEAD".to_string());
+        }
+
+        if let Some(tree) = run_git_query_no_window(workspace_root, &["rev-parse", "HEAD^{tree}"]) {
+            if let Some(ref exp_t) = candidate_tree {
+                if !tree.eq_ignore_ascii_case(exp_t) {
+                    drift_reasons.push(format!(
+                        "git tree drift (expected {exp_t}, live {tree})"
+                    ));
+                }
+            }
+            live_head_tree = Some(tree);
+        } else if candidate_tree.is_some() {
+            drift_reasons.push("unable to verify live git HEAD^{tree}".to_string());
+        }
+
+        if let Some(porcelain) =
+            run_git_query_no_window(workspace_root, &["status", "--porcelain"])
+        {
+            let clean = porcelain.trim().is_empty();
+            working_tree_clean = Some(clean);
+            if !clean {
+                drift_reasons.push("git working tree is DIRTY (dirty_total > 0)".to_string());
+            }
+        }
+    }
+
+    let ready_now = all_gates_passed && drift_reasons.is_empty();
+    let decision = if ready_now {
+        "READY".to_string()
+    } else {
+        "DEFERRED".to_string()
+    };
+    let reverted_to_deferred = prior_decision == "READY" && decision == "DEFERRED";
+
+    Ok(SessionAdmissionReport {
+        prior_decision,
+        decision,
+        reverted_to_deferred,
+        all_gates_passed,
+        candidate_commit,
+        live_head_commit,
+        candidate_tree,
+        live_head_tree,
+        working_tree_clean,
+        expected_prompt_sha256,
+        actual_prompt_sha256,
+        drift_reasons,
+        gates,
+    })
+}
+
+fn run_git_query_no_window(workspace_root: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("--no-optional-locks")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1547,5 +2022,142 @@ mod tests {
         assert!(!bad_ctrl.no_control_bytes);
 
         assert!(validate_no_proto_pollution(&json!({"__proto__": {"admin": true}})).is_err());
+    }
+
+    #[test]
+    fn sync_global_lessons_mirrors_dedups_redacts_enforces_lru_cap_and_drains_pending() {
+        let root = std::env::temp_dir().join(format!("omnia-lessons-sync-{}", uuid_v4()));
+        let omnia_file = root.join("omnia_global_lessons.md");
+        let agy_file = root.join("agy_lessons.md");
+        let pending_file = root
+            .join(".agents")
+            .join("memory")
+            .join("pending-global-lessons.md");
+
+        let dummy_bearer = format!("Bearer {}", "fake_synthetic_token_0000000000000000");
+        atomic_write_with_retry(
+            &agy_file,
+            b"# Global Cross-Project Lessons (Cap: 100 Entries)\n\n\
+              - **[Oldest Entry]** Keep pure UTF-8 LF.\n\
+              - **[Duplicate Rule]** Never delay-load ws2_32.dll on Windows.\n",
+        )
+        .unwrap();
+        atomic_write_with_retry(
+            &omnia_file,
+            b"- **[Duplicate Rule]** Never delay-load ws2_32.dll on Windows.\n\
+              - **[Second Rule]** Use CREATE_NO_WINDOW on background git spawns.\n",
+        )
+        .unwrap();
+        atomic_write_with_retry(
+            &pending_file,
+            format!(
+                "- **[Pending Secret]** Redact {dummy_bearer} before writing.\n\
+                 - **[Newest Rule]** Always validate binary bounds before allocation.\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        // Cap = 3 -> 5 unique entries (6 raw minus 1 duplicate) -> oldest 2 evicted via LRU!
+        let rep = sync_global_lessons_with_paths(&root, &omnia_file, &agy_file, 3).unwrap();
+        assert_eq!(rep.merged_count, 3);
+        assert_eq!(rep.pending_drained, 2);
+        assert_eq!(rep.deduped_count, 1);
+        assert_eq!(rep.evicted_lru_count, 2);
+        assert_eq!(rep.secrets_redacted, 1);
+
+        let omnia_out = fs::read_to_string(&omnia_file).unwrap();
+        let agy_out = fs::read_to_string(&agy_file).unwrap();
+        assert_eq!(omnia_out, agy_out, "both mirrors must be byte-identical");
+        assert!(!omnia_out.contains('\r'), "must be pure Unix LF");
+        assert!(!omnia_out.contains("fake_synthetic_token"), "secret must be redacted");
+        assert!(!omnia_out.contains("Oldest Entry"), "oldest entry must be LRU-evicted");
+        assert!(omnia_out.contains("Second Rule"));
+        assert!(omnia_out.contains("Newest Rule"));
+
+        let pending_after = fs::read_to_string(&pending_file).unwrap();
+        assert!(
+            !pending_after.contains("Newest Rule"),
+            "pending queue must be drained after sync"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_admission_gates_detects_prompt_and_commit_drift_and_reverts_ready_to_deferred() {
+        let root = std::env::temp_dir().join(format!("omnia-admission-{}", uuid_v4()));
+        let ws_docs = root.join("docs").join("workspace");
+        let prompt_path = ws_docs.join("NEXT_SESSION_PROMPT.md");
+        let admission_path = ws_docs.join("SESSION_ADMISSION.json");
+
+        let prompt_body = "Next session prompt fixture\n";
+        let prompt_sha = sha256_hex(prompt_body.as_bytes());
+        atomic_write_with_retry(&prompt_path, prompt_body.as_bytes()).unwrap();
+
+        let all_pass_json = json!({
+            "decision": "READY",
+            "candidateCommit": "1111111111111111111111111111111111111111",
+            "candidateTree": "2222222222222222222222222222222222222222",
+            "gates": [
+                {"id": "SESSION-G01", "required": "PASS_SCOPED", "state": "PASS_SCOPED"},
+                {"id": "SESSION-G02", "required": "PASS_PRESERVATION", "state": "PASS_PRESERVATION"},
+                {"id": "SESSION-G03", "required": "PASS_SCOPED", "state": "PASS_SCOPED"},
+                {"id": "SESSION-G04", "required": "PASS_SCOPED", "state": "PASS_SCOPED"},
+                {"id": "SESSION-G05", "required": "PASS_SCOPED", "state": "PASS_SCOPED"},
+                {"id": "SESSION-G06", "required": "PASS_SCOPED", "state": "PASS_SCOPED"},
+                {"id": "SESSION-G07", "required": "PASS_TRANSFER", "state": "PASS_TRANSFER"}
+            ],
+            "launch": {
+                "promptSha256": prompt_sha
+            }
+        });
+        atomic_write_with_retry(
+            &admission_path,
+            serde_json::to_string_pretty(&all_pass_json).unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        // 1. All 7 gates PASS + exact prompt SHA -> READY (with check_git_state: false in temp dir).
+        let ok_rep = evaluate_session_admission_gates(
+            &root,
+            &SessionAdmissionEvalInput {
+                check_git_state: false,
+                ..SessionAdmissionEvalInput::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(ok_rep.decision, "READY");
+        assert!(!ok_rep.reverted_to_deferred);
+        assert!(ok_rep.all_gates_passed);
+        assert!(ok_rep.drift_reasons.is_empty());
+
+        // 2. Mutate NEXT_SESSION_PROMPT.md -> SHA-256 drift automatically reverts READY -> DEFERRED!
+        atomic_write_with_retry(&prompt_path, b"Mutated prompt body causing SHA drift\n").unwrap();
+        let drift_rep = evaluate_session_admission_gates(
+            &root,
+            &SessionAdmissionEvalInput {
+                check_git_state: false,
+                ..SessionAdmissionEvalInput::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(drift_rep.prior_decision, "READY");
+        assert_eq!(drift_rep.decision, "DEFERRED");
+        assert!(drift_rep.reverted_to_deferred);
+        assert!(drift_rep
+            .drift_reasons
+            .iter()
+            .any(|r| r.contains("SHA-256 drift")));
+
+        // 3. With check_git_state: true on non-git temp dir, missing HEAD verification also forces DEFERRED.
+        let git_drift = evaluate_session_admission_gates(
+            &root,
+            &SessionAdmissionEvalInput::default(),
+        )
+        .unwrap();
+        assert_eq!(git_drift.decision, "DEFERRED");
+        assert!(git_drift.reverted_to_deferred);
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

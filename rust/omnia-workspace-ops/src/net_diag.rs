@@ -100,7 +100,31 @@ pub struct WifiLinkInfo {
     pub state: String,
 }
 
-/// Complete local + public network identity report.
+/// Mapped public socket discovered by RFC 5389 STUN Binding probe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StunMappedAddress {
+    pub ip: String,
+    pub port: u16,
+    pub attribute: String,
+}
+
+/// Pure-Rust RFC 5389 UDP STUN NAT mapping inspection result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StunProbeReport {
+    pub status: DataProvenance,
+    pub server: Option<String>,
+    pub mapped_ip: Option<String>,
+    pub mapped_port: Option<u16>,
+    pub attribute: Option<String>,
+    pub nat_mapping_behavior: String,
+    pub endpoints_probed: Vec<String>,
+    pub rtt_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Complete local & public network identity snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkIdentityReport {
@@ -117,6 +141,8 @@ pub struct NetworkIdentityReport {
     pub fingerprint_sha256: String,
     pub observed_at_ms: i64,
     pub detail: Option<String>,
+    #[serde(default)]
+    pub stun: Option<StunProbeReport>,
 }
 
 /// Options controlling [`inspect_dns_and_benchmark`].
@@ -147,6 +173,28 @@ impl Default for DnsBenchOptions {
     }
 }
 
+/// Parsed RFC 1035 NXDOMAIN verification outcome for one DNS wire packet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsNxdomainParseResult {
+    pub rcode: u8,
+    pub answers_v4: Vec<String>,
+    pub hijacked: bool,
+}
+
+/// RFC 1035 NXDOMAIN DNS-hijack check summary across configured/public resolvers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NxdomainHijackReport {
+    pub status: DataProvenance,
+    pub probed_domain: String,
+    pub hijacked: bool,
+    pub hijack_ips: Vec<String>,
+    pub resolvers_tested: Vec<String>,
+    pub hijacking_resolvers: Vec<String>,
+    pub detail: Option<String>,
+}
+
 /// Latency & reliability benchmark result for a single DNS resolver.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +210,8 @@ pub struct DnsResolverBench {
     pub failure_rate_pct: f64,
     pub samples_ms: Vec<f64>,
     pub resolved_ip: Option<String>,
+    #[serde(default)]
+    pub hijack_detected: bool,
 }
 
 /// System DNS configuration, multi-resolver benchmark, and VPN leak assessment.
@@ -179,6 +229,8 @@ pub struct DnsIntelReport {
     pub leak_status: String,
     pub leak_warning: Option<String>,
     pub observed_at_ms: i64,
+    #[serde(default)]
+    pub nxdomain_hijack: Option<NxdomainHijackReport>,
 }
 
 /// Masked environment proxy configuration entry.
@@ -838,6 +890,24 @@ pub fn inspect_network_identity(opts: &NetDiagOptions) -> NetworkIdentityReport 
     let ipv6_reachable = public_ipv6.is_some();
     let fingerprint_sha256 =
         compute_network_fingerprint(&adapters, public_ipv4.as_deref(), public_ipv6.as_deref());
+    let stun = if opts.probe_public_ip {
+        Some(probe_stun_nat(
+            &local_ipv4s,
+            Duration::from_millis(opts.timeout_ms.clamp(300, 2_500)),
+        ))
+    } else {
+        Some(StunProbeReport {
+            status: DataProvenance::Unavailable,
+            server: None,
+            mapped_ip: None,
+            mapped_port: None,
+            attribute: None,
+            nat_mapping_behavior: "skipped_offline".to_string(),
+            endpoints_probed: Vec::new(),
+            rtt_ms: None,
+            error: Some("STUN NAT probe skipped by option (local adapters only).".to_string()),
+        })
+    };
 
     NetworkIdentityReport {
         provenance,
@@ -853,6 +923,7 @@ pub fn inspect_network_identity(opts: &NetDiagOptions) -> NetworkIdentityReport 
         fingerprint_sha256,
         observed_at_ms,
         detail,
+        stun,
     }
 }
 
@@ -1111,6 +1182,28 @@ pub fn inspect_dns_and_benchmark(opts: &DnsBenchOptions) -> DnsIntelReport {
         dns_egress_ip.as_deref(),
         &sys_dns,
     );
+    let nxdomain_hijack = if opts.run_benchmark {
+        let mut hijack_report = probe_nxdomain_hijack(&sys_dns, timeout);
+        for res in &mut resolvers {
+            if hijack_report.hijacking_resolvers.contains(&res.server) {
+                res.hijack_detected = true;
+            }
+        }
+        if !hijack_report.hijacking_resolvers.is_empty() {
+            hijack_report.hijacked = true;
+        }
+        Some(hijack_report)
+    } else {
+        Some(NxdomainHijackReport {
+            status: DataProvenance::Unavailable,
+            probed_domain: String::new(),
+            hijacked: false,
+            hijack_ips: Vec::new(),
+            resolvers_tested: Vec::new(),
+            hijacking_resolvers: Vec::new(),
+            detail: Some("NXDOMAIN hijack probe skipped when active benchmark is disabled.".to_string()),
+        })
+    };
 
     DnsIntelReport {
         system_dns_servers: sys_dns,
@@ -1124,6 +1217,7 @@ pub fn inspect_dns_and_benchmark(opts: &DnsBenchOptions) -> DnsIntelReport {
         leak_status,
         leak_warning,
         observed_at_ms,
+        nxdomain_hijack,
     }
 }
 
@@ -1238,6 +1332,7 @@ fn benchmark_system_resolver(domain: &str, trials: usize) -> DnsResolverBench {
         failure_rate_pct: stats.loss_pct,
         samples_ms: samples,
         resolved_ip,
+        hijack_detected: false,
     }
 }
 
@@ -1278,6 +1373,7 @@ fn benchmark_udp_resolver(
         failure_rate_pct: stats.loss_pct,
         samples_ms: samples,
         resolved_ip,
+        hijack_detected: false,
     }
 }
 
@@ -1406,6 +1502,371 @@ fn udp_dns_query_a(
     let mut buf = [0u8; 512];
     let (n, _) = sock.recv_from(&mut buf).map_err(|e| e.to_string())?;
     parse_dns_a_response(&buf[..n], tx_id).ok_or_else(|| "no A record in DNS response".to_string())
+}
+
+const STUN_MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
+const STUN_MSG_BINDING_REQUEST: u16 = 0x0001;
+const STUN_MSG_BINDING_RESPONSE: u16 = 0x0101;
+const STUN_ATTR_MAPPED_ADDRESS: u16 = 0x0001;
+const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+
+/// Encodes a 20-byte RFC 5389 STUN Binding Request with magic cookie `0x2112A442`.
+#[must_use]
+pub fn encode_stun_binding_request(tx_id: [u8; 12]) -> [u8; 20] {
+    let mut pkt = [0u8; 20];
+    pkt[0..2].copy_from_slice(&STUN_MSG_BINDING_REQUEST.to_be_bytes());
+    pkt[2..4].copy_from_slice(&0u16.to_be_bytes());
+    pkt[4..8].copy_from_slice(&STUN_MAGIC_COOKIE);
+    pkt[8..20].copy_from_slice(&tx_id);
+    pkt
+}
+
+/// Decodes an RFC 5389 STUN Binding Success Response, extracting `XOR-MAPPED-ADDRESS`
+/// (preferred) or `MAPPED-ADDRESS` (fallback) matching `expected_tx_id`.
+pub fn decode_stun_response(
+    pkt: &[u8],
+    expected_tx_id: &[u8; 12],
+) -> Result<StunMappedAddress, String> {
+    if pkt.len() < 20 {
+        return Err(format!("truncated STUN packet ({} bytes)", pkt.len()));
+    }
+    let msg_type = u16::from_be_bytes([pkt[0], pkt[1]]);
+    if msg_type != STUN_MSG_BINDING_RESPONSE {
+        return Err(format!("unexpected STUN message type 0x{msg_type:04X}"));
+    }
+    if pkt[4..8] != STUN_MAGIC_COOKIE {
+        return Err("invalid STUN magic cookie".to_string());
+    }
+    if &pkt[8..20] != expected_tx_id {
+        return Err("STUN transaction ID mismatch".to_string());
+    }
+    let msg_len = u16::from_be_bytes([pkt[2], pkt[3]]) as usize;
+    let end = 20usize.saturating_add(msg_len).min(pkt.len());
+    let mut pos = 20usize;
+    let mut fallback: Option<StunMappedAddress> = None;
+
+    while pos + 4 <= end {
+        let attr_type = u16::from_be_bytes([pkt[pos], pkt[pos + 1]]);
+        let attr_len = u16::from_be_bytes([pkt[pos + 2], pkt[pos + 3]]) as usize;
+        let val_start = pos + 4;
+        let Some(val_end) = val_start.checked_add(attr_len) else {
+            break;
+        };
+        if val_end > end {
+            break;
+        }
+        let val = &pkt[val_start..val_end];
+        if attr_type == STUN_ATTR_XOR_MAPPED_ADDRESS {
+            if let Some(addr) = parse_stun_mapped_attr(val, expected_tx_id, true) {
+                return Ok(StunMappedAddress {
+                    ip: addr.0,
+                    port: addr.1,
+                    attribute: "XOR-MAPPED-ADDRESS".to_string(),
+                });
+            }
+        } else if attr_type == STUN_ATTR_MAPPED_ADDRESS && fallback.is_none() {
+            if let Some(addr) = parse_stun_mapped_attr(val, expected_tx_id, false) {
+                fallback = Some(StunMappedAddress {
+                    ip: addr.0,
+                    port: addr.1,
+                    attribute: "MAPPED-ADDRESS".to_string(),
+                });
+            }
+        }
+        let padded = (attr_len + 3) & !3;
+        pos = val_start.saturating_add(padded).min(end);
+        if padded == 0 && attr_len == 0 {
+            pos = val_start;
+        }
+    }
+
+    fallback.ok_or_else(|| "STUN response missing XOR-MAPPED-ADDRESS / MAPPED-ADDRESS".to_string())
+}
+
+fn parse_stun_mapped_attr(val: &[u8], tx_id: &[u8; 12], xor: bool) -> Option<(String, u16)> {
+    if val.len() < 8 {
+        return None;
+    }
+    let family = val[1];
+    let raw_port = u16::from_be_bytes([val[2], val[3]]);
+    let port = if xor { raw_port ^ 0x2112 } else { raw_port };
+
+    match family {
+        0x01 if val.len() >= 8 => {
+            let mut octets = [val[4], val[5], val[6], val[7]];
+            if xor {
+                for i in 0..4 {
+                    octets[i] ^= STUN_MAGIC_COOKIE[i];
+                }
+            }
+            Some((Ipv4Addr::from(octets).to_string(), port))
+        }
+        0x02 if val.len() >= 20 => {
+            let mut mask = [0u8; 16];
+            mask[..4].copy_from_slice(&STUN_MAGIC_COOKIE);
+            mask[4..16].copy_from_slice(tx_id);
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&val[4..20]);
+            if xor {
+                for i in 0..16 {
+                    octets[i] ^= mask[i];
+                }
+            }
+            Some((Ipv6Addr::from(octets).to_string(), port))
+        }
+        _ => None,
+    }
+}
+
+fn make_stun_tx_id(salt: u8) -> [u8; 12] {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut tx = [0u8; 12];
+    tx[0..8].copy_from_slice(&seq.wrapping_add(nanos as u64).to_be_bytes());
+    tx[8..12].copy_from_slice(&(std::process::id() ^ u32::from(salt)).to_be_bytes());
+    tx
+}
+
+fn probe_stun_nat(local_ipv4s: &[Ipv4Addr], timeout: Duration) -> StunProbeReport {
+    let servers = ["stun.cloudflare.com:3478", "stun.l.google.com:19302"];
+    let sock = match UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))) {
+        Ok(s) => s,
+        Err(e) => {
+            return StunProbeReport {
+                status: DataProvenance::Unavailable,
+                server: None,
+                mapped_ip: None,
+                mapped_port: None,
+                attribute: None,
+                nat_mapping_behavior: "unavailable".to_string(),
+                endpoints_probed: Vec::new(),
+                rtt_ms: None,
+                error: Some(format!("UDP socket bind failed: {e}")),
+            };
+        }
+    };
+    let per_try = timeout.clamp(Duration::from_millis(250), Duration::from_millis(900));
+    let _ = sock.set_read_timeout(Some(per_try));
+    let _ = sock.set_write_timeout(Some(per_try));
+
+    let mut probed = Vec::new();
+    let mut results: Vec<(&str, StunMappedAddress, u64)> = Vec::new();
+    let mut last_err: Option<String> = None;
+
+    for (idx, srv) in servers.iter().enumerate() {
+        probed.push((*srv).to_string());
+        let Ok(mut addrs) = srv.to_socket_addrs() else {
+            last_err = Some(format!("DNS resolve failed for {srv}"));
+            continue;
+        };
+        let Some(target) = addrs.find(SocketAddr::is_ipv4) else {
+            last_err = Some(format!("no IPv4 address for {srv}"));
+            continue;
+        };
+        let tx_id = make_stun_tx_id(idx as u8);
+        let req = encode_stun_binding_request(tx_id);
+        let t0 = Instant::now();
+        if let Err(e) = sock.send_to(&req, target) {
+            last_err = Some(format!("STUN send to {srv} failed: {e}"));
+            continue;
+        }
+        let mut buf = [0u8; 512];
+        match sock.recv_from(&mut buf) {
+            Ok((n, _)) => match decode_stun_response(&buf[..n], &tx_id) {
+                Ok(mapped) => {
+                    let rtt = t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                    results.push((*srv, mapped, rtt));
+                }
+                Err(e) => last_err = Some(format!("STUN decode from {srv} failed: {e}")),
+            },
+            Err(e) => last_err = Some(format!("STUN recv from {srv} timed out/failed: {e}")),
+        }
+    }
+
+    if let Some((first_srv, first_mapped, rtt)) = results.first() {
+        let local_matches = first_mapped
+            .ip
+            .parse::<Ipv4Addr>()
+            .ok()
+            .is_some_and(|ip| local_ipv4s.contains(&ip));
+        let nat_mapping_behavior = if local_matches {
+            "direct_no_nat".to_string()
+        } else if results.len() >= 2
+            && (results[0].1.port != results[1].1.port || results[0].1.ip != results[1].1.ip)
+        {
+            "symmetric_nat".to_string()
+        } else {
+            "endpoint_independent_cone_nat".to_string()
+        };
+        StunProbeReport {
+            status: DataProvenance::Live,
+            server: Some((*first_srv).to_string()),
+            mapped_ip: Some(first_mapped.ip.clone()),
+            mapped_port: Some(first_mapped.port),
+            attribute: Some(first_mapped.attribute.clone()),
+            nat_mapping_behavior,
+            endpoints_probed: probed,
+            rtt_ms: Some(*rtt),
+            error: None,
+        }
+    } else {
+        StunProbeReport {
+            status: DataProvenance::Unavailable,
+            server: None,
+            mapped_ip: None,
+            mapped_port: None,
+            attribute: None,
+            nat_mapping_behavior: "unavailable".to_string(),
+            endpoints_probed: probed,
+            rtt_ms: None,
+            error: last_err,
+        }
+    }
+}
+
+/// Parses an RFC 1035 response for an NXDOMAIN probe, extracting `RCODE` and all IPv4 `A` answers.
+pub fn parse_dns_nxdomain_reply(
+    buf: &[u8],
+    expected_tx_id: u16,
+) -> Result<DnsNxdomainParseResult, String> {
+    if buf.len() < 12 {
+        return Err(format!("truncated DNS packet ({} bytes)", buf.len()));
+    }
+    let tx_id = u16::from_be_bytes([buf[0], buf[1]]);
+    if tx_id != expected_tx_id {
+        return Err("DNS transaction ID mismatch".to_string());
+    }
+    if (buf[2] & 0x80) == 0 {
+        return Err("DNS packet is not a response".to_string());
+    }
+    let rcode = buf[3] & 0x0F;
+    let qdcount = u16::from_be_bytes([buf[4], buf[5]]) as usize;
+    let ancount = u16::from_be_bytes([buf[6], buf[7]]) as usize;
+    let mut pos = 12usize;
+    for _ in 0..qdcount {
+        pos = skip_dns_name(buf, pos).ok_or_else(|| "malformed DNS question".to_string())?;
+        pos = pos
+            .checked_add(4)
+            .filter(|&p| p <= buf.len())
+            .ok_or_else(|| "truncated DNS question".to_string())?;
+    }
+
+    let mut answers_v4 = Vec::new();
+    for _ in 0..ancount {
+        pos = skip_dns_name(buf, pos).ok_or_else(|| "malformed DNS answer".to_string())?;
+        if pos + 10 > buf.len() {
+            return Err("truncated DNS answer RR".to_string());
+        }
+        let rtype = u16::from_be_bytes([buf[pos], buf[pos + 1]]);
+        let rdlen = u16::from_be_bytes([buf[pos + 8], buf[pos + 9]]) as usize;
+        pos += 10;
+        if pos + rdlen > buf.len() {
+            return Err("truncated DNS answer rdata".to_string());
+        }
+        if rtype == 1 && rdlen == 4 {
+            answers_v4.push(Ipv4Addr::new(buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]).to_string());
+        }
+        pos += rdlen;
+    }
+
+    let hijacked = rcode == 0 && !answers_v4.is_empty();
+    Ok(DnsNxdomainParseResult {
+        rcode,
+        answers_v4,
+        hijacked,
+    })
+}
+
+fn probe_nxdomain_against_server(
+    server_ip: &str,
+    domain: &str,
+    tx_id: u16,
+    timeout: Duration,
+) -> Result<DnsNxdomainParseResult, String> {
+    let server: IpAddr = server_ip
+        .parse()
+        .map_err(|_| format!("invalid DNS IP '{server_ip}'"))?;
+    let bind_addr: SocketAddr = if server.is_ipv6() {
+        SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))
+    } else {
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
+    };
+    let sock = UdpSocket::bind(bind_addr).map_err(|e| e.to_string())?;
+    let bounded = timeout.clamp(Duration::from_millis(200), Duration::from_millis(1_000));
+    sock.set_read_timeout(Some(bounded)).map_err(|e| e.to_string())?;
+    sock.set_write_timeout(Some(bounded)).map_err(|e| e.to_string())?;
+    let query = build_dns_a_query(domain, tx_id);
+    sock.send_to(&query, SocketAddr::new(server, 53))
+        .map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 512];
+    let (n, _) = sock.recv_from(&mut buf).map_err(|e| e.to_string())?;
+    parse_dns_nxdomain_reply(&buf[..n], tx_id)
+}
+
+fn probe_nxdomain_hijack(sys_dns: &[String], timeout: Duration) -> NxdomainHijackReport {
+    let probe_domain = format!("nxprobe-{}-omnia.nonexistent.invalid", now_epoch_ms());
+    let mut candidates: Vec<String> = sys_dns
+        .iter()
+        .filter(|s| s.parse::<IpAddr>().is_ok())
+        .take(2)
+        .cloned()
+        .collect();
+    for pub_dns in ["1.1.1.1", "8.8.8.8"] {
+        if !candidates.iter().any(|c| c == pub_dns) {
+            candidates.push(pub_dns.to_string());
+        }
+    }
+
+    let mut tested = Vec::new();
+    let mut hijacking_resolvers = Vec::new();
+    let mut hijack_ips = BTreeSet::new();
+    let mut responded = 0usize;
+
+    for (idx, srv) in candidates.iter().enumerate() {
+        let tx_id = 0x6C00u16.wrapping_add((idx as u16).wrapping_mul(41));
+        if let Ok(parsed) = probe_nxdomain_against_server(srv, &probe_domain, tx_id, timeout) {
+            responded += 1;
+            tested.push(srv.clone());
+            if parsed.hijacked {
+                hijacking_resolvers.push(srv.clone());
+                for ip in parsed.answers_v4 {
+                    hijack_ips.insert(ip);
+                }
+            }
+        }
+    }
+
+    let hijacked = !hijacking_resolvers.is_empty();
+    let hijack_ips_vec: Vec<String> = hijack_ips.into_iter().collect();
+    let detail = if responded == 0 {
+        Some("NXDOMAIN probe received no UDP DNS replies (offline or filtered).".to_string())
+    } else if hijacked {
+        Some(format!(
+            "Resolver(s) {} synthesized A record(s) [{}] for non-existent RFC 2606 domain.",
+            hijacking_resolvers.join(", "),
+            hijack_ips_vec.join(", ")
+        ))
+    } else {
+        Some("All responding resolvers cleanly returned NXDOMAIN (no DNS hijacking).".to_string())
+    };
+
+    NxdomainHijackReport {
+        status: if responded == 0 {
+            DataProvenance::Unavailable
+        } else {
+            DataProvenance::Live
+        },
+        probed_domain: probe_domain,
+        hijacked,
+        hijack_ips: hijack_ips_vec,
+        resolvers_tested: tested,
+        hijacking_resolvers,
+        detail,
+    }
 }
 
 // =========================================================================
@@ -3521,5 +3982,96 @@ mod tests {
             res.bufferbloat_grade.as_str(),
             "A+" | "A" | "B" | "C" | "D" | "F"
         ));
+    }
+
+    #[test]
+    fn stun_rfc5389_encode_and_decode_xor_mapped_ipv4_and_ipv6() {
+        let tx_id: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let req = encode_stun_binding_request(tx_id);
+        assert_eq!(req.len(), 20);
+        assert_eq!(&req[0..2], &[0x00, 0x01]);
+        assert_eq!(&req[4..8], &[0x21, 0x12, 0xA4, 0x42]);
+        assert_eq!(&req[8..20], &tx_id);
+
+        // Build RFC 5389 Binding Success Response with XOR-MAPPED-ADDRESS 203.0.113.42:54321
+        let xor_port = (54321u16 ^ 0x2112).to_be_bytes();
+        let raw_ip = [203u8, 0, 113, 42];
+        let xor_ip = [
+            raw_ip[0] ^ 0x21,
+            raw_ip[1] ^ 0x12,
+            raw_ip[2] ^ 0xA4,
+            raw_ip[3] ^ 0x42,
+        ];
+        let mut resp = Vec::new();
+        resp.extend_from_slice(&0x0101u16.to_be_bytes());
+        resp.extend_from_slice(&12u16.to_be_bytes());
+        resp.extend_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+        resp.extend_from_slice(&tx_id);
+        resp.extend_from_slice(&0x0020u16.to_be_bytes()); // XOR-MAPPED-ADDRESS
+        resp.extend_from_slice(&8u16.to_be_bytes());
+        resp.extend_from_slice(&[0x00, 0x01]);
+        resp.extend_from_slice(&xor_port);
+        resp.extend_from_slice(&xor_ip);
+
+        let decoded = decode_stun_response(&resp, &tx_id).expect("decode stun ipv4");
+        assert_eq!(decoded.ip, "203.0.113.42");
+        assert_eq!(decoded.port, 54321);
+        assert_eq!(decoded.attribute, "XOR-MAPPED-ADDRESS");
+
+        // Wrong transaction ID must be rejected
+        assert!(decode_stun_response(&resp, &[9u8; 12]).is_err());
+
+        // IPv6 XOR-MAPPED-ADDRESS (2001:db8::1 port 41000)
+        let mut mask = [0u8; 16];
+        mask[..4].copy_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+        mask[4..16].copy_from_slice(&tx_id);
+        let v6_bytes = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1).octets();
+        let mut v6_resp = Vec::new();
+        v6_resp.extend_from_slice(&0x0101u16.to_be_bytes());
+        v6_resp.extend_from_slice(&24u16.to_be_bytes());
+        v6_resp.extend_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+        v6_resp.extend_from_slice(&tx_id);
+        v6_resp.extend_from_slice(&0x0020u16.to_be_bytes());
+        v6_resp.extend_from_slice(&20u16.to_be_bytes());
+        v6_resp.extend_from_slice(&[0x00, 0x02]);
+        v6_resp.extend_from_slice(&(41000u16 ^ 0x2112).to_be_bytes());
+        for i in 0..16 {
+            v6_resp.push(v6_bytes[i] ^ mask[i]);
+        }
+        let decoded6 = decode_stun_response(&v6_resp, &tx_id).expect("decode stun ipv6");
+        assert_eq!(decoded6.ip, "2001:db8::1");
+        assert_eq!(decoded6.port, 41000);
+    }
+
+    #[test]
+    fn nxdomain_hijack_parser_distinguishes_nxdomain_from_synthesized_a() {
+        let tx = 0x5150u16;
+        let query = build_dns_a_query("nxprobe.example.invalid", tx);
+        // 1. Clean NXDOMAIN (QR=1, RCODE=3, ANCOUNT=0)
+        let mut nx_resp = query.clone();
+        nx_resp[2] = 0x81;
+        nx_resp[3] = 0x83;
+        let clean = parse_dns_nxdomain_reply(&nx_resp, tx).expect("parse nxdomain");
+        assert_eq!(clean.rcode, 3);
+        assert!(clean.answers_v4.is_empty());
+        assert!(!clean.hijacked);
+
+        // 2. Hijacked reply (QR=1, RCODE=0, ANCOUNT=1 with A=198.51.100.99)
+        let mut hijacked_resp = query;
+        hijacked_resp[2] = 0x81;
+        hijacked_resp[3] = 0x80;
+        hijacked_resp[6] = 0;
+        hijacked_resp[7] = 1;
+        hijacked_resp.extend_from_slice(&[0xC0, 0x0C]); // pointer to QNAME at offset 12
+        hijacked_resp.extend_from_slice(&1u16.to_be_bytes()); // TYPE A
+        hijacked_resp.extend_from_slice(&1u16.to_be_bytes()); // CLASS IN
+        hijacked_resp.extend_from_slice(&60u32.to_be_bytes()); // TTL
+        hijacked_resp.extend_from_slice(&4u16.to_be_bytes()); // RDLEN
+        hijacked_resp.extend_from_slice(&[198, 51, 100, 99]);
+
+        let hij = parse_dns_nxdomain_reply(&hijacked_resp, tx).expect("parse hijack");
+        assert_eq!(hij.rcode, 0);
+        assert_eq!(hij.answers_v4, vec!["198.51.100.99".to_string()]);
+        assert!(hij.hijacked);
     }
 }

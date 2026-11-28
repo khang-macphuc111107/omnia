@@ -1286,6 +1286,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omnia-computer"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "crc32fast",
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "omnia-connector-gateway"
 version = "0.1.0"
 dependencies = [

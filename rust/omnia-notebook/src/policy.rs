@@ -14,8 +14,10 @@ use omnia_connector_gateway::{
     artifact_intake::sanitize_download_filename, sanitize_and_inspect_url, UrlInspectionPolicy,
 };
 use omnia_core::{now_epoch_ms, SecretRedactor};
+use omnia_harness::fold_vietnamese_ascii;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::error::NotebookError;
@@ -40,6 +42,10 @@ pub const MAX_BINARY_PREVIEW_BYTES: usize = 4 * 1024;
 pub const MAX_JAR_PREVIEW_CLASSES: usize = 60;
 /// Default maximum source count per notebook when `allow_overflow_notebook == false`.
 pub const DEFAULT_MAX_SOURCES_PER_NOTEBOOK: usize = 50;
+/// Maximum safe transport filename length (bytes) enforced by UploadHealer Stage 1+.
+pub const MAX_TRANSPORT_FILENAME_LEN: usize = 88;
+/// Maximum character count allowed for custom notebook chat instructions.
+pub const MAX_CHAT_CUSTOM_PROMPT_CHARS: usize = 10_000;
 
 /// Canonical HTTP status emitted when an upstream auth/CAPTCHA challenge trips the breaker.
 pub const AUTH_CHALLENGE_HTTP_STATUS: u16 = 429;
@@ -710,13 +716,300 @@ pub fn infer_mime_from_extension(ext: &str) -> &'static str {
     }
 }
 
-/// Returns `true` when the given extension or MIME type represents active web markup (HTML/SVG)
-/// that MUST be served with forced `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`.
+/// Returns `true` when the given extension or MIME type represents active web/XML markup
+/// (`HTML` / `XHTML` / `SVG` / `XML`) that MUST be served with forced
+/// `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`.
 #[must_use]
 pub fn requires_forced_attachment(ext: &str, mime_type: &str) -> bool {
-    let m = mime_type.to_ascii_lowercase();
-    matches!(ext, "html" | "htm" | "xhtml" | "svg")
+    let e = ext.trim().to_ascii_lowercase();
+    let m = mime_type.trim().to_ascii_lowercase();
+    matches!(e.as_str(), "html" | "htm" | "xhtml" | "svg" | "xml")
         || m.starts_with("text/html")
         || m.starts_with("application/xhtml")
         || m.starts_with("image/svg")
+        || m.starts_with("application/xml")
+        || m.starts_with("text/xml")
+        || m.ends_with("+xml")
+}
+
+/// Returns `true` when `mime_type` is an allowlisted inline-streamable audio/video media MIME
+/// (explicitly excluding active HTML/SVG/XML documents).
+#[must_use]
+pub fn is_streamable_media_mime(mime_type: &str) -> bool {
+    let base = mime_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "audio/wav"
+            | "audio/wave"
+            | "audio/x-wav"
+            | "audio/mpeg"
+            | "audio/mp4"
+            | "audio/ogg"
+            | "audio/webm"
+            | "video/mp4"
+            | "video/webm"
+    )
+}
+
+/// Strip Google Drive localized UI type suffixes appended after the real file extension
+/// (e.g. `"Rosen.pdf PDF"` -> `"Rosen.pdf"`, `"table.xlsx Microsoft Excel"` -> `"table.xlsx"`,
+/// `"figure.png Hình ảnh"` -> `"figure.png"`).
+#[must_use]
+pub fn normalize_drive_filename_suffix(raw: &str) -> String {
+    const DRIVE_SUFFIXES: &[&str] = &[
+        "microsoft powerpoint",
+        "microsoft excel",
+        "microsoft word",
+        "google spreadsheets",
+        "google sheets",
+        "google slides",
+        "google docs",
+        "compressed archive",
+        "trang trinh bay",
+        "ban trinh bay",
+        "unknown file",
+        "spreadsheet",
+        "presentation",
+        "hinh anh",
+        "tai lieu",
+        "bang tinh",
+        "am thanh",
+        "tep nen",
+        "archive",
+        "document",
+        "image",
+        "video",
+        "audio",
+        "text",
+        "pdf",
+    ];
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let folded = fold_vietnamese_ascii(trimmed);
+    for suffix in DRIVE_SUFFIXES {
+        if let Some(prefix_folded) = folded.strip_suffix(suffix) {
+            if !prefix_folded
+                .chars()
+                .last()
+                .is_some_and(char::is_whitespace)
+            {
+                continue;
+            }
+            let trimmed_prefix_folded = prefix_folded.trim_end();
+            // Ensure stripping leaves a real file extension (e.g. `.pdf`, `.xlsx`, `.png`).
+            if let Some((_, ext_part)) = trimmed_prefix_folded.rsplit_once('.') {
+                if (1..=10).contains(&ext_part.len())
+                    && ext_part.bytes().all(|b| b.is_ascii_alphanumeric())
+                {
+                    // Trim matching trailing token count from the original string to preserve original casing/UTF-8.
+                    let suffix_words = suffix.split_whitespace().count();
+                    let orig_words: Vec<&str> = trimmed.split_whitespace().collect();
+                    if orig_words.len() > suffix_words {
+                        return orig_words[..orig_words.len() - suffix_words].join(" ");
+                    }
+                }
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Sanitize a filename into an ASCII-safe, Win32-reserved-name-safe transport filename strictly
+/// bounded to `<= max_len` bytes (`<= 88` by default) while preserving its extension.
+#[must_use]
+pub fn sanitize_transport_filename(raw: &str, max_len: usize) -> String {
+    let cap = max_len.clamp(16, 200);
+    let normalized = normalize_drive_filename_suffix(raw);
+    let base = normalized.rsplit(['/', '\\']).next().unwrap_or(&normalized).trim();
+    let folded = fold_vietnamese_ascii(base);
+
+    let (raw_stem, raw_ext) = match folded.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && !e.is_empty() && e.len() <= 12 => (s, Some(e)),
+        _ => (folded.as_str(), None),
+    };
+
+    let clean_ext = raw_ext.map(|e| {
+        e.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>()
+    });
+    let clean_ext = clean_ext.filter(|e| !e.is_empty());
+
+    let mut clean_stem = String::with_capacity(raw_stem.len());
+    let mut prev_sep = false;
+    for ch in raw_stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            clean_stem.push(ch);
+            prev_sep = false;
+        } else if matches!(ch, '-' | '_' | ' ' | '.') && !prev_sep && !clean_stem.is_empty() {
+            clean_stem.push(if ch == '_' { '_' } else { '-' });
+            prev_sep = true;
+        }
+    }
+    let clean_stem = clean_stem.trim_matches(|c| c == '-' || c == '_' || c == '.');
+    let mut stem = if clean_stem.is_empty() {
+        "source".to_string()
+    } else {
+        clean_stem.to_string()
+    };
+
+    const WIN_RESERVED: &[&str] = &[
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+        "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    if WIN_RESERVED.contains(&stem.to_ascii_lowercase().as_str()) {
+        stem = format!("file-{stem}");
+    }
+
+    let ext_budget = clean_ext.as_ref().map_or(0, |e| e.len() + 1);
+    let max_stem = cap.saturating_sub(ext_budget).max(4);
+    if stem.len() > max_stem {
+        stem.truncate(max_stem);
+        let trimmed = stem.trim_end_matches(['-', '_']).to_string();
+        stem = if trimmed.is_empty() {
+            "src".to_string()
+        } else {
+            trimmed
+        };
+    }
+
+    match clean_ext {
+        Some(ext) => format!("{stem}.{ext}"),
+        None => stem,
+    }
+}
+
+/// Recursively strip host filesystem path fields (`localPath`, `local_path`, `abs_path`,
+/// `disk_path`, `file_path`, etc.) from a JSON value so public API responses never leak local paths.
+pub fn strip_local_path_fields(value: &mut Value) {
+    const FORBIDDEN_PATH_KEYS: &[&str] = &[
+        "localPath",
+        "local_path",
+        "absPath",
+        "abs_path",
+        "diskPath",
+        "disk_path",
+        "filePath",
+        "file_path",
+    ];
+    match value {
+        Value::Object(map) => {
+            map.retain(|k, _| !FORBIDDEN_PATH_KEYS.contains(&k.as_str()));
+            for v in map.values_mut() {
+                strip_local_path_fields(v);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_local_path_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Validated inclusive HTTP byte range (`RFC 9110 §14.1.2`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpByteRange {
+    pub start: usize,
+    pub end: usize,
+    pub total_len: usize,
+}
+
+impl HttpByteRange {
+    /// Format `Content-Range` response header (`bytes <start>-<end>/<total_len>`).
+    #[must_use]
+    pub fn content_range_header(self) -> String {
+        format!("bytes {}-{}/{}", self.start, self.end, self.total_len)
+    }
+
+    /// Borrow the exact inclusive byte slice covered by this range.
+    #[must_use]
+    pub fn slice(self, data: &[u8]) -> &[u8] {
+        &data[self.start..=self.end]
+    }
+}
+
+/// Failure reason when parsing an HTTP `Range` request header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpByteRangeError {
+    InvalidHeader,
+    Unsatisfiable { total_len: usize },
+}
+
+/// Parse a single RFC 9110 `Range: bytes=...` header against `total_len`.
+///
+/// Supports `bytes=start-end`, `bytes=start-`, and `bytes=-suffix`. Multi-range headers and
+/// out-of-bounds offsets fail closed with [`HttpByteRangeError::Unsatisfiable`] (HTTP `416`).
+pub fn parse_http_byte_range(
+    range_header: &str,
+    total_len: usize,
+) -> Result<HttpByteRange, HttpByteRangeError> {
+    let trimmed = range_header.trim();
+    let Some(spec) = trimmed
+        .strip_prefix("bytes=")
+        .or_else(|| trimmed.strip_prefix("BYTES="))
+    else {
+        return Err(HttpByteRangeError::InvalidHeader);
+    };
+    let spec = spec.trim();
+    if spec.is_empty() || spec.contains(',') {
+        return Err(HttpByteRangeError::Unsatisfiable { total_len });
+    }
+    if total_len == 0 {
+        return Err(HttpByteRangeError::Unsatisfiable { total_len });
+    }
+    let Some((raw_start, raw_end)) = spec.split_once('-') else {
+        return Err(HttpByteRangeError::InvalidHeader);
+    };
+    let raw_start = raw_start.trim();
+    let raw_end = raw_end.trim();
+
+    if raw_start.is_empty() {
+        // Suffix byte range: `bytes=-N`
+        let suffix: usize = raw_end
+            .parse()
+            .map_err(|_| HttpByteRangeError::InvalidHeader)?;
+        if suffix == 0 {
+            return Err(HttpByteRangeError::Unsatisfiable { total_len });
+        }
+        let take = suffix.min(total_len);
+        return Ok(HttpByteRange {
+            start: total_len - take,
+            end: total_len - 1,
+            total_len,
+        });
+    }
+
+    let start: usize = raw_start
+        .parse()
+        .map_err(|_| HttpByteRangeError::InvalidHeader)?;
+    if start >= total_len {
+        return Err(HttpByteRangeError::Unsatisfiable { total_len });
+    }
+    let end = if raw_end.is_empty() {
+        total_len - 1
+    } else {
+        let parsed_end: usize = raw_end
+            .parse()
+            .map_err(|_| HttpByteRangeError::InvalidHeader)?;
+        if parsed_end < start {
+            return Err(HttpByteRangeError::Unsatisfiable { total_len });
+        }
+        parsed_end.min(total_len - 1)
+    };
+
+    Ok(HttpByteRange {
+        start,
+        end,
+        total_len,
+    })
 }

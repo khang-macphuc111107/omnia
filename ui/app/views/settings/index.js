@@ -7,7 +7,7 @@ import { icon } from '../../core/icons.js';
 import { t, fmtNumber, fmtBytes, fmtTime } from '../../core/i18n.js';
 import { prefs } from '../../core/prefs.js';
 import { rovingFocus, confirmDialog, toast, announce } from '../../core/overlay.js';
-import { connection, retryConnection, describeError } from '../../api.js';
+import { api, connection, retryConnection, describeError } from '../../api.js';
 import './strings.js';
 import {
   THEMES,
@@ -19,8 +19,11 @@ import {
   sectionDomId,
   summarizeLocalChat,
   diagnosticRows,
-  connectionMeta
+  connectionMeta,
+  serviceHealthMeta,
+  normalizeCapabilityRows
 } from './helpers.js';
+import { capabilityMatrixHtml } from './capabilities.js';
 import { readChatRecords, clearChatRecords, downloadChatExport } from './local-data.js';
 
 let pendingSection = '';
@@ -110,6 +113,7 @@ function template(view) {
   const p = prefs.get();
   const conn = connection.get();
   const meta = connectionMeta(conn.status);
+  const healthMeta = serviceHealthMeta(conn);
   const rows = diagnosticRows(conn.health, window.location.host);
   const local = view.local;
   const hasLocal = local.records > 0;
@@ -141,16 +145,20 @@ function template(view) {
     )}</tbody></table></div>`;
 
   const diagnostics = html`<div class="card__body col settings-body" aria-busy="${view.checking}">
-    <div class="row wrap">
-      <span class="status status--${meta.variant}">${icon(meta.icon)}${t(meta.labelKey)}</span>
+    <div class="row wrap settings-health-row">
+      <span class="status status--${meta.variant}" data-role="transport-status" title="${t('settings.transportLabel')}">${icon(meta.icon)}${t(meta.labelKey)}</span>
+      <span class="status status--${healthMeta.variant}" data-role="service-health" title="${t('settings.serviceHealthLabel')}">${icon(healthMeta.icon)}${t(healthMeta.labelKey)}</span>
       <span class="text-xs muted">GET /api/health${conn.lastOkAt ? html` · ${t('settings.lastOk')} ${fmtTime(conn.lastOkAt, true)}` : null}</span>
     </div>
     ${conn.status === 'offline'
       ? html`<div class="banner banner--danger" role="alert">${icon('wifi-off', { className: 'banner__icon' })}<div class="banner__body"><span class="banner__title">${t('settings.offlineTitle')}</span><span>${conn.lastError ? describeError(conn.lastError) : t('settings.offlineText')}</span>${conn.health ? html`<span class="text-xs muted">${t('settings.staleNote')}</span>` : null}</div></div>`
-      : null}
+      : healthMeta.state === 'unhealthy' || healthMeta.state === 'degraded'
+        ? html`<div class="banner banner--danger" role="alert">${icon('alert', { className: 'banner__icon' })}<div class="banner__body"><span class="banner__title">${t('settings.healthErrorTitle')}</span><span>${conn.lastError ? describeError(conn.lastError) : t('settings.noHealth')}</span>${conn.health ? html`<span class="text-xs muted">${t('settings.staleNote')}</span>` : null}</div></div>`
+        : null}
     ${rows.length
-      ? html`<dl class="kv settings-kv${conn.status === 'online' ? '' : ' settings-kv--stale'}">${rows.map((row) => html`<dt data-key="dt:${row.id}">${t(`settings.diag.${row.id}`)}</dt><dd data-key="dd:${row.id}">${diagValue(row)}</dd>`)}</dl>`
+      ? html`<dl class="kv settings-kv${conn.status === 'online' && healthMeta.state === 'healthy' ? '' : ' settings-kv--stale'}">${rows.map((row) => html`<dt data-key="dt:${row.id}">${t(`settings.diag.${row.id}`)}</dt><dd data-key="dd:${row.id}">${diagValue(row)}</dd>`)}</dl>`
       : html`<p class="text-sm muted" role="status">${conn.status === 'connecting' ? t('common.loading') : t('settings.noHealth')}</p>`}
+    ${capabilityMatrixHtml(view.capabilities)}
   </div>`;
 
   const localBody = html`<div class="card__body col settings-body">
@@ -191,11 +199,44 @@ registerView({
   label: () => t('nav.settings'),
   title: () => t('nav.settings'),
   mount(host) {
-    const view = { local: summarizeLocalChat(readChatRecords()), checking: false };
+    let alive = true;
+    const view = {
+      local: summarizeLocalChat(readChatRecords()),
+      checking: false,
+      capabilities: { status: 'loading', schema: '', rows: [], error: null, fetchedAt: 0 }
+    };
 
     const paintNow = () => morph(host, template(view));
     const paint = batched(paintNow);
     paintNow();
+
+    let capSeq = 0;
+    const loadCapabilities = async () => {
+      const seq = ++capSeq;
+      view.capabilities = { ...view.capabilities, status: 'loading', error: null };
+      paint();
+      try {
+        const payload = await api.capabilities({ timeout: 6000 });
+        if (!alive || seq !== capSeq) return;
+        const fetchedAt = Date.now();
+        view.capabilities = {
+          status: 'ready',
+          schema: payload.schema || 'omnia.capabilities.v1',
+          rows: normalizeCapabilityRows(payload, fetchedAt),
+          error: null,
+          fetchedAt
+        };
+      } catch (error) {
+        if (!alive || seq !== capSeq) return;
+        view.capabilities = {
+          ...view.capabilities,
+          status: 'error',
+          error
+        };
+      }
+      paint();
+    };
+    void loadCapabilities();
 
     const focusTitle = (section) => {
       const heading = document.getElementById(`${sectionDomId(section)}-title`);
@@ -223,7 +264,10 @@ registerView({
           view.checking = false;
           const meta = connectionMeta(state.status);
           announce(t(meta.labelKey));
-        } else if (state.status !== prev.status) announce(t(connectionMeta(state.status).labelKey));
+        } else if (state.status !== prev.status) {
+          announce(t(connectionMeta(state.status).labelKey));
+          if (state.status === 'online') void loadCapabilities();
+        }
         paint();
       })
     ];
@@ -239,6 +283,7 @@ registerView({
           if (view.checking) return;
           view.checking = true;
           paint();
+          void loadCapabilities();
           retryConnection();
         } else if (action === 'export') {
           refreshLocal();
@@ -291,6 +336,7 @@ registerView({
         consumePending();
       },
       unmount() {
+        alive = false;
         stops.forEach((stop) => stop());
         offs.forEach((off) => off());
       }

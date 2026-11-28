@@ -23,10 +23,16 @@ import { SwarmView } from '@/components/workbenches/SwarmView';
 import {
   activeCanvasArtifact,
   activePreviewDoc,
+  applyContrastMode,
+  applyMotionMode,
   applyTheme,
   canvasDrawerOpen,
   commandPaletteOpen,
+  contrastPref,
   hydrateStudioStartup,
+  motionPref,
+  openObservabilityTab,
+  openWorkbench,
   privacyMask,
   refineCanvasArtifact,
   setActivePreviewDoc,
@@ -34,7 +40,9 @@ import {
   setCommandPaletteOpen,
   sidebarOpen,
   themePref,
+  toggleContrastMode,
   togglePrivacyMask,
+  toggleReducedMotion,
   topMode,
   updateCanvasArtifactContent,
   workbenchTab,
@@ -49,17 +57,90 @@ function isEditableElement(target: EventTarget | null): boolean {
   return false;
 }
 
+/**
+ * Vietnamese IME (VNI / Telex / Windows MSCTFIME) guard:
+ * never intercept global shortcuts while an IME composition session is active.
+ */
+function isImeComposing(e: KeyboardEvent): boolean {
+  return e.isComposing || e.keyCode === 229 || e.key === 'Process';
+}
+
 export function App() {
   onMount(() => {
     applyTheme(themePref());
+    applyContrastMode(contrastPref());
+    applyMotionMode(motionPref());
     void hydrateStudioStartup();
 
     const onKey = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return;
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setCommandPaletteOpen(!commandPaletteOpen());
         return;
       }
+
+      // IME-safe Alt+Shift+C (WCAG AAA High Contrast) & Alt+Shift+M (Reduced Motion)
+      if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        const lower = e.key.toLowerCase();
+        if (lower === 'c') {
+          e.preventDefault();
+          toggleContrastMode();
+          return;
+        }
+        if (lower === 'm') {
+          e.preventDefault();
+          toggleReducedMotion();
+          return;
+        }
+      }
+
+      // IME-safe Alt+1..8 rapid workbench switching (never clashes with Ctrl/Shift or open palette)
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !commandPaletteOpen()) {
+        const digit = e.key;
+        if (digit === '1') {
+          e.preventDefault();
+          openWorkbench('chat');
+          return;
+        }
+        if (digit === '2') {
+          e.preventDefault();
+          openWorkbench('arena');
+          return;
+        }
+        if (digit === '3') {
+          e.preventDefault();
+          openWorkbench('atelier');
+          return;
+        }
+        if (digit === '4') {
+          e.preventDefault();
+          openWorkbench('omnidrive');
+          return;
+        }
+        if (digit === '5') {
+          e.preventDefault();
+          openWorkbench('swarm');
+          return;
+        }
+        if (digit === '6') {
+          e.preventDefault();
+          openObservabilityTab('telemetry');
+          return;
+        }
+        if (digit === '7') {
+          e.preventDefault();
+          openWorkbench('knowledge');
+          return;
+        }
+        if (digit === '8') {
+          e.preventDefault();
+          openWorkbench('lifecycle');
+          return;
+        }
+      }
+
       if (
         !e.ctrlKey &&
         !e.metaKey &&
@@ -77,7 +158,12 @@ export function App() {
   });
 
   return (
-    <div class="omnia-shell" data-privacy-masked={privacyMask() ? 'true' : 'false'}>
+    <div
+      class="omnia-shell"
+      data-privacy-masked={privacyMask() ? 'true' : 'false'}
+      data-contrast={contrastPref()}
+      data-motion={motionPref()}
+    >
       <TopBar />
 
       <main class="min-h-0 flex overflow-hidden">

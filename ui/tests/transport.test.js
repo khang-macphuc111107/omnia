@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { request, api, ApiError, connection } from '../app/api.js';
+import { request, api, ApiError, connection, checkHealth } from '../app/api.js';
 
 async function serverFor(t, handler) {
   const server = http.createServer(handler);
@@ -137,4 +137,66 @@ test('Rust omnia-studio payload shapes normalize cleanly across sessions, templa
   assert.equal(rag.citedSources[0].id, 'ws:README.md');
   assert.equal(rag.citedSources[0].score, 0.85);
   assert.equal(rag.unusedSources[0].reason, 'below_relevance_threshold');
+});
+
+test('AUD-24 & AUD-25: capabilities, chat.stop and router.cancel adapters work and normalize cleanly', async (t) => {
+  const fetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = fetch; });
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ method: init?.method || 'GET', url, body: init?.body ? JSON.parse(init.body) : null });
+    if (url === '/api/capabilities') {
+      return new Response(JSON.stringify({
+        ok: true,
+        schema: 'omnia.capabilities.v1',
+        capabilities: [
+          { id: 'health', enabled: true, endpoint: '/api/health' },
+          { id: 'runtime_proxy', enabled: false, timeoutMs: 3000 }
+        ]
+      }));
+    }
+    return new Response(JSON.stringify({ ok: true }));
+  };
+
+  const caps = await api.capabilities();
+  assert.equal(caps.schema, 'omnia.capabilities.v1');
+  assert.equal(caps.capabilities.length, 2);
+  assert.equal(caps.capabilities[0].status, 'ready');
+  assert.equal(caps.capabilities[1].status, 'unavailable');
+  assert.equal(caps.capabilities[1].detail, '3000ms');
+
+  await api.chat.stop({ sessionId: 's1', messageId: 'm1' });
+  await api.router.cancel({ sessionId: 's1', idempotencyKey: 'chat:s1:m1' });
+  assert.deepEqual(calls.map((c) => `${c.method} ${c.url}`), [
+    'GET /api/capabilities',
+    'POST /api/chat/stop',
+    'POST /api/router/cancel'
+  ]);
+});
+
+test('AUD-25: checkHealth separates HTTP 5xx and invalid JSON service failures from transport reachability and recovers', async (t) => {
+  const fetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = fetch; });
+  let mode = '503';
+  globalThis.fetch = async () => {
+    if (mode === '503') return new Response('{"error":"internal_error"}', { status: 503 });
+    if (mode === 'invalid') return new Response('not-json', { status: 200 });
+    return new Response(JSON.stringify({ ok: true, engine: 'Omnia Full Native Rust', pid: 42 }), { status: 200 });
+  };
+
+  await checkHealth();
+  assert.equal(connection.get().status, 'online');
+  assert.equal(connection.get().serviceHealth, 'unhealthy');
+
+  mode = 'invalid';
+  await checkHealth();
+  assert.equal(connection.get().status, 'online');
+  assert.equal(connection.get().serviceHealth, 'unhealthy');
+
+  mode = 'ok';
+  await checkHealth();
+  assert.equal(connection.get().status, 'online');
+  assert.equal(connection.get().serviceHealth, 'healthy');
+  assert.equal(connection.get().lastError, null);
+  assert.equal(connection.get().health.pid, 42);
 });

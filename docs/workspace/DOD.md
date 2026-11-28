@@ -35,7 +35,7 @@ or contradiction resets the affected row and its consecutive-audit count.
 - **DOD-01:** Source is tracked at the actual root; README and AGENTS resolve
   to current files. Bulk archives, upstream clones and recovery data have
   deliberate external ownership. Ignoring a folder does not count as moving it.
-- **DOD-02:** Root [`Cargo.toml`](../../Cargo.toml) + [`Cargo.lock`](../../Cargo.lock) (17 Rust crates under `rust/`) resolve cleanly `--offline --locked` in an isolated clone/export using Windows 11 SDK (`winsqlite3`, `windows-sys`) with zero network downloads and external `CARGO_TARGET_DIR` (Wave 4 C++20 snapshot archived in `D:\OmniaData\backups\pre-full-rust-20261115\`; earlier pre-Wave-4 snapshot archived on tag `archive/pre-cpp-rust-snapshot-20261112`). Local developer caches are not repository inputs.
+- **DOD-02:** Root [`Cargo.toml`](../../Cargo.toml) + [`Cargo.lock`](../../Cargo.lock) (`18` Rust crates under `rust/`, incl. `omnia-computer` + POSIX `libsqlite3` foundation in `omnia-winsqlite/src/ffi.rs`) resolve cleanly `--offline --locked` in an isolated clone/export using Windows 11 SDK (`winsqlite3`, `windows-sys`, `windows`) with zero network downloads and external `CARGO_TARGET_DIR` (Wave 4 C++20 snapshot archived in `D:\OmniaData\backups\pre-full-rust-20261115\`; earlier pre-Wave-4 snapshot archived on tag `archive/pre-cpp-rust-snapshot-20261112`). Local developer caches are not repository inputs.
 - **DOD-03:** Match each claimed native behavior to an executed oracle. Report fixtures, `cargo test --workspace --offline --locked`, `pwsh -File native/qa-*.ps1`, and live provider/Studio/packaged behavior separately.
 - **DOD-04:** Reconciliation includes HEAD, staged, unstaged, renamed and
   untracked changes. Every retained unique product change has an owner,
@@ -78,7 +78,7 @@ or contradiction resets the affected row and its consecutive-audit count.
   concrete template-detection pass. Unavailable web/social/video sources remain
   explicit gaps.
   Installation/projection is distinct from discovery, loading and invocation.
-- **DOD-13:** Cover all `PRODUCT-*` leaves in GOAL. **Full Native Rust** (17-crate Cargo workspace under `Cargo.toml` / `rust/`, expanded from 13 crates under `Steer #14..#15` alongside `tools/omnia-benchmark` & `tools/omnia-gemini-extractor`) is the canonical active runtime; any external runtime exception requires a recorded resource-backed reason. Complete composer and
+- **DOD-13:** Cover all `PRODUCT-*` leaves in GOAL. **Full Native Rust** (`18`-crate Cargo workspace under `Cargo.toml` / `rust/`, expanded from `13` -> `17` -> `18` crates with `omnia-computer` alongside `tools/omnia-benchmark` & `tools/omnia-gemini-extractor`) is the canonical active runtime; any external runtime exception requires a recorded resource-backed reason. Complete composer and
   attachment ordering/persistence/provider contracts. The provider route must
   bind capability, quota, cost, latency, privacy, authorization, reservation,
   reconciliation, retry/fallback and decision/outcome receipts under
@@ -319,6 +319,17 @@ Independent audit `OMNIA-FINAL-VERIFICATION-20261112` (`D:\OmniaData\qa\audits-2
 - **`DOD-12` / `DOD-15` / `DOD-16` (`13` Skills, Commit #5 Clean-Clone CTest & Session Admission `READY`):**
   - `13/13` curated skills (`deep-cpp-native` `sha256=b87fd5ca...`) synced 4-way (`39/39` `quick_validate.py` `rc=0`, `cpp-skill-sync-receipt.json` `sha256=27df8cf8...`); `SECRET_SCAN_VERIFICATION.json` (`sha256=a01b88f6...`, `leak_count=0`).
   - Commit #5 pushed to `https://github.com/khang-macphuc111107/omnia` and verified via fresh remote GitHub clone + out-of-source Release C++20 build + `35/35` `ctest --output-on-failure` in `D:\OmniaData\qa\github-cpp20-clean-clone-20261112\GITHUB_CPP20_DELIVERY_RECEIPT.json` (temporary clone/build dirs immediately purged). [SESSION_ADMISSION.json](SESSION_ADMISSION.json) remains **`READY`**.
+
+## Wave 6 (`v5.1.0` / `Steer #24–#25`) 18-crate SOTA integration & `AUD-02/24/25` closure acceptance — 2026-11-28
+
+- Prior frozen milestones (`c3033728` Wave 3 `3/3`, `FINAL_WAVE4_VERIFICATION_RECEIPT_20261112.json` on archived C++20, and Steer #15–#21 `6a82180` `3/3` consecutive cleanroom rounds) remain snapshot-scoped historical evidence (`SESSION_ADMISSION.json` stays `DEFERRED`, whole-goal final audit streak = **`0`** on the uncommitted `v5.1.0` integration working tree over `1c9342c`).
+- **`DOD-01` / `DOD-02` / `DOD-03` / `DOD-06` / `DOD-07` / `DOD-13` / `DOD-14` (`18`-Crate Rust, UI & Tooling — `PARTIAL` Pending 5 Live Win32 QA + Commit + 3x Cleanroom):**
+  - `18` Rust crates (`+omnia-computer`), `cargo check --workspace --all-targets` PASS, `3/3` `clippy --all-targets -- -D warnings` clean (`--workspace`, `omnia-cli`, `omnia-studio --features embed-ui`), and **`734 passed, 0 failed, 1 ignored`** across `50` suites (`omnia-cli` `20/20`, `omnia-studio --features embed-ui` `34/34`), with `5/5` release binaries staged externally (`omnia.exe` `12.763 MiB <= 14 MiB` + `5/5` smoke checks `0.11 ms` / `5.71 MiB` RSS; `omnia-studio.exe` `36.413 MiB`; `omnia-runtime.exe` `15.757 MiB`; `omnia-native.exe` `0.366 MiB`; `omnia_qa_seed.exe` `0.222 MiB`).
+  - `ui-v5` built cleanly (`2,564` modules -> `D:\OmniaData\build\ui-dist`); modular fallback `ui/` passes **`127/127`** `node --test`; PR #1 **`AUD-02`, `AUD-24`, `AUD-25` closed (`32/32`)**; `qa-paths.tests.ps1` (`40/40`) and `qa-capture.tests.ps1` (`14/14`) pass on staged `omnia-native.exe`.
+  - Issue #8 (`container_runner.py`, `47/47` benchmark tests PASS) keeps Dockerless `Terminal-Bench 4.1` and `SWE-bench Verified/Pro` honestly in `DEFERRED_BOUNDARY`; Issue #10 (`#[cfg(not(windows))] #[link(name = "sqlite3")]` + `platform/targets.json` `14/14`) establishes POSIX foundation without claiming Linux/macOS binary release verification on this Windows host.
+- **`DOD-09` / `DOD-10` / `DOD-11` / `DOD-12` / `DOD-15` / `DOD-16` (`PARTIAL` / `DEFERRED`):**
+  - `22/22` shards of `mega-deep-read` complete externally in `D:\OmniaData\research\mega-deep-read-20261128\`; `22/22` synced skills (`0` drift) + `16/16` bilingual golden eval PASS; `audit.py --secret-scope all` finds `0` secrets across `1,189` files (`0` CRLF, `0` TWS); `git diff --check` exits `0`.
+  - Remaining gates before next frozen tag / admission: live execution of `qa-{smoke,session,paging,guard,ownership}` on staged `v5.1.0` binaries, `git commit` of `v5.1.0` (`18` crates incl. `rust/omnia-computer/`, closing `stage-public-release.test.mjs` `#10` currently at `9/10`), and **`3` consecutive independent frozen-snapshot Cleanroom Audit Rounds** (`DOD-16` / `SESSION_ADMISSION.json` `DEFERRED`).
 
 ## Wave 5 (`Steer #14..#23`) Full Native Rust 17-crate, Omnia v5, PR #1, Full-Freedom YOLO & AI Studio/Canvas/NotebookLM++ closure gating — 2026-11-24..2026-11-28
 

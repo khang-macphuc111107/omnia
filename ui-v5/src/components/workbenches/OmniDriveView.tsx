@@ -283,6 +283,17 @@ export function OmniDriveView() {
   const [schedulerStartUtc, setSchedulerStartUtc] = createSignal(0);
   const [schedulerEndUtc, setSchedulerEndUtc] = createSignal(24);
   const [schedulerState, setSchedulerState] = createSignal<Record<string, unknown> | null>(null);
+  const [manifestProbeBusy, setManifestProbeBusy] = createSignal(false);
+  const [manifestTracks, setManifestTracks] = createSignal<{
+    kind: string;
+    sourceUrl: string;
+    video: Array<{ id: string; label: string; url: string }>;
+    audio: Array<{ id: string; label: string; url: string }>;
+    subtitles: Array<{ id: string; label: string; url: string }>;
+  } | null>(null);
+  const [selectedVideoTrack, setSelectedVideoTrack] = createSignal('');
+  const [selectedAudioTrack, setSelectedAudioTrack] = createSignal('');
+  const [selectedSubtitleTrack, setSelectedSubtitleTrack] = createSignal('');
 
   // Tab 2: Pre-Flight Byte-Range, Multi-Hash, .omnijrn Journal, Smart Clip Range & Site Rules
   const [probeUrlInput, setProbeUrlInput] = createSignal('https://downloads.example.org/release.bin');
@@ -511,11 +522,14 @@ export function OmniDriveView() {
   };
 
   const refreshJobs = async () => {
-    const res = await api.listDownloads();
+    const [res, aRes] = await Promise.all([api.listDownloads(), api.getDriveAimdStats()]);
     if (res.ok && Array.isArray(res.data.jobs)) {
       setJobs(res.data.jobs);
       const totalBps = res.data.jobs.reduce((acc, j) => acc + Number(j.speed_bps ?? j.speedBps ?? 0), 0);
       setSpeedSamples((prev) => [...prev.slice(-47), totalBps]);
+    }
+    if (aRes.ok) {
+      setAimdStats(aRes.data);
     }
   };
 
@@ -564,6 +578,7 @@ export function OmniDriveView() {
 
   onMount(() => {
     void refreshJobs();
+    void loadAimdAndScheduler();
     void loadHandoffsAndProviders();
     const timer = setInterval(() => void refreshJobs(), 2500);
     onCleanup(() => clearInterval(timer));
@@ -579,12 +594,144 @@ export function OmniDriveView() {
     }
   };
 
+  const handleProbeManifestTracks = async () => {
+    const target = url().trim();
+    if (!target) {
+      setStatusMsg('Paste an HLS (.m3u8), DASH (.mpd), or HTTP URL first');
+      return;
+    }
+    setManifestProbeBusy(true);
+    let r = await api.safeJson<Record<string, unknown>>('/api/downloads/probe', {
+      method: 'POST',
+      body: JSON.stringify({ url: target }),
+    });
+    if (!r.ok && (r.error.status === 404 || r.error.status === 405)) {
+      r = await api.safeJson<Record<string, unknown>>('/api/omni-drive/probe', {
+        method: 'POST',
+        body: JSON.stringify({ url: target }),
+      });
+    }
+    setManifestProbeBusy(false);
+    if (!r.ok) {
+      setInspectorPayload({ error: r.error.code, message: r.error.message });
+      setStatusMsg(`Track probe (${r.error.code}): ${r.error.message}`);
+      return;
+    }
+    setInspectorPayload(r.data);
+    const root = (r.data.probe ?? r.data.manifest ?? r.data) as Record<string, unknown>;
+    const rawVideo = (root.video_tracks ?? root.videoTracks ?? root.variants ?? root.representations ?? []) as Array<
+      Record<string, unknown>
+    >;
+    const rawAudio = (root.audio_tracks ?? root.audioTracks ?? root.audio_renditions ?? []) as Array<
+      Record<string, unknown>
+    >;
+    const rawSubs = (root.subtitle_tracks ?? root.subtitleTracks ?? root.subtitles ?? []) as Array<
+      Record<string, unknown>
+    >;
+    const toTrack = (item: Record<string, unknown>, idx: number, fallbackPrefix: string) => {
+      const tUrl = String(item.url ?? item.uri ?? item.stream_url ?? target);
+      const res = item.resolution ? String(item.resolution) : item.height ? `${item.height}p` : '';
+      const bw = item.bandwidth ? `${Math.round(Number(item.bandwidth) / 1000)} kbps` : '';
+      const codec = item.codecs ?? item.codec ? String(item.codecs ?? item.codec) : '';
+      const lang = item.language ?? item.lang ? String(item.language ?? item.lang) : '';
+      const parts = [String(item.label ?? item.name ?? `${fallbackPrefix} #${idx + 1}`), res, bw, lang, codec].filter(
+        Boolean,
+      );
+      return {
+        id: String(item.id ?? `${fallbackPrefix.toLowerCase()}-${idx}`),
+        label: parts.join(' · '),
+        url: tUrl,
+      };
+    };
+    const video = Array.isArray(rawVideo) ? rawVideo.map((v, i) => toTrack(v, i, 'Video')) : [];
+    const audio = Array.isArray(rawAudio) ? rawAudio.map((a, i) => toTrack(a, i, 'Audio')) : [];
+    const subtitles = Array.isArray(rawSubs) ? rawSubs.map((s, i) => toTrack(s, i, 'Subtitle')) : [];
+    const lower = target.toLowerCase();
+    const kind = lower.includes('.m3u8') ? 'HLS (.m3u8)' : lower.includes('.mpd') ? 'DASH (.mpd)' : 'HTTP Media';
+    setManifestTracks({
+      kind,
+      sourceUrl: target,
+      video: video.length > 0 ? video : [{ id: 'auto-best', label: 'Auto Best Video (Engine Select)', url: target }],
+      audio: audio.length > 0 ? audio : [{ id: 'auto-audio', label: 'Default Audio Track', url: '' }],
+      subtitles,
+    });
+    setSelectedVideoTrack(video[0]?.url ?? target);
+    setSelectedAudioTrack(audio[0]?.url ?? '');
+    setSelectedSubtitleTrack(subtitles[0]?.url ?? '');
+    setStatusMsg(`Probed ${kind}: ${video.length} video, ${audio.length} audio, ${subtitles.length} sub track(s)`);
+  };
+
+  const handleFfprobeTarget = async () => {
+    const target = url().trim() || muxVideo().trim();
+    if (!target) {
+      setStatusMsg('Enter a local media file path (or HTTP URL for remote probe)');
+      return;
+    }
+    if (/^https?:\/\//i.test(target)) {
+      setProbeUrlInput(target);
+      let r = await api.safeJson<Record<string, unknown>>('/api/omni-drive/probe', {
+        method: 'POST',
+        body: JSON.stringify({ url: target }),
+      });
+      if (!r.ok && (r.error.status === 404 || r.error.status === 405)) {
+        r = await api.probeDriveUrl(target);
+      }
+      setInspectorPayload({
+        mode: 'remote_http_probe_fallback',
+        diagnostic:
+          'FFprobe requires a local filesystem path (not an http(s):// URL). Executed Pre-Flight HTTP 206 Remote Probe instead.',
+        target,
+        probe: r.ok ? r.data : { error: r.error.code, message: r.error.message },
+      });
+      setStatusMsg(
+        r.ok
+          ? 'FFprobe requires a local path — ran HTTP 206 Remote Probe instead'
+          : `FFprobe requires local path; remote probe failed (${r.error.code})`,
+      );
+      return;
+    }
+    let r = await api.safeJson<Record<string, unknown>>('/api/downloads/media/ffprobe', {
+      method: 'POST',
+      body: JSON.stringify({ path: target, mediaPath: target, target }),
+    });
+    if (!r.ok && (r.error.status === 404 || r.error.status === 405)) {
+      r = await api.safeJson<Record<string, unknown>>('/api/omni-drive/media/ffprobe', {
+        method: 'POST',
+        body: JSON.stringify({ path: target, mediaPath: target, target }),
+      });
+    }
+    setInspectorPayload(r.ok ? r.data : { error: r.error.code, message: r.error.message });
+    setStatusMsg(r.ok ? 'FFprobe inspected local media file' : `FFprobe (${r.error.code}): ${r.error.message}`);
+  };
+
   const handleStart = async () => {
-    if (!url().trim()) return;
-    const res = await api.startDownload(url().trim(), streams(), pacing());
+    const targetUrl = selectedVideoTrack().trim() || url().trim();
+    if (!targetUrl) return;
+    const extraAudio = selectedAudioTrack().trim();
+    const extraSub = selectedSubtitleTrack().trim();
+    const res =
+      extraAudio || extraSub
+        ? await api.safeJson<Record<string, unknown>>('/api/downloads/start', {
+            method: 'POST',
+            body: JSON.stringify({
+              url: targetUrl,
+              streams: streams(),
+              pacing_mode: pacing(),
+              pacingMode: pacing(),
+              audio_track_url: extraAudio || undefined,
+              audioTrackUrl: extraAudio || undefined,
+              subtitle_track_url: extraSub || undefined,
+              subtitleTrackUrl: extraSub || undefined,
+            }),
+          })
+        : await api.startDownload(targetUrl, streams(), pacing());
     if (res.ok) {
       setStatusMsg(`Queued job ${String(res.data.job_id ?? '')}`);
       setUrl('');
+      setManifestTracks(null);
+      setSelectedVideoTrack('');
+      setSelectedAudioTrack('');
+      setSelectedSubtitleTrack('');
       await refreshJobs();
     } else {
       setStatusMsg(`Download blocked (${res.error.code}): ${res.error.message}`);
@@ -939,6 +1086,17 @@ export function OmniDriveView() {
                 <Play class="w-3.5 h-3.5" />
                 <span>Start Transfer</span>
               </button>
+              <button
+                type="button"
+                data-testid="omnidrive-probe-tracks-btn"
+                disabled={manifestProbeBusy()}
+                class="omnia-btn text-[12px]"
+                title="Discover HLS (.m3u8) / DASH (.mpd) video, audio & subtitle tracks before downloading"
+                onClick={() => void handleProbeManifestTracks()}
+              >
+                <Layers class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
+                <span>{manifestProbeBusy() ? 'Probing...' : 'HLS/DASH Tracks'}</span>
+              </button>
               <select
                 value={crawlKind()}
                 onChange={(e) => setCrawlKind(e.currentTarget.value as 'moodle' | 'youtube' | 'web')}
@@ -962,16 +1120,10 @@ export function OmniDriveView() {
               </button>
               <button
                 type="button"
+                data-testid="omnidrive-ffprobe-btn"
                 class="omnia-btn text-[12px]"
-                onClick={async () => {
-                  const target = url().trim() || muxVideo().trim();
-                  const r = await api.safeJson<Record<string, unknown>>('/api/downloads/media/ffprobe', {
-                    method: 'POST',
-                    body: JSON.stringify({ path: target, mediaPath: target, target, url: target }),
-                  });
-                  setInspectorPayload(r.ok ? r.data : { error: r.error.code, message: r.error.message });
-                  setStatusMsg(r.ok ? 'FFprobe inspected media' : `FFprobe (${r.error.code})`);
-                }}
+                title="FFprobe local file path (automatically switches to HTTP 206 Remote Probe for http(s):// URLs)"
+                onClick={() => void handleFfprobeTarget()}
               >
                 <Film class="w-3.5 h-3.5 text-[var(--accent-amber)]" />
                 <span>FFprobe</span>
@@ -980,28 +1132,123 @@ export function OmniDriveView() {
                 <RefreshCw class="w-3.5 h-3.5" />
               </button>
             </div>
+
+            {/* HLS / DASH Track Selector (when probed) */}
+            <Show when={manifestTracks()}>
+              {(mt) => (
+                <div
+                  data-testid="omnidrive-hls-dash-selector"
+                  class="p-2.5 rounded border border-[var(--border-accent)] bg-[var(--bg-canvas)] space-y-2 text-[11.5px]"
+                >
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="font-semibold text-[var(--accent-cyan)] flex items-center gap-1.5">
+                      <Layers class="w-3.5 h-3.5" />
+                      <span>{mt().kind} Track Selector (DRM Bypass: Disabled)</span>
+                    </span>
+                    <button
+                      type="button"
+                      class="omnia-btn px-2 py-0.5 text-[10.5px]"
+                      onClick={() => {
+                        setManifestTracks(null);
+                        setSelectedVideoTrack('');
+                        setSelectedAudioTrack('');
+                        setSelectedSubtitleTrack('');
+                      }}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                  <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <label class="space-y-1">
+                      <span class="text-[10.5px] font-mono-num text-[var(--ink-muted)]">Video Variant</span>
+                      <select
+                        value={selectedVideoTrack()}
+                        onChange={(e) => setSelectedVideoTrack(e.currentTarget.value)}
+                        class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2 py-1 text-[11.5px]"
+                      >
+                        <For each={mt().video}>{(v) => <option value={v.url}>{v.label}</option>}</For>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10.5px] font-mono-num text-[var(--ink-muted)]">Audio Track</span>
+                      <select
+                        value={selectedAudioTrack()}
+                        onChange={(e) => setSelectedAudioTrack(e.currentTarget.value)}
+                        class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2 py-1 text-[11.5px]"
+                      >
+                        <For each={mt().audio}>{(a) => <option value={a.url}>{a.label}</option>}</For>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10.5px] font-mono-num text-[var(--ink-muted)]">Subtitles</span>
+                      <select
+                        value={selectedSubtitleTrack()}
+                        onChange={(e) => setSelectedSubtitleTrack(e.currentTarget.value)}
+                        class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2 py-1 text-[11.5px]"
+                      >
+                        <option value="">None ({mt().subtitles.length} available)</option>
+                        <For each={mt().subtitles}>{(s) => <option value={s.url}>{s.label}</option>}</For>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </Show>
           </div>
 
-          {/* Live Telemetry: Bezier Throughput Wave + 128-Chunk Heatmap & Per-Stream Bars */}
+          {/* Live Telemetry: Bezier Throughput Wave + Live AIMD/BDP + 128-Chunk Heatmap & Per-Stream Bars */}
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div class="omnia-surface-panel rounded-lg p-3.5 min-w-0">
-              <div class="flex items-center justify-between mb-2 text-[12px]">
+            <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2.5 min-w-0">
+              <div class="flex items-center justify-between text-[12px]">
                 <span class="font-semibold flex items-center gap-1.5">
                   <Activity class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
-                  <span>Bezier Throughput Wave (Event-Driven)</span>
+                  <span>Bezier Throughput Wave &amp; Live AIMD/BDP</span>
                 </span>
                 <span class="font-mono-num text-[var(--ink-muted)]">
                   {(speedSamples()[speedSamples().length - 1] / 1024).toFixed(1)} KiB/s
                 </span>
               </div>
               <canvas ref={waveCanvasRef} class="w-full h-28 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]" />
+              <div
+                data-testid="omnidrive-tab1-aimd-strip"
+                class="grid grid-cols-3 sm:grid-cols-6 gap-1.5 text-[10px] font-mono-num"
+              >
+                <div class="p-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
+                  <div class="text-[9px] text-[var(--ink-muted)]">cwnd</div>
+                  <div class="font-bold text-[var(--accent-cyan)]">
+                    {parsedAimd()?.currentWindow ?? 0}/{parsedAimd()?.maxWindow ?? 16}
+                  </div>
+                </div>
+                <div class="p-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
+                  <div class="text-[9px] text-[var(--ink-muted)]">ssthresh</div>
+                  <div class="font-bold">{parsedAimd()?.ssthresh ?? 0}</div>
+                </div>
+                <div class="p-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
+                  <div class="text-[9px] text-[var(--ink-muted)]">RTT</div>
+                  <div class="font-bold">{(parsedAimd()?.rttMs ?? 0).toFixed(1)}ms</div>
+                </div>
+                <div class="p-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
+                  <div class="text-[9px] text-[var(--ink-muted)]">Est BW</div>
+                  <div class="font-bold">{formatBytes(parsedAimd()?.bwBps ?? 0)}/s</div>
+                </div>
+                <div class="p-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
+                  <div class="text-[9px] text-[var(--ink-muted)]">BDP</div>
+                  <div class="font-bold">{formatBytes(parsedAimd()?.bdpBytes ?? 0)}</div>
+                </div>
+                <div class="p-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
+                  <div class="text-[9px] text-[var(--ink-muted)]">Backoffs</div>
+                  <div class="font-bold text-[var(--accent-amber)]">{parsedAimd()?.backoffs ?? 0}</div>
+                </div>
+              </div>
             </div>
 
             <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2 min-w-0">
               <div class="flex items-center justify-between text-[12px] gap-2">
-                <span class="font-semibold">128-Chunk Bitmap & Per-Stream Bars</span>
-                <span class="font-mono-num text-[var(--ink-muted)] truncate max-w-[200px]">
-                  {selectedJob() ? String(selectedJob()!.filename || selectedJob()!.id) : 'No active transfer'}
+                <span class="font-semibold">128-Chunk Bitmap &amp; Per-Stream Bars</span>
+                <span class="font-mono-num text-[var(--ink-muted)] truncate max-w-[220px]">
+                  {selectedJob()
+                    ? `${String(selectedJob()!.filename || selectedJob()!.id)} (${cellFractions().filter((f) => f > 0.9).length}/128)`
+                    : 'No active transfer (0/128)'}
                 </span>
               </div>
               <div

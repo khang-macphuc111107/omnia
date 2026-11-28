@@ -8,14 +8,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use flate2::write::{GzEncoder, ZlibEncoder};
 use flate2::Compression;
 use omnia_notebook::{
-    parse_canonical_origin, sha256_slices_hex, validate_xml_safety, AuthCircuitState,
-    BridgeDirection, BridgeTransferRequest, CreateNotebookRequest, CreateQuoteCardRequest,
-    DispatchRequest, EffortLevel, GenerateArtifactRequest, IngestSourceRequest, IngestionStage,
-    InteractionSurface, NotebookEngine, NotebookError, PdfClassification, PreviewContent,
-    PreviewFormat, RecordTurnRequest, RepoPackageConfig, SelectionAction, SourceFilter, SourceKind,
-    SourceRegistrationInput, StudioArtifactKind, VisibleHandoffStatus, AUTH_CHALLENGE_CODE,
-    AUTH_CHALLENGE_HTTP_STATUS, CRATE_NAME, MANUAL_VISIBLE_BROWSER_ONLY, MAX_BINARY_PREVIEW_BYTES,
-    MAX_CHUNK_BYTES, MAX_COPIED_TEXT_BYTES, MAX_XML_BYTES,
+    chunk_text_semantically, decode_text_safely, is_likely_binary, is_streamable_media_mime,
+    normalize_drive_filename_suffix, parse_canonical_origin, parse_http_byte_range,
+    requires_forced_attachment, sanitize_transport_filename, sha256_slices_hex,
+    strip_local_path_fields, synthesize_audio_overview_wav, validate_xml_safety, AuthCircuitState,
+    BridgeDirection, BridgeTransferRequest, ChatSettings, ContextualAskPreset,
+    CreateNotebookRequest, CreateQuoteCardRequest, DispatchRequest, EffortLevel,
+    GenerateArtifactRequest, HealStage, HttpByteRangeError, IngestSourceRequest, IngestionStage,
+    InteractionSurface, NotebookEngine, NotebookError, NotebookLlmConfig, PdfClassification,
+    PreviewContent, PreviewFormat, RecordTurnRequest, RemoteSyncItem, RepoPackageConfig,
+    SelectionAction, SourceFilter, SourceKind, SourceRegistrationInput, StudioArtifactKind,
+    VisibleHandoffStatus, AUTH_CHALLENGE_CODE, AUTH_CHALLENGE_HTTP_STATUS, CRATE_NAME,
+    MANUAL_VISIBLE_BROWSER_ONLY, MAX_BINARY_PREVIEW_BYTES, MAX_CHAT_CUSTOM_PROMPT_CHARS,
+    MAX_CHUNK_BYTES, MAX_COPIED_TEXT_BYTES, MAX_TRANSPORT_FILENAME_LEN, MAX_XML_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2098,4 +2103,730 @@ async fn dispatcher_drop_guard_recovers_in_flight_on_cancelled_future() {
     let stats = engine.dispatcher().stats().gemini_queue;
     assert_eq!(stats.in_flight, 0);
     assert_eq!(stats.failed, 1);
+}
+
+#[test]
+fn p0_source_ids_filter_only_checked_persistence_rename_and_btw_delete() {
+    let temp = TempDirGuard::new("p0_filters_persistence");
+    let db_path = temp.path.join("p0_state.db");
+    let (nb_id, s1_id, s2_id, btw_id) = {
+        let engine = NotebookEngine::open(&db_path).expect("open wal");
+        let nb_id = create_test_notebook(&engine, "Initial Title", 10);
+
+        let renamed = engine
+            .rename_notebook(&nb_id, "Renamed Research Atelier")
+            .expect("rename notebook");
+        assert_eq!(renamed.title, "Renamed Research Atelier");
+
+        let s1 = engine
+            .ingest_source(IngestSourceRequest {
+                notebook_id: nb_id.clone(),
+                title: Some("Alpha Spec".to_string()),
+                filename: "alpha.md".to_string(),
+                mime_type: None,
+                remote_id: Some("rem_alpha".to_string()),
+                bytes: b"# Alpha\nAlpha quantum routing protocol with deterministic leases."
+                    .to_vec(),
+                copied_text_fallback: None,
+                max_chunk_bytes: None,
+                metadata: json!({ "localPath": "C:\\Users\\example\\alpha.md" }),
+            })
+            .expect("ingest s1")
+            .source;
+        // Public metadata must never persist or expose `localPath`.
+        assert!(s1.metadata.get("localPath").is_none());
+        assert!(s1.checked);
+
+        let s2 = engine
+            .ingest_source(IngestSourceRequest {
+                notebook_id: nb_id.clone(),
+                title: Some("Beta Spec".to_string()),
+                filename: "beta.md".to_string(),
+                mime_type: None,
+                remote_id: Some("rem_beta".to_string()),
+                bytes: b"# Beta\nBeta quantum routing protocol with fallback queue.".to_vec(),
+                copied_text_fallback: None,
+                max_chunk_bytes: None,
+                metadata: json!({}),
+            })
+            .expect("ingest s2")
+            .source;
+
+        // Toggle `checked = false` on s2.
+        let unchecked = engine
+            .set_source_checked(&nb_id, &s2.source_id, false)
+            .expect("uncheck s2");
+        assert!(!unchecked.checked);
+
+        // `source_ids` filter strictly scopes both `list_sources` and BM25F `build_grounded_prompt`.
+        let scoped_filter = SourceFilter {
+            source_ids: Some(vec![s1.source_id.clone()]),
+            ..Default::default()
+        };
+        let listed = engine
+            .list_sources(&nb_id, &scoped_filter)
+            .expect("scoped list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].source_id, s1.source_id);
+
+        let pack = engine
+            .build_grounded_prompt(&nb_id, "quantum routing protocol", &scoped_filter, 8)
+            .expect("scoped grounding");
+        assert!(!pack.evidence.is_empty());
+        assert!(pack.evidence.iter().all(|ev| ev.source_id == s1.source_id));
+
+        // `only_checked` filter excludes unchecked s2.
+        let checked_pack = engine
+            .build_grounded_prompt(
+                &nb_id,
+                "quantum routing protocol",
+                &SourceFilter {
+                    only_checked: true,
+                    ..Default::default()
+                },
+                8,
+            )
+            .expect("checked-only grounding");
+        assert!(!checked_pack.evidence.is_empty());
+        assert!(checked_pack
+            .evidence
+            .iter()
+            .all(|ev| ev.source_id == s1.source_id));
+
+        // Record a main turn + BTW thread, then delete the BTW thread without mutating turns.
+        let turn = engine
+            .record_turn(RecordTurnRequest {
+                notebook_id: nb_id.clone(),
+                surface: InteractionSurface::Notebook,
+                prompt_text: "Summarize Alpha".to_string(),
+                response_markdown: format!("Alpha routing [{}:0]", s1.source_id),
+                model_id: "gemini-4-hydrogen".to_string(),
+                effort: EffortLevel::High,
+                quotes: vec![],
+                citations: vec![format!("[{}:0]", s1.source_id)],
+            })
+            .expect("record turn");
+        let quote = engine
+            .create_quote_card(CreateQuoteCardRequest {
+                notebook_id: nb_id.clone(),
+                surface: InteractionSurface::Notebook,
+                anchor_turn_id: turn.turn_id,
+                source_id: Some(s1.source_id.clone()),
+                excerpt: "deterministic leases".to_string(),
+                char_start: 0,
+                char_end: 20,
+            })
+            .expect("quote card");
+        let btw = engine
+            .create_btw_thread(quote.quote, "Explain leases")
+            .expect("create btw");
+        assert_eq!(engine.list_btw_threads(&nb_id).expect("list btw").len(), 1);
+        assert!(engine
+            .delete_btw_thread(&btw.btw_id)
+            .expect("delete btw thread"));
+        assert!(engine.list_btw_threads(&nb_id).expect("empty btw").is_empty());
+        assert_eq!(engine.list_turns(&nb_id).expect("turns intact").len(), 1);
+
+        (nb_id, s1.source_id, s2.source_id, btw.btw_id)
+    };
+
+    // Reopen WAL DB to confirm rename, checked toggle, and BTW deletion survive restart.
+    let reopened = NotebookEngine::open(&db_path).expect("reopen wal");
+    assert_eq!(
+        reopened.get_notebook(&nb_id).expect("get nb").title,
+        "Renamed Research Atelier"
+    );
+    let s1_after = reopened
+        .store()
+        .get_source(&s1_id)
+        .expect("s1")
+        .expect("exists");
+    let s2_after = reopened
+        .store()
+        .get_source(&s2_id)
+        .expect("s2")
+        .expect("exists");
+    assert!(s1_after.checked);
+    assert!(!s2_after.checked);
+    assert!(reopened
+        .store()
+        .get_btw_thread(&btw_id)
+        .expect("get deleted btw")
+        .is_none());
+}
+
+#[tokio::test]
+async fn p0_chat_settings_10k_cap_bilingual_effort_and_preset_wiring() {
+    let temp = TempDirGuard::new("p0_chat_settings");
+    let db_path = temp.path.join("chat_settings.db");
+    let engine = NotebookEngine::open(&db_path).expect("open wal");
+    let nb_id = create_test_notebook(&engine, "Chat Settings & Presets", 10);
+
+    let s1 = engine
+        .ingest_source(IngestSourceRequest {
+            notebook_id: nb_id.clone(),
+            title: Some("Consensus Notes".to_string()),
+            filename: "consensus.md".to_string(),
+            mime_type: None,
+            remote_id: None,
+            bytes: b"# Raft\nRaft elects one leader per term using randomized timeouts.".to_vec(),
+            copied_text_fallback: None,
+            max_chunk_bytes: None,
+            metadata: json!({}),
+        })
+        .expect("ingest")
+        .source;
+
+    // 1. Default settings.
+    let defaults = engine.get_chat_settings(&nb_id).expect("default settings");
+    assert_eq!(defaults, ChatSettings::default());
+
+    // 2. Reject blank custom prompt and > 10,000-char custom prompt.
+    assert!(matches!(
+        engine.set_chat_settings(
+            &nb_id,
+            ChatSettings {
+                mode: "custom".to_string(),
+                length: "default".to_string(),
+                custom_prompt: "   ".to_string(),
+            }
+        ),
+        Err(NotebookError::InvalidInput(_))
+    ));
+    let over_cap = "a".repeat(MAX_CHAT_CUSTOM_PROMPT_CHARS + 1);
+    assert!(matches!(
+        engine.set_chat_settings(
+            &nb_id,
+            ChatSettings {
+                mode: "custom".to_string(),
+                length: "longer".to_string(),
+                custom_prompt: over_cap,
+            }
+        ),
+        Err(NotebookError::InvalidInput(_))
+    ));
+
+    // 3. Accept exact 10,000-char prompt and inject into system_instructions.
+    let prefix = "Respond as a formal systems auditor. ";
+    let exact_cap = format!(
+        "{prefix}{}",
+        "x".repeat(MAX_CHAT_CUSTOM_PROMPT_CHARS - prefix.chars().count())
+    );
+    assert_eq!(exact_cap.chars().count(), MAX_CHAT_CUSTOM_PROMPT_CHARS);
+    let saved = engine
+        .set_chat_settings(
+            &nb_id,
+            ChatSettings {
+                mode: "custom".to_string(),
+                length: "shorter".to_string(),
+                custom_prompt: exact_cap.clone(),
+            },
+        )
+        .expect("save exact 10k prompt");
+    assert_eq!(saved.mode, "custom");
+    assert_eq!(saved.length, "shorter");
+
+    let pack = engine
+        .build_grounded_prompt(&nb_id, "How does Raft elect a leader?", &SourceFilter::default(), 4)
+        .expect("pack");
+    assert!(pack
+        .system_instructions
+        .contains("Respond as a formal systems auditor."));
+    assert!(pack.system_instructions.contains("Response Length: Keep the answer concise"));
+
+    // 4. Bilingual EN + VI effort parsing.
+    assert_eq!(EffortLevel::parse_bilingual("tối thiểu").unwrap(), EffortLevel::Minimal);
+    assert_eq!(EffortLevel::parse_bilingual("thấp").unwrap(), EffortLevel::Low);
+    assert_eq!(EffortLevel::parse_bilingual("trung bình").unwrap(), EffortLevel::Medium);
+    assert_eq!(EffortLevel::parse_bilingual("cao").unwrap(), EffortLevel::High);
+    assert_eq!(EffortLevel::parse_bilingual("rất cao").unwrap(), EffortLevel::XHigh);
+    assert_eq!(EffortLevel::parse_bilingual("tối đa").unwrap(), EffortLevel::Max);
+
+    // 5. Real loopback LLM ask with ContextualAskPreset::Verify + EffortLevel::XHigh + source_ids!
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let sid = s1.source_id.clone();
+    let srv = tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = [0u8; 32768];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let req_text = String::from_utf8_lossy(&buf[..n]).into_owned();
+            assert!(
+                req_text.contains("Independently verify every factual and technical claim"),
+                "preset Verify instruction must reach upstream LLM prompt"
+            );
+            let body = json!({
+                "id": "chatcmpl-p0-preset",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": format!("Verified: Raft uses randomized election timeouts [{sid}:0].")
+                    }
+                }],
+                "usage": { "prompt_tokens": 30, "completion_tokens": 15 }
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.flush().await;
+        }
+    });
+
+    let llm_cfg = NotebookLlmConfig {
+        model_spec: "openai/dummy-model".to_string(),
+        config_dir: None,
+        api_base_override: Some(format!("http://{addr}/v1")),
+        api_key_override: Some("dummy_test_api_key_example".to_string()),
+        wire_api_override: Some("openai-completions".to_string()),
+        effort: Some(EffortLevel::XHigh),
+        temperature: 0.2,
+        max_tokens: 512,
+        allow_loopback_endpoints: true,
+    };
+    let outcome = engine
+        .ask_notebook_with_preset_and_llm(
+            &nb_id,
+            InteractionSurface::Notebook,
+            "How does Raft elect a leader?",
+            Some(ContextualAskPreset::Verify),
+            &SourceFilter {
+                source_ids: Some(vec![s1.source_id.clone()]),
+                ..Default::default()
+            },
+            4,
+            &llm_cfg,
+        )
+        .await
+        .expect("ask with preset");
+    srv.await.expect("mock llm done");
+    assert!(outcome.verification.valid);
+    assert_eq!(outcome.turn.effort_level, "xhigh");
+    assert!(outcome
+        .pack
+        .system_instructions
+        .contains("Contextual Ask Preset (Verify)"));
+}
+
+#[test]
+fn p0_reconcile_remote_sources_fails_closed_when_snapshot_incomplete() {
+    let engine = NotebookEngine::open_in_memory().expect("open engine");
+    let nb_id = create_test_notebook(&engine, "Fail-Closed Sync Guard", 10);
+
+    let s1 = engine
+        .ingest_source(IngestSourceRequest {
+            notebook_id: nb_id.clone(),
+            title: Some("Local Ground Truth".to_string()),
+            filename: "truth.md".to_string(),
+            mime_type: None,
+            remote_id: Some("rem_truth_01".to_string()),
+            bytes: b"# Truth\nDo not delete on incomplete remote snapshot.".to_vec(),
+            copied_text_fallback: None,
+            max_chunk_bytes: None,
+            metadata: json!({}),
+        })
+        .expect("ingest")
+        .source;
+
+    // Incomplete snapshot MUST fail closed with `SOURCES_INCOMPLETE` (HTTP 409) and zero mutations.
+    let err = engine
+        .reconcile_remote_sources(&nb_id, &[], false)
+        .expect_err("incomplete snapshot must fail closed");
+    assert_eq!(err.error_code(), "SOURCES_INCOMPLETE");
+    assert_eq!(err.http_status(), 409);
+    assert!(matches!(err, NotebookError::SourcesIncomplete { .. }));
+
+    // Local source and tombstone table remain completely untouched.
+    let remaining = engine
+        .list_sources(&nb_id, &SourceFilter::default())
+        .expect("list sources");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].source_id, s1.source_id);
+    assert!(engine.list_tombstones(&nb_id).expect("tombstones").is_empty());
+
+    // Complete snapshot with explicit remote item succeeds.
+    let ok_rep = engine
+        .reconcile_remote_sources(
+            &nb_id,
+            &[RemoteSyncItem {
+                remote_id: "rem_truth_01".to_string(),
+                title: Some("Local Ground Truth".to_string()),
+                content_sha256: Some(s1.content_sha256),
+            }],
+            true,
+        )
+        .expect("complete snapshot ok");
+    assert_eq!(ok_rep.active_sources.len(), 1);
+}
+
+#[test]
+fn p0_upload_healer_five_stage_ladder_zero_red_rows_drive_suffix_and_error_dedupe() {
+    // 1. Drive localized suffix normalization + <= 88 char transport filename sanitization.
+    assert_eq!(normalize_drive_filename_suffix("Rosen.pdf PDF"), "Rosen.pdf");
+    assert_eq!(
+        normalize_drive_filename_suffix("table.xlsx Microsoft Excel"),
+        "table.xlsx"
+    );
+    assert_eq!(
+        normalize_drive_filename_suffix("figure.png Hình ảnh"),
+        "figure.png"
+    );
+    assert_eq!(
+        normalize_drive_filename_suffix("slides.pptx Microsoft PowerPoint"),
+        "slides.pptx"
+    );
+    assert_eq!(
+        normalize_drive_filename_suffix("my notes.apdf"),
+        "my notes.apdf"
+    );
+
+    let long_vi = format!(
+        "Báo cáo nghiên cứu kiến trúc hệ thống phân tán siêu dài {}.pdf PDF",
+        "chi-tiet-".repeat(15)
+    );
+    let safe_long = sanitize_transport_filename(&long_vi, MAX_TRANSPORT_FILENAME_LEN);
+    assert!(safe_long.len() <= MAX_TRANSPORT_FILENAME_LEN);
+    assert!(safe_long.ends_with(".pdf"));
+    assert!(safe_long.is_ascii());
+
+    let reserved = sanitize_transport_filename("CON.txt", MAX_TRANSPORT_FILENAME_LEN);
+    assert_eq!(reserved, "file-con.txt");
+
+    let engine = NotebookEngine::open_in_memory().expect("open engine");
+    let nb_id = create_test_notebook(&engine, "UploadHealer & Error Dedupe", 20);
+
+    // 2. Error-excluded SHA-256 dedupe: failed row MUST NOT cause retry to skip as duplicate!
+    let retry_payload = b"# Retryable Paper\nExact payload retried after transient upload error.";
+    let failed_reg = engine
+        .library()
+        .register_source(SourceRegistrationInput {
+            notebook_id: nb_id.clone(),
+            remote_id: None,
+            title: "Failed Upload".to_string(),
+            filename: "retry.md".to_string(),
+            mime_type: Some("text/markdown".to_string()),
+            source_kind_override: None,
+            raw_bytes: retry_payload.to_vec(),
+            chunks: vec![],
+            ingestion_stage: "failed_upload".to_string(),
+            provenance: "EXTRACTED".to_string(),
+            metadata: json!({ "status": "error" }),
+        })
+        .expect("register failed row");
+    assert_eq!(failed_reg.source.status, "error");
+
+    let retry_ok = engine
+        .ingest_source(IngestSourceRequest {
+            notebook_id: nb_id.clone(),
+            title: Some("Recovered Paper".to_string()),
+            filename: "retry.md".to_string(),
+            mime_type: Some("text/markdown".to_string()),
+            remote_id: None,
+            bytes: retry_payload.to_vec(),
+            copied_text_fallback: None,
+            max_chunk_bytes: None,
+            metadata: json!({}),
+        })
+        .expect("retry identical bytes succeeds");
+    assert!(!retry_ok.deduplicated, "failed row must not trigger SHA-256 skip");
+    assert_eq!(retry_ok.source.status, "ready");
+    assert!(retry_ok.chunk_count >= 1);
+
+    // 3. Full 5-stage UploadHealer escalation (Stages 0..4 rejected -> Stage 5 succeeds, zero red rows).
+    let nb_heal = create_test_notebook(&engine, "5-Stage Ladder", 20);
+    // Seed a pre-existing red/error source to verify UploadHealer purges it before retry!
+    let _pre_failed = engine
+        .library()
+        .register_source(SourceRegistrationInput {
+            notebook_id: nb_heal.clone(),
+            remote_id: None,
+            title: "Stale Red Row".to_string(),
+            filename: "stale.txt".to_string(),
+            mime_type: Some("text/plain".to_string()),
+            source_kind_override: None,
+            raw_bytes: b"stale red row".to_vec(),
+            chunks: vec![],
+            ingestion_stage: "failed_upload".to_string(),
+            provenance: "EXTRACTED".to_string(),
+            metadata: json!({ "status": "error" }),
+        })
+        .expect("seed red row");
+
+    let mut seen_stages = Vec::new();
+    let healed_s5 = engine
+        .heal_upload_with_ladder(
+            IngestSourceRequest {
+                notebook_id: nb_heal.clone(),
+                title: Some("Rosen Discrete Math".to_string()),
+                filename: "Rosen.pdf PDF".to_string(),
+                mime_type: Some("application/pdf".to_string()),
+                remote_id: None,
+                bytes: b"%PDF-1.4\n1 0 obj << >>\nstream\nBT (Discrete Mathematics Graph Theory) Tj ET\nendstream\nendobj\n%%EOF\n".to_vec(),
+                copied_text_fallback: Some("Discrete Mathematics Graph Theory fallback.".to_string()),
+                max_chunk_bytes: Some(256),
+                metadata: json!({ "localPath": "D:\\private\\Rosen.pdf" }),
+            },
+            |ctx| {
+                seen_stages.push(ctx.stage);
+                if ctx.stage == HealStage::Stage5MetadataInventory {
+                    assert!(ctx.filename.len() <= MAX_TRANSPORT_FILENAME_LEN);
+                    Ok(())
+                } else {
+                    Err(format!("simulated rejection at {}", ctx.stage.as_str()))
+                }
+            },
+        )
+        .expect("stage 5 inventory succeeds");
+
+    assert_eq!(healed_s5.final_stage, HealStage::Stage5MetadataInventory);
+    assert_eq!(healed_s5.normalized_filename, "Rosen.pdf");
+    assert!(healed_s5.total_purged_failed_rows >= 1);
+    assert_eq!(healed_s5.attempts.len(), 6);
+    assert_eq!(
+        seen_stages,
+        vec![
+            HealStage::Stage0Direct,
+            HealStage::Stage1SanitizedRetry,
+            HealStage::Stage2DeepConvertSplit,
+            HealStage::Stage3PlainTxtChunks,
+            HealStage::Stage4CopiedTextMicroChunks,
+            HealStage::Stage5MetadataInventory,
+        ]
+    );
+    // Zero red rows remain in the notebook and `localPath` was stripped.
+    let all_heal_sources = engine
+        .list_sources(&nb_heal, &SourceFilter::default())
+        .expect("list healed");
+    assert!(all_heal_sources.iter().all(|s| s.status == "ready"));
+    assert!(all_heal_sources
+        .iter()
+        .all(|s| s.metadata.get("localPath").is_none()));
+
+    // 4. Security guard: blocked `.exe` MUST fail closed immediately (never escalate to Stage 5).
+    let blocked_exe = engine.heal_upload_with_ladder(
+        IngestSourceRequest {
+            notebook_id: nb_heal,
+            title: Some("Payload".to_string()),
+            filename: "payload.exe".to_string(),
+            mime_type: None,
+            remote_id: None,
+            bytes: b"MZ\x90\x00".to_vec(),
+            copied_text_fallback: None,
+            max_chunk_bytes: None,
+            metadata: json!({}),
+        },
+        |_| Err("should never be called for blocked exe".to_string()),
+    );
+    assert!(matches!(
+        blocked_exe,
+        Err(NotebookError::SecurityRejected {
+            code: "DISALLOWED_EXTENSION",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn p0_encoding_safe_decode_all_encodings_and_utf8_chunk_boundary_fuzz() {
+    // 1. Empty 0-byte file.
+    let empty = decode_text_safely(b"");
+    assert_eq!(empty.text, "");
+    assert_eq!(empty.detected_encoding, "utf-8");
+
+    // 2. UTF-8 BOM + CRLF + unsafe C0 control char (0x07 BEL stripped, \t & \n preserved).
+    let utf8_bom = b"\xEF\xBB\xBFXin ch\xC3\xA0o\tOmnia\x07\r\nLine 2\r";
+    let dec_bom = decode_text_safely(utf8_bom);
+    assert_eq!(dec_bom.detected_encoding, "utf-8-bom");
+    assert_eq!(dec_bom.text, "Xin chào\tOmnia\nLine 2\n");
+    assert_eq!(dec_bom.stripped_controls, 1);
+
+    // 3. UTF-16LE BOM.
+    let mut u16le = vec![0xFFu8, 0xFE];
+    for unit in "Hello Việt".encode_utf16() {
+        u16le.extend_from_slice(&unit.to_le_bytes());
+    }
+    let dec_u16le = decode_text_safely(&u16le);
+    assert_eq!(dec_u16le.detected_encoding, "utf-16le");
+    assert_eq!(dec_u16le.text, "Hello Việt");
+
+    // 4. UTF-16BE BOM.
+    let mut u16be = vec![0xFEu8, 0xFF];
+    for unit in "Atlas 2026".encode_utf16() {
+        u16be.extend_from_slice(&unit.to_be_bytes());
+    }
+    let dec_u16be = decode_text_safely(&u16be);
+    assert_eq!(dec_u16be.detected_encoding, "utf-16be");
+    assert_eq!(dec_u16be.text, "Atlas 2026");
+
+    // 5. BOM-less UTF-16LE heuristic (must be decoded as text AND NOT flagged as binary!).
+    let mut bomless_le = Vec::new();
+    for unit in "Omnia Notebook UTF16LE Heuristic".encode_utf16() {
+        bomless_le.extend_from_slice(&unit.to_le_bytes());
+    }
+    assert!(!is_likely_binary(&bomless_le));
+    let dec_bomless = decode_text_safely(&bomless_le);
+    assert_eq!(dec_bomless.detected_encoding, "utf-16le-bomless");
+    assert_eq!(dec_bomless.text, "Omnia Notebook UTF16LE Heuristic");
+
+    // 6. UTF-32LE BOM.
+    let mut u32le = vec![0xFFu8, 0xFE, 0x00, 0x00];
+    for ch in "Rust32".chars() {
+        u32le.extend_from_slice(&(ch as u32).to_le_bytes());
+    }
+    let dec_u32 = decode_text_safely(&u32le);
+    assert_eq!(dec_u32.detected_encoding, "utf-32le");
+    assert_eq!(dec_u32.text, "Rust32");
+
+    // 7. Stray-NUL UTF-8 (<25% NULs).
+    let stray_nul = b"Alpha\x00BetaGammaDelta";
+    let dec_nul = decode_text_safely(stray_nul);
+    assert_eq!(dec_nul.detected_encoding, "utf-8-nul-cleaned");
+    assert_eq!(dec_nul.text, "AlphaBetaGammaDelta");
+    assert_eq!(dec_nul.stripped_nuls, 1);
+
+    // 8. Windows-1252 fallback (€ = 0x80, smart quotes 0x93/0x94, é = 0xE9).
+    let win1252 = b"Caf\xE9 \x80 100 \x93OK\x94";
+    let dec_cp = decode_text_safely(win1252);
+    assert_eq!(dec_cp.detected_encoding, "windows-1252");
+    assert_eq!(dec_cp.text, "Café € 100 “OK”");
+    assert!(!dec_cp.text.contains('\u{FFFD}'));
+
+    // 9. Surrogate/codepoint-safe UTF-8 chunking fuzz across Vietnamese + emoji + math.
+    let unit = "Tiếng Việt chuẩn xác 🚀🔥🧠 ∑∫∀∃≠≤≥ — phân đoạn UTF-8 an toàn. ";
+    let big_doc = format!("# Đa Ngôn Ngữ\n{}\n\n## Kết Luận\n{}", unit.repeat(40), unit.repeat(20));
+    for max_bytes in [128usize, 257, 513, 1024, MAX_COPIED_TEXT_BYTES] {
+        let chunks = chunk_text_semantically(&big_doc, max_bytes);
+        assert!(!chunks.is_empty());
+        for (_h, body) in chunks {
+            assert!(
+                body.len() <= max_bytes,
+                "chunk length {} exceeded ceiling {}",
+                body.len(),
+                max_bytes
+            );
+            assert!(!body.contains('\u{FFFD}'));
+        }
+    }
+}
+
+#[test]
+fn p0_http_range_206_416_415_audio_wav_xml_attachment_and_zero_local_path_leak() {
+    let engine = NotebookEngine::open_in_memory().expect("open engine");
+    let nb_id = create_test_notebook(&engine, "Audio Range & XML Safety", 10);
+    let _src = engine
+        .ingest_source(IngestSourceRequest {
+            notebook_id: nb_id.clone(),
+            title: Some("Audio Source".to_string()),
+            filename: "notes.md".to_string(),
+            mime_type: None,
+            remote_id: None,
+            bytes: b"# Overview\nHTTP Range streaming enables seekable audio overviews.".to_vec(),
+            copied_text_fallback: None,
+            max_chunk_bytes: None,
+            metadata: json!({}),
+        })
+        .expect("ingest")
+        .source;
+
+    // 1. AudioOverview deterministic RIFF/WAVE stream + HTTP 206 / 416 range verification.
+    let audio_art = engine
+        .generate_artifact(GenerateArtifactRequest {
+            notebook_id: nb_id.clone(),
+            kind: StudioArtifactKind::AudioOverview,
+            title: Some("Range Podcast".to_string()),
+            source_ids: None,
+            focus_prompt: Some("Range streaming".to_string()),
+        })
+        .expect("generate audio overview");
+    let (_, wav) = engine
+        .render_audio_overview_wav(&nb_id, &audio_art.artifact_id)
+        .expect("render wav");
+    assert!(wav.len() > 2048);
+    assert_eq!(&wav[0..4], b"RIFF");
+    assert_eq!(&wav[8..12], b"WAVE");
+
+    let r206 = parse_http_byte_range("bytes=0-1023", wav.len()).expect("valid 206 range");
+    assert_eq!(r206.slice(&wav).len(), 1024);
+    assert_eq!(
+        r206.content_range_header(),
+        format!("bytes 0-1023/{}", wav.len())
+    );
+    assert_eq!(&r206.slice(&wav)[0..4], b"RIFF");
+
+    let suffix = parse_http_byte_range("bytes=-128", wav.len()).expect("valid suffix range");
+    assert_eq!(suffix.slice(&wav).len(), 128);
+    assert_eq!(suffix.end, wav.len() - 1);
+
+    // Out-of-bounds, inverted, and multi-range fail closed with Unsatisfiable (HTTP 416).
+    assert_eq!(
+        parse_http_byte_range("bytes=99999999-", wav.len()),
+        Err(HttpByteRangeError::Unsatisfiable {
+            total_len: wav.len()
+        })
+    );
+    assert_eq!(
+        parse_http_byte_range("bytes=500-100", wav.len()),
+        Err(HttpByteRangeError::Unsatisfiable {
+            total_len: wav.len()
+        })
+    );
+    assert_eq!(
+        parse_http_byte_range("bytes=0-10, 20-30", wav.len()),
+        Err(HttpByteRangeError::Unsatisfiable {
+            total_len: wav.len()
+        })
+    );
+    assert_eq!(
+        parse_http_byte_range("items=0-10", wav.len()),
+        Err(HttpByteRangeError::InvalidHeader)
+    );
+
+    // 2. Non-AudioOverview artifact rejected for WAV streaming (HTTP 415 path in Studio).
+    let briefing = engine
+        .generate_artifact(GenerateArtifactRequest {
+            notebook_id: nb_id.clone(),
+            kind: StudioArtifactKind::Briefing,
+            title: Some("Text Briefing".to_string()),
+            source_ids: None,
+            focus_prompt: None,
+        })
+        .expect("briefing");
+    assert!(synthesize_audio_overview_wav(&briefing).is_err());
+    assert!(is_streamable_media_mime("audio/wav"));
+    assert!(is_streamable_media_mime("audio/mpeg"));
+    assert!(!is_streamable_media_mime("text/html"));
+    assert!(!is_streamable_media_mime("image/svg+xml"));
+    assert!(!is_streamable_media_mime("application/xml"));
+
+    // 3. XML forced-attachment safety + nosniff.
+    assert!(requires_forced_attachment("xml", "application/xml"));
+    assert!(requires_forced_attachment("svg", "image/svg+xml"));
+    assert!(requires_forced_attachment("data", "text/xml"));
+    let xml_prev = engine
+        .preview_bytes(
+            "feed.xml",
+            Some("application/xml"),
+            b"<?xml version=\"1.0\"?><feed><entry>Safe XML</entry></feed>",
+        )
+        .expect("xml preview");
+    assert!(xml_prev.headers.force_attachment);
+    assert!(xml_prev
+        .headers
+        .content_disposition
+        .starts_with("attachment;"));
+    assert_eq!(xml_prev.headers.x_content_type_options, "nosniff");
+
+    // 4. Recursive `localPath`/`local_path` scrubbing.
+    let mut payload = json!({
+        "localPath": "D:\\OmniaData\\secret.db",
+        "items": [{ "local_path": "C:\\Users\\example\\a.pdf", "filePath": "/etc/hosts", "title": "Keep" }]
+    });
+    strip_local_path_fields(&mut payload);
+    assert!(payload.get("localPath").is_none());
+    assert!(payload["items"][0].get("local_path").is_none());
+    assert!(payload["items"][0].get("filePath").is_none());
+    assert_eq!(payload["items"][0]["title"], "Keep");
 }

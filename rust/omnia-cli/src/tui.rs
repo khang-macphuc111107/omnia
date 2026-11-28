@@ -356,6 +356,7 @@ pub struct TuiLaunchOptions {
     pub wire_api: Option<WireApiMode>,
     pub thinking: Option<String>,
     pub approval_mode: Option<ApprovalMode>,
+    pub sandbox: bool,
     pub max_turns: u32,
     pub timeout_secs: u64,
 }
@@ -504,6 +505,21 @@ const SLASH_DEFS: &[SlashDef] = &[
         desc: "Inspect or update Execution Plan lifecycle artifact",
     },
     SlashDef {
+        cmd: "/super-plan",
+        usage: "/super-plan [goal]",
+        desc: "Activate super-plan workflow in .agents/super/engine_state.json",
+    },
+    SlashDef {
+        cmd: "/super-run",
+        usage: "/super-run [goal]",
+        desc: "Activate super-run workflow in .agents/super/engine_state.json",
+    },
+    SlashDef {
+        cmd: "/auto-proceed",
+        usage: "/auto-proceed [status|on|off|recommended-only|full]",
+        desc: "View or toggle auto-proceed mode in .agents/super/engine_state.json",
+    },
+    SlashDef {
         cmd: "/todo",
         usage: "/todo [add <title>|done <id> [proof]]",
         desc: "Inspect, add, or receipt-verify Todo lifecycle tasks",
@@ -525,8 +541,8 @@ const SLASH_DEFS: &[SlashDef] = &[
     },
     SlashDef {
         cmd: "/learn",
-        usage: "/learn [<title> | <cause> | <invariant>]",
-        desc: "Capture 2-tier lesson w/ overlap check or inspect Gap Radar",
+        usage: "/learn [--global] [<title> | <cause> | <invariant>]",
+        desc: "Capture 2-tier lesson (--global mirrors global_lessons.md) or Gap Radar",
     },
     SlashDef {
         cmd: "/lessons",
@@ -771,6 +787,8 @@ struct TuiAppState {
     wire_api: WireApiMode,
     thinking: Option<String>,
     approval_mode: ApprovalMode,
+    sandbox: bool,
+    auto_proceed: crate::super_cmds::AutoProceedMode,
     saved: CliSavedConfig,
     max_turns: u32,
     timeout_secs: u64,
@@ -950,6 +968,7 @@ fn build_engine(
     wire_api: WireApiMode,
     thinking: Option<String>,
     approval_mode: ApprovalMode,
+    sandbox: bool,
     db: Option<AgentStore>,
     cancel_flag: Arc<AtomicBool>,
     ui_tx: Option<mpsc::UnboundedSender<UiAsyncEvent>>,
@@ -990,14 +1009,19 @@ fn build_engine(
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
     }) as _);
 
+    let permission_rules = if sandbox {
+        PermissionsEngine::strict_safety_rules()
+    } else {
+        PermissionsEngine::default_rules()
+    };
     let mut eng = NativeSuperEngine::new(
         session_key,
         workspace.to_path_buf(),
         endpoint,
         thinking,
         approval_mode,
-        true,
-        PermissionsEngine::default_rules(),
+        !sandbox,
+        permission_rules,
         PluginRegistry::with_default_pillars(),
         graph,
         db,
@@ -1257,6 +1281,15 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
         .map(|s| format!(" | {s}"))
         .unwrap_or_default();
     let mask_badge = if state.privacy_mask { " | MASK" } else { "" };
+    let sandbox_badge = if state.sandbox { " | SANDBOX" } else { "" };
+    let proceed_badge = if state.auto_proceed.is_enabled() {
+        format!(
+            " | PROCEED:{}",
+            state.auto_proceed.as_str().to_ascii_uppercase()
+        )
+    } else {
+        String::new()
+    };
     let fork_badge = if state.forked_threads.is_empty() {
         String::new()
     } else {
@@ -1266,7 +1299,7 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
     let hud = Line::from(vec![
         Span::styled(
             format!(
-                " {} | {} | {} | turns:{} tools:{}(err:{}) | KV:{:.1}% | {:.1} tok/s | ctx:{:.0}% | ${:.4} (saved ${:.4}) | RSS:{:.1}MiB | budget:NULL{}{}{} ",
+                " {} | {} | {} | turns:{} tools:{}(err:{}) | KV:{:.1}% | {:.1} tok/s | ctx:{:.0}% | ${:.4} (saved ${:.4}) | RSS:{:.1}MiB | budget:NULL{}{}{}{}{} ",
                 format_approval_badge(state.approval_mode),
                 state.focus_mode.pill(),
                 persona_pill,
@@ -1279,6 +1312,8 @@ fn render_ui(frame: &mut ratatui::Frame, state: &mut TuiAppState) {
                 state.cost_usd,
                 state.kv_savings_usd,
                 rss_mb,
+                sandbox_badge,
+                proceed_badge,
                 fork_badge,
                 st_badge,
                 mask_badge
@@ -1644,6 +1679,7 @@ fn handle_slash_command(
                 state.wire_api,
                 state.thinking.clone(),
                 state.approval_mode,
+                state.sandbox,
                 state.db.clone(),
                 Arc::clone(&state.cancel_flag),
                 Some(tx.clone()),
@@ -1718,7 +1754,7 @@ fn handle_slash_command(
                 let _ = save_config(&state.saved);
                 if let Some(ref mut eng) = state.engine {
                     eng.tool_runtime.approval_mode = mode;
-                    eng.tool_runtime.workspace_trusted = true;
+                    eng.tool_runtime.workspace_trusted = !state.sandbox;
                 }
                 state.push_line(
                     TranscriptEntryKind::System,
@@ -1739,6 +1775,7 @@ fn handle_slash_command(
             let candidate = PathBuf::from(arg);
             if candidate.is_dir() {
                 state.workspace = sanitize_windows_path(&candidate);
+                state.auto_proceed = crate::super_cmds::read_engine_state(&state.workspace).auto_proceed;
                 let eng = build_engine(
                     &state.workspace,
                     &state.model,
@@ -1747,6 +1784,7 @@ fn handle_slash_command(
                     state.wire_api,
                     state.thinking.clone(),
                     state.approval_mode,
+                    state.sandbox,
                     state.db.clone(),
                     Arc::clone(&state.cancel_flag),
                     Some(tx.clone()),
@@ -2373,6 +2411,31 @@ fn handle_slash_command(
                 }
             }
         }
+        "/super-plan" | "/super-run" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            let mode = if cmd == "/super-plan" {
+                "super_plan"
+            } else {
+                "super_run"
+            };
+            let os_opt = open_artifact_os(&state.workspace).ok();
+            let lines = execute_super_mode_command(&state.workspace, mode, arg, os_opt.as_ref());
+            state.last_lifecycle_summary = lines.clone();
+            for l in lines.into_iter().take(18) {
+                state.push_line(TranscriptEntryKind::System, l);
+            }
+        }
+        "/auto-proceed" => {
+            state.drawer_tab = DrawerTab::Lifecycle;
+            let (lines, updated_mode) = execute_auto_proceed_command(&state.workspace, arg);
+            if let Some(m) = updated_mode {
+                state.auto_proceed = m;
+            }
+            state.last_lifecycle_summary = lines.clone();
+            for l in lines.into_iter().take(18) {
+                state.push_line(TranscriptEntryKind::System, l);
+            }
+        }
         "/learn" => {
             state.drawer_tab = DrawerTab::Lifecycle;
             match open_artifact_os(&state.workspace) {
@@ -2572,6 +2635,7 @@ fn handle_slash_command(
                         state.wire_api,
                         state.thinking.clone(),
                         state.approval_mode,
+                        state.sandbox,
                         state.db.clone(),
                         Arc::clone(&state.cancel_flag),
                         Some(tx.clone()),
@@ -2615,6 +2679,7 @@ fn handle_slash_command(
                     state.wire_api,
                     state.thinking.clone(),
                     state.approval_mode,
+                    state.sandbox,
                     state.db.clone(),
                     Arc::clone(&state.cancel_flag),
                     Some(tx.clone()),
@@ -2722,6 +2787,7 @@ async fn run_parallel_arena_task(req: ArenaRunRequest) -> Vec<ArenaModelOutcome>
                 wire_api,
                 thinking,
                 ApprovalMode::Plan,
+                false,
                 None,
                 cancel,
                 None,
@@ -3825,8 +3891,101 @@ fn execute_handoff_command(os: &ArtifactOs, workspace: &Path, arg: &str) -> Vec<
     }
 }
 
-fn execute_learn_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
-    let (cleaned, sync_to_disk) = strip_sync_flag(arg);
+fn execute_super_mode_command(
+    workspace: &Path,
+    mode: &str,
+    arg: &str,
+    os: Option<&ArtifactOs>,
+) -> Vec<String> {
+    let goal = arg.trim();
+    let goal_opt = if goal.is_empty() { None } else { Some(goal) };
+    match crate::super_cmds::set_super_workflow_mode(workspace, mode, goal_opt, os) {
+        Ok((st, path)) => {
+            let mut out = vec![
+                format!("=== Super Workflow Mode: {} ===", st.mode),
+                format!(
+                    "  autoProceed={} (enabled={}) | tokenBudget=null",
+                    st.auto_proceed.as_str(),
+                    st.auto_proceed_enabled
+                ),
+                format!("  stateFile={}", path.display()),
+            ];
+            if let Some(ref g) = st.active_goal {
+                out.push(format!("  activeGoal={}", truncate_chars(g, 80)));
+            }
+            out
+        }
+        Err(e) => vec![format!("Failed to persist super mode `{mode}`: {e}")],
+    }
+}
+
+fn execute_auto_proceed_command(
+    workspace: &Path,
+    arg: &str,
+) -> (Vec<String>, Option<crate::super_cmds::AutoProceedMode>) {
+    let trimmed = arg.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+        let st = crate::super_cmds::read_engine_state(workspace);
+        let path = crate::super_cmds::engine_state_path(workspace);
+        return (
+            vec![
+                "=== Super Auto-Proceed Status ===".into(),
+                format!(
+                    "  mode={} | autoProceed={} (enabled={}) | tokenBudget=null",
+                    st.mode,
+                    st.auto_proceed.as_str(),
+                    st.auto_proceed_enabled
+                ),
+                format!("  stateFile={}", path.display()),
+                "Usage: /auto-proceed [status|on|off|recommended-only|full]".into(),
+            ],
+            Some(st.auto_proceed),
+        );
+    }
+    match crate::super_cmds::AutoProceedMode::try_parse(trimmed) {
+        Ok(mode) => match crate::super_cmds::set_auto_proceed(workspace, mode) {
+            Ok((st, path)) => (
+                vec![
+                    "=== Super Auto-Proceed Updated ===".into(),
+                    format!(
+                        "  autoProceed -> {} (enabled={}) | tokenBudget=null",
+                        st.auto_proceed.as_str(),
+                        st.auto_proceed_enabled
+                    ),
+                    format!("  stateFile={}", path.display()),
+                ],
+                Some(st.auto_proceed),
+            ),
+            Err(e) => (vec![format!("Failed to update auto-proceed: {e}")], None),
+        },
+        Err(e) => (vec![format!("{e}")], None),
+    }
+}
+
+fn strip_global_flag(raw: &str) -> (String, bool) {
+    let mut is_global = false;
+    let kept: Vec<&str> = raw
+        .split_whitespace()
+        .filter(|t| {
+            if *t == "--global" || *t == "-g" {
+                is_global = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    (kept.join(" "), is_global)
+}
+
+fn execute_learn_command_with_mirror(
+    os: &ArtifactOs,
+    arg: &str,
+    global_mirror_override: Option<&Path>,
+) -> Vec<String> {
+    let (without_sync, sync_flag) = strip_sync_flag(arg);
+    let (cleaned, global_flag) = strip_global_flag(&without_sync);
+    let sync_to_disk = sync_flag || global_flag;
     if cleaned.is_empty() {
         let mut out = vec!["=== Auto-Learn & Gap Radar ===".into()];
         if let Ok(rep) = os.gap_radar_report() {
@@ -3843,18 +4002,19 @@ fn execute_learn_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
                 }
             }
         }
-        out.push("Usage: /learn <title> | <root_cause> | <invariant> [| project|global] [--sync]".into());
+        out.push("Usage: /learn [--global] <title> | <root_cause> | <invariant> [| project|global] [--sync]".into());
         return out;
     }
 
     let segs: Vec<&str> = cleaned.split('|').map(str::trim).filter(|s| !s.is_empty()).collect();
-    let (title, root_cause, invariant, scope) = match segs.len() {
-        0 => return vec!["Usage: /learn <title> | <root_cause> | <invariant> [| project|global]".into()],
+    let (title, root_cause, invariant, raw_scope) = match segs.len() {
+        0 => return vec!["Usage: /learn [--global] <title> | <root_cause> | <invariant> [| project|global]".into()],
         1 => (segs[0], "Captured via TUI /learn", segs[0], "project"),
         2 => (segs[0], segs[0], segs[1], "project"),
         3 => (segs[0], segs[1], segs[2], "project"),
         _ => (segs[0], segs[1], segs[2], segs[3]),
     };
+    let scope = if global_flag { "global" } else { raw_scope };
     let rec = LessonRecord {
         id: String::new(),
         scope: scope.to_string(),
@@ -3870,7 +4030,7 @@ fn execute_learn_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
         overlap_warning: None,
         created_at_ms: 0,
     };
-    match os.capture_lesson(rec, sync_to_disk) {
+    match os.capture_lesson(rec, sync_to_disk && !global_flag) {
         Ok(saved) => {
             let mut out = vec![
                 "=== Lesson Captured ===".into(),
@@ -3883,6 +4043,24 @@ fn execute_learn_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
                 ),
                 format!("  Invariant: {}", truncate_chars(&saved.invariant, 76)),
             ];
+            if global_flag {
+                let mirror_path = global_mirror_override
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(crate::super_cmds::global_lessons_path);
+                let globals = os.list_lessons(Some("global")).unwrap_or_default();
+                match crate::super_cmds::mirror_lessons_markdown(
+                    &mirror_path,
+                    "Omnia Global Lessons",
+                    &globals,
+                    crate::super_cmds::GLOBAL_LESSONS_MAX_ENTRIES,
+                ) {
+                    Ok(cnt) => out.push(format!(
+                        "  Global Mirror: {} ({cnt} entries, UTF-8 LF)",
+                        mirror_path.display()
+                    )),
+                    Err(e) => out.push(format!("  Global Mirror warning: {e}")),
+                }
+            }
             if let Some(ref warn) = saved.overlap_warning {
                 out.push(format!("  [OVERLAP] {}", truncate_chars(warn, 88)));
             }
@@ -3890,6 +4068,10 @@ fn execute_learn_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
         }
         Err(e) => vec![format!("Capture lesson failed: {e}")],
     }
+}
+
+fn execute_learn_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
+    execute_learn_command_with_mirror(os, arg, None)
 }
 
 fn execute_lessons_command(os: &ArtifactOs, arg: &str) -> Vec<String> {
@@ -4222,6 +4404,7 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
             wire_api,
             thinking,
             approval_mode,
+            opts.sandbox,
             db,
             opts.max_turns,
             opts.timeout_secs,
@@ -4239,10 +4422,12 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         wire_api,
         thinking.clone(),
         approval_mode,
+        opts.sandbox,
         db.clone(),
         Arc::clone(&cancel_flag),
         Some(tx.clone()),
     )?;
+    let init_auto_proceed = crate::super_cmds::read_engine_state(&workspace).auto_proceed;
 
     let init_theme = saved
         .theme
@@ -4268,6 +4453,8 @@ pub async fn run_interactive_tui(opts: TuiLaunchOptions) -> Result<()> {
         wire_api,
         thinking,
         approval_mode,
+        sandbox: opts.sandbox,
+        auto_proceed: init_auto_proceed,
         saved,
         max_turns: opts.max_turns,
         timeout_secs: opts.timeout_secs,
@@ -4919,6 +5106,7 @@ async fn run_piped_repl(
     wire_api: WireApiMode,
     thinking: Option<String>,
     approval_mode: ApprovalMode,
+    sandbox: bool,
     db: Option<AgentStore>,
     max_turns: u32,
     timeout_secs: u64,
@@ -4932,6 +5120,7 @@ async fn run_piped_repl(
         wire_api,
         thinking,
         approval_mode,
+        sandbox,
         db,
         cancel,
         None,
@@ -5450,5 +5639,44 @@ mod tests {
         assert!(flist.contains("fork-1"));
         assert!(flist.contains("FOCUS:DEEP"));
         assert!(flist.contains("GEM:ARC"));
+    }
+
+    #[test]
+    fn wave2_super_slash_commands_and_global_learn_mirror_work() {
+        let cmds: Vec<&str> = SLASH_DEFS.iter().map(|d| d.cmd).collect();
+        for req in ["/super-plan", "/super-run", "/auto-proceed", "/learn"] {
+            assert!(cmds.contains(&req), "missing Wave 2 slash command {req}");
+        }
+
+        let ws = env::temp_dir().join(format!(
+            "omnia_tui_super_{}_{}",
+            std::process::id(),
+            &omnia_core::uuid_v4()[..8]
+        ));
+        let _ = fs::create_dir_all(&ws);
+
+        let plan_lines = execute_super_mode_command(&ws, "super_plan", "Deliver B11", None);
+        assert!(plan_lines.iter().any(|l| l.contains("super_plan")));
+        let run_lines = execute_super_mode_command(&ws, "super_run", "Execute B11", None);
+        assert!(run_lines.iter().any(|l| l.contains("super_run")));
+
+        let (p_lines, p_mode) = execute_auto_proceed_command(&ws, "recommended-only");
+        assert_eq!(p_mode, Some(crate::super_cmds::AutoProceedMode::RecommendedOnly));
+        assert!(p_lines.iter().any(|l| l.contains("recommended-only")));
+
+        let os = ArtifactOs::open_in_memory(&ws).unwrap();
+        let mirror_path = ws.join("global_lessons.md");
+        let l_lines = execute_learn_command_with_mirror(
+            &os,
+            "--global Always guard MSVC delayload | Dual casing WS2_32 | Never delayload ws2_32.dll",
+            Some(&mirror_path),
+        );
+        assert!(l_lines.iter().any(|l| l.contains("[global]")));
+        assert!(l_lines.iter().any(|l| l.contains("Global Mirror:")));
+        let md = fs::read_to_string(&mirror_path).unwrap();
+        assert!(md.contains("Always guard MSVC delayload"));
+        assert!(!md.contains('\r'));
+
+        let _ = fs::remove_dir_all(&ws);
     }
 }

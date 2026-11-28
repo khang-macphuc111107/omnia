@@ -3,10 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use omnia_core::{sha256_hex, truncate_utf8_codepoints};
+use omnia_core::{now_epoch_ms, sha256_hex, truncate_utf8_codepoints};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::m2v_router::{rrf_fuse_ranks, M2vSeekEngine};
 use crate::proactive_rag::{fold_vietnamese_ascii, tokenize_folded};
 use crate::research_vault::{atomic_write_with_retry, levenshtein_bounded};
 
@@ -251,19 +252,95 @@ pub fn resolve_skill_alias(slug: &str) -> &str {
     }
 }
 
+/// Low-score query captured by the skill router's Gap Radar to feed [`SkillRegistry::codify_skill`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GapRadarRecord {
+    pub query: String,
+    pub best_score: f64,
+    pub reason: String,
+    pub occurrences: u32,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+}
+
+/// Ranked hybrid (BM25 + dense Model2Vec RRF) match returned by [`SkillRegistry::search_hybrid`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridSkillMatch {
+    pub skill: SkillMetadata,
+    pub rrf_score: f64,
+    pub bm25_score: f64,
+    pub dense_cosine: Option<f32>,
+    pub bm25_rank: Option<usize>,
+    pub dense_rank: Option<usize>,
+    pub matched_terms: Vec<String>,
+}
+
+impl HybridSkillMatch {
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        json!({
+            "skill": self.skill.to_json(),
+            "rrfScore": self.rrf_score,
+            "bm25Score": self.bm25_score,
+            "denseCosine": self.dense_cosine,
+            "bm25Rank": self.bm25_rank,
+            "denseRank": self.dense_rank,
+            "matchedTerms": self.matched_terms,
+        })
+    }
+}
+
 /// Thread-safe skill catalog reading `.agents/skills.json`, `SKILL.md` frontmatter,
 /// `agents/openai.yaml`, and read-only Cold Vault catalogs with bilingual EN/VN BM25+fuzzy search,
-/// 4-Stage DAG composition, 24 pre-wired pipelines, Merkle doctor, and quality-gated codification.
+/// optional pure-Rust Model2Vec dense RRF fusion (`k=60`), GapRadar telemetry feeding
+/// [`SkillRegistry::codify_skill`], 4-Stage DAG composition, 24 pre-wired pipelines, Merkle doctor,
+/// and quality-gated codification.
 #[derive(Debug, Default)]
 pub struct SkillRegistry {
     skills: Mutex<Vec<IndexedSkill>>,
     cold_vault: Mutex<Vec<ColdVaultEntry>>,
+    m2v_engine: Mutex<Option<M2vSeekEngine>>,
+    gap_radar: Mutex<Vec<GapRadarRecord>>,
 }
 
 impl SkillRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Loads and attaches a read-only Model2Vec binary seek engine (`M2VV0001`/`M2VE0001`/`M2VS0001`)
+    /// from `model_dir`. Returns `false` gracefully (preserving pure BM25 fallback) when files are
+    /// absent or corrupt.
+    pub fn attach_m2v_model_dir(&self, model_dir: &Path) -> bool {
+        let loaded = M2vSeekEngine::load(model_dir);
+        let ok = loaded.is_some();
+        if let Ok(mut guard) = self.m2v_engine.lock() {
+            *guard = loaded;
+        }
+        ok
+    }
+
+    /// Auto-discovers (`OMNIA_M2V_MODEL_DIR` / default plugin path) and attaches the Model2Vec
+    /// binary seek engine if present; returns `false` cleanly when absent.
+    pub fn try_load_default_m2v(&self) -> bool {
+        let loaded = M2vSeekEngine::load_default();
+        let ok = loaded.is_some();
+        if let Ok(mut guard) = self.m2v_engine.lock() {
+            *guard = loaded;
+        }
+        ok
+    }
+
+    /// Returns `true` if a validated Model2Vec dense seek engine is currently attached.
+    #[must_use]
+    pub fn has_m2v_engine(&self) -> bool {
+        self.m2v_engine
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
     }
 
     pub fn load_from_workspace(
@@ -616,18 +693,127 @@ impl SkillRegistry {
         Ok(results)
     }
 
-    /// Searches active workspace skills + optional read-only Cold Vault entries (`1,001`-skill catalog).
+    /// Hybrid dense Model2Vec + sparse bilingual BM25 search fused via Reciprocal Rank Fusion
+    /// (`k = 60.0`). Gracefully degrades to pure BM25 + VN-EN synonyms when no Model2Vec binary
+    /// index is loaded or when the query encodes to no known subword pieces.
+    pub fn search_hybrid(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<HybridSkillMatch>, SkillError> {
+        if query.trim().is_empty() || top_k == 0 {
+            return Ok(Vec::new());
+        }
+        let all_skills = self.list_skills()?;
+        if all_skills.is_empty() {
+            return Ok(Vec::new());
+        }
+        let bm25_hits = self.search(query, all_skills.len())?;
+
+        let mut sparse_ranks: HashMap<String, usize> = HashMap::with_capacity(bm25_hits.len());
+        let mut bm25_map: HashMap<String, (f64, Vec<String>)> =
+            HashMap::with_capacity(bm25_hits.len());
+        for (idx, hit) in bm25_hits.iter().enumerate() {
+            sparse_ranks.insert(hit.skill.name.clone(), idx + 1);
+            bm25_map.insert(
+                hit.skill.name.clone(),
+                (hit.score, hit.matched_terms.clone()),
+            );
+        }
+
+        let dense_scores: HashMap<String, f32> = self
+            .m2v_engine
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|eng| eng.score_map_by_slug(query)))
+            .unwrap_or_default();
+
+        let mut dense_ranked: Vec<(String, f32)> = all_skills
+            .iter()
+            .filter_map(|sk| {
+                let cos = dense_scores.get(&sk.name).copied()?;
+                if cos.is_finite() && cos > 0.05 {
+                    Some((sk.name.clone(), cos))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        dense_ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let mut dense_ranks: HashMap<String, usize> = HashMap::with_capacity(dense_ranked.len());
+        let mut dense_cos_map: HashMap<String, f32> = HashMap::with_capacity(dense_ranked.len());
+        for (idx, (slug, cos)) in dense_ranked.into_iter().enumerate() {
+            dense_ranks.insert(slug.clone(), idx + 1);
+            dense_cos_map.insert(slug, cos);
+        }
+
+        let fused = rrf_fuse_ranks(&sparse_ranks, &dense_ranks, 60.0);
+        let mut out = Vec::with_capacity(fused.len());
+        for sk in all_skills {
+            let Some(&rrf_score) = fused.get(&sk.name) else {
+                continue;
+            };
+            let (bm25_score, matched_terms) = bm25_map
+                .get(&sk.name)
+                .cloned()
+                .unwrap_or_else(|| (0.0, Vec::new()));
+            let bm25_rank = sparse_ranks.get(&sk.name).copied();
+            let dense_rank = dense_ranks.get(&sk.name).copied();
+            let dense_cosine = dense_cos_map.get(&sk.name).copied();
+            out.push(HybridSkillMatch {
+                skill: sk,
+                rrf_score,
+                bm25_score,
+                dense_cosine,
+                bm25_rank,
+                dense_rank,
+                matched_terms,
+            });
+        }
+
+        out.sort_by(|a, b| {
+            b.rrf_score
+                .total_cmp(&a.rrf_score)
+                .then_with(|| b.bm25_score.total_cmp(&a.bm25_score))
+                .then_with(|| a.skill.name.cmp(&b.skill.name))
+        });
+        out.truncate(top_k);
+        Ok(out)
+    }
+
+    /// Searches active workspace skills + optional read-only Cold Vault entries (`1,001`-skill catalog),
+    /// fusing dense Model2Vec RRF (`k=60`) automatically when a validated model directory is attached.
     #[must_use]
     pub fn search_with_vault(&self, query: &str, limit: usize, include_vault: bool) -> Value {
         let cap = limit.clamp(1, 50);
+        let m2v_enabled = self.has_m2v_engine();
         let active_matches = self.search(query, cap).unwrap_or_default();
+        let hybrid_matches = if m2v_enabled {
+            self.search_hybrid(query, cap).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let dense_map: HashMap<String, f32> = if m2v_enabled && !query.trim().is_empty() {
+            self.m2v_engine
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|eng| eng.score_map_by_slug(query)))
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
         let mut vault_matches = Vec::new();
         if include_vault && !query.trim().is_empty() {
             let direct = tokenize_folded(query);
             let expanded = expand_skill_query_terms(query);
             let alias = resolve_skill_alias(query).to_ascii_lowercase();
             let vault = self.cold_vault_entries();
-            let mut scored: Vec<(f64, ColdVaultEntry)> = Vec::new();
+            let mut sparse_scored: Vec<(f64, ColdVaultEntry)> = Vec::new();
+            let mut dense_scored: Vec<(f32, ColdVaultEntry)> = Vec::new();
+            let mut by_slug: HashMap<String, ColdVaultEntry> = HashMap::with_capacity(vault.len());
+
             for entry in vault {
                 let slug_f = fold_vietnamese_ascii(&entry.slug);
                 let bag = fold_vietnamese_ascii(&format!(
@@ -646,24 +832,185 @@ impl SkillRegistry {
                     }
                 }
                 if sc > 0.0 {
-                    scored.push((sc, entry));
+                    sparse_scored.push((sc, entry.clone()));
                 }
+                if let Some(&cos) = dense_map.get(&entry.slug) {
+                    if cos.is_finite() && cos > 0.15 {
+                        dense_scored.push((cos, entry.clone()));
+                    }
+                }
+                by_slug.insert(entry.slug.clone(), entry);
             }
-            scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.slug.cmp(&b.1.slug)));
-            for (sc, e) in scored.into_iter().take(cap) {
-                vault_matches.push(json!({
-                    "entry": e,
-                    "score": (sc * 100.0).round() / 100.0,
-                }));
+            sparse_scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.slug.cmp(&b.1.slug)));
+            if dense_scored.is_empty() {
+                for (sc, e) in sparse_scored.into_iter().take(cap) {
+                    vault_matches.push(json!({
+                        "entry": e,
+                        "score": (sc * 100.0).round() / 100.0,
+                    }));
+                }
+            } else {
+                dense_scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.slug.cmp(&b.1.slug)));
+                let sparse_ranks: HashMap<String, usize> = sparse_scored
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, e))| (e.slug.clone(), i + 1))
+                    .collect();
+                let dense_ranks: HashMap<String, usize> = dense_scored
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, e))| (e.slug.clone(), i + 1))
+                    .collect();
+                let fused = rrf_fuse_ranks(&sparse_ranks, &dense_ranks, 60.0);
+                let mut ranked: Vec<(f64, ColdVaultEntry)> = fused
+                    .into_iter()
+                    .filter_map(|(slug, rrf)| by_slug.remove(&slug).map(|e| (rrf, e)))
+                    .collect();
+                ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.slug.cmp(&b.1.slug)));
+                for (rrf, e) in ranked.into_iter().take(cap) {
+                    vault_matches.push(json!({
+                        "entry": e,
+                        "score": (rrf * 10_000.0).round() / 10_000.0,
+                    }));
+                }
             }
         }
         json!({
             "query": query,
+            "m2vEnabled": m2v_enabled,
             "matches": active_matches.iter().map(SkillMatch::to_json).collect::<Vec<_>>(),
+            "hybridMatches": hybrid_matches.iter().map(HybridSkillMatch::to_json).collect::<Vec<_>>(),
             "vaultMatches": vault_matches,
             "activeTotal": self.list_skills().map(|v| v.len()).unwrap_or(0),
             "vaultTotal": self.cold_vault_entries().len(),
         })
+    }
+
+    /// Records a low-score or unmatched query in the in-memory Gap Radar so repeated skill gaps
+    /// can be promoted into atomic skills via [`SkillRegistry::codify_skill`].
+    pub fn record_gap_query(&self, query: &str, best_score: f64, reason: &str) -> GapRadarRecord {
+        let trimmed = query.trim();
+        let now = now_epoch_ms();
+        let clean_score = if best_score.is_finite() { best_score } else { 0.0 };
+        let clean_reason = reason.trim().to_string();
+        let folded_key = fold_vietnamese_ascii(trimmed);
+
+        if let Ok(mut guard) = self.gap_radar.lock() {
+            if let Some(pos) = guard
+                .iter()
+                .position(|r| fold_vietnamese_ascii(&r.query) == folded_key)
+            {
+                let mut rec = guard.remove(pos);
+                rec.occurrences = rec.occurrences.saturating_add(1);
+                rec.best_score = rec.best_score.min(clean_score);
+                if !clean_reason.is_empty() {
+                    rec.reason = clean_reason;
+                }
+                rec.last_seen_ms = now;
+                guard.push(rec.clone());
+                return rec;
+            }
+            let rec = GapRadarRecord {
+                query: trimmed.to_string(),
+                best_score: clean_score,
+                reason: if clean_reason.is_empty() {
+                    "low_routing_score".to_string()
+                } else {
+                    clean_reason
+                },
+                occurrences: 1,
+                first_seen_ms: now,
+                last_seen_ms: now,
+            };
+            if guard.len() >= 256 {
+                guard.remove(0);
+            }
+            guard.push(rec.clone());
+            return rec;
+        }
+        GapRadarRecord {
+            query: trimmed.to_string(),
+            best_score: clean_score,
+            reason: clean_reason,
+            occurrences: 1,
+            first_seen_ms: now,
+            last_seen_ms: now,
+        }
+    }
+
+    /// Returns Gap Radar candidates meeting `occurrences >= min_occurrences` and
+    /// `best_score <= max_score`, ranked by highest occurrence count then lowest score.
+    #[must_use]
+    pub fn gap_radar_candidates(
+        &self,
+        min_occurrences: u32,
+        max_score: f64,
+    ) -> Vec<GapRadarRecord> {
+        let mut out: Vec<GapRadarRecord> = self
+            .gap_radar
+            .lock()
+            .map(|g| {
+                g.iter()
+                    .filter(|r| r.occurrences >= min_occurrences && r.best_score <= max_score)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| a.best_score.total_cmp(&b.best_score))
+                .then_with(|| b.last_seen_ms.cmp(&a.last_seen_ms))
+        });
+        out
+    }
+
+    /// Builds a quality-gated [`CodifySkillRequest`] from a [`GapRadarRecord`] candidate.
+    #[must_use]
+    pub fn suggest_codify_request_from_gap(
+        &self,
+        candidate: &GapRadarRecord,
+        slug: &str,
+        body_md: &str,
+        dry_run: bool,
+    ) -> CodifySkillRequest {
+        let short_query = truncate_utf8_codepoints(candidate.query.trim(), 120);
+        CodifySkillRequest {
+            slug: slug.trim().to_ascii_lowercase(),
+            description: format!(
+                "Use when handling recurring capability gap `{short_query}` ({})",
+                candidate.reason.trim()
+            ),
+            category: "Omnia Gap-Radar Learned Skill".to_string(),
+            canonical_artifacts: vec![format!("SKILL.md ({})", slug.trim())],
+            body_md: body_md.to_string(),
+            invariants_md: Some(format!(
+                "# Invariants\n\n- Originated from GapRadar query `{short_query}` (occurrences={}, best_score={:.3}).\n",
+                candidate.occurrences, candidate.best_score
+            )),
+            dry_run,
+        }
+    }
+
+    /// Promotes a [`GapRadarRecord`] directly through [`SkillRegistry::codify_skill`] and removes
+    /// the resolved query from Gap Radar when `dry_run` is `false`.
+    pub fn codify_from_gap_candidate(
+        &self,
+        workspace_root: &Path,
+        candidate: &GapRadarRecord,
+        slug: &str,
+        body_md: &str,
+        dry_run: bool,
+    ) -> Result<Value, String> {
+        let req = self.suggest_codify_request_from_gap(candidate, slug, body_md, dry_run);
+        let res = self.codify_skill(workspace_root, &req)?;
+        if !dry_run {
+            let key = fold_vietnamese_ascii(&candidate.query);
+            if let Ok(mut guard) = self.gap_radar.lock() {
+                guard.retain(|r| fold_vietnamese_ascii(&r.query) != key);
+            }
+        }
+        Ok(res)
     }
 
     /// Composes a deterministic 4-Stage Execution DAG (`stage_1_preflight_framing` ->
@@ -1361,5 +1708,94 @@ mod tests {
         );
         assert_eq!(reg.pipelines().len(), 24);
         assert!(reg.doctor().ok);
+    }
+
+    #[test]
+    fn hybrid_search_rrf_fuses_m2v_and_degrades_gracefully() {
+        let reg = synthetic_registry_for_golden_eval();
+        // 1. Without M2V attached, gracefully degrades to BM25 + bilingual VN-EN synonyms.
+        assert!(!reg.has_m2v_engine());
+        let fallback_hits = reg.search_hybrid("nghien cuu trich dan", 3).unwrap();
+        assert!(!fallback_hits.is_empty());
+        assert!(fallback_hits.iter().all(|h| h.dense_cosine.is_none()));
+        assert_eq!(fallback_hits[0].skill.name, "deep-research");
+
+        // 2. Attach a synthetic M2V seek index where query token maps directly to `deep-think`
+        //    with zero lexical overlap, proving RRF (k=60) surfaces the dense semantic match!
+        let dir = std::env::temp_dir().join(format!("omnia-skill-m2v-{}", omnia_core::uuid_v4()));
+        let mut v_think = [0.0f32; crate::m2v_router::M2V_DIM];
+        v_think[7] = 1.0;
+        let mut v_research = [0.0f32; crate::m2v_router::M2V_DIM];
+        v_research[8] = 1.0;
+        crate::m2v_router::write_synthetic_m2v_fixture(
+            &dir,
+            &[("\u{2581}abductive", 2, -1.0)],
+            &[(2, v_think)],
+            &[
+                ("deep-think", "01", v_think),
+                ("deep-research", "02", v_research),
+            ],
+        )
+        .unwrap();
+
+        assert!(reg.attach_m2v_model_dir(&dir));
+        assert!(reg.has_m2v_engine());
+        let hybrid_hits = reg.search_hybrid("abductive", 3).unwrap();
+        assert_eq!(hybrid_hits.len(), 1);
+        assert_eq!(hybrid_hits[0].skill.name, "deep-think");
+        assert!(hybrid_hits[0].dense_cosine.unwrap() > 0.95);
+        assert_eq!(hybrid_hits[0].dense_rank, Some(1));
+        assert!((hybrid_hits[0].rrf_score - (1.0 / 61.0)).abs() < 1e-6);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gap_radar_records_low_score_queries_and_feeds_codify_skill() {
+        let reg = synthetic_registry_for_golden_eval();
+        reg.record_gap_query("quantum circuit transpiler", 0.12, "no_matching_skill");
+        let rec = reg.record_gap_query("quantum circuit transpiler", 0.08, "repeated_gap");
+        assert_eq!(rec.occurrences, 2);
+        assert!((rec.best_score - 0.08).abs() < 1e-9);
+
+        let candidates = reg.gap_radar_candidates(2, 0.5);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].query, "quantum circuit transpiler");
+
+        let ws = std::env::temp_dir().join(format!("omnia-gap-codify-{}", omnia_core::uuid_v4()));
+        fs::create_dir_all(&ws).unwrap();
+
+        let dry = reg
+            .codify_from_gap_candidate(
+                &ws,
+                &candidates[0],
+                "quantum-circuit-transpiler",
+                "## Phase 0\nTranspile circuits deterministically.",
+                true,
+            )
+            .unwrap();
+        assert_eq!(dry["ok"], Value::Bool(true));
+        assert_eq!(dry["dryRun"], Value::Bool(true));
+        assert_eq!(reg.gap_radar_candidates(2, 0.5).len(), 1);
+
+        let written = reg
+            .codify_from_gap_candidate(
+                &ws,
+                &candidates[0],
+                "quantum-circuit-transpiler",
+                "## Phase 0\nTranspile circuits deterministically.",
+                false,
+            )
+            .unwrap();
+        assert_eq!(written["ok"], Value::Bool(true));
+        assert!(ws
+            .join(".agents")
+            .join("skills")
+            .join("quantum-circuit-transpiler")
+            .join("SKILL.md")
+            .is_file());
+        assert!(reg.gap_radar_candidates(2, 0.5).is_empty());
+
+        let _ = fs::remove_dir_all(&ws);
     }
 }

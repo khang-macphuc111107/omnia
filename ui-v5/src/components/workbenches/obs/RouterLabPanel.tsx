@@ -1,8 +1,15 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from 'solid-js';
-import { Cpu, Download, Flame, GitPullRequest, ShieldAlert } from 'lucide-solid';
+import { CheckCircle2, Cpu, Download, Flame, GitPullRequest, ShieldAlert, ShieldCheck, XCircle } from 'lucide-solid';
 import { api } from '@/api/client';
-import { flashNotice, privacyMask } from '@/state/studio';
+import { flashNotice, openObservabilityTab, privacyMask } from '@/state/studio';
 import { downloadTextFile, maskJson } from '@/utils/privacy';
+
+interface RouterCapabilityBadge {
+  id: string;
+  enabled: boolean;
+  endpoint: string;
+  remediation: string;
+}
 
 interface ScoreSegments {
   capability: number;
@@ -39,15 +46,97 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
   const [routeDecision, setRouteDecision] = createSignal<Record<string, unknown> | null>(null);
   const [statusMsg, setStatusMsg] = createSignal('');
   const [busy, setBusy] = createSignal(false);
+  const [routerCaps, setRouterCaps] = createSignal<RouterCapabilityBadge[]>([]);
+  const [capProbeMeta, setCapProbeMeta] = createSignal<{
+    transportOk: boolean;
+    healthOk: boolean;
+    checkedAt: string;
+    rttMs: number | null;
+  }>({ transportOk: false, healthOk: false, checkedAt: '', rttMs: null });
+
+  const loadCapabilitiesSummary = async () => {
+    const t0 = performance.now();
+    const checkedAt = new Date().toISOString();
+    const [capRes, healthRes] = await Promise.all([
+      fetch('/api/capabilities')
+        .then(async (r) => ({ ok: r.ok, data: (await r.json().catch(() => ({}))) as Record<string, unknown> }))
+        .catch(() => ({ ok: false, data: {} as Record<string, unknown> })),
+      api.getHealth(),
+    ]);
+    const rttMs = Math.round(performance.now() - t0);
+    const focusIds = new Set(['routing', 'runtime_proxy', 'observatory_v5', 'steer', 'connector_gateway']);
+    const list = Array.isArray(capRes.data.capabilities)
+      ? (capRes.data.capabilities as Array<Record<string, unknown>>)
+      : [];
+    const filtered: RouterCapabilityBadge[] = list
+      .filter((c) => focusIds.has(String(c.id ?? '')))
+      .map((c) => {
+        const id = String(c.id ?? 'capability');
+        const enabled = Boolean(c.enabled ?? false);
+        return {
+          id,
+          enabled,
+          endpoint: String(c.endpoint ?? '—'),
+          remediation: enabled
+            ? 'Ready'
+            : id === 'runtime_proxy'
+              ? 'Launch omnia-runtime.exe or pass --runtime-url'
+              : `Check ${id} service configuration`,
+        };
+      });
+    setRouterCaps(filtered);
+    setCapProbeMeta({
+      transportOk: capRes.ok,
+      healthOk: healthRes.ok && Boolean(healthRes.data.ok ?? true),
+      checkedAt,
+      rttMs,
+    });
+  };
 
   const loadState = async () => {
-    const res = await api.getRouterState(privacyMask());
+    const [res] = await Promise.all([api.getRouterState(privacyMask()), loadCapabilitiesSummary()]);
     if (res.ok) {
       setRouterState(res.data);
       setStatusMsg('');
     } else {
       setStatusMsg(`Router state error (${res.error.code}): ${res.error.message}`);
     }
+  };
+
+  const handleCancelReservation = async () => {
+    setBusy(true);
+    const dec = routeDecision();
+    const reservationId = dec?.reservationId ?? dec?.reservation_id ?? dec?.requestId ?? dec?.request_id;
+    const fencingToken = dec?.fencingToken ?? dec?.fencing_token;
+    const body: Record<string, unknown> = reservationId
+      ? {
+          reservationId: String(reservationId),
+          ...(fencingToken !== undefined ? { fencingToken } : {}),
+          note: 'router_lab_manual_cancel',
+        }
+      : {
+          cancelAllActive: true,
+          note: 'router_lab_manual_cancel',
+        };
+    try {
+      const res = await fetch('/api/router/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (res.ok) {
+        setRouteDecision(data);
+        const count = Number(data.cancelledCount ?? (data.cancelled ? 1 : 0));
+        setStatusMsg(`Router cancel complete (${count} reservation(s) released)`);
+        await loadState();
+      } else {
+        setStatusMsg(`Cancel reservation note (HTTP ${res.status}): ${String(data.message ?? res.statusText)}`);
+      }
+    } catch (err) {
+      setStatusMsg(`Cancel reservation unreachable: ${err instanceof Error ? err.message : 'network error'}`);
+    }
+    setBusy(false);
   };
 
   onMount(() => {
@@ -170,6 +259,64 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
 
   return (
     <div data-testid="obs-router-panel" class="space-y-4">
+      {/* AUD-25 Router & Provider Capability Readiness Strip */}
+      <div
+        data-testid="router-capability-readiness"
+        class="omnia-surface-panel rounded-lg p-3 flex flex-wrap items-center justify-between gap-2 text-[11.5px] font-mono-num"
+      >
+        <div class="flex flex-wrap items-center gap-2 min-w-0">
+          <ShieldCheck class="w-4 h-4 text-[var(--accent-cyan)] shrink-0" />
+          <span class="font-semibold text-[var(--ink-primary)]">Capability Readiness (AUD-25)</span>
+          <span
+            class="omnia-badge"
+            classList={{
+              'text-[var(--status-emerald)]': capProbeMeta().transportOk,
+              'text-[var(--status-coral)]': !capProbeMeta().transportOk,
+            }}
+          >
+            Transport: {capProbeMeta().transportOk ? `OK (${capProbeMeta().rttMs ?? 0}ms)` : 'UNREACHABLE'}
+          </span>
+          <span
+            class="omnia-badge"
+            classList={{
+              'text-[var(--status-emerald)]': capProbeMeta().healthOk,
+              'text-[var(--accent-amber)]': !capProbeMeta().healthOk,
+            }}
+          >
+            Health: {capProbeMeta().healthOk ? 'ONLINE' : 'DEGRADED'}
+          </span>
+          <For each={routerCaps()}>
+            {(cap) => (
+              <span
+                title={`${cap.endpoint} — ${cap.remediation}`}
+                class="omnia-badge"
+                classList={{
+                  'text-[var(--status-emerald)]': cap.enabled,
+                  'text-[var(--accent-amber)]': !cap.enabled,
+                }}
+              >
+                <Show when={cap.enabled} fallback={<XCircle class="w-3 h-3" />}>
+                  <CheckCircle2 class="w-3 h-3" />
+                </Show>
+                <span>{cap.id}</span>
+              </span>
+            )}
+          </For>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <Show when={capProbeMeta().checkedAt}>
+            <span class="text-[10.5px] text-[var(--ink-muted)]">{capProbeMeta().checkedAt.slice(11, 19)} UTC</span>
+          </Show>
+          <button
+            type="button"
+            class="omnia-btn !px-2 !py-0.5 text-[10.5px]"
+            onClick={() => openObservabilityTab('system')}
+          >
+            Full Matrix
+          </button>
+        </div>
+      </div>
+
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {/* Simulator & Circuit Breakers + 5-Segment Score Waterfalls */}
         <div class="omnia-surface-panel rounded-lg p-4 space-y-3">
@@ -229,7 +376,7 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
             />
           </label>
 
-          <div class="flex items-center justify-between">
+          <div class="flex flex-wrap items-center justify-between gap-2">
             <label class="flex items-center gap-2 text-[12px] cursor-pointer">
               <input
                 type="checkbox"
@@ -238,14 +385,25 @@ export function RouterLabPanel(props: { refreshSeq: number }) {
               />
               <span>Require SSE Streaming</span>
             </label>
-            <button
-              type="button"
-              disabled={busy()}
-              class="omnia-btn omnia-btn-primary text-[12px]"
-              onClick={() => void handleDecide()}
-            >
-              Compute Route
-            </button>
+            <div class="flex items-center gap-1.5">
+              <button
+                type="button"
+                data-testid="router-cancel-reservation-btn"
+                disabled={busy()}
+                class="omnia-btn omnia-btn-danger text-[11.5px]"
+                onClick={() => void handleCancelReservation()}
+              >
+                Cancel Reservation
+              </button>
+              <button
+                type="button"
+                disabled={busy()}
+                class="omnia-btn omnia-btn-primary text-[12px]"
+                onClick={() => void handleDecide()}
+              >
+                Compute Route
+              </button>
+            </div>
           </div>
 
           {/* Legend for 5-Segment Score Waterfalls */}

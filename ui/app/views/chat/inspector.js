@@ -25,6 +25,7 @@ const STATE_STATUS = {
   pending: { cls: 'info', icon: 'clock', key: 'statePending' },
   routed: { cls: 'ok', icon: 'check-circle', key: 'stateRouted' },
   fenced: { cls: 'warn', icon: 'alert', key: 'stateFenced' },
+  cancelled: { cls: 'warn', icon: 'stop', key: 'stateCancelled' },
   error: { cls: 'danger', icon: 'stop', key: 'stateError' }
 };
 
@@ -55,6 +56,9 @@ function receiptBody(view) {
       <span class="text-xs muted num">${fmtTime(message.createdAt, true)}</span>
     </div>
     ${isLatest ? null : html`<button class="btn btn--ghost btn--sm" type="button" data-action="receipt-latest" style="align-self: flex-start;">${t('chat.receiptLatest')}</button>`}
+    ${route.state === 'cancelled'
+      ? html`<p class="text-sm">${t('chat.routeCancelled')}</p><p class="text-xs muted">${t('chat.routeCancelledHint')}</p>`
+      : null}
     ${route.state === 'error'
       ? html`<p class="text-sm">${route.errorCode === 'interrupted' ? t('chat.routeInterrupted') : describeError(new ApiError({ code: route.errorCode }))}</p><p class="text-xs muted mono">${route.errorCode}</p>`
       : null}

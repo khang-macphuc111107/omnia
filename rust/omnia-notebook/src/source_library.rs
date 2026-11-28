@@ -16,8 +16,9 @@ use uuid::Uuid;
 
 use crate::error::NotebookError;
 use crate::policy::{
-    extract_extension_lower, validate_filename_and_mime, ARTIFACT_INTAKE_ALLOWED_EXTENSIONS,
-    DEFAULT_MAX_SOURCES_PER_NOTEBOOK,
+    extract_extension_lower, strip_local_path_fields, validate_filename_and_mime,
+    ARTIFACT_INTAKE_ALLOWED_EXTENSIONS, DEFAULT_MAX_SOURCES_PER_NOTEBOOK,
+    MAX_CHAT_CUSTOM_PROMPT_CHARS,
 };
 use crate::store::{NotebookStore, SyncTombstoneRow};
 
@@ -174,6 +175,87 @@ fn default_effort_level() -> String {
     "medium".to_string()
 }
 
+fn default_checked_true() -> bool {
+    true
+}
+
+fn default_status_ready() -> String {
+    "ready".to_string()
+}
+
+fn default_chat_mode() -> String {
+    "default".to_string()
+}
+
+fn default_chat_length() -> String {
+    "default".to_string()
+}
+
+/// Persisted per-notebook chat configuration (`mode`, `length`, `custom_prompt <= 10,000 chars`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatSettings {
+    #[serde(default = "default_chat_mode")]
+    pub mode: String,
+    #[serde(default = "default_chat_length")]
+    pub length: String,
+    #[serde(default, alias = "customPrompt")]
+    pub custom_prompt: String,
+}
+
+impl Default for ChatSettings {
+    fn default() -> Self {
+        Self {
+            mode: default_chat_mode(),
+            length: default_chat_length(),
+            custom_prompt: String::new(),
+        }
+    }
+}
+
+impl ChatSettings {
+    /// Validate and normalize mode (`default|learning|custom`), length (`default|longer|shorter`),
+    /// and custom prompt (`<= 10,000` chars; required non-empty when `mode == "custom"`).
+    pub fn validate_and_normalize(self) -> Result<Self, NotebookError> {
+        let mode = match self.mode.trim().to_ascii_lowercase().as_str() {
+            "" | "default" => "default".to_string(),
+            "learning" | "learning_guide" | "tutor" => "learning".to_string(),
+            "custom" => "custom".to_string(),
+            other => {
+                return Err(NotebookError::InvalidInput(format!(
+                    "unsupported chat mode '{other}' (expected default|learning|custom)"
+                )));
+            }
+        };
+        let length = match self.length.trim().to_ascii_lowercase().as_str() {
+            "" | "default" => "default".to_string(),
+            "longer" | "long" | "detailed" => "longer".to_string(),
+            "shorter" | "short" | "concise" => "shorter".to_string(),
+            other => {
+                return Err(NotebookError::InvalidInput(format!(
+                    "unsupported chat length '{other}' (expected default|longer|shorter)"
+                )));
+            }
+        };
+        let custom_prompt = SecretRedactor::redact(self.custom_prompt.trim());
+        let char_count = custom_prompt.chars().count();
+        if char_count > MAX_CHAT_CUSTOM_PROMPT_CHARS {
+            return Err(NotebookError::InvalidInput(format!(
+                "custom_prompt length ({char_count} chars) exceeds maximum of {MAX_CHAT_CUSTOM_PROMPT_CHARS} characters"
+            )));
+        }
+        if mode == "custom" && custom_prompt.is_empty() {
+            return Err(NotebookError::InvalidInput(
+                "custom_prompt cannot be empty when chat mode is 'custom'".to_string(),
+            ));
+        }
+        Ok(Self {
+            mode,
+            length,
+            custom_prompt,
+        })
+    }
+}
+
 /// Collision-proof persisted source record (`SourceRecord` public Wave 3 contract).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceRecord {
@@ -197,6 +279,12 @@ pub struct SourceRecord {
     pub provenance: String,
     pub metadata: Value,
     pub created_at_ms: i64,
+    /// Whether this source is actively selected for grounded Q&A (`checked` toggle persisted in SQLite).
+    #[serde(default = "default_checked_true")]
+    pub checked: bool,
+    /// Source lifecycle state (`ready` | `error` | `quarantined`; error rows excluded from SHA-256 dedupe).
+    #[serde(default = "default_status_ready")]
+    pub status: String,
 }
 
 /// Semantic chunk persisted in `notebook_chunks` (`<= 120 KiB` each).
@@ -213,7 +301,7 @@ pub struct SourceChunkRecord {
     pub content_blake3: String,
 }
 
-/// Query filter for listing or searching sources (`exclude_videos` / `pure_documents_only`).
+/// Query filter for listing or searching sources (`exclude_videos` / `pure_documents_only` / `source_ids` / `only_checked`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFilter {
     #[serde(default)]
@@ -224,11 +312,18 @@ pub struct SourceFilter {
     pub source_kinds: Option<Vec<SourceKind>>,
     #[serde(default)]
     pub query: Option<String>,
+    #[serde(default, alias = "sourceIds")]
+    pub source_ids: Option<Vec<String>>,
+    #[serde(default, alias = "onlyChecked")]
+    pub only_checked: bool,
 }
 
 impl SourceFilter {
     #[must_use]
     pub fn matches(&self, record: &SourceRecord, query_folded: Option<&str>) -> bool {
+        if self.only_checked && !record.checked {
+            return false;
+        }
         if self.exclude_videos && (record.is_video || record.source_kind == SourceKind::Video) {
             return false;
         }
@@ -237,6 +332,16 @@ impl SourceFilter {
         }
         if let Some(kinds) = &self.source_kinds {
             if !kinds.contains(&record.source_kind) {
+                return false;
+            }
+        }
+        if let Some(ids) = &self.source_ids {
+            let matches_id = ids.iter().any(|raw| {
+                let target = raw.trim();
+                !target.is_empty()
+                    && (record.source_id == target || record.remote_id.as_deref() == Some(target))
+            });
+            if !matches_id {
                 return false;
             }
         }
@@ -375,6 +480,73 @@ impl SourceLibrary {
             })
     }
 
+    /// Rename a notebook title durably in SQLite WAL.
+    pub fn rename_notebook(
+        &self,
+        notebook_id: &str,
+        new_title: &str,
+    ) -> Result<NotebookRecord, NotebookError> {
+        let clean_title = SecretRedactor::redact(new_title.trim());
+        if clean_title.is_empty() {
+            return Err(NotebookError::InvalidInput(
+                "notebook title cannot be empty".to_string(),
+            ));
+        }
+        if !self.store.rename_notebook(notebook_id, &clean_title)? {
+            return Err(NotebookError::NotFound {
+                entity: "notebook",
+                id: notebook_id.to_string(),
+            });
+        }
+        self.require_notebook(notebook_id)
+    }
+
+    /// Persist a source's active selection (`checked`) toggle in SQLite WAL.
+    pub fn set_source_checked(
+        &self,
+        notebook_id: &str,
+        source_id_or_remote: &str,
+        checked: bool,
+    ) -> Result<SourceRecord, NotebookError> {
+        let _ = self.require_notebook(notebook_id)?;
+        let Some(existing) = self
+            .store
+            .find_source_by_id_or_remote(notebook_id, source_id_or_remote.trim())?
+        else {
+            return Err(NotebookError::NotFound {
+                entity: "source",
+                id: source_id_or_remote.to_string(),
+            });
+        };
+        let _ = self
+            .store
+            .set_source_checked(notebook_id, &existing.source_id, checked)?;
+        self.store
+            .get_source(&existing.source_id)?
+            .ok_or(NotebookError::NotFound {
+                entity: "source",
+                id: existing.source_id,
+            })
+    }
+
+    /// Read persisted chat settings (`mode`, `length`, `custom_prompt`) for `notebook_id`.
+    pub fn get_chat_settings(&self, notebook_id: &str) -> Result<ChatSettings, NotebookError> {
+        let _ = self.require_notebook(notebook_id)?;
+        self.store.get_chat_settings(notebook_id)
+    }
+
+    /// Validate and persist chat settings (`mode`, `length`, `custom_prompt <= 10,000` chars).
+    pub fn set_chat_settings(
+        &self,
+        notebook_id: &str,
+        settings: ChatSettings,
+    ) -> Result<ChatSettings, NotebookError> {
+        let _ = self.require_notebook(notebook_id)?;
+        let validated = settings.validate_and_normalize()?;
+        self.store.set_chat_settings(notebook_id, &validated)?;
+        Ok(validated)
+    }
+
     /// Register a single source with SHA-256 cross-batch dedup, `artifact_intake` canonical check,
     /// and strict `allow_overflow_notebook: false` capacity guard.
     pub fn register_source(
@@ -441,7 +613,7 @@ impl SourceLibrary {
 
         // Wire `omnia-connector-gateway::artifact_intake` canonical validation for canonical extensions.
         let ext = extract_extension_lower(&safe_filename);
-        let safe_metadata = if ARTIFACT_INTAKE_ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
+        let mut safe_metadata = if ARTIFACT_INTAKE_ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
             let intake_manifest = json!({
                 "manifest_id": format!("intake_{source_id}"),
                 "source_kind": IntakeSourceKind::GeminiNotebook.as_str(),
@@ -465,6 +637,14 @@ impl SourceLibrary {
         } else {
             SecretRedactor::redact_json(&input.metadata)
         };
+        strip_local_path_fields(&mut safe_metadata);
+
+        let initial_status = safe_metadata
+            .get("status")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| matches!(s.as_str(), "ready" | "error" | "failed" | "quarantined"))
+            .unwrap_or_else(default_status_ready);
 
         let source_kind = input
             .source_kind_override
@@ -513,6 +693,8 @@ impl SourceLibrary {
             provenance: input.provenance,
             metadata: safe_metadata,
             created_at_ms: now,
+            checked: true,
+            status: initial_status,
         };
 
         self.store
@@ -653,6 +835,9 @@ impl SourceLibrary {
     }
 
     /// Tombstone-safe remote source reconciliation (`sourceLibrary.js` / `syncService.js`):
+    /// - Fails closed with [`NotebookError::SourcesIncomplete`] (`SOURCES_INCOMPLETE`) whenever
+    ///   `remote_snapshot_complete == false` so partial snapshots can NEVER delete local sources
+    ///   or cause tombstone drift.
     /// - Suppressed items matching active tombstones (`remote_id`, `tombstone_key`, or `content_sha256`)
     ///   NEVER resurrect on sync.
     /// - When `remote_snapshot_complete` is true and `remote_items` is empty, records/confirms empty
@@ -664,6 +849,13 @@ impl SourceLibrary {
         remote_snapshot_complete: bool,
     ) -> Result<RemoteReconcileReport, NotebookError> {
         let _ = self.require_notebook(notebook_id)?;
+        if !remote_snapshot_complete {
+            return Err(NotebookError::SourcesIncomplete {
+                notebook_id: notebook_id.to_string(),
+                reason: "remote_snapshot_complete is false; refusing partial reconciliation"
+                    .to_string(),
+            });
+        }
         let tombstones = self.store.list_tombstones(notebook_id)?;
         let mut suppressed = Vec::new();
         let mut kept_remote_ids = Vec::new();

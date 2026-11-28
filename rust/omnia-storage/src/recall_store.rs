@@ -273,6 +273,7 @@ impl RecallStore {
             }
         }
         let conn = Connection::open_read_write(path_ref)?;
+        crate::apply_connection_security_pragmas(&conn)?;
         conn.exec_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         let fts5_enabled = Self::ensure_schema(&conn)?;
         Ok(Self {
@@ -283,6 +284,7 @@ impl RecallStore {
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
+        crate::apply_connection_security_pragmas(&conn)?;
         conn.exec_batch("PRAGMA foreign_keys = ON;")?;
         let fts5_enabled = Self::ensure_schema(&conn)?;
         Ok(Self {

@@ -48,6 +48,10 @@ export function MissionLifecycleView() {
   const [thinkSessions, setThinkSessions] = createSignal<Array<Record<string, unknown>>>([]);
   const [selectedArt, setSelectedArt] = createSignal<Record<string, unknown> | null>(null);
   const [verifyReport, setVerifyReport] = createSignal<Record<string, unknown> | null>(null);
+  const [citationReport, setCitationReport] = createSignal<Record<string, unknown> | null>(null);
+  const [citationVerifyBusy, setCitationVerifyBusy] = createSignal(false);
+  const [globalSyncBusy, setGlobalSyncBusy] = createSignal(false);
+  const [globalSyncReceipt, setGlobalSyncReceipt] = createSignal<Record<string, unknown> | null>(null);
   const [statusNote, setStatusNote] = createSignal('');
 
   // Artifact upsert form
@@ -164,6 +168,52 @@ export function MissionLifecycleView() {
     setStatusNote(res.ok ? 'Deterministic artifact verification complete' : `Verify (${res.error.code})`);
   };
 
+  const handleVerifyCitations = async () => {
+    const art = selectedArt();
+    if (!art || citationVerifyBusy()) return;
+    const text = String(art.content ?? art.body ?? '').trim();
+    if (!text) return;
+    setCitationVerifyBusy(true);
+    const res = await api.safeJson<Record<string, unknown>>('/api/v5/research/verify-citations', {
+      method: 'POST',
+      body: JSON.stringify({ draft: text, text, strict: true }),
+    });
+    setCitationVerifyBusy(false);
+    if (res.ok) {
+      setCitationReport(res.data);
+      const isValid = res.data.valid === true || res.data.ok === true;
+      setStatusNote(
+        isValid
+          ? '4-Layer EN+VN citation verification passed'
+          : '4-Layer citation verification flagged unverified claims',
+      );
+    } else {
+      setCitationReport({ ok: false, error: res.error.code, message: res.error.message });
+      setStatusNote(`Citation verify (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleSyncGlobalLessons = async () => {
+    if (globalSyncBusy()) return;
+    setGlobalSyncBusy(true);
+    const res = await api.safeJson<Record<string, unknown>>('/api/v5/learn/sync-global', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    setGlobalSyncBusy(false);
+    if (res.ok) {
+      setGlobalSyncReceipt(res.data);
+      const count = res.data.syncedCount ?? res.data.synced ?? res.data.total ?? '';
+      const msg = `Global Lessons synced${count !== '' ? ` (${String(count)} entries)` : ''}`;
+      setStatusNote(msg);
+      flashNotice(msg);
+      await loadAll();
+    } else {
+      setGlobalSyncReceipt({ ok: false, error: res.error.code, message: res.error.message });
+      setStatusNote(`Global lessons sync (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
   const handleCaptureLesson = async () => {
     if (!lessonTitle().trim() || !lessonBody().trim()) return;
     const res = await api.captureLearnLesson({
@@ -246,6 +296,17 @@ export function MissionLifecycleView() {
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            data-testid="lifecycle-sync-global-header-btn"
+            disabled={globalSyncBusy()}
+            class="omnia-btn text-[11px]"
+            title="Mirror Global Lessons (D:\\OmniaData\\memory\\global_lessons.md <-> Antigravity)"
+            onClick={() => void handleSyncGlobalLessons()}
+          >
+            <GraduationCap class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
+            <span>{globalSyncBusy() ? 'Syncing...' : 'Sync Global Lessons'}</span>
+          </button>
           <button type="button" class="omnia-btn text-[11px]" onClick={() => void loadAll()}>
             <RefreshCw class="w-3.5 h-3.5" />
             <span>Sync</span>
@@ -382,15 +443,28 @@ export function MissionLifecycleView() {
             {/* Right Inspector: Selected Artifact + Deterministic Verifier + Cross-Links */}
             <div class="space-y-3 min-w-0">
               <div class="omnia-surface-panel rounded-lg p-3.5 space-y-2.5 min-w-0">
-                <div class="flex items-center justify-between gap-2">
+                <div class="flex flex-wrap items-center justify-between gap-2">
                   <span class="font-bold text-[12.5px] flex items-center gap-1.5">
                     <FileCheck2 class="w-4 h-4 text-[var(--status-emerald)]" />
                     <span>Artifact Preview &amp; Deterministic Gate</span>
                   </span>
-                  <button type="button" class="omnia-btn text-[11px]" onClick={() => void handleVerifySelected()}>
-                    <ShieldCheck class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
-                    <span>Verify Artifact</span>
-                  </button>
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="lifecycle-verify-citations-btn"
+                      disabled={citationVerifyBusy() || !selectedArt()}
+                      class="omnia-btn text-[11px]"
+                      title="Run 4-Layer EN+VN ResearchVault citation verifier on selected artifact"
+                      onClick={() => void handleVerifyCitations()}
+                    >
+                      <Sparkles class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
+                      <span>{citationVerifyBusy() ? 'Checking...' : 'Verify Citations (4-Layer)'}</span>
+                    </button>
+                    <button type="button" class="omnia-btn text-[11px]" onClick={() => void handleVerifySelected()}>
+                      <ShieldCheck class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
+                      <span>Verify Artifact</span>
+                    </button>
+                  </div>
                 </div>
                 <Show
                   when={selectedArt()}
@@ -407,6 +481,30 @@ export function MissionLifecycleView() {
                   <pre class="p-2.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-code)] text-[10.5px] font-mono-num max-h-36 overflow-auto">
                     {JSON.stringify(maskJson(verifyReport(), privacyMask()), null, 2)}
                   </pre>
+                </Show>
+                <Show when={citationReport()}>
+                  {(rep) => (
+                    <div
+                      data-testid="lifecycle-citation-report"
+                      class="space-y-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-code)] p-2.5"
+                    >
+                      <div class="flex items-center justify-between text-[10.5px] font-mono-num">
+                        <span class="font-semibold text-[var(--accent-cyan)]">4-Layer Citation Audit</span>
+                        <span
+                          class="omnia-badge text-[10px]"
+                          classList={{
+                            'text-[var(--status-emerald)]': rep().valid === true,
+                            'text-[var(--status-coral)]': rep().valid !== true,
+                          }}
+                        >
+                          {rep().valid === true ? 'VERIFIED' : 'NEEDS REVIEW'}
+                        </span>
+                      </div>
+                      <pre class="text-[10.5px] font-mono-num max-h-36 overflow-auto m-0">
+                        {JSON.stringify(maskJson(rep(), privacyMask()), null, 2)}
+                      </pre>
+                    </div>
+                  )}
                 </Show>
               </div>
 
@@ -643,9 +741,30 @@ export function MissionLifecycleView() {
                 onInput={(e) => setLessonBody(e.currentTarget.value)}
                 class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5"
               />
-              <button type="button" class="omnia-btn omnia-btn-primary text-[11.5px]" onClick={() => void handleCaptureLesson()}>
-                Capture Lesson
-              </button>
+              <div class="flex flex-wrap items-center gap-2">
+                <button type="button" class="omnia-btn omnia-btn-primary text-[11.5px]" onClick={() => void handleCaptureLesson()}>
+                  Capture Lesson
+                </button>
+                <button
+                  type="button"
+                  data-testid="lifecycle-sync-global-btn"
+                  disabled={globalSyncBusy()}
+                  class="omnia-btn text-[11.5px]"
+                  title="Atomically mirror Global Tier-2 Lessons across OmniaData and Antigravity"
+                  onClick={() => void handleSyncGlobalLessons()}
+                >
+                  <RefreshCw class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
+                  <span>{globalSyncBusy() ? 'Syncing Global...' : 'Sync Global Lessons'}</span>
+                </button>
+              </div>
+              <Show when={globalSyncReceipt()}>
+                <pre
+                  data-testid="lifecycle-global-sync-receipt"
+                  class="p-2 rounded border border-[var(--border-subtle)] bg-[var(--bg-code)] text-[10.5px] font-mono-num max-h-28 overflow-auto"
+                >
+                  {JSON.stringify(maskJson(globalSyncReceipt(), privacyMask()), null, 2)}
+                </pre>
+              </Show>
 
               <div class="pt-2 border-t border-[var(--border-subtle)] grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px]">
                 <input

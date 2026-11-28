@@ -361,6 +361,101 @@ fn parse_iso_boxes(
     }
 }
 
+/// Extracts `(tfdt_box_offset, base_media_decode_time)` pairs by traversing ISO-BMFF
+/// `moof -> traf -> tfdt` FullBoxes (v0 32-bit and v1 64-bit) read-only.
+/// Useful for inspecting timeline continuity across `#EXT-X-DISCONTINUITY` fMP4 splices.
+#[must_use]
+pub fn extract_moof_tfdt_timestamps(bytes: &[u8]) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    walk_tfdt_boxes(bytes, 0, bytes.len(), 0, &mut out);
+    out
+}
+
+fn walk_tfdt_boxes(
+    all: &[u8],
+    start: usize,
+    end: usize,
+    depth: usize,
+    out: &mut Vec<(u64, u64)>,
+) {
+    if depth > MAX_ISO_BOX_DEPTH || out.len() >= MAX_ISO_BOX_COUNT {
+        return;
+    }
+    let mut cursor = start;
+    while cursor + 8 <= end && out.len() < MAX_ISO_BOX_COUNT {
+        let size32 = u32::from_be_bytes([
+            all[cursor],
+            all[cursor + 1],
+            all[cursor + 2],
+            all[cursor + 3],
+        ]) as u64;
+        let fourcc = &all[cursor + 4..cursor + 8];
+        if !fourcc.iter().all(|&b| b.is_ascii_graphic() || b == b' ') {
+            break;
+        }
+        let (box_size, header_len) = if size32 == 1 {
+            if cursor + 16 > end {
+                break;
+            }
+            let sz64 = u64::from_be_bytes([
+                all[cursor + 8],
+                all[cursor + 9],
+                all[cursor + 10],
+                all[cursor + 11],
+                all[cursor + 12],
+                all[cursor + 13],
+                all[cursor + 14],
+                all[cursor + 15],
+            ]);
+            (sz64, 16usize)
+        } else if size32 == 0 {
+            ((end - cursor) as u64, 8usize)
+        } else {
+            (size32, 8usize)
+        };
+        if box_size < header_len as u64 {
+            break;
+        }
+        let Some(box_end_u64) = (cursor as u64).checked_add(box_size) else {
+            break;
+        };
+        let box_end = (box_end_u64 as usize).min(end);
+        let payload_start = cursor + header_len;
+
+        if fourcc == b"moof" || fourcc == b"traf" {
+            walk_tfdt_boxes(all, payload_start, box_end, depth + 1, out);
+        } else if fourcc == b"tfdt" && payload_start + 4 <= box_end {
+            let version = all[payload_start];
+            if version == 0 && payload_start + 8 <= box_end {
+                let dts = u32::from_be_bytes([
+                    all[payload_start + 4],
+                    all[payload_start + 5],
+                    all[payload_start + 6],
+                    all[payload_start + 7],
+                ]) as u64;
+                out.push((cursor as u64, dts));
+            } else if version == 1 && payload_start + 12 <= box_end {
+                let dts = u64::from_be_bytes([
+                    all[payload_start + 4],
+                    all[payload_start + 5],
+                    all[payload_start + 6],
+                    all[payload_start + 7],
+                    all[payload_start + 8],
+                    all[payload_start + 9],
+                    all[payload_start + 10],
+                    all[payload_start + 11],
+                ]);
+                out.push((cursor as u64, dts));
+            }
+        }
+
+        if box_end <= cursor {
+            break;
+        }
+        cursor = box_end;
+    }
+}
+
 fn format_uuid_bytes(b: &[u8]) -> String {
     let h = hex_encode(b);
     format!(
@@ -639,5 +734,26 @@ mod tests {
             Some("webm")
         );
         assert!(!webm_rep.drm_detected);
+    }
+
+    #[test]
+    fn extracts_moof_traf_tfdt_v0_and_v1_timestamps() {
+        let mut tfdt_v0 = vec![0u8, 0, 0, 0];
+        tfdt_v0.extend_from_slice(&90_000u32.to_be_bytes());
+        let traf0 = make_box(b"traf", &make_box(b"tfdt", &tfdt_v0));
+        let moof0 = make_box(b"moof", &traf0);
+
+        let mut tfdt_v1 = vec![1u8, 0, 0, 0];
+        tfdt_v1.extend_from_slice(&4_500_000_000u64.to_be_bytes());
+        let traf1 = make_box(b"traf", &make_box(b"tfdt", &tfdt_v1));
+        let moof1 = make_box(b"moof", &traf1);
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&moof0);
+        stream.extend_from_slice(&moof1);
+        let parsed = extract_moof_tfdt_timestamps(&stream);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].1, 90_000);
+        assert_eq!(parsed[1].1, 4_500_000_000);
     }
 }

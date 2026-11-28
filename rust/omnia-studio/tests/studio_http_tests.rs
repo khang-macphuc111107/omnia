@@ -259,13 +259,14 @@ async fn server_tolerates_adguard_18_cookies_multispace_request_line_and_blocks_
     for idx in 0..18 {
         raw.push_str(&format!("Cookie: ag_cookie_{idx}=dummy-session-{idx}\r\n"));
     }
-    raw.push_str("Origin: http://localhost:3000\r\nConnection: close\r\n\r\n");
+    let expected_origin = format!("http://localhost:{}", addr.port());
+    raw.push_str(&format!("Origin: {expected_origin}\r\nConnection: close\r\n\r\n"));
 
     let reply = send_raw_http(addr, &raw).await;
     assert_eq!(reply.status, 200);
     assert_eq!(
         reply.header("Access-Control-Allow-Origin"),
-        Some("http://localhost:3000")
+        Some(expected_origin.as_str())
     );
     let json = reply.json();
     assert_eq!(json["ok"], true);
@@ -307,19 +308,49 @@ async fn server_tolerates_adguard_18_cookies_multispace_request_line_and_blocks_
     let null_origin = http_request(addr, "GET", "/api/health", &[("Origin", "null")], None).await;
     assert_eq!(null_origin.status, 403);
 
+    let bound_origin = format!("http://127.0.0.1:{}", addr.port());
     let preflight = http_request(
         addr,
         "OPTIONS",
         "/api/health",
-        &[("Origin", "http://127.0.0.1:8787")],
+        &[("Origin", bound_origin.as_str())],
         None,
     )
     .await;
     assert_eq!(preflight.status, 204);
     assert_eq!(
         preflight.header("Access-Control-Allow-Origin"),
-        Some("http://127.0.0.1:8787")
+        Some(bound_origin.as_str())
     );
+
+    // AUD-02: Wrong-port loopback Host & Origin must be rejected with 403.
+    let wrong_port = if addr.port() == 19999 { 19998 } else { 19999 };
+    let wrong_host_req = format!(
+        "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{wrong_port}\r\nConnection: close\r\n\r\n"
+    );
+    let wrong_host = send_raw_http(addr, &wrong_host_req).await;
+    assert_eq!(wrong_host.status, 403);
+    assert_eq!(wrong_host.json()["code"], "forbidden_host");
+
+    let bare_host = send_raw_http(
+        addr,
+        "GET /api/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(bare_host.status, 403);
+    assert_eq!(bare_host.json()["code"], "forbidden_host");
+
+    let wrong_origin_hdr = format!("http://localhost:{wrong_port}");
+    let wrong_origin = http_request(
+        addr,
+        "GET",
+        "/api/health",
+        &[("Origin", wrong_origin_hdr.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(wrong_origin.status, 403);
+    assert_eq!(wrong_origin.json()["code"], "forbidden_origin");
 
     // 3. Static asset serving & path traversal rejection
     let index_resp = http_request(addr, "GET", "/", &[], None).await;

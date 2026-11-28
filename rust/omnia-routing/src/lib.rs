@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod model_roles;
+pub mod scheduler_sota;
 pub mod sqlite_store;
 pub mod wire_adapter;
 
@@ -19,15 +20,24 @@ pub use model_roles::{
     effort_spec_for_model, intrinsic_role_affinity, normalize_model_family_key, EffortLevel,
     EffortWireMode, ModelEffortSpec, ModelRole,
 };
+pub use scheduler_sota::{
+    classify_post_dispatch_outcome, detect_retired_model_notice, splitmix64_next,
+    ComboDefinition, ComboProbeOutcome, ComboProbeTarget, ComboRegistry, ComboResolution,
+    ComboStrategy, DispatchOutcomeClass, ModelRetiredError, NotServedDecision, NotServedTracker,
+    PostDispatchClassification, PostDispatchInput, QuotaResetPoolStatus, COMBO_MAX_DEPTH,
+    COMBO_PROBE_INTERVAL_MS, DEFAULT_SOFT_FAIL_WINDOW_MS, MAX_QUOTA_EXHAUSTION_MS,
+};
 pub use sqlite_store::RouterSqliteStore;
 
 /// Default 1-in-N probe cadence for unproven credentials (`htmustc-proxy/internal/proxy/scheduler.go`).
 pub const DEFAULT_PROBE_UNPROVEN_EVERY: u64 = 4;
 
 pub use wire_adapter::{
-    evaluate_local_vram_fit, normalize_provider_wire_payload, LocalVramFitDecision,
-    LocalVramPolicy, NormalizedWirePayload, ProviderWireDialect, WireAdapterError,
-    DEFAULT_DWM_UI_HEADROOM_MB, DEFAULT_MAX_AUX_MODEL_VRAM_MB, ENFORCED_LOCAL_VRAM_SEMAPHORE,
+    compute_cache_shape_hash, evaluate_local_vram_fit, normalize_provider_wire_payload,
+    sanitize_input_tool_names, sort_tools_stable, validate_anthropic_cache_breakpoints,
+    CacheShapeDigest, LocalVramFitDecision, LocalVramPolicy, NormalizedWirePayload,
+    ProviderWireDialect, WireAdapterError, DEFAULT_DWM_UI_HEADROOM_MB,
+    DEFAULT_MAX_AUX_MODEL_VRAM_MB, ENFORCED_LOCAL_VRAM_SEMAPHORE,
 };
 
 const MAX_LATENCY_SAMPLES: usize = 256;
@@ -610,6 +620,10 @@ pub struct CandidateResourceState {
     pub model_proven: BTreeMap<String, bool>,
     #[serde(default)]
     pub model_locks_until_ms: BTreeMap<String, i64>,
+    #[serde(default)]
+    pub soft_fail_until_ms: Option<i64>,
+    #[serde(default)]
+    pub provider_quota_reset_until_ms: Option<i64>,
 }
 
 impl Default for CandidateResourceState {
@@ -628,12 +642,15 @@ impl Default for CandidateResourceState {
             quota_exhausted_until_ms: None,
             model_proven: BTreeMap::new(),
             model_locks_until_ms: BTreeMap::new(),
+            soft_fail_until_ms: None,
+            provider_quota_reset_until_ms: None,
         }
     }
 }
 
 impl CandidateResourceState {
-    /// Advance wall-clock state: expire cooldowns, Retry-After windows, or stale/rolled-over quotas.
+    /// Advance wall-clock state: expire cooldowns, Retry-After windows, soft-fail demotions,
+    /// stated quota resets, or stale/rolled-over quotas.
     pub fn advance_time(&mut self, now_ms: i64) {
         if let CircuitState::Open {
             opened_at_ms,
@@ -649,6 +666,16 @@ impl CandidateResourceState {
         if let Some(until) = self.retry_after_until_ms {
             if now_ms >= until {
                 self.retry_after_until_ms = None;
+            }
+        }
+        if let Some(until) = self.soft_fail_until_ms {
+            if now_ms >= until {
+                self.soft_fail_until_ms = None;
+            }
+        }
+        if let Some(until) = self.provider_quota_reset_until_ms {
+            if now_ms >= until {
+                self.provider_quota_reset_until_ms = None;
             }
         }
         let next_quota = match &self.quota {
@@ -756,6 +783,8 @@ impl CandidateResourceState {
             "circuit": self.circuit.to_json(),
             "retry_after_until_ms": self.retry_after_until_ms,
             "quota_exhausted_until_ms": self.quota_exhausted_until_ms,
+            "soft_fail_until_ms": self.soft_fail_until_ms,
+            "provider_quota_reset_until_ms": self.provider_quota_reset_until_ms,
             "model_proven": self.model_proven,
             "model_locks_until_ms": self.model_locks_until_ms,
             "consecutive_failures": self.consecutive_failures,
@@ -1246,6 +1275,10 @@ pub struct OutcomeReport {
     pub model_entitlement_error: bool,
     /// Explicit quota exhaustion reset timestamp (`epoch_ms`) parsed from upstream 429/usage headers.
     pub quota_exhausted_until_ms: Option<i64>,
+    /// True when transient error should apply 5s `softFail` demotion rather than tripping the circuit.
+    pub soft_fail: bool,
+    /// Authoritative provider-stated `QuotaResetAt` deadline (`epoch_ms`, e.g., Codex `resets_at`).
+    pub provider_quota_reset_at_ms: Option<i64>,
 }
 
 impl Default for OutcomeReport {
@@ -1266,6 +1299,8 @@ impl Default for OutcomeReport {
             is_request_scoped: false,
             model_entitlement_error: false,
             quota_exhausted_until_ms: None,
+            soft_fail: false,
+            provider_quota_reset_at_ms: None,
         }
     }
 }
@@ -1534,6 +1569,8 @@ struct RouterInner {
     token_burn_samples: BTreeMap<String, VecDeque<(i64, u64)>>,
     failover_events: VecDeque<FailoverEvent>,
     model_cooldowns: BTreeMap<(String, String, ModelCooldownClass), ModelCooldownEntry>,
+    not_served_tracker: NotServedTracker,
+    combo_registry: ComboRegistry,
 }
 
 impl RouterInner {
@@ -1653,6 +1690,8 @@ impl DynamicProviderRouter {
                 token_burn_samples: BTreeMap::new(),
                 failover_events: VecDeque::new(),
                 model_cooldowns: BTreeMap::new(),
+                not_served_tracker: NotServedTracker::new(),
+                combo_registry: ComboRegistry::new(),
             }),
         }
     }
@@ -1850,6 +1889,335 @@ impl DynamicProviderRouter {
         }
         guard.candidates.insert(id, reg);
         Ok(())
+    }
+
+    /// Register or refresh static candidate metadata while preserving persisted runtime quota,
+    /// circuit-breaker, soft-fail, latency, and `model_proven` state when loaded from SQLite.
+    pub fn upsert_candidate_preserving_state(
+        &self,
+        candidate: RouteCandidate,
+        default_state: CandidateResourceState,
+    ) -> Result<(), RoutingError> {
+        if candidate.candidate_id.trim().is_empty() {
+            return Err(RoutingError::InvalidCandidateId);
+        }
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let id = candidate.candidate_id.clone();
+        let store_opt = guard.sqlite_store.clone();
+        let state = guard
+            .candidates
+            .get(&id)
+            .map(|existing| existing.state.clone())
+            .unwrap_or(default_state);
+        let reg = RegisteredCandidate { candidate, state };
+        if let Some(store) = store_opt {
+            store.save_candidate(&reg.candidate, &reg.state, now_epoch_ms())?;
+        }
+        guard.candidates.insert(id, reg);
+        Ok(())
+    }
+
+    /// Record a non-punishing transient `5s` `softFail` demotion without tripping the circuit.
+    pub fn record_soft_fail(
+        &self,
+        candidate_id: &str,
+        window_ms: Option<i64>,
+        now_ms: i64,
+        reason: &str,
+    ) -> Result<i64, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let store_opt = guard.sqlite_store.clone();
+        let effective_window = window_ms.unwrap_or(DEFAULT_SOFT_FAIL_WINDOW_MS).max(1);
+        let until_ms = now_ms.saturating_add(effective_window);
+        {
+            let entry = guard
+                .candidates
+                .get_mut(candidate_id)
+                .ok_or_else(|| RoutingError::UnknownCandidate(candidate_id.to_owned()))?;
+            let prev = entry.state.soft_fail_until_ms.unwrap_or(0);
+            entry.state.soft_fail_until_ms = Some(prev.max(until_ms));
+            if let Some(ref store) = store_opt {
+                store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
+            }
+        }
+        guard.push_failover_event(FailoverEvent {
+            timestamp_ms: now_ms,
+            kind: "soft_fail_demotion".to_owned(),
+            from_candidate_id: Some(candidate_id.to_owned()),
+            to_candidate_id: None,
+            reason: reason.to_owned(),
+            reservation_id: None,
+        });
+        Ok(until_ms)
+    }
+
+    /// Record a provider-stated `QuotaResetAt` deadline (monotonic `max`, capped at `7d`).
+    pub fn record_provider_quota_reset(
+        &self,
+        candidate_id: &str,
+        reset_at_ms: i64,
+        now_ms: i64,
+        reason: &str,
+    ) -> Result<i64, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let store_opt = guard.sqlite_store.clone();
+        let bounded = reset_at_ms
+            .max(now_ms.saturating_add(1_000))
+            .min(now_ms.saturating_add(MAX_QUOTA_EXHAUSTION_MS));
+        let final_until = {
+            let entry = guard
+                .candidates
+                .get_mut(candidate_id)
+                .ok_or_else(|| RoutingError::UnknownCandidate(candidate_id.to_owned()))?;
+            let prev = entry.state.provider_quota_reset_until_ms.unwrap_or(0);
+            let next_until = prev.max(bounded);
+            entry.state.provider_quota_reset_until_ms = Some(next_until);
+            if let Some(ref store) = store_opt {
+                store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
+            }
+            next_until
+        };
+        guard.push_failover_event(FailoverEvent {
+            timestamp_ms: now_ms,
+            kind: "provider_quota_reset".to_owned(),
+            from_candidate_id: Some(candidate_id.to_owned()),
+            to_candidate_id: None,
+            reason: reason.to_owned(),
+            reservation_id: None,
+        });
+        Ok(final_until)
+    }
+
+    /// Inspect whether all matching enabled candidates are awaiting provider-stated quota resets.
+    pub fn pool_quota_reset_status(
+        &self,
+        provider_or_model: Option<&str>,
+        now_ms: i64,
+    ) -> Result<Option<QuotaResetPoolStatus>, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        let filter = provider_or_model
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let matching: Vec<&RegisteredCandidate> = guard
+            .candidates
+            .values()
+            .filter(|reg| {
+                reg.candidate.enabled
+                    && reg.candidate.credential_present
+                    && filter.is_none_or(|f| {
+                        reg.candidate.provider_id == f
+                            || reg.candidate.model_id == f
+                            || reg.candidate.candidate_id == f
+                    })
+            })
+            .collect();
+        if matching.is_empty() {
+            return Ok(None);
+        }
+        let mut earliest_reset: Option<i64> = None;
+        for reg in &matching {
+            let Some(until) = reg
+                .state
+                .provider_quota_reset_until_ms
+                .filter(|&u| u > now_ms)
+            else {
+                return Ok(None);
+            };
+            earliest_reset = Some(earliest_reset.map_or(until, |e| e.min(until)));
+        }
+        let reset_at_ms = earliest_reset.unwrap_or(now_ms);
+        let remaining_ms = reset_at_ms.saturating_sub(now_ms).max(1_000) as u64;
+        let secs = remaining_ms.div_ceil(1_000);
+        Ok(Some(QuotaResetPoolStatus {
+            error_code: "usage_limit_reached".to_owned(),
+            reset_at_ms,
+            resets_in_seconds: secs,
+            retry_after_secs: secs,
+            candidate_count: matching.len(),
+        }))
+    }
+
+    /// Record an upstream 404 model-not-served response across a pool to stop 12h retry loops.
+    pub fn record_not_served_outcome(
+        &self,
+        pool_key: &str,
+        model_id: &str,
+        candidate_id: &str,
+        eligible_pool_size: usize,
+    ) -> Result<NotServedDecision, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard.not_served_tracker.record_not_served(
+            pool_key,
+            model_id,
+            candidate_id,
+            eligible_pool_size,
+        ))
+    }
+
+    /// Mark `(pool_key, model_id)` as actively served, clearing unserved failure state.
+    pub fn record_served_outcome(&self, pool_key: &str, model_id: &str) -> Result<(), RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        guard.not_served_tracker.record_served(pool_key, model_id);
+        Ok(())
+    }
+
+    /// Query whether all known candidates in `(pool_key, model_id)` reported unserved 404.
+    pub fn is_model_unserved(
+        &self,
+        pool_key: &str,
+        model_id: &str,
+        eligible_pool_size: usize,
+    ) -> Result<bool, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard
+            .not_served_tracker
+            .is_model_unserved(pool_key, model_id, eligible_pool_size))
+    }
+
+    /// Register or update a virtual `combo/<id>` failover chain.
+    pub fn upsert_combo(&self, def: ComboDefinition) -> Result<(), RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        guard.combo_registry.upsert(def);
+        Ok(())
+    }
+
+    /// Resolve a `combo/<id>` chain, applying strategy ordering and `demote_benched` tails.
+    pub fn resolve_combo(&self, target: &str, now_ms: i64) -> Result<ComboResolution, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard.combo_registry.resolve(target, now_ms))
+    }
+
+    /// Non-mutating combo snapshot for dashboard / status inspection.
+    pub fn peek_combo(&self, target: &str) -> Result<ComboResolution, RoutingError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard.combo_registry.peek_chain(target))
+    }
+
+    /// Demote a failing combo member strictly within `(combo_id, member_id)` to tail fallback.
+    pub fn record_combo_member_failure(
+        &self,
+        combo_id: &str,
+        member_id: &str,
+        now_ms: i64,
+    ) -> Result<(), RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        guard
+            .combo_registry
+            .record_member_failure(combo_id, member_id, now_ms);
+        Ok(())
+    }
+
+    /// Restore a recovered combo member to active primary ordering.
+    pub fn record_combo_member_success(
+        &self,
+        combo_id: &str,
+        member_id: &str,
+    ) -> Result<(), RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        guard
+            .combo_registry
+            .record_member_success(combo_id, member_id);
+        Ok(())
+    }
+
+    /// Claim due `30s` active `ComboProbe` health-recovery probes without stampeding.
+    pub fn claim_due_combo_probes(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<ComboProbeTarget>, RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        Ok(guard.combo_registry.claim_due_probes(now_ms))
+    }
+
+    /// Finish an active `ComboProbe`; `Healthy` or `Undecided` restores primary ordering.
+    pub fn complete_combo_probe(
+        &self,
+        combo_id: &str,
+        member_id: &str,
+        outcome: ComboProbeOutcome,
+        now_ms: i64,
+    ) -> Result<(), RoutingError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| RoutingError::InternalLockPoisoned)?;
+        guard
+            .combo_registry
+            .complete_probe(combo_id, member_id, outcome, now_ms);
+        Ok(())
+    }
+
+    /// Classify post-dispatch wire telemetry into 3-way `Accepted`/`NotAccepted`/`Unknown`
+    /// and atomically reconcile the in-flight reservation (`Unknown -> OperatorRecoveryRequired`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_post_dispatch(
+        &self,
+        reservation_id: &str,
+        fencing_token: u64,
+        attempt_id: &str,
+        input: &PostDispatchInput,
+        latency_ms: Option<f64>,
+        soft_fail_on_not_accepted: bool,
+        now_ms: i64,
+    ) -> Result<(PostDispatchClassification, RouteOutcomeReceipt), RoutingError> {
+        let class = classify_post_dispatch_outcome(input);
+        let success = class.outcome_class == DispatchOutcomeClass::Accepted;
+        let is_request_scoped = input
+            .http_status
+            .is_some_and(|st| matches!(st, 400 | 409 | 413 | 422));
+        let receipt = self.reconcile_in_flight_outcome(OutcomeReport {
+            reservation_id: reservation_id.to_owned(),
+            fencing_token,
+            attempt_id: Some(attempt_id.to_owned()),
+            success,
+            acceptance: class.acceptance_state,
+            latency_ms,
+            diagnostic_note: class.reason.clone(),
+            now_epoch_ms: Some(now_ms),
+            is_request_scoped,
+            soft_fail: !success && soft_fail_on_not_accepted && !is_request_scoped,
+            ..Default::default()
+        })?;
+        Ok((class, receipt))
     }
 
     pub fn set_candidate_enabled(
@@ -2772,6 +3140,7 @@ impl DynamicProviderRouter {
 
         let mut auto_opened_circuit = false;
         let mut model_entitlement_locked: Option<(String, String)> = None;
+        let mut served_provider_id: Option<String> = None;
         let diag_lower = report.diagnostic_note.to_ascii_lowercase();
         let inferred_model_not_allowed = !report.success
             && (report.model_entitlement_error
@@ -2779,6 +3148,9 @@ impl DynamicProviderRouter {
                 || diag_lower.contains("does not have access to the requested model")
                 || (diag_lower.contains("403") && diag_lower.contains("model")));
         if let Some(entry) = guard.candidates.get_mut(&candidate_id) {
+            if report.success {
+                served_provider_id = Some(entry.candidate.provider_id.clone());
+            }
             let was_open = matches!(entry.state.circuit, CircuitState::Open { .. });
             entry.state.reserved_tokens = entry
                 .state
@@ -2800,11 +3172,20 @@ impl DynamicProviderRouter {
                     entry.state.quota_exhausted_until_ms = Some(q_until);
                 }
             }
+            if let Some(reset_until) = report.provider_quota_reset_at_ms {
+                if reset_until > now_ms {
+                    let bounded = reset_until.min(now_ms.saturating_add(MAX_QUOTA_EXHAUSTION_MS));
+                    let prev = entry.state.provider_quota_reset_until_ms.unwrap_or(0);
+                    entry.state.provider_quota_reset_until_ms = Some(prev.max(bounded));
+                }
+            }
             if report.success {
                 entry.state.success_count = entry.state.success_count.saturating_add(1);
                 entry.state.consecutive_failures = 0;
                 entry.state.circuit = CircuitState::Closed;
                 entry.state.quota_exhausted_until_ms = None;
+                entry.state.soft_fail_until_ms = None;
+                entry.state.provider_quota_reset_until_ms = None;
                 entry.state.model_locks_until_ms.remove(&model_id);
                 entry.state.model_proven.insert(model_id.clone(), true);
             } else if report.is_request_scoped {
@@ -2834,6 +3215,29 @@ impl DynamicProviderRouter {
                         probe_in_flight: false,
                     };
                 }
+            } else if report.soft_fail {
+                // 5s non-punishing softFail demotion: prefers healthy siblings without causing
+                // single-account 503 circuit-open outages.
+                let until = now_ms.saturating_add(DEFAULT_SOFT_FAIL_WINDOW_MS);
+                let prev = entry.state.soft_fail_until_ms.unwrap_or(0);
+                entry.state.soft_fail_until_ms = Some(prev.max(until));
+                if let CircuitState::HalfOpen {
+                    probe_in_flight: true,
+                } = entry.state.circuit
+                {
+                    entry.state.circuit = CircuitState::HalfOpen {
+                        probe_in_flight: false,
+                    };
+                }
+            } else if report.provider_quota_reset_at_ms.is_some() {
+                if let CircuitState::HalfOpen {
+                    probe_in_flight: true,
+                } = entry.state.circuit
+                {
+                    entry.state.circuit = CircuitState::HalfOpen {
+                        probe_in_flight: false,
+                    };
+                }
             } else {
                 entry.state.consecutive_failures =
                     entry.state.consecutive_failures.saturating_add(1);
@@ -2851,6 +3255,9 @@ impl DynamicProviderRouter {
             if let Some(ref store) = store_opt {
                 store.save_candidate(&entry.candidate, &entry.state, now_ms)?;
             }
+        }
+        if let Some(prov) = served_provider_id {
+            guard.not_served_tracker.record_served(&prov, &model_id);
         }
         if let Some((provider_id, locked_model)) = model_entitlement_locked {
             let until_ms = now_ms.saturating_add(300_000);
@@ -3460,7 +3867,8 @@ fn simulate_route_locked(
         .and_then(|k| guard.session_affinity.get(k).cloned());
 
     let mut scores = Vec::with_capacity(guard.candidates.len());
-    let mut best_idx: Option<usize> = None;
+    let mut best_clean_idx: Option<usize> = None;
+    let mut best_demoted_idx: Option<usize> = None;
 
     for reg in guard.candidates.values() {
         let mut cloned_state = reg.state.clone();
@@ -3482,7 +3890,15 @@ fn simulate_route_locked(
         );
         let idx = scores.len();
         if score.eligible {
-            let is_better = match best_idx {
+            let is_soft_failed = cloned_state
+                .soft_fail_until_ms
+                .is_some_and(|until| now_ms < until);
+            let slot = if is_soft_failed {
+                &mut best_demoted_idx
+            } else {
+                &mut best_clean_idx
+            };
+            let is_better = match *slot {
                 None => true,
                 Some(cur_best_idx) => {
                     let cur_best: &CandidateScoreBreakdown = &scores[cur_best_idx];
@@ -3492,11 +3908,12 @@ fn simulate_route_locked(
                 }
             };
             if is_better {
-                best_idx = Some(idx);
+                *slot = Some(idx);
             }
         }
         scores.push(score);
     }
+    let best_idx = best_clean_idx.or(best_demoted_idx);
 
     if let Some(idx) = best_idx {
         let winner_id = scores[idx].candidate_id.clone();
@@ -3612,7 +4029,7 @@ fn decide_and_reserve_locked(
         .and_then(|k| guard.session_affinity.get(k).cloned());
 
     let mut scores = Vec::with_capacity(guard.candidates.len());
-    let mut eligible_meta: Vec<(usize, bool)> = Vec::new();
+    let mut eligible_meta: Vec<(usize, bool, bool)> = Vec::new();
 
     let candidate_ids: Vec<String> = guard.candidates.keys().cloned().collect();
     for id in candidate_ids {
@@ -3641,16 +4058,29 @@ fn decide_and_reserve_locked(
                     .get(&reg.candidate.model_id)
                     .copied()
                     .unwrap_or(false);
-                eligible_meta.push((scores.len(), is_proven));
+                let is_soft_failed = reg
+                    .state
+                    .soft_fail_until_ms
+                    .is_some_and(|until| now_ms < until);
+                eligible_meta.push((scores.len(), is_proven, is_soft_failed));
             }
             scores.push(score);
         }
     }
 
+    // 4-Tier selection: prefer clean Tier-0 candidates before falling back to 5s softFail Tier-1
+    // candidates (eliminating single-account 503 outages while routing healthy traffic elsewhere).
+    let has_clean_candidate = eligible_meta.iter().any(|(_, _, soft)| !*soft);
+    let tier_meta: Vec<(usize, bool)> = eligible_meta
+        .into_iter()
+        .filter(|(_, _, soft)| if has_clean_candidate { !*soft } else { true })
+        .map(|(idx, proven, _)| (idx, proven))
+        .collect();
+
     // Apply 1-in-4 `probe_unproven_every` narrowing when both proven and unproven candidates
-    // exist in the eligible pool (`htmustc-proxy/internal/proxy/scheduler.go`), without ever starving a pool.
-    let proven_count = eligible_meta.iter().filter(|(_, p)| *p).count();
-    let unproven_count = eligible_meta.len().saturating_sub(proven_count);
+    // exist in the eligible tier (`htmustc-proxy/internal/proxy/scheduler.go`), without starving.
+    let proven_count = tier_meta.iter().filter(|(_, p)| *p).count();
+    let unproven_count = tier_meta.len().saturating_sub(proven_count);
     let target_proven_filter: Option<bool> = if proven_count > 0 && unproven_count > 0 {
         let probe_key = format!(
             "{}:{}",
@@ -3670,7 +4100,7 @@ fn decide_and_reserve_locked(
     };
 
     let mut best_idx: Option<usize> = None;
-    for &(idx, is_proven) in &eligible_meta {
+    for &(idx, is_proven) in &tier_meta {
         if target_proven_filter.is_some_and(|want| want != is_proven) {
             continue;
         }
@@ -3966,6 +4396,12 @@ fn evaluate_candidate(
             Some(est) if est > max_cost => return reject("estimated_cost_exceeds_cap".to_owned()),
             Some(_) => {}
         }
+    }
+    if state
+        .provider_quota_reset_until_ms
+        .is_some_and(|until| now_ms < until)
+    {
+        return reject("provider_quota_reset_active".to_owned());
     }
     if state
         .quota_exhausted_until_ms

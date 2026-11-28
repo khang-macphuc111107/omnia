@@ -8,6 +8,7 @@
 //! 4. Adversarial red-team critique with distinct vendor-family enforcement
 //! 5. Verified Winner + Rejected Alternatives Matrix + 6-state completion receipt.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -126,6 +127,310 @@ impl Default for EscalationState {
     }
 }
 
+/// Standard Lean 4 foundational axioms whitelisted for formal proof verification.
+pub const STANDARD_FOUNDATIONAL_AXIOMS: &[&str] =
+    &["propext", "classical.choice", "quot.sound"];
+
+/// 3-bucket epistemic separation for mathematical and algorithmic claims (Collatz / P vs NP rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EpistemicBucket {
+    Refereed,
+    PendingPreprint,
+    RefutedOrGalactic,
+}
+
+impl EpistemicBucket {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Refereed => "refereed",
+            Self::PendingPreprint => "pending_preprint",
+            Self::RefutedOrGalactic => "refuted_or_galactic",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_lossy(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "refereed" => Self::Refereed,
+            "pending_preprint" | "preprint" => Self::PendingPreprint,
+            _ => Self::RefutedOrGalactic,
+        }
+    }
+}
+
+/// Machine-checked axiom footprint audit guarding against CVE-2026-72844 / custom `axiom` smuggling
+/// and incomplete `sorry`/`admit` placeholders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AxiomFootprintAudit {
+    pub declared_axioms: Vec<String>,
+    pub unauthorized_axioms: Vec<String>,
+    pub sorry_or_admit_count: usize,
+    pub passed: bool,
+}
+
+impl AxiomFootprintAudit {
+    #[must_use]
+    pub fn evaluate(declared_axioms: Vec<String>, sorry_or_admit_count: usize) -> Self {
+        let mut clean_declared = Vec::new();
+        let mut unauthorized = Vec::new();
+        for ax in declared_axioms {
+            let trimmed = ax.trim().to_string();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let low = trimmed.to_ascii_lowercase();
+            let allowed = STANDARD_FOUNDATIONAL_AXIOMS.iter().any(|std_ax| low == *std_ax);
+            if !allowed && !unauthorized.contains(&trimmed) {
+                unauthorized.push(trimmed.clone());
+            }
+            if !clean_declared.contains(&trimmed) {
+                clean_declared.push(trimmed);
+            }
+        }
+        let passed = unauthorized.is_empty() && sorry_or_admit_count == 0;
+        Self {
+            declared_axioms: clean_declared,
+            unauthorized_axioms: unauthorized,
+            sorry_or_admit_count,
+            passed,
+        }
+    }
+}
+
+/// Multi-Kernel Replay verification requiring `>= 2` distinct independent proof checkers
+/// (e.g., `lean4` + `lean4checker` / `nanoda` / `coqchk`) plus explicit statement-fidelity audit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiKernelReplayCheck {
+    pub checkers: Vec<String>,
+    pub all_passed: bool,
+    pub statement_fidelity_audited: bool,
+    pub independent_checker_count: usize,
+    pub passed: bool,
+}
+
+impl MultiKernelReplayCheck {
+    #[must_use]
+    pub fn evaluate(
+        checkers: Vec<String>,
+        all_passed: bool,
+        statement_fidelity_audited: bool,
+    ) -> Self {
+        let mut unique: BTreeSet<String> = BTreeSet::new();
+        let mut normalized = Vec::new();
+        for checker in checkers {
+            let clean = checker.trim().to_ascii_lowercase();
+            if !clean.is_empty() && unique.insert(clean.clone()) {
+                normalized.push(clean);
+            }
+        }
+        let independent_checker_count = normalized.len();
+        let passed =
+            independent_checker_count >= 2 && all_passed && statement_fidelity_audited;
+        Self {
+            checkers: normalized,
+            all_passed,
+            statement_fidelity_audited,
+            independent_checker_count,
+            passed,
+        }
+    }
+}
+
+/// Scott Aaronson's 8 diagnostic signs for spotting flawed P vs NP / complexity-theoretic proofs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AaronsonSignId {
+    IgnoresKnownBarriers,
+    VagueOrInformalDefinitions,
+    NoConcreteSmallExamples,
+    HiddenNonElementaryJump,
+    UnprovenAuxiliaryLemmas,
+    UnexaminedReductionGaps,
+    GalacticAsymptoticCrossover,
+    RefusalToEngageCounterexamples,
+}
+
+impl AaronsonSignId {
+    pub const ALL: [Self; 8] = [
+        Self::IgnoresKnownBarriers,
+        Self::VagueOrInformalDefinitions,
+        Self::NoConcreteSmallExamples,
+        Self::HiddenNonElementaryJump,
+        Self::UnprovenAuxiliaryLemmas,
+        Self::UnexaminedReductionGaps,
+        Self::GalacticAsymptoticCrossover,
+        Self::RefusalToEngageCounterexamples,
+    ];
+}
+
+/// Result of inspecting one Aaronson diagnostic sign on a formal/algorithmic proof claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AaronsonSignCheck {
+    pub sign: AaronsonSignId,
+    pub triggered: bool,
+    pub evidence: String,
+}
+
+/// Complete formal-verification anti-exploit gate attached to a [`DeepThinkSession`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormalProofAudit {
+    pub theorem_name: String,
+    pub bucket: EpistemicBucket,
+    pub axiom_audit: AxiomFootprintAudit,
+    pub kernel_replay: MultiKernelReplayCheck,
+    pub aaronson_checks: Vec<AaronsonSignCheck>,
+    pub crossover_bound_log10: Option<f64>,
+    pub galactic_bound_detected: bool,
+    pub passed: bool,
+    pub blocking_reasons: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl FormalProofAudit {
+    /// Evaluates a formal proof candidate against axiom whitelisting, multi-kernel replay,
+    /// Aaronson's 8-sign checklist, 3-bucket epistemic separation, and galactic crossover bounds
+    /// (`10^10` threshold: `crossover_bound_log10 > 10.0`).
+    #[must_use]
+    pub fn evaluate(
+        theorem_name: &str,
+        declared_bucket: EpistemicBucket,
+        axiom_audit: AxiomFootprintAudit,
+        kernel_replay: MultiKernelReplayCheck,
+        aaronson_checks: Vec<AaronsonSignCheck>,
+        crossover_bound_log10: Option<f64>,
+    ) -> Self {
+        let mut blocking_reasons = Vec::new();
+        let mut warnings = Vec::new();
+
+        let galactic_bound_detected = crossover_bound_log10
+            .is_some_and(|log10| log10.is_nan() || log10 > 10.0)
+            || aaronson_checks
+                .iter()
+                .any(|c| c.sign == AaronsonSignId::GalacticAsymptoticCrossover && c.triggered);
+
+        let effective_bucket = if galactic_bound_detected {
+            EpistemicBucket::RefutedOrGalactic
+        } else {
+            declared_bucket
+        };
+
+        if !axiom_audit.passed {
+            if !axiom_audit.unauthorized_axioms.is_empty() {
+                blocking_reasons.push(format!(
+                    "unauthorized custom axiom(s) detected (axiom smuggling): {}",
+                    axiom_audit.unauthorized_axioms.join(", ")
+                ));
+            }
+            if axiom_audit.sorry_or_admit_count > 0 {
+                blocking_reasons.push(format!(
+                    "proof contains {} `sorry`/`admit` hole(s)",
+                    axiom_audit.sorry_or_admit_count
+                ));
+            }
+        }
+
+        if !kernel_replay.passed {
+            if kernel_replay.independent_checker_count < 2 {
+                blocking_reasons.push(format!(
+                    "multi-kernel replay requires >= 2 independent checkers (observed {})",
+                    kernel_replay.independent_checker_count
+                ));
+            }
+            if !kernel_replay.all_passed {
+                blocking_reasons
+                    .push("one or more independent proof kernels failed replay".to_string());
+            }
+            if !kernel_replay.statement_fidelity_audited {
+                blocking_reasons.push(
+                    "theorem statement fidelity has not been audited against canonical definitions"
+                        .to_string(),
+                );
+            }
+        }
+
+        for chk in &aaronson_checks {
+            if chk.triggered {
+                blocking_reasons.push(format!(
+                    "Aaronson diagnostic sign triggered ({:?}): {}",
+                    chk.sign,
+                    chk.evidence.trim()
+                ));
+            }
+        }
+
+        if galactic_bound_detected {
+            blocking_reasons.push(format!(
+                "galactic crossover bound detected (log10={:?} > 10.0; relegated to RefutedOrGalactic)",
+                crossover_bound_log10
+            ));
+        }
+
+        if effective_bucket != EpistemicBucket::Refereed {
+            blocking_reasons.push(format!(
+                "epistemic bucket is `{}` (must be `refereed` for verified proof closure)",
+                effective_bucket.as_str()
+            ));
+        }
+
+        if aaronson_checks.len() < AaronsonSignId::ALL.len() {
+            warnings.push(format!(
+                "only {}/8 Aaronson diagnostic signs were explicitly audited",
+                aaronson_checks.len()
+            ));
+        }
+
+        let passed = blocking_reasons.is_empty();
+        Self {
+            theorem_name: SecretRedactor::redact(theorem_name.trim()),
+            bucket: effective_bucket,
+            axiom_audit,
+            kernel_replay,
+            aaronson_checks,
+            crossover_bound_log10,
+            galactic_bound_detected,
+            passed,
+            blocking_reasons,
+            warnings,
+        }
+    }
+}
+
+/// Scans Lean 4 / Coq proof source text (skipping line comments) for custom `axiom` declarations
+/// and `sorry`/`admit` proof holes, returning a deterministic [`AxiomFootprintAudit`].
+#[must_use]
+pub fn scan_lean_source_for_axioms_and_sorry(source: &str) -> AxiomFootprintAudit {
+    let mut declared_axioms = Vec::new();
+    let mut sorry_or_admit_count = 0usize;
+
+    for raw_line in source.lines() {
+        let code = raw_line.split("--").next().unwrap_or("").trim();
+        if code.is_empty() {
+            continue;
+        }
+        let tokens: Vec<&str> = code
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '.')
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.first().copied() == Some("axiom") {
+            if let Some(&name) = tokens.get(1) {
+                declared_axioms.push(name.to_string());
+            }
+        }
+        for tok in &tokens {
+            if *tok == "sorry" || *tok == "admit" || *tok == "Admitted" {
+                sorry_or_admit_count += 1;
+            }
+        }
+    }
+    AxiomFootprintAudit::evaluate(declared_axioms, sorry_or_admit_count)
+}
+
 /// Persisted Deep Think deliberation session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,6 +448,8 @@ pub struct DeepThinkSession {
     pub winner_branch_id: Option<String>,
     pub synthesis: Option<String>,
     pub receipt_6state: Option<Value>,
+    #[serde(default)]
+    pub formal_proof_audit: Option<FormalProofAudit>,
     pub warnings: Vec<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -217,6 +524,7 @@ impl DeepThinkEngine {
             winner_branch_id: None,
             synthesis: None,
             receipt_6state: None,
+            formal_proof_audit: None,
             warnings: Vec::new(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -374,6 +682,27 @@ impl DeepThinkEngine {
         sess.synthesis = Some(SecretRedactor::redact(synthesis.trim()));
         sess.receipt_6state = Some(SecretRedactor::redact_json(&receipt_6state));
         sess.stage = "concluded".to_string();
+        sess.updated_at_ms = now_epoch_ms();
+        self.save_session(&sess)?;
+        Ok(sess)
+    }
+
+    /// Attaches a formal-verification anti-exploit audit ([`FormalProofAudit`]) to a session,
+    /// recording any blocking reasons as session warnings so downstream synthesis cannot ignore them.
+    pub fn record_formal_proof_audit(
+        &self,
+        think_id: &str,
+        audit: FormalProofAudit,
+    ) -> Result<DeepThinkSession, String> {
+        let mut sess = self
+            .get_session(think_id)?
+            .ok_or_else(|| format!("Deep Think session `{think_id}` not found"))?;
+        for reason in &audit.blocking_reasons {
+            sess.warnings
+                .push(format!("formal_proof_audit BLOCK: {reason}"));
+        }
+        sess.formal_proof_audit = Some(audit);
+        sess.stage = "formal_proof_audit".to_string();
         sess.updated_at_ms = now_epoch_ms();
         self.save_session(&sess)?;
         Ok(sess)
@@ -588,5 +917,110 @@ mod tests {
             .unwrap();
         assert_eq!(done.winner_branch_id.as_deref(), Some("br_b"));
         assert_eq!(DeepThinkEngine::rejected_alternatives_matrix(&done).len(), 2);
+    }
+
+    #[test]
+    fn formal_proof_audit_blocks_axiom_smuggling_sorry_single_kernel_aaronson_and_galactic_bounds() {
+        // 1. Custom axiom smuggling (`yudin_nemirovski`) + `sorry` scanned directly from Lean source.
+        let leaky_lean = r#"
+            -- Safe comment mentioning sorry should not count
+            axiom yudin_nemirovski : True
+            theorem bogus_p_eq_np : True := by
+              sorry
+        "#;
+        let ax = scan_lean_source_for_axioms_and_sorry(leaky_lean);
+        assert!(!ax.passed);
+        assert_eq!(ax.unauthorized_axioms, vec!["yudin_nemirovski".to_string()]);
+        assert_eq!(ax.sorry_or_admit_count, 1);
+
+        // 2. Single-kernel replay + Aaronson sign + galactic crossover bound (10^42 > 10^10).
+        let replay = MultiKernelReplayCheck::evaluate(vec!["lean4".into()], true, false);
+        assert!(!replay.passed);
+        assert_eq!(replay.independent_checker_count, 1);
+
+        let aaronson = vec![AaronsonSignCheck {
+            sign: AaronsonSignId::IgnoresKnownBarriers,
+            triggered: true,
+            evidence: "Proof relativizes without explaining Baker-Gill-Solovay barrier".into(),
+        }];
+        let audit = FormalProofAudit::evaluate(
+            "bogus_p_eq_np",
+            EpistemicBucket::PendingPreprint,
+            ax,
+            replay,
+            aaronson,
+            Some(42.0),
+        );
+        assert!(!audit.passed);
+        assert!(audit.galactic_bound_detected);
+        assert_eq!(audit.bucket, EpistemicBucket::RefutedOrGalactic);
+        assert!(audit
+            .blocking_reasons
+            .iter()
+            .any(|r| r.contains("axiom smuggling")));
+        assert!(audit
+            .blocking_reasons
+            .iter()
+            .any(|r| r.contains("sorry")));
+        assert!(audit
+            .blocking_reasons
+            .iter()
+            .any(|r| r.contains(">= 2 independent checkers")));
+        assert!(audit
+            .blocking_reasons
+            .iter()
+            .any(|r| r.contains("galactic crossover bound")));
+    }
+
+    #[test]
+    fn formal_proof_audit_passes_clean_refereed_multi_kernel_proof_and_persists_on_session() {
+        let ax = AxiomFootprintAudit::evaluate(
+            vec![
+                "propext".into(),
+                "Classical.choice".into(),
+                "Quot.sound".into(),
+            ],
+            0,
+        );
+        assert!(ax.passed);
+        assert!(ax.unauthorized_axioms.is_empty());
+
+        let replay = MultiKernelReplayCheck::evaluate(
+            vec!["lean4".into(), "lean4checker".into(), "nanoda".into()],
+            true,
+            true,
+        );
+        assert!(replay.passed);
+        assert_eq!(replay.independent_checker_count, 3);
+
+        let checks: Vec<AaronsonSignCheck> = AaronsonSignId::ALL
+            .iter()
+            .map(|&sign| AaronsonSignCheck {
+                sign,
+                triggered: false,
+                evidence: "audited clean".into(),
+            })
+            .collect();
+
+        let audit = FormalProofAudit::evaluate(
+            "verified_graph_invariant",
+            EpistemicBucket::Refereed,
+            ax,
+            replay,
+            checks,
+            Some(3.0),
+        );
+        assert!(audit.passed, "expected clean formal audit to pass: {audit:?}");
+        assert!(!audit.galactic_bound_detected);
+        assert!(audit.warnings.is_empty());
+
+        let eng = DeepThinkEngine::open_in_memory().unwrap();
+        let sess = eng
+            .start_session("sess-formal", "Verify peer-mesh acyclicity bound", vec![], vec![], "max")
+            .unwrap();
+        let updated = eng.record_formal_proof_audit(&sess.think_id, audit).unwrap();
+        assert_eq!(updated.stage, "formal_proof_audit");
+        assert!(updated.formal_proof_audit.as_ref().is_some_and(|a| a.passed));
+        assert!(updated.warnings.is_empty());
     }
 }

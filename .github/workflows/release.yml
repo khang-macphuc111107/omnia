@@ -34,16 +34,41 @@ jobs:
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Node.js 22 for ui-v5 build
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Cache Cargo registry and release build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: omnia-release-win-x64-v5
 
-      - name: Build all 5 Windows release binaries (standalone omnia-cli LAST for <= 14 MiB)
+      - name: Build Flagship Studio ui-v5 into external ui-dist
+        shell: pwsh
+        run: |
+          $uiDist = Join-Path $env:RUNNER_TEMP 'ui-dist'
+          New-Item -ItemType Directory -Force -Path $uiDist, 'D:\OmniaData\build\ui-dist' | Out-Null
+          "OMNIA_UI_DIST_DIR=$uiDist" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Push-Location ui-v5
+          npm ci
+          npx vite build --outDir $uiDist
+          Copy-Item -Path (Join-Path $uiDist '*') -Destination 'D:\OmniaData\build\ui-dist' -Recurse -Force
+          Pop-Location
+
+      - name: Build all 5 Windows release binaries (omnia-studio with embed-ui, standalone omnia-cli LAST for <= 14 MiB)
         shell: pwsh
         run: |
           cargo build --workspace --release --locked
+          cargo build -p omnia-studio --release --locked --features embed-ui
           cargo build -p omnia-cli --release --locked
+          $cliPath = Join-Path $env:CARGO_TARGET_DIR "release\omnia.exe"
+          $cliSize = (Get-Item $cliPath).Length
+          $cliMiB = [math]::Round($cliSize / 1MB, 3)
+          Write-Host "omnia.exe size: $cliMiB MiB ($cliSize bytes)"
+          if ($cliSize -gt 14 * 1024 * 1024) {
+            throw "omnia.exe exceeds 14 MiB budget: $cliMiB MiB"
+          }
 
       - name: Package release zip and SHA256SUMS.txt
         shell: pwsh

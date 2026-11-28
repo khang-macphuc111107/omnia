@@ -240,6 +240,53 @@ CREATE TABLE IF NOT EXISTS chat_branches (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_branches_session
     ON chat_branches (session_id, parent_msg_id, branch_index);
+
+CREATE TABLE IF NOT EXISTS ops_peer_mesh_agents (
+    agent_id TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    owned_paths_json TEXT NOT NULL DEFAULT '[]',
+    excluded_paths_json TEXT NOT NULL DEFAULT '[]',
+    epoch INTEGER NOT NULL DEFAULT 1,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_read_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ops_peer_mesh_edges (
+    from_id TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    channel_label TEXT NOT NULL DEFAULT 'duplex-mesh',
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (from_id, to_id)
+);
+
+CREATE TABLE IF NOT EXISTS ops_peer_mesh_messages (
+    seq INTEGER PRIMARY KEY,
+    from_id TEXT NOT NULL,
+    recipients_json TEXT NOT NULL DEFAULT '[]',
+    epoch INTEGER NOT NULL DEFAULT 1,
+    hop_count INTEGER NOT NULL DEFAULT 0,
+    max_hops INTEGER NOT NULL DEFAULT 4,
+    in_reply_to_seq INTEGER,
+    topic TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL,
+    sent_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ops_peer_mesh_msg_sent
+    ON ops_peer_mesh_messages (sent_at_ms DESC, seq ASC);
+
+CREATE TABLE IF NOT EXISTS ops_routine_runs (
+    run_id TEXT PRIMARY KEY,
+    routine_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    scheduled_for_ms INTEGER,
+    started_at_ms INTEGER NOT NULL,
+    finished_at_ms INTEGER NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ops_routine_runs_routine
+    ON ops_routine_runs (routine_id, started_at_ms DESC);
 "#;
 
 const OPS_USAGE_MIGRATIONS: &[&str] = &[
@@ -335,6 +382,64 @@ pub struct RoutineRecord {
     pub last_run_at_ms: Option<i64>,
     pub next_run_at_ms: Option<i64>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutineRunRecord {
+    pub run_id: String,
+    pub routine_id: String,
+    pub status: String,
+    pub scheduled_for_ms: Option<i64>,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub summary: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerMeshAgentRecord {
+    pub agent_id: String,
+    pub role: String,
+    pub owned_paths: Vec<String>,
+    pub excluded_paths: Vec<String>,
+    pub epoch: u64,
+    pub active: bool,
+    pub last_read_seq: u64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerMeshEdgeRecord {
+    pub from_id: String,
+    pub to_id: String,
+    pub channel_label: String,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerMeshMessageRecord {
+    pub seq: u64,
+    pub from_id: String,
+    pub recipients: Vec<String>,
+    pub epoch: u64,
+    pub hop_count: u32,
+    pub max_hops: u32,
+    pub in_reply_to_seq: Option<u64>,
+    pub topic: String,
+    pub payload: String,
+    pub sent_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerMeshSnapshotRecord {
+    pub agents: Vec<PeerMeshAgentRecord>,
+    pub edges: Vec<PeerMeshEdgeRecord>,
+    pub messages: Vec<PeerMeshMessageRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -977,12 +1082,13 @@ impl OpsStore {
         }
         let id = format!("rtn_{}", uuid_v4());
         let now = now_epoch_ms();
+        let next_run_at_ms = compute_next_cron_run_ms(schedule_expr.trim(), now).ok();
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare(
                 "INSERT INTO ops_routines
-                 (id, name, prompt, workspace_path, schedule_expr, isolation_mode, model_spec, enabled, created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8);",
+                 (id, name, prompt, workspace_path, schedule_expr, isolation_mode, model_spec, enabled, next_run_at_ms, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9);",
             )
             .map_err(|e| e.to_string())?;
         stmt.bind_text(1, &id).map_err(|e| e.to_string())?;
@@ -996,7 +1102,9 @@ impl OpsStore {
             .map_err(|e| e.to_string())?;
         stmt.bind_opt_text(7, model_spec)
             .map_err(|e| e.to_string())?;
-        stmt.bind_int64(8, now).map_err(|e| e.to_string())?;
+        stmt.bind_opt_int64(8, next_run_at_ms)
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(9, now).map_err(|e| e.to_string())?;
         stmt.step().map_err(|e| e.to_string())?;
         Ok(RoutineRecord {
             id,
@@ -1008,7 +1116,7 @@ impl OpsStore {
             model_spec: model_spec.map(ToString::to_string),
             enabled: true,
             last_run_at_ms: None,
-            next_run_at_ms: None,
+            next_run_at_ms,
             created_at_ms: now,
         })
     }
@@ -1038,6 +1146,315 @@ impl OpsStore {
             });
         }
         Ok(out)
+    }
+
+    pub fn record_routine_run(&self, run: &RoutineRunRecord) -> Result<(), String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO ops_routine_runs
+                 (run_id, routine_id, status, scheduled_for_ms, started_at_ms, finished_at_ms, summary, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                    status = excluded.status,
+                    finished_at_ms = excluded.finished_at_ms,
+                    summary = excluded.summary,
+                    error = excluded.error;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, &run.run_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(2, &run.routine_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(3, &run.status).map_err(|e| e.to_string())?;
+        stmt.bind_opt_int64(4, run.scheduled_for_ms)
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(5, run.started_at_ms).map_err(|e| e.to_string())?;
+        stmt.bind_int64(6, run.finished_at_ms).map_err(|e| e.to_string())?;
+        stmt.bind_text(7, &run.summary).map_err(|e| e.to_string())?;
+        stmt.bind_opt_text(8, run.error.as_deref())
+            .map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_routine_runs(
+        &self,
+        routine_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<RoutineRunRecord>, String> {
+        let cap = limit.clamp(1, 200) as i64;
+        let conn = self.conn.lock();
+        let mut stmt = if routine_id.is_some() {
+            conn.prepare(
+                "SELECT run_id, routine_id, status, scheduled_for_ms, started_at_ms, finished_at_ms, summary, error
+                 FROM ops_routine_runs WHERE routine_id = ?1 ORDER BY started_at_ms DESC LIMIT ?2;",
+            )
+        } else {
+            conn.prepare(
+                "SELECT run_id, routine_id, status, scheduled_for_ms, started_at_ms, finished_at_ms, summary, error
+                 FROM ops_routine_runs ORDER BY started_at_ms DESC LIMIT ?1;",
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        if let Some(rid) = routine_id {
+            stmt.bind_text(1, rid).map_err(|e| e.to_string())?;
+            stmt.bind_int64(2, cap).map_err(|e| e.to_string())?;
+        } else {
+            stmt.bind_int64(1, cap).map_err(|e| e.to_string())?;
+        }
+        let mut out = Vec::new();
+        while stmt.step_row().map_err(|e| e.to_string())? {
+            out.push(RoutineRunRecord {
+                run_id: stmt.column_text(0).map_err(|e| e.to_string())?,
+                routine_id: stmt.column_text(1).map_err(|e| e.to_string())?,
+                status: stmt.column_text(2).map_err(|e| e.to_string())?,
+                scheduled_for_ms: stmt.column_opt_int64(3).ok().flatten(),
+                started_at_ms: stmt.column_int64(4).map_err(|e| e.to_string())?,
+                finished_at_ms: stmt.column_int64(5).map_err(|e| e.to_string())?,
+                summary: stmt.column_text(6).map_err(|e| e.to_string())?,
+                error: stmt.column_opt_text(7).map_err(|e| e.to_string())?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Evaluates enabled routines against Vixie 5-field cron (and `@every`/`@hourly`/... aliases),
+    /// records due trigger receipts into `ops_routine_runs`, and advances `next_run_at_ms`.
+    pub fn evaluate_due_routines(&self, now_ms: i64) -> Result<Vec<RoutineRunRecord>, String> {
+        let routines = self.list_routines()?;
+        let mut runs = Vec::new();
+        for rtn in routines {
+            if !rtn.enabled {
+                continue;
+            }
+            let Some(due_ms) = rtn.next_run_at_ms else {
+                if let Ok(initial_next) = compute_next_cron_run_ms(&rtn.schedule_expr, now_ms) {
+                    let conn = self.conn.lock();
+                    let mut upd = conn
+                        .prepare("UPDATE ops_routines SET next_run_at_ms = ?1 WHERE id = ?2;")
+                        .map_err(|e| e.to_string())?;
+                    upd.bind_int64(1, initial_next).map_err(|e| e.to_string())?;
+                    upd.bind_text(2, &rtn.id).map_err(|e| e.to_string())?;
+                    upd.step().map_err(|e| e.to_string())?;
+                }
+                continue;
+            };
+            if due_ms > now_ms {
+                continue;
+            }
+            let next_after = compute_next_cron_run_ms(&rtn.schedule_expr, now_ms).ok();
+            let run = RoutineRunRecord {
+                run_id: format!("rrun_{}", uuid_v4()),
+                routine_id: rtn.id.clone(),
+                status: "triggered".to_string(),
+                scheduled_for_ms: Some(due_ms),
+                started_at_ms: now_ms,
+                finished_at_ms: now_ms,
+                summary: SecretRedactor::redact(&format!(
+                    "Scheduled routine '{}' ({}) fired at {now_ms}",
+                    rtn.name, rtn.schedule_expr
+                )),
+                error: None,
+            };
+            self.record_routine_run(&run)?;
+            {
+                let conn = self.conn.lock();
+                let mut upd = conn
+                    .prepare(
+                        "UPDATE ops_routines SET last_run_at_ms = ?1, next_run_at_ms = ?2 WHERE id = ?3;",
+                    )
+                    .map_err(|e| e.to_string())?;
+                upd.bind_int64(1, now_ms).map_err(|e| e.to_string())?;
+                upd.bind_opt_int64(2, next_after)
+                    .map_err(|e| e.to_string())?;
+                upd.bind_text(3, &rtn.id).map_err(|e| e.to_string())?;
+                upd.step().map_err(|e| e.to_string())?;
+            }
+            runs.push(run);
+        }
+        Ok(runs)
+    }
+
+    pub fn save_peer_mesh_agent(&self, agent: &PeerMeshAgentRecord) -> Result<(), String> {
+        let owned_json = serde_json::to_string(&agent.owned_paths).unwrap_or_else(|_| "[]".into());
+        let excl_json = serde_json::to_string(&agent.excluded_paths).unwrap_or_else(|_| "[]".into());
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO ops_peer_mesh_agents
+                 (agent_id, role, owned_paths_json, excluded_paths_json, epoch, active, last_read_seq, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(agent_id) DO UPDATE SET
+                    role = excluded.role,
+                    owned_paths_json = excluded.owned_paths_json,
+                    excluded_paths_json = excluded.excluded_paths_json,
+                    epoch = excluded.epoch,
+                    active = excluded.active,
+                    last_read_seq = excluded.last_read_seq,
+                    updated_at_ms = excluded.updated_at_ms;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, &agent.agent_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(2, &agent.role).map_err(|e| e.to_string())?;
+        stmt.bind_text(3, &owned_json).map_err(|e| e.to_string())?;
+        stmt.bind_text(4, &excl_json).map_err(|e| e.to_string())?;
+        stmt.bind_int64(5, agent.epoch as i64).map_err(|e| e.to_string())?;
+        stmt.bind_int64(6, if agent.active { 1 } else { 0 })
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(7, agent.last_read_seq as i64)
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(8, agent.updated_at_ms)
+            .map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn save_peer_mesh_edge(&self, edge: &PeerMeshEdgeRecord) -> Result<(), String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO ops_peer_mesh_edges (from_id, to_id, channel_label, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(from_id, to_id) DO UPDATE SET
+                    channel_label = excluded.channel_label,
+                    updated_at_ms = excluded.updated_at_ms;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(1, &edge.from_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(2, &edge.to_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(3, &edge.channel_label)
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(4, edge.updated_at_ms)
+            .map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn save_peer_mesh_message(&self, msg: &PeerMeshMessageRecord) -> Result<(), String> {
+        let recipients_json =
+            serde_json::to_string(&msg.recipients).unwrap_or_else(|_| "[]".into());
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO ops_peer_mesh_messages
+                 (seq, from_id, recipients_json, epoch, hop_count, max_hops, in_reply_to_seq, topic, payload, sent_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(seq) DO UPDATE SET
+                    from_id = excluded.from_id,
+                    recipients_json = excluded.recipients_json,
+                    epoch = excluded.epoch,
+                    hop_count = excluded.hop_count,
+                    max_hops = excluded.max_hops,
+                    in_reply_to_seq = excluded.in_reply_to_seq,
+                    topic = excluded.topic,
+                    payload = excluded.payload,
+                    sent_at_ms = excluded.sent_at_ms;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(1, msg.seq as i64).map_err(|e| e.to_string())?;
+        stmt.bind_text(2, &msg.from_id).map_err(|e| e.to_string())?;
+        stmt.bind_text(3, &recipients_json)
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(4, msg.epoch as i64).map_err(|e| e.to_string())?;
+        stmt.bind_int64(5, i64::from(msg.hop_count))
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(6, i64::from(msg.max_hops))
+            .map_err(|e| e.to_string())?;
+        stmt.bind_opt_int64(7, msg.in_reply_to_seq.map(|v| v as i64))
+            .map_err(|e| e.to_string())?;
+        stmt.bind_text(8, &msg.topic).map_err(|e| e.to_string())?;
+        stmt.bind_text(9, &msg.payload).map_err(|e| e.to_string())?;
+        stmt.bind_int64(10, msg.sent_at_ms)
+            .map_err(|e| e.to_string())?;
+        stmt.step().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_peer_mesh_messages_since(
+        &self,
+        since_seq: u64,
+    ) -> Result<Vec<PeerMeshMessageRecord>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, from_id, recipients_json, epoch, hop_count, max_hops, in_reply_to_seq, topic, payload, sent_at_ms
+                 FROM ops_peer_mesh_messages WHERE seq > ?1 ORDER BY seq ASC;",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind_int64(1, since_seq as i64)
+            .map_err(|e| e.to_string())?;
+        let mut messages = Vec::new();
+        while stmt.step_row().map_err(|e| e.to_string())? {
+            let recipients_raw = stmt.column_text(2).map_err(|e| e.to_string())?;
+            let recipients: Vec<String> =
+                serde_json::from_str(&recipients_raw).unwrap_or_default();
+            messages.push(PeerMeshMessageRecord {
+                seq: stmt.column_int64(0).map_err(|e| e.to_string())?.max(0) as u64,
+                from_id: stmt.column_text(1).map_err(|e| e.to_string())?,
+                recipients,
+                epoch: stmt.column_int64(3).map_err(|e| e.to_string())?.max(0) as u64,
+                hop_count: stmt.column_int64(4).map_err(|e| e.to_string())?.max(0) as u32,
+                max_hops: stmt.column_int64(5).map_err(|e| e.to_string())?.max(0) as u32,
+                in_reply_to_seq: stmt
+                    .column_opt_int64(6)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| u64::try_from(v).ok()),
+                topic: stmt.column_text(7).map_err(|e| e.to_string())?,
+                payload: stmt.column_text(8).map_err(|e| e.to_string())?,
+                sent_at_ms: stmt.column_int64(9).map_err(|e| e.to_string())?,
+            });
+        }
+        Ok(messages)
+    }
+
+    pub fn load_peer_mesh_snapshot(&self) -> Result<PeerMeshSnapshotRecord, String> {
+        let messages = self.list_peer_mesh_messages_since(0)?;
+        let conn = self.conn.lock();
+        let mut agents = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT agent_id, role, owned_paths_json, excluded_paths_json, epoch, active, last_read_seq, updated_at_ms
+                     FROM ops_peer_mesh_agents ORDER BY agent_id ASC;",
+                )
+                .map_err(|e| e.to_string())?;
+            while stmt.step_row().map_err(|e| e.to_string())? {
+                let owned_raw = stmt.column_text(2).map_err(|e| e.to_string())?;
+                let excl_raw = stmt.column_text(3).map_err(|e| e.to_string())?;
+                agents.push(PeerMeshAgentRecord {
+                    agent_id: stmt.column_text(0).map_err(|e| e.to_string())?,
+                    role: stmt.column_text(1).map_err(|e| e.to_string())?,
+                    owned_paths: serde_json::from_str(&owned_raw).unwrap_or_default(),
+                    excluded_paths: serde_json::from_str(&excl_raw).unwrap_or_default(),
+                    epoch: stmt.column_int64(4).map_err(|e| e.to_string())?.max(1) as u64,
+                    active: stmt.column_int64(5).map_err(|e| e.to_string())? != 0,
+                    last_read_seq: stmt.column_int64(6).map_err(|e| e.to_string())?.max(0) as u64,
+                    updated_at_ms: stmt.column_int64(7).map_err(|e| e.to_string())?,
+                });
+            }
+        }
+        let mut edges = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT from_id, to_id, channel_label, updated_at_ms
+                     FROM ops_peer_mesh_edges ORDER BY from_id ASC, to_id ASC;",
+                )
+                .map_err(|e| e.to_string())?;
+            while stmt.step_row().map_err(|e| e.to_string())? {
+                edges.push(PeerMeshEdgeRecord {
+                    from_id: stmt.column_text(0).map_err(|e| e.to_string())?,
+                    to_id: stmt.column_text(1).map_err(|e| e.to_string())?,
+                    channel_label: stmt.column_text(2).map_err(|e| e.to_string())?,
+                    updated_at_ms: stmt.column_int64(3).map_err(|e| e.to_string())?,
+                });
+            }
+        }
+        Ok(PeerMeshSnapshotRecord {
+            agents,
+            edges,
+            messages,
+        })
     }
 
     pub fn add_inbox_item(&self, content: &str, source: &str) -> Result<Value, String> {
@@ -3276,5 +3693,345 @@ mod tests {
             store.list_chat_branches("sess_br_forked", None).unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn vixie_cron_evaluator_due_routine_runs_and_peer_mesh_snapshot_roundtrip() {
+        // 1. Vixie 5-field cron matching (UTC epoch 2026-11-28T03:15:00Z = Saturday = dow 6)
+        // Compute exact timestamp deterministically using UTC day/hour/minute check
+        let feb_leap_days = compute_next_cron_run_ms("0 0 29 2 *", 1_709_164_800_000).expect("leap");
+        assert!(cron_matches_epoch_ms("0 0 29 2 *", feb_leap_days).unwrap());
+        // 1_700_000_100s = 2023-11-14T22:15:00Z (minute 15 matches */15); 1_700_000_700s = 22:25:00Z.
+        assert!(cron_matches_epoch_ms("*/15 * * * *", 1_700_000_100_000).unwrap());
+        assert!(!cron_matches_epoch_ms("*/15 * * * *", 1_700_000_700_000).unwrap());
+        assert!(!cron_matches_epoch_ms("5 0 * * *", 1_700_000_000_000).unwrap());
+        let next_every = compute_next_cron_run_ms("@every 30s", 1_700_000_000_000).expect("@every");
+        assert_eq!(next_every, 1_700_000_030_000);
+
+        // 2. Due routine evaluation records run receipts and advances next_run_at_ms
+        let store = OpsStore::open_in_memory().expect("ops");
+        let rtn = store
+            .upsert_routine(
+                "Hourly Verify",
+                "Run strict audit",
+                "D:/Omnia",
+                "*/5 * * * *",
+                "worktree",
+                None,
+            )
+            .expect("upsert routine");
+        let due_at = rtn.next_run_at_ms.expect("initial next_run_at_ms");
+        let triggered = store.evaluate_due_routines(due_at + 100).expect("eval due");
+        assert_eq!(triggered.len(), 1);
+        assert_eq!(triggered[0].routine_id, rtn.id);
+        let runs = store.list_routine_runs(Some(&rtn.id), 10).expect("list runs");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "triggered");
+
+        // 3. PeerMesh snapshot WAL persistence
+        store
+            .save_peer_mesh_agent(&PeerMeshAgentRecord {
+                agent_id: "coord".to_string(),
+                role: "coordinator".to_string(),
+                owned_paths: vec!["docs/".to_string()],
+                excluded_paths: vec![],
+                epoch: 1,
+                active: true,
+                last_read_seq: 0,
+                updated_at_ms: 1_000,
+            })
+            .expect("save agent");
+        store
+            .save_peer_mesh_edge(&PeerMeshEdgeRecord {
+                from_id: "coord".to_string(),
+                to_id: "worker-a".to_string(),
+                channel_label: "duplex-mesh".to_string(),
+                updated_at_ms: 1_000,
+            })
+            .expect("save edge");
+        store
+            .save_peer_mesh_message(&PeerMeshMessageRecord {
+                seq: 1,
+                from_id: "coord".to_string(),
+                recipients: vec!["worker-a".to_string()],
+                epoch: 1,
+                hop_count: 0,
+                max_hops: 4,
+                in_reply_to_seq: None,
+                topic: "handoff".to_string(),
+                payload: "check net_diag".to_string(),
+                sent_at_ms: 1_500,
+            })
+            .expect("save msg");
+        let snap = store.load_peer_mesh_snapshot().expect("snapshot");
+        assert_eq!(snap.agents.len(), 1);
+        assert_eq!(snap.edges.len(), 1);
+        assert_eq!(snap.messages.len(), 1);
+        assert_eq!(snap.messages[0].seq, 1);
+    }
+}
+
+/// Parsed pure-Rust Vixie 5-field cron schedule (or `@every <N>s|m|h` interval).
+#[derive(Debug, Clone)]
+pub enum CronSchedule {
+    EveryMs(i64),
+    Vixie {
+        minutes: [bool; 60],
+        hours: [bool; 24],
+        dom: [bool; 32],
+        months: [bool; 13],
+        dow: [bool; 7],
+        dom_restricted: bool,
+        dow_restricted: bool,
+    },
+}
+
+fn epoch_ms_to_utc(ms: i64) -> (i32, u8, u8, u8, u8, u8) {
+    let days = ms.div_euclid(86_400_000);
+    let secs_of_day = ms.rem_euclid(86_400_000) / 1_000;
+    let hour = (secs_of_day / 3_600) as u8;
+    let min = ((secs_of_day % 3_600) / 60) as u8;
+    let dow = (days + 4).rem_euclid(7) as u8;
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = (y + i64::from(m <= 2)) as i32;
+    (year, m as u8, d as u8, hour, min, dow)
+}
+
+fn parse_cron_value(raw: &str, min: usize, max: usize, wrap_seven: bool) -> Result<usize, String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    let val = match lower.as_str() {
+        "jan" => 1,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        "dec" => 12,
+        "sun" => 0,
+        "mon" => 1,
+        "tue" => 2,
+        "wed" => 3,
+        "thu" => 4,
+        "fri" => 5,
+        "sat" => 6,
+        _ => lower
+            .parse::<usize>()
+            .map_err(|_| format!("invalid cron token '{raw}'"))?,
+    };
+    let normalized = if wrap_seven && val == 7 { 0 } else { val };
+    if normalized < min || normalized > max {
+        return Err(format!("cron value {val} out of range {min}..={max}"));
+    }
+    Ok(normalized)
+}
+
+fn parse_cron_field(
+    field: &str,
+    out: &mut [bool],
+    min: usize,
+    max: usize,
+    wrap_seven: bool,
+) -> Result<bool, String> {
+    let trimmed = field.trim();
+    if trimmed == "*" {
+        for slot in out.iter_mut().take(max + 1).skip(min) {
+            *slot = true;
+        }
+        return Ok(false);
+    }
+    let mut restricted = false;
+    for part in trimmed.split(',') {
+        let (base, step) = if let Some((b, s)) = part.split_once('/') {
+            let step_val = s
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&v| v > 0)
+                .ok_or_else(|| format!("invalid cron step '{s}'"))?;
+            (b.trim(), step_val)
+        } else {
+            (part.trim(), 1usize)
+        };
+        let (start, end) = if base == "*" {
+            (min, max)
+        } else if let Some((lo_s, hi_s)) = base.split_once('-') {
+            restricted = true;
+            let lo = parse_cron_value(lo_s, min, max, wrap_seven)?;
+            let hi = parse_cron_value(hi_s, min, max, wrap_seven)?;
+            if lo > hi {
+                return Err(format!("inverted cron range '{base}'"));
+            }
+            (lo, hi)
+        } else {
+            restricted = true;
+            let single = parse_cron_value(base, min, max, wrap_seven)?;
+            if step == 1 {
+                out[single] = true;
+                continue;
+            }
+            (single, max)
+        };
+        if step > 1 && base == "*" {
+            restricted = true;
+        }
+        let mut cur = start;
+        while cur <= end {
+            let slot = if wrap_seven && cur == 7 { 0 } else { cur };
+            out[slot] = true;
+            cur += step;
+        }
+    }
+    Ok(restricted)
+}
+
+/// Parses a standard Vixie 5-field cron expression or `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly`/`@every`.
+pub fn parse_cron_schedule(expr: &str) -> Result<CronSchedule, String> {
+    let trimmed = expr.trim();
+    if let Some(rest) = trimmed
+        .strip_prefix("@every ")
+        .or_else(|| trimmed.strip_prefix("every "))
+    {
+        let s = rest.trim().to_ascii_lowercase();
+        let (num_s, mult) = if let Some(n) = s.strip_suffix('s') {
+            (n, 1_000i64)
+        } else if let Some(n) = s.strip_suffix('m') {
+            (n, 60_000i64)
+        } else if let Some(n) = s.strip_suffix('h') {
+            (n, 3_600_000i64)
+        } else {
+            return Err(format!("unsupported @every interval '{trimmed}'"));
+        };
+        let qty = num_s
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|&v| v > 0)
+            .ok_or_else(|| format!("invalid @every quantity '{trimmed}'"))?;
+        return Ok(CronSchedule::EveryMs(qty.saturating_mul(mult)));
+    }
+
+    let expanded = match trimmed.to_ascii_lowercase().as_str() {
+        "@hourly" => "0 * * * *",
+        "@daily" | "@midnight" => "0 0 * * *",
+        "@weekly" => "0 0 * * 0",
+        "@monthly" => "0 0 1 * *",
+        "@yearly" | "@annually" => "0 0 1 1 *",
+        _ => trimmed,
+    };
+    let fields: Vec<&str> = expanded.split_whitespace().collect();
+    if fields.len() != 5 {
+        return Err(format!(
+            "expected 5-field Vixie cron expression, got '{}' fields",
+            fields.len()
+        ));
+    }
+
+    let mut minutes = [false; 60];
+    let mut hours = [false; 24];
+    let mut dom = [false; 32];
+    let mut months = [false; 13];
+    let mut dow = [false; 7];
+
+    parse_cron_field(fields[0], &mut minutes, 0, 59, false)?;
+    parse_cron_field(fields[1], &mut hours, 0, 23, false)?;
+    let dom_restricted = parse_cron_field(fields[2], &mut dom, 1, 31, false)?;
+    parse_cron_field(fields[3], &mut months, 1, 12, false)?;
+    let dow_restricted = parse_cron_field(fields[4], &mut dow, 0, 6, true)?;
+
+    Ok(CronSchedule::Vixie {
+        minutes,
+        hours,
+        dom,
+        months,
+        dow,
+        dom_restricted,
+        dow_restricted,
+    })
+}
+
+fn vixie_matches(sched: &CronSchedule, ms: i64) -> bool {
+    let CronSchedule::Vixie {
+        minutes,
+        hours,
+        dom,
+        months,
+        dow,
+        dom_restricted,
+        dow_restricted,
+    } = sched
+    else {
+        return true;
+    };
+    let (_year, month, day, hour, minute, wd) = epoch_ms_to_utc(ms);
+    if !minutes[usize::from(minute)]
+        || !hours[usize::from(hour)]
+        || !months[usize::from(month)]
+    {
+        return false;
+    }
+    let dom_ok = dom[usize::from(day)];
+    let dow_ok = dow[usize::from(wd)];
+    if *dom_restricted && *dow_restricted {
+        dom_ok || dow_ok
+    } else {
+        dom_ok && dow_ok
+    }
+}
+
+/// Returns `true` when `epoch_ms` falls within a minute matching `expr`.
+pub fn cron_matches_epoch_ms(expr: &str, epoch_ms: i64) -> Result<bool, String> {
+    let sched = parse_cron_schedule(expr)?;
+    Ok(vixie_matches(&sched, epoch_ms))
+}
+
+/// Computes the next UTC epoch timestamp (`> after_ms`) matching `expr`.
+pub fn compute_next_cron_run_ms(expr: &str, after_ms: i64) -> Result<i64, String> {
+    let sched = parse_cron_schedule(expr)?;
+    match sched {
+        CronSchedule::EveryMs(step_ms) => Ok(after_ms.saturating_add(step_ms)),
+        ref vix @ CronSchedule::Vixie {
+            ref hours,
+            ref months,
+            ..
+        } => {
+            let mut candidate = ((after_ms / 60_000) + 1) * 60_000;
+            // Search up to 4 years + 4 days so Feb 29 leap schedules always resolve quickly.
+            for _ in 0..1_500 {
+                let (_y, month, _d, hour, _min, _wd) = epoch_ms_to_utc(candidate);
+                if !months[usize::from(month)] {
+                    // Advance to next midnight/day quickly
+                    candidate = ((candidate / 86_400_000) + 1) * 86_400_000;
+                    continue;
+                }
+                if hours[usize::from(hour)] && vixie_matches(vix, candidate) {
+                    return Ok(candidate);
+                }
+                // Check remaining minutes in current day if hour matches or jump to matching hours
+                let day_start = candidate.div_euclid(86_400_000) * 86_400_000;
+                let start_min_of_day = ((candidate - day_start) / 60_000) as usize;
+                for m_idx in start_min_of_day..1_440 {
+                    let probe = day_start + (m_idx as i64) * 60_000;
+                    if vixie_matches(vix, probe) {
+                        return Ok(probe);
+                    }
+                }
+                candidate = day_start + 86_400_000;
+            }
+            Err(format!("no next cron run found within 4 years for '{expr}'"))
+        }
     }
 }

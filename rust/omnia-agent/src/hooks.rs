@@ -8,11 +8,146 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+
+/// Owns the entire subprocess tree launched for a single command hook so timeout,
+/// cancellation, or early drop kills both the shell and every grandchild with zero orphans.
+#[cfg(windows)]
+mod owned_hook_tree {
+    use std::ffi::c_void;
+    use std::io;
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent};
+
+    /// Named manual-reset Win32 event gating hook command execution until the shell
+    /// has been assigned to its kill-on-close Job Object (eliminating spawn-before-assign races).
+    pub(super) struct StartGate {
+        event: OwnedHandle,
+        name: String,
+    }
+
+    impl StartGate {
+        pub(super) fn new() -> io::Result<Self> {
+            let name = format!("Local\\omnia-hook-{}", uuid::Uuid::new_v4().simple());
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            // SAFETY: null-terminated UTF-16 event name and null security attributes create
+            // an owned non-inheritable manual-reset event in the current Windows session.
+            let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
+            if raw.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `raw` is a newly created non-null Win32 event handle owned exclusively here.
+            let event = unsafe { OwnedHandle::from_raw_handle(raw as RawHandle) };
+            Ok(Self { event, name })
+        }
+
+        pub(super) fn name(&self) -> &str {
+            &self.name
+        }
+
+        pub(super) fn release(&self) -> io::Result<()> {
+            // SAFETY: `self.event` remains valid and owned for the entire hook execution.
+            if unsafe { SetEvent(self.event.as_raw_handle() as HANDLE) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    /// Kill-on-close Win32 Job Object owning the hook shell and all descendant processes.
+    pub(super) struct Guard {
+        job: OwnedHandle,
+    }
+
+    impl Guard {
+        pub(super) fn attach(child: &tokio::process::Child) -> io::Result<Self> {
+            let process = child
+                .raw_handle()
+                .ok_or_else(|| io::Error::other("hook shell has no active process handle"))?;
+            // SAFETY: null attributes and null name create an unnamed non-inheritable Job Object.
+            let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if raw.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `raw` is a newly created non-null Win32 Job Object handle owned exclusively here.
+            let job = unsafe { OwnedHandle::from_raw_handle(raw as RawHandle) };
+            // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a plain C repr struct zero-initialized cleanly.
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let len = u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+                .unwrap_or(u32::MAX);
+            // SAFETY: `job` is our owned handle, `limits` matches the requested class and size,
+            // and `process` is the live handle borrowed from `child`.
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job.as_raw_handle() as HANDLE,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast::<c_void>(),
+                    len,
+                ) != 0
+                    && AssignProcessToJobObject(job.as_raw_handle() as HANDLE, process as HANDLE)
+                        != 0
+            };
+            if !configured {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self { job })
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // SAFETY: `self.job` is an owned Job Object handle; terminating it synchronously
+            // guarantees zero surviving grandchild processes before `OwnedHandle` closes it.
+            unsafe {
+                let _ = TerminateJobObject(self.job.as_raw_handle() as HANDLE, 1);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+mod owned_hook_tree {
+    use std::io;
+
+    extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+
+    pub(super) struct Guard {
+        group: i32,
+    }
+
+    impl Guard {
+        pub(super) fn attach(child: &tokio::process::Child) -> io::Result<Self> {
+            let group = child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .filter(|id| *id > 0)
+                .ok_or_else(|| io::Error::other("hook shell has no process group"))?;
+            Ok(Self { group })
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // SAFETY: `build_hidden_shell_command` places the child in its own process group (`pgid == pid`).
+            let _ = unsafe { kill(-self.group, 9) };
+        }
+    }
+}
 
 /// All 25 lifecycle events supported by Omnia v5 hooks (OMP + Claude Code + Omnia parity).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -232,6 +367,8 @@ pub struct HookRegistry {
     workspace_root: PathBuf,
     specs: Arc<RwLock<Vec<HookSpec>>>,
     inline: Arc<RwLock<Vec<RegisteredInlineHook>>>,
+    /// Trusted plugin roots keyed by hook id (never deserialized from untrusted JSON).
+    plugin_roots: Arc<RwLock<HashMap<String, PathBuf>>>,
 }
 
 impl std::fmt::Debug for HookRegistry {
@@ -251,6 +388,7 @@ impl HookRegistry {
             workspace_root: workspace_root.into(),
             specs: Arc::new(RwLock::new(Vec::new())),
             inline: Arc::new(RwLock::new(Vec::new())),
+            plugin_roots: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -277,10 +415,40 @@ impl HookRegistry {
     }
 
     pub fn register_command(&self, spec: HookSpec) {
+        if let Ok(mut roots) = self.plugin_roots.write() {
+            roots.remove(&spec.id);
+        }
         if let Ok(mut guard) = self.specs.write() {
             guard.retain(|existing| existing.id != spec.id);
             guard.push(spec);
         }
+    }
+
+    /// Registers a command hook with a trusted plugin root directory exported as `OMNIA_PLUGIN_ROOT`.
+    pub fn register_command_with_root(&self, spec: HookSpec, plugin_root: PathBuf) {
+        let id = spec.id.clone();
+        if let Ok(mut guard) = self.specs.write() {
+            guard.retain(|existing| existing.id != id);
+            guard.push(spec);
+        }
+        if let Ok(mut roots) = self.plugin_roots.write() {
+            roots.insert(id, plugin_root);
+        }
+    }
+
+    /// Fires a non-blocking background hook dispatch (e.g., task/notification completion).
+    pub fn fire_background(
+        &self,
+        event: HookEvent,
+        match_subject: Option<String>,
+        payload: Value,
+    ) -> tokio::task::JoinHandle<HookDispatchOutcome> {
+        let registry = self.clone();
+        tokio::spawn(async move {
+            registry
+                .dispatch(event, match_subject.as_deref(), payload)
+                .await
+        })
     }
 
     pub fn register_inline(
@@ -410,7 +578,19 @@ impl HookRegistry {
 
         for spec in cmd_hooks {
             outcome.executed_hooks += 1;
-            match execute_hook_command(&self.workspace_root, &spec, &stdin_payload).await {
+            let plugin_root = self
+                .plugin_roots
+                .read()
+                .ok()
+                .and_then(|map| map.get(&spec.id).cloned());
+            match execute_hook_command(
+                &self.workspace_root,
+                &spec,
+                plugin_root.as_deref(),
+                &stdin_payload,
+            )
+            .await
+            {
                 Ok(cmd_out) => {
                     if cmd_out.exit_code == HOOK_EXIT_HARD_BLOCK {
                         let reason = first_non_empty(&[&cmd_out.stderr, &cmd_out.stdout])
@@ -593,12 +773,67 @@ struct HookCommandOutput {
 async fn execute_hook_command(
     workspace_root: &Path,
     spec: &HookSpec,
+    plugin_root: Option<&Path>,
     stdin_payload: &str,
 ) -> Result<HookCommandOutput> {
-    let mut cmd = build_hidden_shell_command(&spec.command, workspace_root);
-    cmd.stdin(Stdio::piped())
+    #[cfg(windows)]
+    let gate = owned_hook_tree::StartGate::new()
+        .with_context(|| format!("create Windows StartGate for hook `{}`", spec.id))?;
+    #[cfg(windows)]
+    let gate_name = Some(gate.name());
+    #[cfg(not(windows))]
+    let gate_name: Option<&str> = None;
+
+    let mut child = spawn_hidden_hook_shell(
+        &spec.command,
+        workspace_root,
+        spec,
+        plugin_root,
+        gate_name,
+    )?;
+
+    // Fail closed BEFORE releasing the startup gate if Job Object / process-group ownership
+    // cannot be established, ensuring zero user commands or descendants can escape supervision.
+    let _tree_guard = owned_hook_tree::Guard::attach(&child)
+        .with_context(|| format!("attach hook `{}` to isolated process tree", spec.id))?;
+
+    #[cfg(windows)]
+    gate.release()
+        .with_context(|| format!("release Windows StartGate for hook `{}`", spec.id))?;
+
+    let stdin = child.stdin.take();
+    let payload_owned = stdin_payload.to_owned();
+    let work = async move {
+        if let Some(mut stdin) = stdin {
+            let _ = stdin.write_all(payload_owned.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        }
+        child.wait_with_output().await
+    };
+
+    let timeout = Duration::from_millis(spec.timeout_ms.clamp(250, 60_000));
+    let output = tokio::time::timeout(timeout, work)
+        .await
+        .map_err(|_| anyhow::anyhow!("hook `{}` timed out after {}ms", spec.id, timeout.as_millis()))??;
+
+    Ok(HookCommandOutput {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+fn configure_hook_env(
+    cmd: &mut tokio::process::Command,
+    cwd: &Path,
+    spec: &HookSpec,
+    plugin_root: Option<&Path>,
+) {
+    cmd.current_dir(cwd)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
     // Strip provider credentials from hook subprocess environments by default.
     for (k, _) in std::env::vars_os() {
@@ -611,41 +846,84 @@ async fn execute_hook_command(
     }
     cmd.env("OMNIA_HOOK_EVENT", spec.event.as_str());
     cmd.env("OMNIA_HOOK_ID", &spec.id);
-
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn hook `{}`", spec.id))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(stdin_payload.as_bytes()).await;
-        let _ = stdin.shutdown().await;
+    cmd.env("OMNIA_PROJECT_DIR", cwd);
+    cmd.env("CLAUDE_PROJECT_DIR", cwd);
+    if let Some(root) = plugin_root {
+        cmd.env("OMNIA_PLUGIN_ROOT", root);
     }
-
-    let timeout = Duration::from_millis(spec.timeout_ms.clamp(250, 60_000));
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
-        .map_err(|_| anyhow::anyhow!("hook `{}` timed out after {}ms", spec.id, timeout.as_millis()))??;
-
-    Ok(HookCommandOutput {
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
 }
 
-fn build_hidden_shell_command(command: &str, cwd: &Path) -> tokio::process::Command {
+#[cfg(windows)]
+fn build_windows_gated_shell(
+    program: &str,
+    command: &str,
+    cwd: &Path,
+    spec: &HookSpec,
+    plugin_root: Option<&Path>,
+    gate_name: &str,
+) -> tokio::process::Command {
+    // Wait on the named Win32 StartGate event until the parent has attached this shell
+    // to its kill-on-close Job Object, then launch `cmd.exe /d /s /c "..."` inheriting
+    // raw OS stdin/stdout/stderr handles untouched so existing cmd.exe hooks & stdin JSON
+    // continue to work identically with zero spawn-before-assign race or orphan leaks.
+    const GATE_SCRIPT: &str = concat!(
+        "$gateName = $env:OMNIA_HOOK_GATE; ",
+        "$hookCmd = $env:OMNIA_HOOK_CMD; ",
+        "Remove-Item Env:OMNIA_HOOK_GATE, Env:OMNIA_HOOK_CMD -ErrorAction SilentlyContinue; ",
+        "$g = [System.Threading.EventWaitHandle]::OpenExisting($gateName); ",
+        "try { if (-not $g.WaitOne(30000)) { exit 1 } } finally { $g.Dispose() }; ",
+        "$psi = [System.Diagnostics.ProcessStartInfo]::new('cmd.exe', '/d /s /c \"' + $hookCmd + '\"'); ",
+        "$psi.UseShellExecute = $false; ",
+        "$p = [System.Diagnostics.Process]::Start($psi); ",
+        "$p.WaitForExit(); ",
+        "exit $p.ExitCode"
+    );
+
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", GATE_SCRIPT])
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    configure_hook_env(&mut cmd, cwd, spec, plugin_root);
+    cmd.env("OMNIA_HOOK_GATE", gate_name);
+    cmd.env("OMNIA_HOOK_CMD", command);
+    cmd
+}
+
+fn spawn_hidden_hook_shell(
+    command: &str,
+    cwd: &Path,
+    spec: &HookSpec,
+    plugin_root: Option<&Path>,
+    gate_name: Option<&str>,
+) -> Result<tokio::process::Child> {
     #[cfg(windows)]
     {
-        let mut cmd = tokio::process::Command::new("cmd.exe");
-        cmd.args(["/d", "/s", "/c", command])
-            .current_dir(cwd)
-            .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        cmd
+        let gate_name = gate_name.context("missing Windows StartGate name")?;
+        for shell in ["pwsh", "powershell"] {
+            match build_windows_gated_shell(shell, command, cwd, spec, plugin_root, gate_name)
+                .spawn()
+            {
+                Ok(child) => return Ok(child),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    return Err(err).with_context(|| format!("spawn hook `{}` via {shell}", spec.id));
+                }
+            }
+        }
+        anyhow::bail!(
+            "spawn hook `{}`: neither `pwsh` nor `powershell` found on PATH",
+            spec.id
+        )
     }
     #[cfg(not(windows))]
     {
+        let _ = gate_name;
         let mut cmd = tokio::process::Command::new("/bin/sh");
-        cmd.args(["-c", command]).current_dir(cwd);
-        cmd
+        cmd.args(["-c", command]);
+        #[cfg(unix)]
+        cmd.process_group(0);
+        configure_hook_env(&mut cmd, cwd, spec, plugin_root);
+        cmd.spawn()
+            .with_context(|| format!("spawn hook `{}`", spec.id))
     }
 }
 
@@ -752,5 +1030,87 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].event, HookEvent::PreToolUse);
         assert_eq!(specs[0].matcher.as_deref(), Some("shell|edit_file"));
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_hook_process_tree_without_orphans() {
+        let tmp = std::env::temp_dir().join(format!(
+            "omnia_hook_timeout_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        let registry = HookRegistry::new(&tmp);
+        let sleep_cmd = if cfg!(windows) {
+            "ping -n 20 127.0.0.1 >nul"
+        } else {
+            "sleep 20"
+        };
+        registry.register_command(HookSpec {
+            id: "slow-hook".into(),
+            event: HookEvent::PostToolUse,
+            matcher: None,
+            command: sleep_cmd.into(),
+            timeout_ms: 1_200,
+            enabled: true,
+            fail_closed: false,
+            source: "unit-test".into(),
+        });
+
+        let started = std::time::Instant::now();
+        let out = registry
+            .dispatch(HookEvent::PostToolUse, Some("shell"), json!({}))
+            .await;
+        assert!(!out.blocked);
+        assert!(
+            out.warnings.iter().any(|w| w.contains("timed out")),
+            "expected timeout warning, got {:?}",
+            out.warnings
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "process tree termination hung: {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn plugin_root_is_exported_from_trusted_side_map() {
+        let tmp = std::env::temp_dir().join(format!(
+            "omnia_hook_root_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        let fake_root = tmp.join("trusted-plugin");
+        let registry = HookRegistry::new(&tmp);
+        let cmd = if cfg!(windows) {
+            "echo %OMNIA_PLUGIN_ROOT%"
+        } else {
+            "printf %s \"$OMNIA_PLUGIN_ROOT\""
+        };
+        registry.register_command_with_root(
+            HookSpec {
+                id: "root-probe".into(),
+                event: HookEvent::SessionStart,
+                matcher: None,
+                command: cmd.into(),
+                timeout_ms: 8_000,
+                enabled: true,
+                fail_closed: false,
+                source: "plugin".into(),
+            },
+            fake_root.clone(),
+        );
+        let out = registry
+            .dispatch(HookEvent::SessionStart, None, json!({}))
+            .await;
+        assert!(
+            out.additional_context
+                .iter()
+                .any(|c| c.contains("trusted-plugin")),
+            "expected OMNIA_PLUGIN_ROOT in context, got {:?}",
+            out.additional_context
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -6,24 +6,26 @@ use omnia_connector_gateway::proxy_router::{
     FailureScope, NormalizedProxyConfig, ProxyCandidateConfig, ProxyRouter, QuotaCertainty,
     RouteSelectionRequest, RoutingStrategy,
 };
-use omnia_core::{now_epoch_ms, try_json_i64_in_range};
+use omnia_core::credentials::CredentialStore;
+use omnia_core::{now_epoch_ms, try_json_i64_in_range, SecretRedactor};
 use omnia_agent::{
     read_models_config, resolve_model_endpoint, AgentStore, ApprovalMode, HarnessBackendId,
     ManagedSpawnRequest, SuperHarnessManager, WireApiMode,
 };
-use omnia_core::credentials::CredentialStore;
 use omnia_routing::{
-    normalize_provider_wire_payload, CandidateResourceState, CircuitState,
-    DynamicProviderRouter, ModelCapabilities, PrivacyTier, ProviderWireDialect, QuotaState,
-    RouteCandidate, RouteRequestPolicy, TaskRisk,
+    compute_cache_shape_hash, detect_retired_model_notice, normalize_provider_wire_payload,
+    sort_tools_stable, CandidateResourceState, CircuitState, DynamicProviderRouter,
+    ModelCapabilities, PrivacyTier, ProviderWireDialect, QuotaState, RouteCandidate,
+    RouteRequestPolicy, TaskRisk,
 };
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,8 +51,68 @@ const DEFAULT_TOKEN_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_RETRIES: u32 = 2;
 const DEFAULT_CHAT_PATH: &str = "chat/completions";
 const DEFAULT_MODELS_PATH: &str = "models";
+const MAX_AGENT_EVENT_RING: usize = 512;
 
 static RUNTIME_REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug, Default)]
+struct AgentEventRing {
+    inner: Arc<Mutex<AgentEventRingInner>>,
+}
+
+#[derive(Debug, Default)]
+struct AgentEventRingInner {
+    next_seq: u64,
+    events: VecDeque<Value>,
+}
+
+impl AgentEventRing {
+    fn push(&self, session_id: &str, payload: Value) -> u64 {
+        let redacted = SecretRedactor::redact_json(&payload);
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.next_seq = guard.next_seq.saturating_add(1);
+        let seq = guard.next_seq;
+        if guard.events.len() >= MAX_AGENT_EVENT_RING {
+            guard.events.pop_front();
+        }
+        guard.events.push_back(json!({
+            "seq": seq,
+            "tsMs": now_epoch_ms(),
+            "sessionId": session_id,
+            "event": redacted,
+        }));
+        seq
+    }
+
+    fn snapshot(&self, session_filter: Option<&str>, since_seq: u64) -> Vec<Value> {
+        let guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .events
+            .iter()
+            .filter(|ev| {
+                let seq = ev.get("seq").and_then(Value::as_u64).unwrap_or(0);
+                let sid_ok = session_filter
+                    .is_none_or(|f| ev.get("sessionId").and_then(Value::as_str) == Some(f));
+                seq > since_seq && sid_ok
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        let guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.events.len()
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -72,6 +134,7 @@ struct Config {
     skills: SkillCatalog,
     nvidia: NvidiaConfig,
     provider_model_allowlist: Vec<String>,
+    router_db_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -157,6 +220,18 @@ impl Config {
             .filter(|id| !id.is_empty())
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
+        let router_db_path = env::var("OMNIA_RUNTIME_ROUTER_DB")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var("OMNIA_DATA_DIR")
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .map(|dir| PathBuf::from(dir).join("runtime_router.db"))
+            });
 
         Self {
             bind,
@@ -177,6 +252,7 @@ impl Config {
             skills,
             nvidia,
             provider_model_allowlist,
+            router_db_path,
         }
     }
 
@@ -203,6 +279,8 @@ struct App {
     candidate_urls: Arc<HashMap<String, Url>>,
     harness: Arc<SuperHarnessManager>,
     dynamic_router: Arc<DynamicProviderRouter>,
+    agent_events: AgentEventRing,
+    latest_cache_shape: Arc<Mutex<Option<String>>>,
 }
 
 impl App {
@@ -277,7 +355,23 @@ impl App {
         let agent_store = AgentStore::open_in_memory()
             .map_err(|e| format!("unable to initialize agent store: {e}"))?;
         let harness = Arc::new(SuperHarnessManager::new(agent_store));
-        let dynamic_router = Arc::new(DynamicProviderRouter::new());
+        let now_ms = now_epoch_ms();
+        let router_inst = match config.router_db_path.as_ref() {
+            Some(db_path) => match DynamicProviderRouter::open_sqlite(db_path, now_ms) {
+                Ok(router) => router,
+                Err(err) => {
+                    eprintln!(
+                        "omnia-runtime: failed opening router SQLite WAL at {}: {err}; falling back to in-memory SQLite",
+                        db_path.display()
+                    );
+                    DynamicProviderRouter::open_in_memory_sqlite(now_ms)
+                        .unwrap_or_else(|_| DynamicProviderRouter::new())
+                }
+            },
+            None => DynamicProviderRouter::open_in_memory_sqlite(now_ms)
+                .unwrap_or_else(|_| DynamicProviderRouter::new()),
+        };
+        let dynamic_router = Arc::new(router_inst);
         seed_configured_models_router(&dynamic_router, &config);
 
         Ok(Self {
@@ -289,6 +383,8 @@ impl App {
             candidate_urls: Arc::new(candidate_urls),
             harness,
             dynamic_router,
+            agent_events: AgentEventRing::default(),
+            latest_cache_shape: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -492,6 +588,9 @@ fn compact_header_name(value: &str) -> String {
 
 fn is_credential_name(value: &str) -> bool {
     let normalized = compact_header_name(value);
+    if normalized == "fencingtoken" {
+        return false;
+    }
     matches!(
         normalized.as_str(),
         "authorization"
@@ -1224,10 +1323,15 @@ async fn request_chat_with_dialect(
         .insert("model".to_string(), Value::String(requested_model.clone()));
 
     if let Some(dialect) = active_dialect {
+        let _ = sort_tools_stable(&mut body);
         let normalized = normalize_provider_wire_payload(dialect, &body).map_err(|err| {
             json_error(400, "invalid_wire_payload", &err.to_string())
         })?;
         body = normalized.into_value();
+    }
+    let cache_digest = compute_cache_shape_hash(&body);
+    if let Ok(mut shape_slot) = app.latest_cache_shape.lock() {
+        *shape_slot = Some(cache_digest.prefix_8hex.clone());
     }
 
     let serialized = serde_json::to_vec(&body)
@@ -1366,6 +1470,19 @@ async fn request_chat_with_dialect(
         )
         .await
         .map_err(|detail| upstream_error(502, detail))?;
+        let body_text = String::from_utf8_lossy(&body);
+        if let Some(retired) = detect_retired_model_notice(&body_text) {
+            return Err(ResponseSpec::json(
+                404,
+                json!({
+                    "ok": false,
+                    "error": "model_retired",
+                    "retiredModel": retired.retired_model,
+                    "successorModel": retired.successor_model,
+                    "detail": retired.raw_notice,
+                }),
+            ));
+        }
         return Ok(Dispatch::Response(ResponseSpec::bytes(
             status,
             &content_type,
@@ -1430,7 +1547,7 @@ fn seed_configured_models_router(router: &DynamicProviderRouter, config: &Config
             circuit: CircuitState::Closed,
             ..CandidateResourceState::default()
         };
-        let _ = router.upsert_candidate(cand, state);
+        let _ = router.upsert_candidate_preserving_state(cand, state);
     }
 
     let providers = read_models_config(None)
@@ -1471,7 +1588,7 @@ fn seed_configured_models_router(router: &DynamicProviderRouter, config: &Config
                 circuit: CircuitState::Closed,
                 ..CandidateResourceState::default()
             };
-            let _ = router.upsert_candidate(cand, state);
+            let _ = router.upsert_candidate_preserving_state(cand, state);
         }
     }
 }
@@ -1630,9 +1747,25 @@ async fn dispatch_request(app: &App, request: &Request) -> Result<Dispatch, Resp
         }
         ("GET", "/api/agent/sessions") => {
             let sessions = app.harness.list_running();
+            let events = app.agent_events.snapshot(None, 0);
             Ok(Dispatch::Response(ResponseSpec::json(
                 200,
-                json!({ "ok": true, "sessions": sessions }),
+                json!({
+                    "ok": true,
+                    "sessions": sessions,
+                    "events": events,
+                }),
+            )))
+        }
+        ("GET", "/api/agent/events") => {
+            let events = app.agent_events.snapshot(None, 0);
+            Ok(Dispatch::Response(ResponseSpec::json(
+                200,
+                json!({
+                    "ok": true,
+                    "count": events.len(),
+                    "events": events,
+                }),
             )))
         }
         ("POST", "/api/agent/spawn") => handle_runtime_agent_spawn(app, request).await,
@@ -1640,6 +1773,7 @@ async fn dispatch_request(app: &App, request: &Request) -> Result<Dispatch, Resp
         ("POST", "/api/agent/abort") => handle_runtime_agent_abort(app, request).await,
         ("GET", "/api/router/state") => handle_runtime_router_state(app),
         ("POST", "/api/router/decide") => handle_runtime_router_decide(app, request),
+        ("POST", "/api/router/cancel") => handle_runtime_router_cancel(app, request),
         ("POST", "/api/router/trip") => handle_runtime_router_breaker(app, request, true),
         ("POST", "/api/router/reset") => handle_runtime_router_breaker(app, request, false),
         ("GET", "/api/telemetry") => handle_runtime_telemetry(app),
@@ -1679,6 +1813,59 @@ async fn dispatch_request(app: &App, request: &Request) -> Result<Dispatch, Resp
     }
 }
 
+fn parse_runtime_approval_mode(
+    raw: Option<&Value>,
+    trusted_override: Option<bool>,
+) -> Result<(ApprovalMode, bool, &'static str), ResponseSpec> {
+    let Some(val) = raw.filter(|v| !v.is_null()) else {
+        return Ok((
+            ApprovalMode::Yolo,
+            trusted_override.unwrap_or(true),
+            "yolo",
+        ));
+    };
+    let Some(s) = val.as_str() else {
+        return Err(json_error(
+            400,
+            "invalid_approval_mode",
+            "approvalMode must be a string",
+        ));
+    };
+    match s.trim().to_ascii_lowercase().as_str() {
+        "yolo" | "turbo" | "full" | "full-access" | "unrestricted" | "auto" | "auto-approve"
+        | "auto-yolo" | "solo" | "bypasspermissions" | "acceptall" => Ok((
+            ApprovalMode::Yolo,
+            trusted_override.unwrap_or(true),
+            "yolo",
+        )),
+        "write" | "acceptedits" | "auto-workspace" | "workspace" => Ok((
+            ApprovalMode::Write,
+            trusted_override.unwrap_or(true),
+            "write",
+        )),
+        "plan" | "read-only" | "readonly" => Ok((
+            ApprovalMode::Plan,
+            trusted_override.unwrap_or(true),
+            "plan",
+        )),
+        "always-ask-cached" | "cached" => Ok((
+            ApprovalMode::AlwaysAskCached,
+            trusted_override.unwrap_or(true),
+            "always-ask-cached",
+        )),
+        "default" | "approve" | "ask" | "always-ask" => Ok((
+            ApprovalMode::AlwaysAsk,
+            trusted_override.unwrap_or(false),
+            "always-ask",
+        )),
+        other => Err(json_error(
+            400,
+            "invalid_approval_mode",
+            &format!("unrecognized approvalMode '{other}'"),
+        )),
+    }
+}
+
 async fn handle_runtime_agent_spawn(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
     let body = parse_json_object(request)?;
     let cwd = body
@@ -1692,6 +1879,15 @@ async fn handle_runtime_agent_spawn(app: &App, request: &Request) -> Result<Disp
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("rt-sess-{}", RUNTIME_REQUEST_SEQ.fetch_add(1, Ordering::Relaxed)));
+    let trusted_override = body
+        .get("workspaceTrusted")
+        .or_else(|| body.get("workspace_trusted"))
+        .and_then(Value::as_bool);
+    let (approval_mode, workspace_trusted, approval_label) = parse_runtime_approval_mode(
+        body.get("approvalMode")
+            .or_else(|| body.get("approval_mode")),
+        trusted_override,
+    )?;
     let provider = body.get("provider").and_then(Value::as_str).map(ToString::to_string);
     let model_id = body
         .get("model")
@@ -1708,8 +1904,8 @@ async fn handle_runtime_agent_spawn(app: &App, request: &Request) -> Result<Disp
         tab_id: tab_id.clone(),
         cwd,
         backend: HarnessBackendId::OmniSuper,
-        approval_mode: ApprovalMode::AlwaysAsk,
-        workspace_trusted: true,
+        approval_mode,
+        workspace_trusted,
         permission_rules: Vec::new(),
         provider: resolved.as_ref().map(|r| r.provider_id.clone()).or(provider),
         model_id: resolved.as_ref().map(|r| r.model_id.clone()).or(model_id),
@@ -1718,18 +1914,36 @@ async fn handle_runtime_agent_spawn(app: &App, request: &Request) -> Result<Disp
         config_dir: None,
         max_turns: 16,
     };
-    let sink: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(|_| {});
+    let event_ring = app.agent_events.clone();
+    let sink_sid = tab_id.clone();
+    let sink: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |ev: Value| {
+        event_ring.push(&sink_sid, ev);
+    });
     match app.harness.spawn_session(req, sink).await {
-        Ok((session_key, pid, state)) => Ok(Dispatch::Response(ResponseSpec::json(
-            200,
-            json!({
-                "ok": true,
-                "sessionKey": session_key,
-                "sessionId": tab_id,
-                "pid": pid,
-                "state": state,
-            }),
-        ))),
+        Ok((session_key, pid, state)) => {
+            app.agent_events.push(
+                &tab_id,
+                json!({
+                    "kind": "runtime.session_spawned",
+                    "sessionKey": session_key,
+                    "approvalMode": approval_label,
+                    "workspaceTrusted": workspace_trusted,
+                    "pid": pid,
+                }),
+            );
+            Ok(Dispatch::Response(ResponseSpec::json(
+                200,
+                json!({
+                    "ok": true,
+                    "sessionKey": session_key,
+                    "sessionId": tab_id,
+                    "pid": pid,
+                    "state": state,
+                    "approvalMode": approval_label,
+                    "workspaceTrusted": workspace_trusted,
+                }),
+            )))
+        }
         Err(e) => Err(json_error(503, "agent_spawn_failed", &e.to_string())),
     }
 }
@@ -1863,11 +2077,51 @@ fn handle_runtime_router_decide(app: &App, request: &Request) -> Result<Dispatch
                 "ok": true,
                 "simulated": false,
                 "allowed": decision.allowed,
+                "reservationId": decision.receipt.reservation_id,
+                "fencingToken": decision.receipt.fencing_token,
                 "tokenBudget": Value::Null,
                 "selectedCandidateId": decision.receipt.selected_candidate_id,
             }),
         ))),
         Err(e) => Err(json_error(503, "route_decision_failed", &e.to_string())),
+    }
+}
+
+fn handle_runtime_router_cancel(app: &App, request: &Request) -> Result<Dispatch, ResponseSpec> {
+    let body = parse_json_object(request)?;
+    let reservation_id = body
+        .get("reservationId")
+        .or_else(|| body.get("reservation_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| json_error(400, "missing_reservation_id", "reservationId is required"))?;
+    let fencing_token_raw = body
+        .get("fencingToken")
+        .or_else(|| body.get("fencing_token"))
+        .ok_or_else(|| json_error(400, "missing_fencing_token", "fencingToken is required"))?;
+    let fencing_token = try_json_i64_in_range(fencing_token_raw, 1, i64::MAX)
+        .map(|v| v as u64)
+        .ok_or_else(|| json_error(400, "invalid_fencing_token", "fencingToken must be a positive integer"))?;
+    let note = body
+        .get("note")
+        .and_then(Value::as_str)
+        .unwrap_or("runtime_cancel");
+    match app
+        .dynamic_router
+        .cancel_reservation(reservation_id, fencing_token, note, now_epoch_ms())
+    {
+        Ok(receipt) => Ok(Dispatch::Response(ResponseSpec::json(
+            200,
+            json!({
+                "ok": true,
+                "cancelled": true,
+                "reservationId": receipt.reservation_id,
+                "candidateId": receipt.candidate_id,
+                "status": receipt.status.as_str(),
+            }),
+        ))),
+        Err(e) => Err(json_error(400, "router_cancel_failed", &e.to_string())),
     }
 }
 
@@ -1926,6 +2180,11 @@ fn handle_runtime_telemetry(app: &App) -> Result<Dispatch, ResponseSpec> {
         .filter(|s| !matches!(s.state.circuit, CircuitState::Closed))
         .count();
     let sessions = app.harness.list_running();
+    let latest_cache_shape = app
+        .latest_cache_shape
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
     Ok(Dispatch::Response(ResponseSpec::json(
         200,
         json!({
@@ -1935,8 +2194,11 @@ fn handle_runtime_telemetry(app: &App) -> Result<Dispatch, ResponseSpec> {
             "requestSeq": RUNTIME_REQUEST_SEQ.load(Ordering::Relaxed),
             "providerConfigured": app.config.provider_configured(),
             "activeAgentSessions": sessions.len(),
+            "agentEventsBuffered": app.agent_events.len(),
             "routerCandidates": snaps.len(),
             "openCircuits": open_circuits,
+            "routerPersistedWal": app.config.router_db_path.is_some(),
+            "latestCacheShape": latest_cache_shape,
             "skillsReady": app.config.skills.is_ready(),
             "tokenBudget": Value::Null,
         }),
@@ -2250,6 +2512,7 @@ mod tests {
             skills: SkillCatalog::load(None, None),
             nvidia: NvidiaConfig::from_env(),
             provider_model_allowlist: Vec::new(),
+            router_db_path: None,
         }
     }
 
@@ -2277,6 +2540,7 @@ mod tests {
             skills: SkillCatalog::load(None, None),
             nvidia: NvidiaConfig::from_env(),
             provider_model_allowlist: Vec::new(),
+            router_db_path: None,
         }
     }
 
@@ -3678,5 +3942,168 @@ mod tests {
         assert!(tracker.feed(b"event: message\r\ndata: {\"a\":1}\r\ndata: {\"b\":2}\r\n\r\n"));
         assert!(!tracker.feed(b": ping\r\n\r\n"));
         assert!(tracker.feed(b"data: [DONE]\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn lane_b4_steer22_agent_spawn_defaults_to_yolo_and_records_event_ring() {
+        let app = test_app();
+        // Default spawn MUST use ApprovalMode::Yolo + workspace_trusted = true (`Z-01`).
+        let Dispatch::Response(resp) = dispatch_request(
+            &app,
+            &request("POST", "/api/agent/spawn", br#"{"sessionId":"rt-yolo-1"}"#),
+        )
+        .await
+        .expect("default spawn should succeed") else {
+            panic!("expected buffered response");
+        };
+        assert_eq!(resp.status, 200);
+        let j = json_body(&resp);
+        assert_eq!(j["approvalMode"], "yolo");
+        assert_eq!(j["workspaceTrusted"], true);
+        let skey = j["sessionKey"].as_str().unwrap().to_owned();
+
+        // Explicit alias & strict mode parsing + invalid mode fail-closed check.
+        for alias in ["turbo", "full", "full-access", "unrestricted", "auto", "auto-approve", "solo"] {
+            let (mode, trusted, label) =
+                parse_runtime_approval_mode(Some(&Value::String(alias.to_owned())), None)
+                    .expect("yolo alias valid");
+            assert!(matches!(mode, ApprovalMode::Yolo));
+            assert!(trusted);
+            assert_eq!(label, "yolo");
+        }
+        let (strict_mode, strict_trust, strict_lbl) =
+            parse_runtime_approval_mode(Some(&Value::String("always-ask".to_owned())), None)
+                .expect("strict opt-in valid");
+        assert!(matches!(strict_mode, ApprovalMode::AlwaysAsk));
+        assert!(!strict_trust);
+        assert_eq!(strict_lbl, "always-ask");
+        assert!(parse_runtime_approval_mode(Some(&Value::String("bogus".to_owned())), None).is_err());
+
+        // Event sink captures events with secret redaction and surfaces on /api/agent/sessions & /api/telemetry.
+        let _ = app.agent_events.push(
+            "rt-yolo-1",
+            json!({ "kind": "turn.delta", "Authorization": "Bearer dummy_synthetic_example_token" }),
+        );
+        let Dispatch::Response(sess_resp) =
+            dispatch_request(&app, &request("GET", "/api/agent/sessions", b""))
+                .await
+                .unwrap() else {
+            panic!("expected response");
+        };
+        let sess_json = json_body(&sess_resp);
+        let events = sess_json["events"].as_array().expect("events array present");
+        assert!(events.len() >= 2);
+        let serialized_events = serde_json::to_string(events).unwrap();
+        assert!(!serialized_events.contains("dummy_synthetic_example_token"));
+
+        let Dispatch::Response(tel_resp) =
+            dispatch_request(&app, &request("GET", "/api/telemetry", b""))
+                .await
+                .unwrap() else {
+            panic!("expected response");
+        };
+        assert!(json_body(&tel_resp)["agentEventsBuffered"].as_u64().unwrap_or(0) >= 2);
+        app.harness.abort_session(&skey);
+    }
+
+    #[tokio::test]
+    async fn lane_b4_sqlite_wal_router_persists_across_app_restart_and_supports_cancel() {
+        let db_path = std::env::temp_dir().join(format!("omnia_rt_wal_{}.db", now_epoch_ms()));
+        let _ = std::fs::remove_file(&db_path);
+
+        let mut cfg1 = test_config();
+        cfg1.router_db_path = Some(db_path.clone());
+        {
+            let app1 = App::new(cfg1).expect("sqlite backed app1");
+            app1.dynamic_router
+                .upsert_candidate(
+                    RouteCandidate {
+                        candidate_id: "persist-a::gpt-5.4".into(),
+                        provider_id: "persist-a".into(),
+                        model_id: "gpt-5.4".into(),
+                        credential_present: true,
+                        enabled: true,
+                        ..RouteCandidate::default()
+                    },
+                    CandidateResourceState {
+                        quota: QuotaState::known(50_000, 100),
+                        circuit: CircuitState::Closed,
+                        ..CandidateResourceState::default()
+                    },
+                )
+                .unwrap();
+
+            // Decide + cancel via HTTP route `/api/router/cancel`.
+            let Dispatch::Response(dec_resp) = dispatch_request(
+                &app1,
+                &request("POST", "/api/router/decide", br#"{"estimatedTokens":256}"#),
+            )
+            .await
+            .unwrap() else {
+                panic!("expected response");
+            };
+            let dec_j = json_body(&dec_resp);
+            assert_eq!(dec_j["allowed"], true);
+            let res_id = dec_j["reservationId"].as_str().unwrap().to_owned();
+            let fence = dec_j["fencingToken"].as_u64().unwrap();
+
+            let cancel_body = serde_json::to_vec(&json!({
+                "reservationId": res_id,
+                "fencingToken": fence,
+                "note": "abort_test"
+            }))
+            .unwrap();
+            let Dispatch::Response(can_resp) =
+                dispatch_request(&app1, &request("POST", "/api/router/cancel", &cancel_body))
+                    .await
+                    .unwrap() else {
+                panic!("expected response");
+            };
+            assert_eq!(can_resp.status, 200);
+            assert_eq!(json_body(&can_resp)["cancelled"], true);
+
+            // Trip circuit -> persisted to WAL!
+            app1.dynamic_router
+                .trip_circuit("persist-a::gpt-5.4", now_epoch_ms(), Some(60_000))
+                .unwrap();
+        }
+
+        let mut cfg2 = test_config();
+        cfg2.router_db_path = Some(db_path.clone());
+        let app2 = App::new(cfg2).expect("restarted app2 loads WAL");
+        let snaps = app2.dynamic_router.snapshots(now_epoch_ms()).unwrap();
+        let recovered = snaps
+            .into_iter()
+            .find(|s| s.candidate.candidate_id == "persist-a::gpt-5.4")
+            .expect("candidate recovered from WAL");
+        assert!(matches!(recovered.state.circuit, CircuitState::Open { .. }));
+
+        drop(app2);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn lane_b4_detects_retired_model_200_notice_and_returns_404() {
+        let body = br#"{"candidates":[{"content":{"parts":[{"text":"gemini-1.5-pro is no longer available. Please switch to gemini-2.5-pro."}]}}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        )
+        .into_bytes();
+        let (base_url, provider_task) = spawn_provider_response(resp).await;
+        let app = App::new(provider_config(base_url)).unwrap();
+        let err = dispatch_request(
+            &app,
+            &request("POST", "/api/chat", br#"{"messages":[{"role":"user","content":"hi"}]}"#),
+        )
+        .await
+        .expect_err("retired canned 200 must translate to 404");
+        assert_eq!(err.status, 404);
+        let j = json_body(&err);
+        assert_eq!(j["error"], "model_retired");
+        assert_eq!(j["retiredModel"], "gemini-1.5-pro");
+        assert_eq!(j["successorModel"], "gemini-2.5-pro");
+        provider_task.await.unwrap();
     }
 }

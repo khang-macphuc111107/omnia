@@ -23,7 +23,8 @@ use serde_json::Value;
 use crate::error::NotebookError;
 use crate::policy::DEFAULT_MAX_SOURCES_PER_NOTEBOOK;
 use crate::source_library::{
-    ClearSourcesReceipt, NotebookRecord, SourceChunkRecord, SourceFilter, SourceKind, SourceRecord,
+    ChatSettings, ClearSourcesReceipt, NotebookRecord, SourceChunkRecord, SourceFilter, SourceKind,
+    SourceRecord,
 };
 
 const NOTEBOOK_SCHEMA_SQL: &str = r#"
@@ -35,6 +36,9 @@ CREATE TABLE IF NOT EXISTS notebooks (
     max_sources INTEGER NOT NULL DEFAULT 50,
     model_id TEXT NOT NULL DEFAULT 'gemini-3.5-flash-lite',
     effort_level TEXT NOT NULL DEFAULT 'medium',
+    chat_mode TEXT NOT NULL DEFAULT 'default',
+    chat_length TEXT NOT NULL DEFAULT 'default',
+    custom_prompt TEXT NOT NULL DEFAULT '',
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
 );
@@ -56,6 +60,8 @@ CREATE TABLE IF NOT EXISTS notebook_sources (
     provenance TEXT NOT NULL,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at_ms INTEGER NOT NULL,
+    checked INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'ready',
     UNIQUE(notebook_id, content_sha256)
 );
 
@@ -437,6 +443,139 @@ impl NotebookStore {
         Ok(conn.changes() > 0)
     }
 
+    /// Rename a notebook's display title durably.
+    pub fn rename_notebook(
+        &self,
+        notebook_id: &str,
+        new_title: &str,
+    ) -> Result<bool, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "UPDATE notebooks SET title = ?2, updated_at_ms = ?3 WHERE notebook_id = ?1;",
+        )?;
+        stmt.bind_text(1, notebook_id)?;
+        stmt.bind_text(2, new_title)?;
+        stmt.bind_int64(3, now_epoch_ms())?;
+        stmt.step()?;
+        Ok(conn.changes() > 0)
+    }
+
+    /// Read persisted chat settings (`chat_mode`, `chat_length`, `custom_prompt`) for a notebook.
+    pub fn get_chat_settings(&self, notebook_id: &str) -> Result<ChatSettings, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT chat_mode, chat_length, custom_prompt
+             FROM notebooks WHERE notebook_id = ?1;",
+        )?;
+        stmt.bind_text(1, notebook_id)?;
+        if stmt.step_row()? {
+            return Ok(ChatSettings {
+                mode: stmt.column_text(0)?,
+                length: stmt.column_text(1)?,
+                custom_prompt: stmt.column_text(2)?,
+            });
+        }
+        Err(NotebookError::NotFound {
+            entity: "notebook",
+            id: notebook_id.to_string(),
+        })
+    }
+
+    /// Persist validated chat settings (`chat_mode`, `chat_length`, `custom_prompt`) for a notebook.
+    pub fn set_chat_settings(
+        &self,
+        notebook_id: &str,
+        settings: &ChatSettings,
+    ) -> Result<bool, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "UPDATE notebooks
+             SET chat_mode = ?2, chat_length = ?3, custom_prompt = ?4, updated_at_ms = ?5
+             WHERE notebook_id = ?1;",
+        )?;
+        stmt.bind_text(1, notebook_id)?;
+        stmt.bind_text(2, &settings.mode)?;
+        stmt.bind_text(3, &settings.length)?;
+        stmt.bind_text(4, &settings.custom_prompt)?;
+        stmt.bind_int64(5, now_epoch_ms())?;
+        stmt.step()?;
+        Ok(conn.changes() > 0)
+    }
+
+    /// Update a source's persisted `checked` selection flag inside `notebook_sources`.
+    pub fn set_source_checked(
+        &self,
+        notebook_id: &str,
+        source_id: &str,
+        checked: bool,
+    ) -> Result<bool, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "UPDATE notebook_sources SET checked = ?3
+             WHERE notebook_id = ?1 AND source_id = ?2;",
+        )?;
+        stmt.bind_text(1, notebook_id)?;
+        stmt.bind_text(2, source_id)?;
+        stmt.bind_int64(3, i64::from(checked))?;
+        stmt.step()?;
+        Ok(conn.changes() > 0)
+    }
+
+    /// Update a source's lifecycle status (`ready` | `error` | `quarantined`).
+    pub fn set_source_status(
+        &self,
+        notebook_id: &str,
+        source_id: &str,
+        status: &str,
+    ) -> Result<bool, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "UPDATE notebook_sources SET status = ?3
+             WHERE notebook_id = ?1 AND source_id = ?2;",
+        )?;
+        stmt.bind_text(1, notebook_id)?;
+        stmt.bind_text(2, source_id)?;
+        stmt.bind_text(3, status)?;
+        stmt.step()?;
+        Ok(conn.changes() > 0)
+    }
+
+    /// Delete all failed/error sources (`status IN ('error', 'failed', 'failed_upload')`)
+    /// inside `notebook_id` to enforce UploadHealer's zero-red-rows invariant before retry.
+    pub fn purge_failed_sources(&self, notebook_id: &str) -> Result<usize, NotebookError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.begin_immediate()?;
+        let mut failed_ids = Vec::new();
+        {
+            let mut sel = tx.prepare(
+                "SELECT source_id FROM notebook_sources
+                 WHERE notebook_id = ?1
+                   AND lower(status) IN ('error', 'failed', 'failed_upload');",
+            )?;
+            sel.bind_text(1, notebook_id)?;
+            while sel.step_row()? {
+                failed_ids.push(sel.column_text(0)?);
+            }
+        }
+        let mut removed = 0usize;
+        for sid in &failed_ids {
+            if self.fts5_enabled {
+                let mut fts =
+                    tx.prepare("DELETE FROM notebook_chunks_fts WHERE source_id = ?1;")?;
+                fts.bind_text(1, sid)?;
+                fts.step()?;
+            }
+            let mut del = tx.prepare("DELETE FROM notebook_sources WHERE source_id = ?1;")?;
+            del.bind_text(1, sid)?;
+            del.step()?;
+            if tx.changes() > 0 {
+                removed += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     /// Count sources currently persisted in a notebook.
     pub fn count_sources(&self, notebook_id: &str) -> Result<usize, NotebookError> {
         let conn = self.conn.lock();
@@ -449,7 +588,8 @@ impl NotebookStore {
         Ok(0)
     }
 
-    /// Find an existing source by `(notebook_id, content_sha256)` for cross-batch deduplication.
+    /// Find an existing non-error source by `(notebook_id, content_sha256)` for cross-batch
+    /// deduplication (error/failed rows are excluded so retries are never silently skipped).
     pub fn find_source_by_sha256(
         &self,
         notebook_id: &str,
@@ -459,9 +599,12 @@ impl NotebookStore {
         let mut stmt = conn.prepare(
             "SELECT source_id, notebook_id, remote_id, title, safe_filename, mime_type,
                     source_kind, is_video, content_sha256, content_blake3, byte_size,
-                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms
+                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms,
+                    checked, status
              FROM notebook_sources
-             WHERE notebook_id = ?1 AND content_sha256 = ?2;",
+             WHERE notebook_id = ?1
+               AND content_sha256 = ?2
+               AND lower(status) NOT IN ('error', 'failed', 'failed_upload');",
         )?;
         stmt.bind_text(1, notebook_id)?;
         stmt.bind_text(2, content_sha256)?;
@@ -477,7 +620,8 @@ impl NotebookStore {
         let mut stmt = conn.prepare(
             "SELECT source_id, notebook_id, remote_id, title, safe_filename, mime_type,
                     source_kind, is_video, content_sha256, content_blake3, byte_size,
-                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms
+                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms,
+                    checked, status
              FROM notebook_sources WHERE source_id = ?1;",
         )?;
         stmt.bind_text(1, source_id)?;
@@ -502,7 +646,8 @@ impl NotebookStore {
             let mut by_id = conn.prepare(
                 "SELECT source_id, notebook_id, remote_id, title, safe_filename, mime_type,
                         source_kind, is_video, content_sha256, content_blake3, byte_size,
-                        chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms
+                        chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms,
+                        checked, status
                  FROM notebook_sources
                  WHERE notebook_id = ?1 AND source_id = ?2;",
             )?;
@@ -515,7 +660,8 @@ impl NotebookStore {
         let mut by_remote = conn.prepare(
             "SELECT source_id, notebook_id, remote_id, title, safe_filename, mime_type,
                     source_kind, is_video, content_sha256, content_blake3, byte_size,
-                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms
+                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms,
+                    checked, status
              FROM notebook_sources
              WHERE notebook_id = ?1 AND remote_id = ?2
              ORDER BY created_at_ms ASC, source_id ASC;",
@@ -566,7 +712,8 @@ impl NotebookStore {
         let mut stmt = conn.prepare(
             "SELECT source_id, notebook_id, remote_id, title, safe_filename, mime_type,
                     source_kind, is_video, content_sha256, content_blake3, byte_size,
-                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms
+                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms,
+                    checked, status
              FROM notebook_sources
              WHERE notebook_id = ?1 AND lower(title) = lower(?2)
              ORDER BY created_at_ms ASC, source_id ASC;",
@@ -582,8 +729,9 @@ impl NotebookStore {
 
     /// Atomically insert a source and all its semantic chunks inside one IMMEDIATE transaction.
     ///
-    /// The notebook capacity (`max_sources`, with `allow_overflow_notebook` strictly `false`) is
-    /// re-checked INSIDE the write transaction so concurrent ingests can never race past the cap.
+    /// Any previously errored source sharing `(notebook_id, content_sha256)` is purged inside the
+    /// transaction before re-checking the notebook capacity (`max_sources`, `allow_overflow_notebook: false`)
+    /// so retries never trip the UNIQUE constraint and concurrent ingests can never race past the cap.
     pub fn insert_source_with_chunks(
         &self,
         source: &SourceRecord,
@@ -591,6 +739,33 @@ impl NotebookStore {
     ) -> Result<(), NotebookError> {
         let mut conn = self.conn.lock();
         let tx = conn.begin_immediate()?;
+        {
+            let mut stale_ids = Vec::new();
+            {
+                let mut stale = tx.prepare(
+                    "SELECT source_id FROM notebook_sources
+                     WHERE notebook_id = ?1
+                       AND content_sha256 = ?2
+                       AND lower(status) IN ('error', 'failed', 'failed_upload');",
+                )?;
+                stale.bind_text(1, &source.notebook_id)?;
+                stale.bind_text(2, &source.content_sha256)?;
+                while stale.step_row()? {
+                    stale_ids.push(stale.column_text(0)?);
+                }
+            }
+            for stale_sid in &stale_ids {
+                if self.fts5_enabled {
+                    let mut fts =
+                        tx.prepare("DELETE FROM notebook_chunks_fts WHERE source_id = ?1;")?;
+                    fts.bind_text(1, stale_sid)?;
+                    fts.step()?;
+                }
+                let mut del = tx.prepare("DELETE FROM notebook_sources WHERE source_id = ?1;")?;
+                del.bind_text(1, stale_sid)?;
+                del.step()?;
+            }
+        }
         {
             let mut cap = tx.prepare(
                 "SELECT n.max_sources,
@@ -619,8 +794,9 @@ impl NotebookStore {
                 "INSERT INTO notebook_sources (
                     source_id, notebook_id, remote_id, title, safe_filename, mime_type,
                     source_kind, is_video, content_sha256, content_blake3, byte_size,
-                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);",
+                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms,
+                    checked, status
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18);",
             )?;
             let meta_str = serde_json::to_string(&source.metadata)?;
             stmt.bind_text(1, &source.source_id)?;
@@ -639,6 +815,8 @@ impl NotebookStore {
             stmt.bind_text(14, &source.provenance)?;
             stmt.bind_text(15, &meta_str)?;
             stmt.bind_int64(16, source.created_at_ms)?;
+            stmt.bind_int64(17, i64::from(source.checked))?;
+            stmt.bind_text(18, &source.status)?;
             stmt.step()?;
         }
 
@@ -680,7 +858,9 @@ impl NotebookStore {
         insert_chunks_in_tx(&tx, self.fts5_enabled, source_title, chunks)?;
         {
             let mut upd = tx.prepare(
-                "UPDATE notebook_sources SET chunk_count = ?2, ingestion_stage = ?3 WHERE source_id = ?1;",
+                "UPDATE notebook_sources
+                 SET chunk_count = ?2, ingestion_stage = ?3, status = 'ready'
+                 WHERE source_id = ?1;",
             )?;
             upd.bind_text(1, source_id)?;
             upd.bind_int64(2, chunks.len() as i64)?;
@@ -717,7 +897,7 @@ impl NotebookStore {
         Ok(removed)
     }
 
-    /// List sources in a notebook with optional `exclude_videos` / `pure_documents_only` filters.
+    /// List sources in a notebook with optional `exclude_videos` / `pure_documents_only` / `source_ids` / `only_checked` filters.
     pub fn list_sources(
         &self,
         notebook_id: &str,
@@ -727,7 +907,8 @@ impl NotebookStore {
         let mut stmt = conn.prepare(
             "SELECT source_id, notebook_id, remote_id, title, safe_filename, mime_type,
                     source_kind, is_video, content_sha256, content_blake3, byte_size,
-                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms
+                    chunk_count, ingestion_stage, provenance, metadata_json, created_at_ms,
+                    checked, status
              FROM notebook_sources
              WHERE notebook_id = ?1
              ORDER BY created_at_ms ASC, source_id ASC;",
@@ -1305,6 +1486,15 @@ impl NotebookStore {
         Ok(out)
     }
 
+    /// Delete one isolated BTW side-thread by `btw_id` without modifying `notebook_turns`.
+    pub fn delete_btw_thread(&self, btw_id: &str) -> Result<bool, NotebookError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("DELETE FROM notebook_btw_threads WHERE btw_id = ?1;")?;
+        stmt.bind_text(1, btw_id)?;
+        stmt.step()?;
+        Ok(conn.changes() > 0)
+    }
+
     /// Persist a bidirectional Cross-Bridge transfer audit record.
     pub fn insert_bridge_event(&self, row: &StoredBridgeRow) -> Result<(), NotebookError> {
         let conn = self.conn.lock();
@@ -1501,6 +1691,16 @@ impl NotebookStore {
 
 fn bootstrap_schema(conn: &Connection) -> Result<bool, NotebookError> {
     conn.exec_batch(NOTEBOOK_SCHEMA_SQL)?;
+    // Idempotent column migrations for existing WAL databases created before Steer P0 upgrades.
+    for alter_sql in [
+        "ALTER TABLE notebooks ADD COLUMN chat_mode TEXT NOT NULL DEFAULT 'default';",
+        "ALTER TABLE notebooks ADD COLUMN chat_length TEXT NOT NULL DEFAULT 'default';",
+        "ALTER TABLE notebooks ADD COLUMN custom_prompt TEXT NOT NULL DEFAULT '';",
+        "ALTER TABLE notebook_sources ADD COLUMN checked INTEGER NOT NULL DEFAULT 1;",
+        "ALTER TABLE notebook_sources ADD COLUMN status TEXT NOT NULL DEFAULT 'ready';",
+    ] {
+        let _ = conn.exec_batch(alter_sql);
+    }
     let fts5_enabled = conn.exec_batch(NOTEBOOK_FTS5_SQL).is_ok();
     Ok(fts5_enabled)
 }
@@ -1594,6 +1794,8 @@ fn read_source_row(stmt: &omnia_winsqlite::Statement<'_>) -> Result<SourceRecord
         provenance: stmt.column_text(13)?,
         metadata,
         created_at_ms: stmt.column_int64(15)?,
+        checked: stmt.column_int64(16)? != 0,
+        status: stmt.column_text(17)?,
     })
 }
 

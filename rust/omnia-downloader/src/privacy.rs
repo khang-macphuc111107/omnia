@@ -417,6 +417,43 @@ const PUBLIC_SUFFIXES: &[&str] = &[
     "r2.dev",
 ];
 
+/// RFC 6265bis `SameSite` policy parsed from `Set-Cookie`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SameSitePolicy {
+    Strict,
+    Lax,
+    None,
+    #[default]
+    Unspecified,
+}
+
+/// Request navigation / origin context evaluated against cookie `SameSite` rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SameSiteContext {
+    #[default]
+    SameSite,
+    CrossSiteTopLevelNav,
+    CrossSiteSubresource,
+}
+
+impl SameSiteContext {
+    /// Parses UI/HTTP context aliases cleanly.
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "cross_site_top_level_nav" | "top_level_nav" | "navigation" | "lax" => {
+                Self::CrossSiteTopLevelNav
+            }
+            "cross_site_subresource" | "subresource" | "cross_site" | "third_party" => {
+                Self::CrossSiteSubresource
+            }
+            _ => Self::SameSite,
+        }
+    }
+}
+
 /// A single RFC 6265 scoped HTTP cookie stored in memory only (never serialized to logs/receipts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedCookie {
@@ -427,6 +464,7 @@ pub struct ScopedCookie {
     pub path: String,
     pub secure: bool,
     pub http_only: bool,
+    pub same_site: SameSitePolicy,
     pub expires_epoch_secs: Option<i64>,
 }
 
@@ -482,6 +520,7 @@ impl ScopedCookieJar {
         let mut path_attr: Option<String> = None;
         let mut secure = false;
         let mut http_only = false;
+        let mut same_site = SameSitePolicy::Unspecified;
         let mut expires_epoch_secs: Option<i64> = None;
         let mut has_max_age = false;
 
@@ -502,6 +541,14 @@ impl ScopedCookieJar {
                     }
                     "path" if vv.starts_with('/') => {
                         path_attr = Some(vv.to_string());
+                    }
+                    "samesite" => {
+                        same_site = match vv.to_ascii_lowercase().as_str() {
+                            "strict" => SameSitePolicy::Strict,
+                            "lax" => SameSitePolicy::Lax,
+                            "none" => SameSitePolicy::None,
+                            _ => SameSitePolicy::Unspecified,
+                        };
                     }
                     "max-age" => {
                         if let Ok(secs) = vv.parse::<i64>() {
@@ -527,6 +574,11 @@ impl ScopedCookieJar {
                     _ => {}
                 }
             }
+        }
+
+        // RFC 6265bis: `SameSite=None` unconditionally requires `Secure` attribute.
+        if same_site == SameSitePolicy::None && !secure {
+            return false;
         }
 
         // RFC 6265bis cookie prefixes: `__Secure-` requires Secure + HTTPS; `__Host-` requires Secure + HTTPS + no Domain + Path=/
@@ -559,6 +611,7 @@ impl ScopedCookieJar {
             path,
             secure,
             http_only,
+            same_site,
             expires_epoch_secs,
         };
 
@@ -598,6 +651,39 @@ impl ScopedCookieJar {
         previous_origin: Option<&Url>,
         now_epoch_secs: i64,
     ) -> Option<String> {
+        self.cookie_header_for_context_at(
+            target_url,
+            previous_origin,
+            SameSiteContext::SameSite,
+            now_epoch_secs,
+        )
+    }
+
+    /// Builds an RFC 6265bis `Cookie` header enforcing `SameSite` policy alongside domain/path/`Secure`.
+    #[must_use]
+    pub fn cookie_header_for_context(
+        &self,
+        target_url: &Url,
+        previous_origin: Option<&Url>,
+        same_site_ctx: SameSiteContext,
+    ) -> Option<String> {
+        self.cookie_header_for_context_at(
+            target_url,
+            previous_origin,
+            same_site_ctx,
+            Utc::now().timestamp(),
+        )
+    }
+
+    /// Deterministic `SameSite`-aware cookie evaluation at explicit `now_epoch_secs`.
+    #[must_use]
+    pub fn cookie_header_for_context_at(
+        &self,
+        target_url: &Url,
+        previous_origin: Option<&Url>,
+        same_site_ctx: SameSiteContext,
+        now_epoch_secs: i64,
+    ) -> Option<String> {
         let target_host = target_url.host_str()?.to_ascii_lowercase();
         let is_https = target_url.scheme().eq_ignore_ascii_case("https");
         let target_path = target_url.path();
@@ -634,7 +720,10 @@ impl ScopedCookieJar {
                 } else {
                     domain_matches(&target_host, &c.domain)
                 };
-                host_ok && path_matches(target_path, &c.path)
+                if !host_ok || !path_matches(target_path, &c.path) {
+                    return false;
+                }
+                same_site_allows(c.same_site, same_site_ctx, c.secure && is_https)
             })
             .collect();
 
@@ -649,6 +738,65 @@ impl ScopedCookieJar {
             .collect::<Vec<_>>()
             .join("; ");
         Some(header)
+    }
+
+    /// Evaluates stored cookies for `target_url` under `same_site_ctx`, returning
+    /// `(matched_cookie_names, blocked_by_same_site_names)`. Never leaks raw values.
+    #[must_use]
+    pub fn evaluate_names_for_context(
+        &self,
+        target_url: &Url,
+        previous_origin: Option<&Url>,
+        same_site_ctx: SameSiteContext,
+    ) -> (Vec<String>, Vec<String>) {
+        let now = Utc::now().timestamp();
+        let Some(target_host) = target_url.host_str().map(str::to_ascii_lowercase) else {
+            return (Vec::new(), Vec::new());
+        };
+        let is_https = target_url.scheme().eq_ignore_ascii_case("https");
+        let target_path = target_url.path();
+        let cross_origin_strip_domain = previous_origin
+            .and_then(|prev| prev.host_str().map(str::to_ascii_lowercase))
+            .filter(|prev_host| {
+                prev_host != &target_host
+                    && !domain_matches(&target_host, prev_host)
+                    && !domain_matches(prev_host, &target_host)
+            });
+
+        let jar = self.cookies.read();
+        let mut matched: Vec<&ScopedCookie> = Vec::new();
+        let mut blocked_same_site: Vec<String> = Vec::new();
+        for c in jar.iter() {
+            if c.expires_epoch_secs.is_some_and(|exp| exp <= now) {
+                continue;
+            }
+            if c.secure && !is_https {
+                continue;
+            }
+            if let Some(ref stripped_prev) = cross_origin_strip_domain {
+                if domain_matches(stripped_prev, &c.domain) {
+                    continue;
+                }
+            }
+            let host_ok = if c.host_only {
+                target_host == c.domain
+            } else {
+                domain_matches(&target_host, &c.domain)
+            };
+            if !host_ok || !path_matches(target_path, &c.path) {
+                continue;
+            }
+            if same_site_allows(c.same_site, same_site_ctx, c.secure && is_https) {
+                matched.push(c);
+            } else {
+                blocked_same_site.push(c.name.clone());
+            }
+        }
+        matched.sort_by(|a, b| b.path.len().cmp(&a.path.len()).then(a.name.cmp(&b.name)));
+        (
+            matched.into_iter().map(|c| c.name.clone()).collect(),
+            blocked_same_site,
+        )
     }
 
     /// Number of stored cookies currently in the jar.
@@ -666,6 +814,19 @@ impl ScopedCookieJar {
     /// Clears all cookies from memory.
     pub fn clear(&self) {
         self.cookies.write().clear();
+    }
+}
+
+fn same_site_allows(policy: SameSitePolicy, ctx: SameSiteContext, is_secure_https: bool) -> bool {
+    match ctx {
+        SameSiteContext::SameSite => true,
+        SameSiteContext::CrossSiteTopLevelNav => matches!(
+            policy,
+            SameSitePolicy::Lax | SameSitePolicy::Unspecified | SameSitePolicy::None
+        ),
+        SameSiteContext::CrossSiteSubresource => {
+            policy == SameSitePolicy::None && is_secure_https
+        }
     }
 }
 
@@ -813,5 +974,43 @@ mod tests {
 
         // Expired cookie disappears after Max-Age
         assert_eq!(jar.cookie_header_for_at(&sub_url, None, 5_000), None);
+    }
+
+    #[test]
+    fn scoped_cookie_jar_enforces_samesite_strict_lax_none() {
+        let jar = ScopedCookieJar::new();
+        let origin = Url::parse("https://cdn.example.org/app").unwrap();
+
+        // SameSite=None without Secure MUST be rejected.
+        assert!(!jar.store_set_cookie_at(&origin, "bad_none=1; SameSite=None", 1_000));
+        assert!(jar.store_set_cookie_at(&origin, "strict_tok=1; SameSite=Strict; Secure", 1_000));
+        assert!(jar.store_set_cookie_at(&origin, "lax_tok=1; SameSite=Lax; Secure", 1_000));
+        assert!(jar.store_set_cookie_at(&origin, "none_tok=1; SameSite=None; Secure", 1_000));
+
+        assert_eq!(
+            jar.cookie_header_for_context_at(&origin, None, SameSiteContext::SameSite, 1_100)
+                .as_deref(),
+            Some("lax_tok=1; none_tok=1; strict_tok=1")
+        );
+        assert_eq!(
+            jar.cookie_header_for_context_at(
+                &origin,
+                None,
+                SameSiteContext::CrossSiteTopLevelNav,
+                1_100
+            )
+            .as_deref(),
+            Some("lax_tok=1; none_tok=1")
+        );
+        assert_eq!(
+            jar.cookie_header_for_context_at(
+                &origin,
+                None,
+                SameSiteContext::CrossSiteSubresource,
+                1_100
+            )
+            .as_deref(),
+            Some("none_tok=1")
+        );
     }
 }

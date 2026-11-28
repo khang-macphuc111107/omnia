@@ -554,6 +554,14 @@ impl DownloadScheduler {
         self.active_count = self.active_count.saturating_sub(1);
     }
 
+    /// Updates scheduler concurrency/window settings without dropping pending queue items.
+    pub fn set_config(&mut self, config: SchedulerConfig) {
+        self.config = SchedulerConfig {
+            max_concurrent_jobs: config.max_concurrent_jobs.clamp(1, 32),
+            window: config.window,
+        };
+    }
+
     #[must_use]
     pub fn pending_len(&self) -> usize {
         self.queued.len()

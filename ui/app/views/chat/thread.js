@@ -75,7 +75,19 @@ function routeEvent(message, index, stagger) {
   if (route.state === 'pending') {
     return html`<div class="event enter" role="note" aria-busy="true" style="${style}" ${raw(attrs('pending'))}>
         <span class="status status--info">${icon('clock')}${t('chat.statePending')}</span>
-        <span>${t('chat.routePending')}</span>${estimate}${note}
+        <span>${t('chat.routePending')}</span>${estimate}
+        <button class="btn btn--ghost btn--sm" type="button" data-action="cancel-route" data-id="${message.id}">${icon('stop', { size: 'sm' })}${t('common.cancel')}</button>${note}
+      </div>`;
+  }
+  if (route.state === 'cancelled') {
+    const ack = route.cancelAck || {};
+    const reconciled = ack.routerCancelled === true || ack.chatStopped === true;
+    return html`<div class="event enter" role="note" style="${style}" ${raw(attrs('cancelled'))}>
+        <span class="status status--warn">${icon('stop')}${t('chat.stateCancelled')}</span>
+        <span>${t('chat.routeCancelled')}</span>
+        ${reconciled ? html`<span class="chip">${t('chat.cancelReconciled')}</span>` : null}${estimate}
+        <button class="btn btn--sm" type="button" data-action="retry-route" data-id="${message.id}">${icon('refresh', { size: 'sm' })}${t('common.retry')}</button>
+        <span class="event__note">${t('chat.routeCancelledHint')}</span>${note}
       </div>`;
   }
   if (route.state === 'routed') {

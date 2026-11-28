@@ -44,13 +44,13 @@ use crate::web_tools::{
 use aho_corasick::AhoCorasickBuilder;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 const MAX_READ_LINES_DEFAULT: usize = 400;
@@ -85,6 +85,117 @@ pub struct ToolExecOutput {
     pub is_error: bool,
     pub is_host_tool: bool,
     pub duration_ms: u64,
+}
+
+/// Weak-referenced canonical per-file async mutex preventing concurrent overlapping edits
+/// to the same file (including case-aliased paths on Windows) with deadlock-free sorted multi-lock.
+#[derive(Default)]
+pub struct FileMutationLocks {
+    locks: Mutex<BTreeMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>,
+}
+
+impl FileMutationLocks {
+    /// Resolves `path` onto a canonical lock key using the deepest existing ancestor so
+    /// not-yet-created files and Windows case-aliases serialize on the exact same mutex.
+    #[must_use]
+    pub fn canonical_key(path: &Path) -> PathBuf {
+        let mut probe = path.to_path_buf();
+        let mut tail_parts = Vec::new();
+        while !probe.exists() {
+            let Some(name) = probe.file_name() else {
+                break;
+            };
+            tail_parts.push(name.to_os_string());
+            if !probe.pop() {
+                break;
+            }
+        }
+        let mut resolved = fs::canonicalize(&probe).unwrap_or(probe);
+        for part in tail_parts.into_iter().rev() {
+            resolved.push(part);
+        }
+        let clean = sanitize_windows_path(&resolved);
+        #[cfg(windows)]
+        {
+            PathBuf::from(clean.to_string_lossy().to_ascii_lowercase())
+        }
+        #[cfg(not(windows))]
+        {
+            clean
+        }
+    }
+
+    fn get_or_create_lock(&self, key: PathBuf) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.locks.lock().unwrap();
+        // Opportunistically prune released Weak entries so memory stays bounded.
+        if map.len() > 64 {
+            map.retain(|_, w| w.strong_count() > 0);
+        }
+        if let Some(existing) = map.get(&key).and_then(Weak::upgrade) {
+            return existing;
+        }
+        let fresh = Arc::new(tokio::sync::Mutex::new(()));
+        map.insert(key, Arc::downgrade(&fresh));
+        fresh
+    }
+
+    /// Acquires exclusive mutation ownership for `path`, checking `cancel_flag` while waiting.
+    pub async fn acquire(
+        &self,
+        path: &Path,
+        cancel_flag: &AtomicBool,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        let key = Self::canonical_key(path);
+        let lock = self.get_or_create_lock(key);
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                bail!("file mutation cancelled while waiting for lock on `{}`", path.display());
+            }
+            match tokio::time::timeout(Duration::from_millis(50), lock.clone().lock_owned()).await {
+                Ok(guard) => return Ok(guard),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Acquires locks across multiple files in sorted canonical order (deadlock-free).
+    pub async fn acquire_many(
+        &self,
+        paths: &[PathBuf],
+        cancel_flag: &AtomicBool,
+    ) -> Result<Vec<tokio::sync::OwnedMutexGuard<()>>> {
+        let mut keys: Vec<PathBuf> = paths.iter().map(|p| Self::canonical_key(p)).collect();
+        keys.sort();
+        keys.dedup();
+        let mut guards = Vec::with_capacity(keys.len());
+        for key in keys {
+            let lock = self.get_or_create_lock(key.clone());
+            let guard = loop {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    bail!(
+                        "multi-file mutation cancelled while waiting for lock on `{}`",
+                        key.display()
+                    );
+                }
+                match tokio::time::timeout(Duration::from_millis(50), lock.clone().lock_owned())
+                    .await
+                {
+                    Ok(g) => break g,
+                    Err(_) => continue,
+                }
+            };
+            guards.push(guard);
+        }
+        Ok(guards)
+    }
+
+    /// Prunes released weak references and returns the number of currently active file locks.
+    #[must_use]
+    pub fn active_lock_count(&self) -> usize {
+        let mut map = self.locks.lock().unwrap();
+        map.retain(|_, w| w.strong_count() > 0);
+        map.len()
+    }
 }
 
 #[derive(Clone)]
@@ -143,6 +254,8 @@ pub struct ToolRuntime {
     pub deferred_handlers: Arc<Mutex<HashMap<String, ExtensionToolHandler>>>,
     /// Dynamic read-only flag overrides for deferred tools.
     pub read_only_overrides: Arc<Mutex<HashSet<String>>>,
+    /// Weak-referenced canonical per-file async mutex serializing overlapping file mutations.
+    pub file_mutations: Arc<FileMutationLocks>,
 }
 
 impl ToolRuntime {
@@ -254,6 +367,7 @@ impl ToolRuntime {
             current_turn: Arc::new(AtomicU32::new(1)),
             deferred_handlers: Arc::new(Mutex::new(HashMap::new())),
             read_only_overrides: Arc::new(Mutex::new(ro_overrides)),
+            file_mutations: Arc::new(FileMutationLocks::default()),
         }
     }
 
@@ -287,6 +401,7 @@ impl ToolRuntime {
                 | "web_fetch"
                 | "web_search"
                 | "verify_artifact"
+                | "stem_verify"
                 | "omni_skills"
                 | "memory_recall"
                 | "swarm_read"
@@ -638,6 +753,7 @@ impl ToolRuntime {
             "workspace_lifecycle" => self.exec_workspace_lifecycle(args).await,
             "skill_codify" => self.exec_skill_codify(args).await,
             "verify_artifact" => self.exec_verify_artifact(args).await,
+            "stem_verify" => crate::builtin_stem::dispatch_stem_verify(args),
             "omni_skills" => self.exec_omni_skills(args).await,
             "browser" => self.exec_browser(args).await,
             "mcp_call" => self.exec_mcp_call(args).await,
@@ -741,21 +857,27 @@ impl ToolRuntime {
                 "Verify path exists via workspace_map or search_code",
             )
         })?;
-        if raw_bytes.iter().take(4096).any(|&b| b == 0) {
-            bail!(
-                "{}",
-                format_fail_fast_error(
-                    "binary file cannot be read as UTF-8 text",
-                    "path",
-                    &format!("{rel} ({} bytes)", raw_bytes.len()),
-                    "Inspect binary metadata via shell instead of read_file"
-                )
-            );
-        }
-        // Record full file hash for Claude Code Pre-Read Guard
-        self.read_tracker.record_read(&abs, &raw_bytes);
-
-        let text = String::from_utf8_lossy(&raw_bytes).replace("\r\n", "\n");
+        let text = if crate::office_reader::is_supported_document_extension(&abs) {
+            self.read_tracker.record_read(&abs, &raw_bytes);
+            crate::office_reader::extract_document_text(&abs, &raw_bytes)?
+                .unwrap_or_default()
+                .replace("\r\n", "\n")
+        } else {
+            if raw_bytes.iter().take(4096).any(|&b| b == 0) {
+                bail!(
+                    "{}",
+                    format_fail_fast_error(
+                        "binary file cannot be read as UTF-8 text",
+                        "path",
+                        &format!("{rel} ({} bytes)", raw_bytes.len()),
+                        "Inspect binary metadata via shell instead of read_file"
+                    )
+                );
+            }
+            // Record full file hash for Claude Code Pre-Read Guard
+            self.read_tracker.record_read(&abs, &raw_bytes);
+            String::from_utf8_lossy(&raw_bytes).replace("\r\n", "\n")
+        };
         let lines: Vec<&str> = if text.is_empty() {
             Vec::new()
         } else {
@@ -987,6 +1109,7 @@ impl ToolRuntime {
         let unrestricted = self.is_unrestricted_paths();
         let abs = resolve_tool_path(&self.workspace_root, rel, unrestricted)?;
         self.authorize("edit", &abs.to_string_lossy()).await?;
+        let _file_lock = self.file_mutations.acquire(&abs, &self.cancel_flag).await?;
 
         // D2: Capture Copy-on-Write BLAKE3 pre-mutation checkpoint
         let turn = self.current_turn.load(Ordering::Relaxed);
@@ -1171,7 +1294,15 @@ impl ToolRuntime {
             }
         }
 
-        // D2: Snapshot all pre-mutation files before applying patch
+        // D2: Acquire deadlock-free sorted locks & snapshot all pre-mutation files before applying patch
+        let touched_abs: Vec<PathBuf> = touched_rel
+            .iter()
+            .filter_map(|rel| resolve_tool_path(&self.workspace_root, rel, unrestricted).ok())
+            .collect();
+        let _file_locks = self
+            .file_mutations
+            .acquire_many(&touched_abs, &self.cancel_flag)
+            .await?;
         let turn = self.current_turn.load(Ordering::Relaxed);
         {
             let mut cp = self.checkpoint_store.lock().unwrap();
@@ -1261,6 +1392,7 @@ impl ToolRuntime {
 
         let abs = resolve_tool_path(&self.workspace_root, rel, self.is_unrestricted_paths())?;
         self.authorize("write", &abs.to_string_lossy()).await?;
+        let _file_lock = self.file_mutations.acquire(&abs, &self.cancel_flag).await?;
 
         // D2: Pre-mutation checkpoint + read prior text for D1 delta syntax verification & D8 BOM preservation
         let turn = self.current_turn.load(Ordering::Relaxed);
@@ -1464,9 +1596,19 @@ impl ToolRuntime {
         let cmd_str = command.to_string();
         let cmd_for_run = cmd_str.clone();
         let cancel_flag = Arc::clone(&self.cancel_flag);
+        // Opt-in OS sandbox: NEVER active in default ApprovalMode::Yolo unless caller explicitly
+        // sets `sandbox: true` (preserving Z-01/Z-04 unrestricted default execution).
+        let explicit_sandbox = args.get("sandbox").and_then(Value::as_bool).unwrap_or(false);
+        let strict_env_sandbox = !matches!(self.approval_mode, ApprovalMode::Yolo)
+            && std::env::var("OMNIA_SANDBOX_STRICT").ok().as_deref() == Some("1");
+        let use_sandbox = explicit_sandbox || strict_env_sandbox;
 
         let res = tokio::task::spawn_blocking(move || {
-            run_supervised_shell(&cwd, &cmd_for_run, &shell_choice, timeout_secs, &cancel_flag)
+            if use_sandbox {
+                run_opt_in_sandboxed_shell(&cwd, &cmd_for_run, &shell_choice, timeout_secs)
+            } else {
+                run_supervised_shell(&cwd, &cmd_for_run, &shell_choice, timeout_secs, &cancel_flag)
+            }
         })
         .await?;
 
@@ -1558,6 +1700,7 @@ impl ToolRuntime {
                 | "workspace_lifecycle"
                 | "skill_codify"
                 | "verify_artifact"
+                | "stem_verify"
                 | "omni_skills"
                 | "browser"
                 | "mcp_call"
@@ -1680,6 +1823,11 @@ impl ToolRuntime {
                 .context("lsp_query rename requires string parameter 'new_name'")?
                 .to_owned();
             let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+            let _file_lock = if apply {
+                Some(self.file_mutations.acquire(&abs, &self.cancel_flag).await?)
+            } else {
+                None
+            };
             let mgr = self.lsp_manager.clone();
             let rel_owned = rel_path.to_owned();
             let outcome = tokio::task::spawn_blocking(move || {
@@ -1790,6 +1938,11 @@ impl ToolRuntime {
         } else {
             self.authorize("write", &abs.to_string_lossy()).await?;
         }
+        let _file_lock = if !dry_run {
+            Some(self.file_mutations.acquire(&abs, &self.cancel_flag).await?)
+        } else {
+            None
+        };
         let lang = args
             .get("lang")
             .and_then(Value::as_str)
@@ -3569,6 +3722,88 @@ fn build_shell_command(shell_choice: &str, command: &str) -> Command {
         c.args(["-c", command]);
         c
     }
+}
+
+fn run_opt_in_sandboxed_shell(
+    cwd: &Path,
+    command: &str,
+    shell_choice: &str,
+    timeout_secs: u64,
+) -> Result<String> {
+    let mut policy = omnia_workspace_ops::sandbox::SandboxPolicy::strict_workspace(cwd);
+    policy.timeout_ms = timeout_secs.saturating_mul(1_000);
+
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert("PYTHONUTF8".into(), "1".into());
+    extra_env.insert("PYTHONIOENCODING".into(), "utf-8".into());
+    extra_env.insert("MSYS_NO_PATHCONV".into(), "1".into());
+    extra_env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
+    extra_env.insert("TERM".into(), "dumb".into());
+
+    let (program, prog_args): (&str, Vec<String>) = if cfg!(windows) {
+        match shell_choice.to_ascii_lowercase().as_str() {
+            "cmd" => (
+                "cmd.exe",
+                vec!["/d".into(), "/s".into(), "/c".into(), command.to_owned()],
+            ),
+            "pwsh" => (
+                "pwsh.exe",
+                vec![
+                    "-NoLogo".into(),
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-Command".into(),
+                    command.to_owned(),
+                ],
+            ),
+            "powershell" => (
+                "powershell.exe",
+                vec![
+                    "-NoLogo".into(),
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-Command".into(),
+                    command.to_owned(),
+                ],
+            ),
+            _ => (
+                "cmd.exe",
+                vec!["/d".into(), "/s".into(), "/c".into(), command.to_owned()],
+            ),
+        }
+    } else {
+        ("/bin/sh", vec!["-c".into(), command.to_owned()])
+    };
+
+    let receipt =
+        omnia_workspace_ops::sandbox::run_sandboxed_command(program, &prog_args, &extra_env, &policy)
+            .map_err(|e| anyhow::anyhow!("opt-in sandboxed shell failed closed: {e}"))?;
+
+    let mut combined = String::new();
+    if !receipt.stdout.is_empty() {
+        combined.push_str(&receipt.stdout);
+    }
+    if !receipt.stderr.is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str("[stderr]\n");
+        combined.push_str(&receipt.stderr);
+    }
+    let body = if combined.trim().is_empty() {
+        "(no output)".to_owned()
+    } else {
+        compact_shell_output(command, &combined, receipt.exit_code, None)
+    };
+    let status = if receipt.timed_out {
+        format!("exit_code: -1 (timed out after {timeout_secs}s)")
+    } else {
+        format!("exit_code: {}", receipt.exit_code)
+    };
+    Ok(format!(
+        "{status}\n[sandbox: restricted_token={}, job_kill_on_close={}, egress={}]\n{body}",
+        receipt.restricted_token_applied, receipt.job_object_kill_on_close, receipt.egress_mode
+    ))
 }
 
 fn run_supervised_shell(

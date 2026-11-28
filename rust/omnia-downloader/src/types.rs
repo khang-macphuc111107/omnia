@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use omnia_connector_gateway::artifact_intake::{
@@ -16,6 +17,7 @@ use omnia_workspace_ops::range_downloader::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use url::{Host, Url};
 
 use crate::handoff::VisibleHandoffTicket;
 use crate::pacing::PacingMode;
@@ -395,9 +397,203 @@ fn normalize_cmp_path(path: &Path) -> String {
     }
 }
 
-/// Sanitizes a filename using `omnia-connector-gateway`'s Win32/POSIX sanitizer.
+/// Maximum sanitized output filename byte length (`fsutil` compatibility).
+pub const MAX_SAFE_FILENAME_BYTES: usize = 180;
+
+/// Returns `true` only for globally routable unicast public IPv4/IPv6 addresses
+/// (rejecting loopback, RFC-1918, CGNAT `100.64.0.0/10`, link-local/IMDS `169.254.0.0/16`,
+/// benchmarking/documentation ranges, ULA `fc00::/7`, Teredo/6to4, and IPv4-mapped IPv6).
+#[must_use]
+pub fn is_public_unicast_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_unicast_ipv4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_public_unicast_ipv4(mapped);
+            }
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return false;
+            }
+            let segs = v6.segments();
+            // Reject ULA fc00::/7, link-local fe80::/10, documentation 2001:db8::/32 & 3fff::/20,
+            // Teredo 2001:0000::/32, 6to4 2002::/16, benchmarking 2001:2::/48.
+            if (segs[0] & 0xfe00) == 0xfc00 || (segs[0] & 0xffc0) == 0xfe80 {
+                return false;
+            }
+            if segs[0] == 0x2001 && (segs[1] == 0x0000 || segs[1] == 0x0db8 || segs[1] == 0x0002) {
+                return false;
+            }
+            if segs[0] == 0x2002 || (segs[0] == 0x3fff && segs[1] < 0x1000) {
+                return false;
+            }
+            (segs[0] & 0xe000) == 0x2000
+        }
+    }
+}
+
+const fn is_public_unicast_ipv4(v4: Ipv4Addr) -> bool {
+    let [a, b, c, _] = v4.octets();
+    !(v4.is_private()
+        || v4.is_loopback()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_documentation()
+        || v4.is_unspecified()
+        || v4.is_multicast()
+        || a == 0
+        || a >= 240
+        || (a == 100 && b >= 64 && b <= 127)
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 198 && (b == 18 || b == 19)))
+}
+
+/// Validates a URL against `policy`, resolves its target socket addresses, verifies every resolved
+/// IP against anti-DNS-rebinding SSRF rules, and returns `(parsed_url, pinned_addrs)`.
+pub async fn validate_and_resolve_addrs(
+    raw_url: &str,
+    policy: SecurityPolicy,
+) -> Result<(Url, Vec<SocketAddr>), DownloaderError> {
+    policy.validate_url(raw_url)?;
+    let parsed = Url::parse(raw_url.trim())
+        .map_err(|e| DownloaderError::InvalidInput(format!("invalid URL `{raw_url}`: {e}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| DownloaderError::InvalidInput("URL missing host".into()))?
+        .to_string();
+    let port = parsed.port_or_known_default().unwrap_or(443);
+
+    let addrs: Vec<SocketAddr> = match parsed.host() {
+        Some(Host::Ipv4(ip)) => vec![SocketAddr::new(IpAddr::V4(ip), port)],
+        Some(Host::Ipv6(ip)) => vec![SocketAddr::new(IpAddr::V6(ip), port)],
+        Some(Host::Domain(_)) => tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|e| {
+                DownloaderError::InvalidInput(format!("DNS lookup failed for `{host}`: {e}"))
+            })?
+            .collect(),
+        None => {
+            return Err(DownloaderError::InvalidInput("URL missing host".into()));
+        }
+    };
+
+    if addrs.is_empty() {
+        return Err(DownloaderError::SecurityRejected(format!(
+            "DNS resolution for `{host}` returned no addresses"
+        )));
+    }
+    for addr in &addrs {
+        let ip = addr.ip();
+        let ok = if policy.loopback_allowed() && ip.is_loopback() {
+            true
+        } else {
+            is_public_unicast_ip(ip)
+        };
+        if !ok {
+            return Err(DownloaderError::SecurityRejected(format!(
+                "DNS resolved `{host}` to forbidden non-public address {ip}"
+            )));
+        }
+    }
+    Ok((parsed, addrs))
+}
+
+/// Refuses insecure HTTPS -> HTTP redirect downgrades.
+pub fn check_redirect_https_downgrade(current: &Url, next: &Url) -> Result<(), DownloaderError> {
+    if current.scheme().eq_ignore_ascii_case("https")
+        && !next.scheme().eq_ignore_ascii_case("https")
+    {
+        return Err(DownloaderError::SecurityRejected(format!(
+            "refused HTTPS-to-{} redirect downgrade from `{}`",
+            next.scheme(),
+            current.host_str().unwrap_or("unknown")
+        )));
+    }
+    Ok(())
+}
+
+/// Normalizes Windows superscript reserved device digits (`COM¹..³`, `LPT¹..³`) before checking.
+fn is_windows_reserved_stem(stem: &str) -> bool {
+    let mut normalized = String::with_capacity(stem.len());
+    for ch in stem.chars() {
+        match ch {
+            '\u{00B9}' => normalized.push('1'),
+            '\u{00B2}' => normalized.push('2'),
+            '\u{00B3}' => normalized.push('3'),
+            other => normalized.push(other.to_ascii_uppercase()),
+        }
+    }
+    matches!(
+        normalized.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+fn truncate_filename_utf8_preserve_ext(name: &str, max_bytes: usize) -> String {
+    if name.len() <= max_bytes {
+        return name.to_string();
+    }
+    if let Some(dot_idx) = name.rfind('.') {
+        let ext = &name[dot_idx..];
+        if dot_idx > 0 && ext.len() < max_bytes.saturating_sub(4) && ext.len() <= 24 {
+            let max_stem = max_bytes - ext.len();
+            let stem = &name[..dot_idx];
+            let mut end = max_stem.min(stem.len());
+            while end > 0 && !stem.is_char_boundary(end) {
+                end -= 1;
+            }
+            if end > 0 {
+                return format!("{}{}", stem[..end].trim_end_matches(['.', ' ']), ext);
+            }
+        }
+    }
+    let mut end = max_bytes.min(name.len());
+    while end > 0 && !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let out = name[..end].trim_end_matches(['.', ' ']).to_string();
+    if out.is_empty() {
+        "download.bin".to_string()
+    } else {
+        out
+    }
+}
+
+/// Sanitizes a filename using `omnia-connector-gateway`'s Win32/POSIX sanitizer,
+/// plus Unicode superscript Win32 device-name guards (`COM¹..³`/`LPT¹..³`),
+/// NTFS ADS `:` rejection, and UTF-8 `180`-byte extension-preserving truncation.
 pub fn safe_output_filename(raw_name: &str) -> Result<String, DownloaderError> {
-    sanitize_download_filename(raw_name).map_err(Into::into)
+    let mut base = sanitize_download_filename(raw_name)?;
+    // Defense-in-depth: never permit literal colons (NTFS Alternate Data Streams).
+    if base.contains(':') {
+        base = base.replace(':', "_");
+    }
+    base = truncate_filename_utf8_preserve_ext(&base, MAX_SAFE_FILENAME_BYTES);
+    let stem = base.split('.').next().unwrap_or("");
+    if is_windows_reserved_stem(stem) {
+        base = truncate_filename_utf8_preserve_ext(&format!("_{base}"), MAX_SAFE_FILENAME_BYTES);
+    }
+    Ok(base)
 }
 
 /// Inclusive byte-range chunk state tracked during multi-stream downloads.
@@ -591,6 +787,18 @@ pub struct DownloadRequest {
     pub expected_sha256: Option<String>,
     /// Optional expected base64 CRC32C checksum (`X-Goog-Hash` format).
     pub expected_crc32c_b64: Option<String>,
+    /// Optional expected 32-hex or 24-char Base64 MD5 checksum.
+    #[serde(default)]
+    pub expected_md5_hex: Option<String>,
+    /// Optional lossless clip start timestamp in seconds (`-ss`) for streaming manifests.
+    #[serde(default)]
+    pub clip_start_sec: Option<f64>,
+    /// Optional lossless clip end timestamp in seconds (`-to`) for streaming manifests.
+    #[serde(default)]
+    pub clip_end_sec: Option<f64>,
+    /// Optional Google Workspace export format (`pdf`, `docx`, `xlsx`, `pptx`, `csv`, `md`, `txt`, `svg`).
+    #[serde(default)]
+    pub export_format: Option<String>,
     /// Whether to resume from `.part.meta` v2 / `OMNF` journal if validators match.
     #[serde(default = "default_true")]
     pub resume: bool,
@@ -616,8 +824,45 @@ impl DownloadRequest {
             headers: BTreeMap::new(),
             expected_sha256: None,
             expected_crc32c_b64: None,
+            expected_md5_hex: None,
+            clip_start_sec: None,
+            clip_end_sec: None,
+            export_format: None,
             resume: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod types_security_tests {
+    use super::*;
+
+    #[test]
+    fn sanitizes_superscript_reserved_devices_and_truncates_on_utf8_boundary() {
+        assert_eq!(safe_output_filename("COM\u{00B9}.txt").unwrap(), "_COM\u{00B9}.txt");
+        assert_eq!(safe_output_filename("LPT\u{00B2}.log").unwrap(), "_LPT\u{00B2}.log");
+        assert!(!safe_output_filename("note.txt:Zone.Identifier")
+            .unwrap()
+            .contains(':'));
+
+        let long_utf8 = format!("{}.mp4", "á".repeat(150));
+        let truncated = safe_output_filename(&long_utf8).unwrap();
+        assert!(truncated.len() <= MAX_SAFE_FILENAME_BYTES);
+        assert!(truncated.ends_with(".mp4"));
+    }
+
+    #[test]
+    fn validates_public_unicast_ips_and_blocks_https_downgrades() {
+        assert!(is_public_unicast_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_public_unicast_ip("100.64.0.1".parse().unwrap()));
+        assert!(!is_public_unicast_ip("169.254.169.254".parse().unwrap()));
+        assert!(!is_public_unicast_ip("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_public_unicast_ip("fe80::1".parse().unwrap()));
+
+        let https = Url::parse("https://cdn.example.org/file.bin").unwrap();
+        let http = Url::parse("http://cdn.example.org/file.bin").unwrap();
+        assert!(check_redirect_https_downgrade(&https, &http).is_err());
+        assert!(check_redirect_https_downgrade(&https, &https).is_ok());
     }
 }
 

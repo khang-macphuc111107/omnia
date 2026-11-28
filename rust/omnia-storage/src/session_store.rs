@@ -264,6 +264,7 @@ impl SessionStore {
             }
         }
         let conn = Connection::open_read_write(path)?;
+        crate::apply_connection_security_pragmas(&conn)?;
         conn.exec_batch(SESSION_STORE_SCHEMA_SQL)?;
         ensure_lease_columns(&conn)?;
         Ok(Self {
@@ -274,6 +275,7 @@ impl SessionStore {
     /// Open an isolated in-memory `SessionStore` for unit testing.
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
+        crate::apply_connection_security_pragmas(&conn)?;
         conn.exec_batch(SESSION_STORE_SCHEMA_SQL)?;
         ensure_lease_columns(&conn)?;
         Ok(Self {

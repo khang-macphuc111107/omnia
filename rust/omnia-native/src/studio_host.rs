@@ -138,12 +138,17 @@ fn contains_thorium(p: &Path) -> bool {
     p.to_string_lossy().to_ascii_lowercase().contains("thorium")
 }
 
-/// Probe host-specific non-Thorium WebView2 runtimes (EdgeCore on E:, System32, Program Files).
+/// Probe non-Thorium WebView2 runtimes via env override, `LOCALAPPDATA`, `ProgramFiles`, and System32.
 pub fn resolve_webview2_browser_folder() -> Option<PathBuf> {
-    if let Ok(env_dir) = std::env::var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER") {
-        let p = PathBuf::from(env_dir.trim());
-        if !contains_thorium(&p) && p.join("msedgewebview2.exe").is_file() {
-            return Some(p);
+    for env_key in ["OMNIA_WEBVIEW2_RUNTIME", "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"] {
+        if let Ok(env_dir) = std::env::var(env_key) {
+            let trimmed = env_dir.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                if !contains_thorium(&p) && p.join("msedgewebview2.exe").is_file() {
+                    return Some(p);
+                }
+            }
         }
     }
 
@@ -158,25 +163,37 @@ pub fn resolve_webview2_browser_folder() -> Option<PathBuf> {
             }
         }
     }
-    if let Ok(entries) = std::fs::read_dir(r"E:\Users\khang\AppData\Local\Microsoft\EdgeCore") {
-        for ent in entries.flatten() {
-            dynamic_dirs.push(ent.path());
+
+    let pf_x86 = std::env::var("ProgramFiles(x86)")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)"));
+    let pf_64 = std::env::var("ProgramFiles")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+
+    for root in [pf_x86, pf_64] {
+        let webview_app = root.join(r"Microsoft\EdgeWebView\Application");
+        if let Ok(entries) = std::fs::read_dir(&webview_app) {
+            for ent in entries.flatten() {
+                dynamic_dirs.push(ent.path());
+            }
         }
     }
-    if let Ok(entries) =
-        std::fs::read_dir(r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application")
-    {
-        for ent in entries.flatten() {
-            dynamic_dirs.push(ent.path());
-        }
-    }
-    // Sort newest version folder first so dynamic runtime discovery stays ahead of static fallbacks.
+
+    // Sort newest version folder first so dynamic runtime discovery stays ahead of system fallbacks.
     dynamic_dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
     candidates.extend(dynamic_dirs);
-    candidates.push(PathBuf::from(
-        r"E:\Users\khang\AppData\Local\Microsoft\EdgeCore\159.0.4401.0",
-    ));
-    candidates.push(PathBuf::from(r"C:\Windows\System32\Microsoft-Edge-WebView"));
+
+    let system_root = std::env::var("SystemRoot")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    candidates.push(system_root.join(r"System32\Microsoft-Edge-WebView"));
 
     candidates
         .into_iter()
@@ -547,7 +564,7 @@ mod tests {
     fn thorium_paths_are_strictly_rejected() {
         assert!(contains_thorium(Path::new(r"C:\Apps\Thorium\Application")));
         assert!(!contains_thorium(Path::new(
-            r"E:\Users\khang\AppData\Local\Microsoft\EdgeCore\159.0.4401.0"
+            r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\130.0.0.0"
         )));
     }
 }

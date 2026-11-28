@@ -11,6 +11,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use omnia_core::sha256_hex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use thiserror::Error;
@@ -192,6 +193,30 @@ pub enum WireAdapterError {
         model_id: String,
         /// Rejection explanation.
         reason: String,
+    },
+
+    /// Anthropic prompt-caching permits at most 4 `cache_control` breakpoints total.
+    #[error(
+        "anthropic prompt caching allows at most {max} cache_control breakpoints across tools->system->messages (got {count})"
+    )]
+    AnthropicCacheBreakpointsExceeded {
+        /// Total observed `cache_control` blocks.
+        count: usize,
+        /// Maximum supported breakpoint count (`4`).
+        max: usize,
+    },
+
+    /// Anthropic prompt-caching forbids a longer `1h` TTL breakpoint after an earlier `5m` TTL.
+    #[error(
+        "anthropic cache_control TTL ordering violation in {section}: '{next_ttl}' cannot follow earlier '{previous_ttl}'"
+    )]
+    AnthropicInvalidCacheTtlOrder {
+        /// Earlier breakpoint TTL observed along `tools -> system -> messages`.
+        previous_ttl: String,
+        /// Invalid subsequent TTL (`1h`).
+        next_ttl: String,
+        /// Section where the violation occurred.
+        section: String,
     },
 }
 
@@ -571,6 +596,10 @@ fn normalize_anthropic_messages(
         }
     }
 
+    let breakpoints = validate_anthropic_cache_breakpoints(&out)?;
+    if breakpoints > 0 {
+        preserved.insert(format!("cache_breakpoints={breakpoints}"));
+    }
     collect_tool_namespaces(out.get("tools"), &mut preserved);
 
     Ok(NormalizedWirePayload {
@@ -1003,6 +1032,275 @@ fn collect_tool_namespaces(tools: Option<&Value>, preserved: &mut BTreeSet<Strin
     }
 }
 
+/// Telemetry digest capturing 8-char SHA-256 hashes of request KV-prefix segments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CacheShapeDigest {
+    pub instr_h: String,
+    pub tools_h: String,
+    pub first5_h: String,
+    pub first10_h: String,
+    pub input_head_h: String,
+    pub last2_h: String,
+    pub include_h: String,
+    pub text_h: String,
+    pub meta_h: String,
+    pub reasoning_h: String,
+    pub tc_h: String,
+    pub body_h: String,
+    pub prefix_8hex: String,
+}
+
+impl CacheShapeDigest {
+    /// Emit single-line KV-cache telemetry log string pinpointing which prefix field drifted.
+    #[must_use]
+    pub fn to_log_line(&self) -> String {
+        format!(
+            "prefix={} instr={} tools={} first5={} first10={} input_head={} last2={} include={} text={} meta={} reasoning={} tc={} body={}",
+            self.prefix_8hex,
+            self.instr_h,
+            self.tools_h,
+            self.first5_h,
+            self.first10_h,
+            self.input_head_h,
+            self.last2_h,
+            self.include_h,
+            self.text_h,
+            self.meta_h,
+            self.reasoning_h,
+            self.tc_h,
+            self.body_h,
+        )
+    }
+}
+
+fn short_hash_opt(val: Option<&Value>) -> String {
+    match val {
+        None | Some(Value::Null) => "00000000".to_owned(),
+        Some(v) => {
+            let bytes = serde_json::to_vec(v).unwrap_or_default();
+            sha256_hex(&bytes)[..8].to_owned()
+        }
+    }
+}
+
+fn short_hash_slice(items: &[Value]) -> String {
+    if items.is_empty() {
+        return "00000000".to_owned();
+    }
+    let bytes = serde_json::to_vec(items).unwrap_or_default();
+    sha256_hex(&bytes)[..8].to_owned()
+}
+
+fn tool_decl_name(tool: &Value) -> &str {
+    tool.get("name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            tool.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+}
+
+/// Lexicographically sort top-level `tools[]` by tool name (`max = 256` fast cap preserved for
+/// stability) so client tool-ordering jitter never invalidates upstream KV prompt caches.
+pub fn sort_tools_stable(payload: &mut Value) -> usize {
+    let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    if tools.len() <= 1 || tools.len() > 256 {
+        return tools.len();
+    }
+    tools.sort_by(|a, b| tool_decl_name(a).cmp(tool_decl_name(b)));
+    tools.len()
+}
+
+/// Normalize historical tool names outside `^[a-zA-Z0-9_.-]+$` to `_` without mutating tool payloads.
+pub fn sanitize_input_tool_names(payload: &mut Value) -> usize {
+    fn clean_name(raw: &str) -> Option<String> {
+        let mut changed = false;
+        let sanitized: String = raw
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+                    c
+                } else {
+                    changed = true;
+                    '_'
+                }
+            })
+            .collect();
+        changed.then_some(sanitized)
+    }
+
+    let mut count = 0usize;
+    for field in ["messages", "input"] {
+        let Some(items) = payload.get_mut(field).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for item in items {
+            if let Some(name) = item.get("name").and_then(Value::as_str).map(ToOwned::to_owned) {
+                if let Some(cleaned) = clean_name(&name) {
+                    if let Some(obj) = item.as_object_mut() {
+                        obj.insert("name".to_owned(), Value::String(cleaned));
+                        count += 1;
+                    }
+                }
+            }
+            if let Some(calls) = item.get_mut("tool_calls").and_then(Value::as_array_mut) {
+                for call in calls {
+                    if let Some(fname) = call
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                    {
+                        if let Some(cleaned) = clean_name(&fname) {
+                            if let Some(fobj) = call.get_mut("function").and_then(Value::as_object_mut)
+                            {
+                                fobj.insert("name".to_owned(), Value::String(cleaned));
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Compute 8-char SHA-256 digests (`cache_shape_hash`) across request KV-prefix segments.
+#[must_use]
+pub fn compute_cache_shape_hash(payload: &Value) -> CacheShapeDigest {
+    let instr_val = payload.get("instructions").or_else(|| payload.get("system"));
+    let tools_val = payload.get("tools");
+    let seq = payload
+        .get("input")
+        .or_else(|| payload.get("messages"))
+        .and_then(Value::as_array);
+    let seq_slice = seq.map(Vec::as_slice).unwrap_or(&[]);
+    let first5_end = seq_slice.len().min(5);
+    let first10_end = seq_slice.len().min(10);
+    let tail_start = seq_slice.len().saturating_sub(2);
+    let head_end = seq_slice.len().saturating_sub(2);
+
+    let instr_h = short_hash_opt(instr_val);
+    let tools_h = short_hash_opt(tools_val);
+    let first5_h = short_hash_slice(&seq_slice[..first5_end]);
+    let first10_h = short_hash_slice(&seq_slice[..first10_end]);
+    let input_head_h = short_hash_slice(&seq_slice[..head_end]);
+    let last2_h = short_hash_slice(&seq_slice[tail_start..]);
+    let include_h = short_hash_opt(payload.get("include"));
+    let text_h = short_hash_opt(payload.get("text").or_else(|| payload.get("response_format")));
+    let meta_h = short_hash_opt(payload.get("metadata"));
+    let reasoning_h = short_hash_opt(
+        payload
+            .get("reasoning")
+            .or_else(|| payload.get("thinking"))
+            .or_else(|| payload.get("output_config")),
+    );
+    let tc_h = short_hash_opt(payload.get("tool_choice"));
+    let body_h = short_hash_opt(Some(payload));
+
+    let prefix_material = format!("{instr_h}:{tools_h}:{input_head_h}:{tc_h}:{reasoning_h}");
+    let prefix_8hex = sha256_hex(prefix_material.as_bytes())[..8].to_owned();
+
+    CacheShapeDigest {
+        instr_h,
+        tools_h,
+        first5_h,
+        first10_h,
+        input_head_h,
+        last2_h,
+        include_h,
+        text_h,
+        meta_h,
+        reasoning_h,
+        tc_h,
+        body_h,
+        prefix_8hex,
+    }
+}
+
+/// Enforce Anthropic's 4-breakpoint `cache_control` cap and TTL monotonicity across
+/// `tools -> system -> messages` (never allowing `"1h"` after an earlier `"5m"` breakpoint).
+pub fn validate_anthropic_cache_breakpoints(
+    input: &Map<String, Value>,
+) -> Result<usize, WireAdapterError> {
+    const MAX_ANTHROPIC_CACHE_BREAKPOINTS: usize = 4;
+
+    fn extract_ttl(cc: &Value) -> String {
+        cc.get("ttl")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "5m".to_owned())
+    }
+
+    fn visit_cc(
+        cc: &Value,
+        section: &str,
+        count: &mut usize,
+        saw_5m: &mut bool,
+    ) -> Result<(), WireAdapterError> {
+        *count += 1;
+        if *count > MAX_ANTHROPIC_CACHE_BREAKPOINTS {
+            return Err(WireAdapterError::AnthropicCacheBreakpointsExceeded {
+                count: *count,
+                max: MAX_ANTHROPIC_CACHE_BREAKPOINTS,
+            });
+        }
+        let ttl = extract_ttl(cc);
+        if *saw_5m && ttl == "1h" {
+            return Err(WireAdapterError::AnthropicInvalidCacheTtlOrder {
+                previous_ttl: "5m".to_owned(),
+                next_ttl: ttl,
+                section: section.to_owned(),
+            });
+        }
+        if ttl != "1h" {
+            *saw_5m = true;
+        }
+        Ok(())
+    }
+
+    let mut count = 0usize;
+    let mut saw_5m = false;
+
+    if let Some(tools) = input.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            if let Some(cc) = tool.get("cache_control") {
+                visit_cc(cc, "tools", &mut count, &mut saw_5m)?;
+            }
+        }
+    }
+    if let Some(sys_blocks) = input.get("system").and_then(Value::as_array) {
+        for block in sys_blocks {
+            if let Some(cc) = block.get("cache_control") {
+                visit_cc(cc, "system", &mut count, &mut saw_5m)?;
+            }
+        }
+    } else if let Some(cc) = input.get("system").and_then(|s| s.get("cache_control")) {
+        visit_cc(cc, "system", &mut count, &mut saw_5m)?;
+    }
+    if let Some(messages) = input.get("messages").and_then(Value::as_array) {
+        for msg in messages {
+            if let Some(cc) = msg.get("cache_control") {
+                visit_cc(cc, "messages", &mut count, &mut saw_5m)?;
+            }
+            if let Some(blocks) = msg.get("content").and_then(Value::as_array) {
+                for block in blocks {
+                    if let Some(cc) = block.get("cache_control") {
+                        visit_cc(cc, "messages", &mut count, &mut saw_5m)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1261,5 +1559,93 @@ mod tests {
         assert_eq!(local_req_ok.payload["local_vram_semaphore"], 1);
         assert_eq!(local_req_ok.payload["dwm_ui_headroom_mb"], 1024);
         assert_eq!(local_req_ok.payload["token_budget"], Value::Null);
+    }
+
+    #[test]
+    fn stable_tool_sort_cache_shape_and_anthropic_cache_ttl_guard() {
+        let mut p1 = json!({
+            "instructions": "system prompt",
+            "tools": [
+                { "name": "zeta_tool", "parameters": {} },
+                { "name": "alpha_tool", "parameters": {} }
+            ],
+            "input": [
+                { "role": "user", "content": "msg 1" },
+                { "role": "user", "content": "msg 2", "name": "bad tool/name!" }
+            ]
+        });
+        let mut p2 = json!({
+            "instructions": "system prompt",
+            "tools": [
+                { "name": "alpha_tool", "parameters": {} },
+                { "name": "zeta_tool", "parameters": {} }
+            ],
+            "input": [
+                { "role": "user", "content": "msg 1" },
+                { "role": "user", "content": "msg 2 modified", "name": "bad tool/name!" }
+            ]
+        });
+        assert_eq!(sort_tools_stable(&mut p1), 2);
+        assert_eq!(sort_tools_stable(&mut p2), 2);
+        assert_eq!(sanitize_input_tool_names(&mut p1), 1);
+        assert_eq!(p1["input"][1]["name"], "bad_tool_name_");
+
+        let d1 = compute_cache_shape_hash(&p1);
+        let d2 = compute_cache_shape_hash(&p2);
+        assert_eq!(d1.instr_h, d2.instr_h);
+        assert_eq!(d1.tools_h, d2.tools_h);
+        assert_ne!(d1.last2_h, d2.last2_h);
+        assert!(d1.to_log_line().contains(&d1.prefix_8hex));
+
+        // Valid Anthropic 4-breakpoint 1h -> 5m ordering across tools -> system -> messages.
+        let valid_cc = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 4096,
+            "tools": [{ "name": "t1", "cache_control": { "type": "ephemeral", "ttl": "1h" } }],
+            "system": [{ "type": "text", "text": "sys", "cache_control": { "type": "ephemeral", "ttl": "1h" } }],
+            "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "u1", "cache_control": { "type": "ephemeral", "ttl": "5m" } }] },
+                { "role": "assistant", "content": "a1" },
+                { "role": "user", "content": [{ "type": "text", "text": "u2", "cache_control": { "type": "ephemeral", "ttl": "5m" } }] }
+            ]
+        });
+        let ok = normalize_provider_wire_payload(ProviderWireDialect::AnthropicMessages, &valid_cc)
+            .expect("valid 4-breakpoint 1h->5m should pass");
+        assert!(ok
+            .preserved_fields
+            .contains(&"cache_breakpoints=4".to_owned()));
+
+        // Invalid 5m -> 1h across tools -> messages must fail closed.
+        let invalid_ttl = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 4096,
+            "tools": [{ "name": "t1", "cache_control": { "type": "ephemeral", "ttl": "5m" } }],
+            "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "u1", "cache_control": { "type": "ephemeral", "ttl": "1h" } }] }
+            ]
+        });
+        assert!(matches!(
+            normalize_provider_wire_payload(ProviderWireDialect::AnthropicMessages, &invalid_ttl),
+            Err(WireAdapterError::AnthropicInvalidCacheTtlOrder { .. })
+        ));
+
+        // Invalid >4 breakpoints must fail closed.
+        let too_many = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 4096,
+            "tools": [
+                { "name": "t1", "cache_control": { "type": "ephemeral", "ttl": "1h" } },
+                { "name": "t2", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+            ],
+            "system": [{ "type": "text", "text": "sys", "cache_control": { "type": "ephemeral", "ttl": "1h" } }],
+            "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "u1", "cache_control": { "type": "ephemeral", "ttl": "5m" } }] },
+                { "role": "user", "content": [{ "type": "text", "text": "u2", "cache_control": { "type": "ephemeral", "ttl": "5m" } }] }
+            ]
+        });
+        assert!(matches!(
+            normalize_provider_wire_payload(ProviderWireDialect::AnthropicMessages, &too_many),
+            Err(WireAdapterError::AnthropicCacheBreakpointsExceeded { count: 5, max: 4 })
+        ));
     }
 }

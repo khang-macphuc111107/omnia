@@ -1176,8 +1176,18 @@ pub(crate) async fn dispatch_rpc(
             let entry = state.sessions.lock().await.get(sid).cloned();
             match entry {
                 Some((eng_arc, _, perm_snap)) => {
-                    let approval = acp_proto::approval_for_mode_id(&mode_id)
-                        .unwrap_or(ApprovalMode::AlwaysAsk);
+                    let Some(approval) = acp_proto::approval_for_mode_id(&mode_id) else {
+                        return id.map(|req_id| {
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": format!("Invalid params: unrecognized modeId `{mode_id}`")
+                                }
+                            })
+                        });
+                    };
                     let mut eng = eng_arc.lock().await;
                     eng.tool_runtime.approval_mode = approval;
                     eng.tool_runtime.workspace_trusted = matches!(approval, ApprovalMode::Yolo);
@@ -2309,6 +2319,46 @@ mod tests {
             let eng = entry.0.lock().await;
             assert_eq!(eng.tool_runtime.approval_mode, ApprovalMode::Plan);
             assert!(!eng.tool_runtime.workspace_trusted);
+        }
+
+        // Invalid modeId in session/set_mode must return JSON-RPC -32602 without downgrading Yolo.
+        let r_bad_mode = dispatch_rpc(
+            rpc(
+                4,
+                "session/set_mode",
+                json!({"sessionId": sid_def, "modeId": "unrecognized-mode-xyz"}),
+            ),
+            &state,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r_bad_mode["error"]["code"], -32602);
+        {
+            let entry = state.sessions.lock().await.get(sid_def).unwrap().clone();
+            let eng = entry.0.lock().await;
+            assert_eq!(eng.tool_runtime.approval_mode, ApprovalMode::Yolo);
+            assert!(eng.tool_runtime.workspace_trusted);
+        }
+
+        // "solo" alias maps cleanly to ApprovalMode::Yolo + workspace_trusted = true.
+        let r_solo = dispatch_rpc(
+            rpc(
+                5,
+                "session/set_mode",
+                json!({"sessionId": sid_ask, "modeId": "solo"}),
+            ),
+            &state,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(r_solo.get("error").is_none());
+        {
+            let entry = state.sessions.lock().await.get(sid_ask).unwrap().clone();
+            let eng = entry.0.lock().await;
+            assert_eq!(eng.tool_runtime.approval_mode, ApprovalMode::Yolo);
+            assert!(eng.tool_runtime.workspace_trusted);
         }
 
         let _ = std::fs::remove_dir_all(&tmp);

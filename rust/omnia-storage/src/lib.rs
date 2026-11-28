@@ -5,13 +5,28 @@
 //! `RunRegistry`, `RunCoordinator`).
 
 mod error;
+mod graph_cursor;
 mod native_store;
 mod native_types;
 mod recall_store;
 mod session_store;
 mod sessions;
 
+pub(crate) const SQLITE_SECURITY_PRAGMAS: &str =
+    "PRAGMA trusted_schema = OFF; PRAGMA secure_delete = ON;";
+
+pub(crate) fn apply_connection_security_pragmas(
+    conn: &omnia_winsqlite::Connection,
+) -> Result<(), StoreError> {
+    conn.exec_batch(SQLITE_SECURITY_PRAGMAS)?;
+    Ok(())
+}
+
 pub use error::StoreError;
+pub use graph_cursor::{
+    decode_graph_cursor, encode_graph_cursor, hmac_sha256, new_graph_cursor_secret,
+    GraphCursorCodec, GraphKeysetCursor, GRAPH_CURSOR_PREFIX, MIN_GRAPH_CURSOR_SECRET_BYTES,
+};
 pub use native_store::HarnessStore;
 pub use recall_store::{
     KanbanTaskRecord, KbNoteRecord, PasteRecord, RecallStore, RoutineRecord, RoutineRunRecord,

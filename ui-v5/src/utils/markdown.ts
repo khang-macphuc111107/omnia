@@ -22,28 +22,275 @@ const EXT_FOR_LANG: Record<string, string> = {
   rust: 'rs',
   rs: 'rs',
   cpp: 'cpp',
+  'c++': 'cpp',
   c: 'c',
   csharp: 'cs',
+  cs: 'cs',
   java: 'java',
+  kotlin: 'kt',
+  kt: 'kt',
+  swift: 'swift',
   go: 'go',
+  zig: 'zig',
+  ruby: 'rb',
+  rb: 'rb',
+  php: 'php',
+  lua: 'lua',
+  r: 'r',
+  scala: 'scala',
   sql: 'sql',
   bash: 'sh',
   sh: 'sh',
+  zsh: 'sh',
+  shell: 'sh',
   powershell: 'ps1',
   ps1: 'ps1',
+  bat: 'bat',
+  cmd: 'cmd',
   json: 'json',
+  toml: 'toml',
+  ini: 'ini',
   yaml: 'yaml',
   yml: 'yml',
   html: 'html',
   xml: 'xml',
   svg: 'svg',
   css: 'css',
+  scss: 'scss',
   markdown: 'md',
   md: 'md',
   latex: 'tex',
   tex: 'tex',
   mermaid: 'mmd',
+  csv: 'csv',
+  tsv: 'tsv',
+  diff: 'diff',
+  patch: 'patch',
+  dockerfile: 'Dockerfile',
+  graphql: 'graphql',
+  proto: 'proto',
+  text: 'txt',
 };
+
+const LATEX_SYMBOL_MAP: Record<string, string> = {
+  alpha: '&alpha;', beta: '&beta;', gamma: '&gamma;', delta: '&delta;',
+  epsilon: '&epsilon;', varepsilon: '&epsilon;', zeta: '&zeta;', eta: '&eta;',
+  theta: '&theta;', vartheta: '&theta;', iota: '&iota;', kappa: '&kappa;',
+  lambda: '&lambda;', mu: '&mu;', nu: '&nu;', xi: '&xi;', pi: '&pi;',
+  rho: '&rho;', sigma: '&sigma;', tau: '&tau;', upsilon: '&upsilon;',
+  phi: '&phi;', varphi: '&varphi;', chi: '&chi;', psi: '&psi;', omega: '&omega;',
+  Gamma: '&Gamma;', Delta: '&Delta;', Theta: '&Theta;', Lambda: '&Lambda;',
+  Xi: '&Xi;', Pi: '&Pi;', Sigma: '&Sigma;', Phi: '&Phi;', Psi: '&Psi;', Omega: '&Omega;',
+  infty: '&infin;', partial: '&part;', nabla: '&nabla;', hbar: '&#8463;',
+  pm: '&plusmn;', mp: '&#8723;', times: '&times;', cdot: '&middot;', div: '&divide;',
+  leq: '&le;', le: '&le;', geq: '&ge;', ge: '&ge;', neq: '&ne;', ne: '&ne;',
+  approx: '&asymp;', equiv: '&equiv;', sim: '&sim;', propto: '&prop;',
+  sum: '&sum;', prod: '&prod;', int: '&int;', oint: '&#8750;',
+  forall: '&forall;', exists: '&exist;', in: '&isin;', notin: '&notin;',
+  subset: '&sub;', subseteq: '&sube;', supset: '&sup;', cup: '&cup;', cap: '&cap;',
+  emptyset: '&empty;', to: '&rarr;', rightarrow: '&rarr;', leftarrow: '&larr;',
+  Rightarrow: '&rArr;', Leftarrow: '&lArr;', leftrightarrow: '&harr;', Leftrightarrow: '&hArr;',
+  circ: '&deg;', degree: '&deg;', ldots: '&hellip;', cdots: '&ctdot;', mid: '|',
+  land: '&and;', lor: '&or;', neg: '&not;', ell: '&#8467;',
+};
+
+function readBalancedGroup(src: string, startIdx: number, openCh = '{', closeCh = '}'): { content: string; end: number } | null {
+  if (src[startIdx] !== openCh) return null;
+  let depth = 0;
+  for (let i = startIdx; i < src.length; i++) {
+    if (src[i] === '\\' && i + 1 < src.length) {
+      i += 1;
+      continue;
+    }
+    if (src[i] === openCh) depth += 1;
+    else if (src[i] === closeCh) {
+      depth -= 1;
+      if (depth === 0) {
+        return { content: src.slice(startIdx + 1, i), end: i + 1 };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Zero-CDN pure HTML/CSS semantic math fallback for fractions, roots, matrices,
+ * superscripts/subscripts, and Greek/operator symbols when KaTeX errors or is unavailable.
+ */
+export function renderSemanticMathFallback(expr: string, displayMode = false): string {
+  const convertInner = (rawTex: string, depth = 0): string => {
+    if (depth > 8) return escapeHtml(rawTex);
+    const trimmed = rawTex.trim();
+    if (!trimmed) return '';
+
+    // Matrix / cases environments
+    const envMatch = trimmed.match(
+      /^\\begin\{(pmatrix|bmatrix|vmatrix|Bmatrix|matrix|cases|align\*?|equation\*?|gather\*?|split)\}([\s\S]*?)\\end\{\1\}$/,
+    );
+    if (envMatch) {
+      const env = envMatch[1];
+      const body = envMatch[2].trim();
+      const rows = body.split(/\\\\/).map((r) => r.trim()).filter(Boolean);
+      const isMatrix = ['pmatrix', 'bmatrix', 'vmatrix', 'Bmatrix', 'matrix', 'cases'].includes(env);
+      const delimMap: Record<string, [string, string]> = {
+        pmatrix: ['(', ')'],
+        bmatrix: ['[', ']'],
+        vmatrix: ['|', '|'],
+        Bmatrix: ['{', '}'],
+        matrix: ['', ''],
+        cases: ['{', ''],
+      };
+      const rowsHtml = rows
+        .map((row) => {
+          const cols = row.split('&').map((c) => convertInner(c, depth + 1));
+          return `<tr>${cols.map((c) => `<td style="padding:1px 6px;text-align:${env === 'cases' ? 'left' : 'center'};border:0">${c}</td>`).join('')}</tr>`;
+        })
+        .join('');
+      const table = `<table style="display:inline-table;vertical-align:middle;border-collapse:collapse;margin:0 2px">${rowsHtml}</table>`;
+      if (!isMatrix) return table;
+      const [ld, rd] = delimMap[env] ?? ['', ''];
+      const leftSpan = ld ? `<span style="font-size:1.45em;line-height:1;vertical-align:middle">${escapeHtml(ld)}</span>` : '';
+      const rightSpan = rd ? `<span style="font-size:1.45em;line-height:1;vertical-align:middle">${escapeHtml(rd)}</span>` : '';
+      return `<span class="omnia-smath-matrix" style="display:inline-flex;align-items:center;gap:2px;vertical-align:middle">${leftSpan}${table}${rightSpan}</span>`;
+    }
+
+    let out = '';
+    let i = 0;
+    while (i < trimmed.length) {
+      const ch = trimmed[i];
+      if (ch === '\\') {
+        const rest = trimmed.slice(i + 1);
+        const cmdMatch = rest.match(/^([a-zA-Z]+|[^a-zA-Z\s])/);
+        if (!cmdMatch) {
+          out += '\\';
+          i += 1;
+          continue;
+        }
+        const cmd = cmdMatch[1];
+        let cursor = i + 1 + cmd.length;
+        while (cursor < trimmed.length && trimmed[cursor] === ' ') cursor += 1;
+
+        if (cmd === 'frac' || cmd === 'dfrac' || cmd === 'tfrac') {
+          const num = readBalancedGroup(trimmed, cursor);
+          if (num) {
+            let nextCur = num.end;
+            while (nextCur < trimmed.length && trimmed[nextCur] === ' ') nextCur += 1;
+            const den = readBalancedGroup(trimmed, nextCur);
+            if (den) {
+              out +=
+                `<span class="omnia-smath-frac" style="display:inline-flex;flex-direction:column;align-items:center;vertical-align:middle;margin:0 0.18em;line-height:1.15;font-size:0.92em">` +
+                `<span style="border-bottom:1px solid currentColor;padding:0 0.22em">${convertInner(num.content, depth + 1)}</span>` +
+                `<span style="padding:0 0.22em">${convertInner(den.content, depth + 1)}</span>` +
+                `</span>`;
+              i = den.end;
+              continue;
+            }
+          }
+        }
+
+        if (cmd === 'sqrt') {
+          let rootIdxHtml = '';
+          if (trimmed[cursor] === '[') {
+            const opt = readBalancedGroup(trimmed, cursor, '[', ']');
+            if (opt) {
+              rootIdxHtml = `<sup style="font-size:0.68em;margin-right:-1px">${convertInner(opt.content, depth + 1)}</sup>`;
+              cursor = opt.end;
+              while (cursor < trimmed.length && trimmed[cursor] === ' ') cursor += 1;
+            }
+          }
+          const rad = readBalancedGroup(trimmed, cursor);
+          if (rad) {
+            out += `<span class="omnia-smath-sqrt" style="display:inline-flex;align-items:baseline">${rootIdxHtml}<span>&radic;</span><span style="border-top:1px solid currentColor;padding:0 0.16em;margin-left:1px">${convertInner(rad.content, depth + 1)}</span></span>`;
+            i = rad.end;
+            continue;
+          }
+        }
+
+        if (['text', 'mathrm', 'mathbf', 'mathit', 'mathsf', 'mathtt', 'hat', 'bar', 'vec', 'ce', 'pu'].includes(cmd)) {
+          const grp = readBalancedGroup(trimmed, cursor);
+          if (grp) {
+            if (cmd === 'mathbf') out += `<strong>${convertInner(grp.content, depth + 1)}</strong>`;
+            else if (cmd === 'hat') out += `${convertInner(grp.content, depth + 1)}&#770;`;
+            else if (cmd === 'bar') out += `<span style="border-top:1px solid currentColor">${convertInner(grp.content, depth + 1)}</span>`;
+            else if (cmd === 'vec') out += `${convertInner(grp.content, depth + 1)}&#8407;`;
+            else if (cmd === 'ce') {
+              const chem = escapeHtml(grp.content)
+                .replace(/&lt;=&gt;/g, ' &#8652; ')
+                .replace(/-&gt;/g, ' &rarr; ')
+                .replace(/([A-Za-z)\]])(\d+)/g, '$1<sub>$2</sub>');
+              out += `<span class="omnia-smath-chem">${chem}</span>`;
+            } else {
+              out += `<span>${escapeHtml(grp.content)}</span>`;
+            }
+            i = grp.end;
+            continue;
+          }
+        }
+
+        if (cmd === ',' || cmd === ';' || cmd === ':' || cmd === 'quad' || cmd === 'qquad') {
+          out += cmd === 'qquad' ? '&emsp;&emsp;' : cmd === 'quad' ? '&emsp;' : '&thinsp;';
+          i = i + 1 + cmd.length;
+          continue;
+        }
+        if (cmd === 'left' || cmd === 'right') {
+          i = i + 1 + cmd.length;
+          continue;
+        }
+        if (LATEX_SYMBOL_MAP[cmd]) {
+          out += LATEX_SYMBOL_MAP[cmd];
+          i = i + 1 + cmd.length;
+          continue;
+        }
+        if (['{', '}', '%', '_', '&', '#', '$'].includes(cmd)) {
+          out += escapeHtml(cmd);
+          i = i + 1 + cmd.length;
+          continue;
+        }
+        out += escapeHtml(cmd);
+        i = i + 1 + cmd.length;
+        continue;
+      }
+
+      if (ch === '^' || ch === '_') {
+        const tag = ch === '^' ? 'sup' : 'sub';
+        let cursor = i + 1;
+        while (cursor < trimmed.length && trimmed[cursor] === ' ') cursor += 1;
+        if (trimmed[cursor] === '{') {
+          const grp = readBalancedGroup(trimmed, cursor);
+          if (grp) {
+            out += `<${tag} style="font-size:0.75em">${convertInner(grp.content, depth + 1)}</${tag}>`;
+            i = grp.end;
+            continue;
+          }
+        } else if (cursor < trimmed.length) {
+          out += `<${tag} style="font-size:0.75em">${escapeHtml(trimmed[cursor])}</${tag}>`;
+          i = cursor + 1;
+          continue;
+        }
+      }
+
+      if (ch === '{') {
+        const grp = readBalancedGroup(trimmed, i);
+        if (grp) {
+          out += convertInner(grp.content, depth + 1);
+          i = grp.end;
+          continue;
+        }
+      }
+
+      out += escapeHtml(ch);
+      i += 1;
+    }
+    return out;
+  };
+
+  const rendered = convertInner(expr, 0);
+  const tag = displayMode ? 'div' : 'span';
+  const style = displayMode
+    ? 'display:block;text-align:center;font-family:Georgia,Cambria,serif;font-size:1.05em;padding:4px 0'
+    : 'display:inline;font-family:Georgia,Cambria,serif';
+  return `<${tag} class="omnia-math-semantic" data-math-fallback="semantic" style="${style}">${rendered}</${tag}>`;
+}
 
 const ALERT_LABELS: Record<string, { label: string; cls: string }> = {
   NOTE: { label: 'NOTE', cls: 'note' },
@@ -74,16 +321,23 @@ function sanitizeSvgMarkup(rawSvg: string): string {
 
 function renderLatexSegment(expr: string, displayMode: boolean): string {
   const clean = expr.trim();
+  if (!clean) return '';
   try {
-    return katex.renderToString(clean, {
-      displayMode,
-      throwOnError: false,
-      strict: false,
-      trust: false,
-    });
+    if (typeof katex?.renderToString === 'function') {
+      const rendered = katex.renderToString(clean, {
+        displayMode,
+        throwOnError: true,
+        strict: false,
+        trust: false,
+      });
+      if (rendered && !rendered.includes('katex-error')) {
+        return rendered;
+      }
+    }
   } catch {
-    return `<code class="omnia-math-fallback">${escapeHtml(clean)}</code>`;
+    // fall through to zero-CDN pure HTML/CSS semantic math renderer
   }
+  return renderSemanticMathFallback(clean, displayMode);
 }
 
 function renderDisplayMathCard(expr: string): string {
@@ -100,14 +354,23 @@ function renderDisplayMathCard(expr: string): string {
 
 function buildCodeCardHtml(text: string, rawLang = ''): string {
   const normalized = String(text ?? '').replace(/\r\n/g, '\n').replace(/\n$/, '');
-  const cleanLang = (rawLang || 'text').trim().toLowerCase().replace(/[^a-z0-9_+#.-]/g, '') || 'text';
+  const trimmedInfo = (rawLang || '').trim();
+  let langPart = trimmedInfo;
+  let fileHint = '';
+  const colonIdx = trimmedInfo.indexOf(':');
+  if (colonIdx > 0) {
+    langPart = trimmedInfo.slice(0, colonIdx).trim();
+    fileHint = trimmedInfo.slice(colonIdx + 1).trim().replace(/[^a-zA-Z0-9_./-]/g, '');
+  }
+  const cleanLang = (langPart || 'text').toLowerCase().replace(/[^a-z0-9_+#.-]/g, '') || 'text';
   const lineCount = normalized ? normalized.split('\n').length : 1;
   const ext = EXT_FOR_LANG[cleanLang] || 'txt';
   const encodedRaw = encodeURIComponent(normalized);
+  const safeFilename = fileHint ? fileHint.split('/').pop() || `omnia-snippet.${ext}` : `omnia-snippet.${ext}`;
 
   if (cleanLang === 'mermaid') {
     return (
-      `<div class="omnia-code-card rounded-md border border-[var(--border-subtle)] bg-[var(--bg-code)] my-2 overflow-hidden" data-code-raw="${encodedRaw}" data-code-ext="mmd">` +
+      `<div class="omnia-code-card rounded-md border border-[var(--border-subtle)] bg-[var(--bg-code)] my-2 overflow-hidden" data-code-raw="${encodedRaw}" data-code-ext="mmd" data-code-filename="${escapeHtml(safeFilename)}">` +
       `<div class="omnia-code-header">` +
       `<div class="flex items-center gap-2"><span class="font-semibold text-[var(--accent-cyan)]">mermaid</span><span>${lineCount} lines</span>` +
       `<button type="button" class="omnia-code-tab active" data-code-tab="preview">Diagram</button>` +
@@ -151,18 +414,18 @@ function buildCodeCardHtml(text: string, rawLang = ''): string {
   }
 
   return (
-    `<div class="omnia-code-card${showLinesDefault ? ' show-lines' : ''} rounded-md border border-[var(--border-subtle)] bg-[var(--bg-code)] my-2 overflow-hidden" data-code-raw="${encodedRaw}" data-code-ext="${escapeHtml(ext)}">` +
+    `<div class="omnia-code-card${showLinesDefault ? ' show-lines' : ''} rounded-md border border-[var(--border-subtle)] bg-[var(--bg-code)] my-2 overflow-hidden" data-code-raw="${encodedRaw}" data-code-ext="${escapeHtml(ext)}" data-code-filename="${escapeHtml(safeFilename)}">` +
     `<div class="omnia-code-header">` +
-    `<div class="flex items-center gap-2"><span class="font-semibold text-[var(--accent-cyan)]">${escapeHtml(cleanLang)}</span><span>${lineCount}L</span>` +
+    `<div class="flex items-center gap-2"><span class="font-semibold text-[var(--accent-cyan)]">${escapeHtml(fileHint || cleanLang)}</span><span>${lineCount}L</span>` +
     (previewable
       ? `<button type="button" class="omnia-code-tab active" data-code-tab="code">Code</button><button type="button" class="omnia-code-tab" data-code-tab="preview">Preview</button>`
       : '') +
     `</div>` +
     `<div class="flex items-center gap-1">` +
-    `<button type="button" class="omnia-code-btn" data-code-action="lines" title="Toggle line numbers">#</button>` +
-    `<button type="button" class="omnia-code-btn" data-code-action="wrap" title="Toggle word wrap">Wrap</button>` +
-    `<button type="button" class="omnia-code-btn" data-code-action="download" title="Download code">Save</button>` +
-    `<button type="button" class="omnia-code-btn" data-code-action="copy" title="Copy code">Copy</button>` +
+    `<button type="button" class="omnia-code-btn${showLinesDefault ? ' active' : ''}" data-code-action="lines" aria-pressed="${showLinesDefault ? 'true' : 'false'}" title="Toggle line numbers">#</button>` +
+    `<button type="button" class="omnia-code-btn" data-code-action="wrap" aria-pressed="false" title="Toggle soft word wrap">Wrap</button>` +
+    `<button type="button" class="omnia-code-btn" data-code-action="download" title="Download raw file (.${escapeHtml(ext)})">Save</button>` +
+    `<button type="button" class="omnia-code-btn" data-code-action="copy" title="Copy raw code">Copy</button>` +
     `</div></div>` +
     `<pre data-code-pane="code" class="hljs m-0 border-0 rounded-none overflow-x-auto"><code>${linesHtml}</code></pre>` +
     (previewable ? `<div data-code-pane="preview" hidden>${previewHtml}</div>` : '') +
@@ -325,12 +588,14 @@ export function renderRichMarkdown(raw: string, opts: { citations?: boolean } = 
       'data-mermaid',
       'data-code-raw',
       'data-code-ext',
+      'data-code-filename',
       'data-code-tab',
       'data-code-pane',
       'data-code-action',
       'data-line',
       'data-copy-tex',
       'data-citation-id',
+      'aria-pressed',
       'sandbox',
       'srcdoc',
       'hidden',
@@ -413,11 +678,16 @@ export function handleRichMarkdownClick(
     const action = actionBtn.dataset.codeAction;
     const rawCode = decodeURIComponent(card.dataset.codeRaw || '');
     const ext = card.dataset.codeExt || 'txt';
+    const filename = card.dataset.codeFilename || `omnia-snippet.${ext}`;
 
     if (action === 'lines') {
-      card.classList.toggle('show-lines');
+      const enabled = card.classList.toggle('show-lines');
+      actionBtn.classList.toggle('active', enabled);
+      actionBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
     } else if (action === 'wrap') {
-      card.classList.toggle('wrap-lines');
+      const enabled = card.classList.toggle('wrap-lines');
+      actionBtn.classList.toggle('active', enabled);
+      actionBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
     } else if (action === 'copy') {
       void navigator.clipboard?.writeText(rawCode).then(
         () => {
@@ -434,10 +704,10 @@ export function handleRichMarkdownClick(
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `omnia-snippet.${ext}`;
+      a.download = filename;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      callbacks.onNotify?.(`Saved omnia-snippet.${ext}`);
+      callbacks.onNotify?.(`Saved ${filename}`);
     }
   }
 }

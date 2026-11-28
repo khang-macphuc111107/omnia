@@ -10,6 +10,7 @@ import {
   Download,
   Eye,
   FileText,
+  FolderTree,
   Headphones,
   HelpCircle,
   Layers,
@@ -27,6 +28,7 @@ import {
   Send,
   Share2,
   Shuffle,
+  Sliders,
   Sparkles,
   Square,
   Trash2,
@@ -57,6 +59,116 @@ const ARTIFACT_KINDS = [
 
 const PODCAST_SPEEDS = [0.75, 1, 1.25, 1.5, 2] as const;
 const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
+const CHAT_SETTINGS_MAX_CHARS = 10_000;
+
+interface DroppedFileEntry {
+  file: File;
+  relativePath: string;
+}
+
+interface FsEntryLike {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  file?: (cb: (f: File) => void, err?: (e: unknown) => void) => void;
+  createReader?: () => {
+    readEntries: (cb: (entries: FsEntryLike[]) => void, err?: (e: unknown) => void) => void;
+  };
+}
+
+function readAllDirectoryEntries(reader: NonNullable<FsEntryLike['createReader']> extends () => infer R ? R : never): Promise<FsEntryLike[]> {
+  return new Promise((resolve) => {
+    const all: FsEntryLike[] = [];
+    const readBatch = () => {
+      try {
+        reader.readEntries(
+          (batch) => {
+            if (!batch || batch.length === 0) {
+              resolve(all);
+              return;
+            }
+            all.push(...batch);
+            // Chromium returns at most 100 entries per readEntries() call — loop until empty
+            readBatch();
+          },
+          () => resolve(all),
+        );
+      } catch {
+        resolve(all);
+      }
+    };
+    readBatch();
+  });
+}
+
+async function traverseFsEntry(entry: FsEntryLike, prefix: string, out: DroppedFileEntry[]): Promise<void> {
+  if (entry.isFile && entry.file) {
+    const file = await new Promise<File | null>((resolve) => {
+      try {
+        entry.file!(
+          (f) => resolve(f),
+          () => resolve(null),
+        );
+      } catch {
+        resolve(null);
+      }
+    });
+    if (file) {
+      out.push({ file, relativePath: prefix ? `${prefix}/${file.name}` : file.name });
+    }
+    return;
+  }
+  if (entry.isDirectory && entry.createReader) {
+    const nextPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const children = await readAllDirectoryEntries(entry.createReader());
+    for (const child of children) {
+      await traverseFsEntry(child, nextPrefix, out);
+    }
+  }
+}
+
+export async function collectDroppedFiles(dt: DataTransfer | null): Promise<DroppedFileEntry[]> {
+  if (!dt) return [];
+  const out: DroppedFileEntry[] = [];
+  const items = dt.items ? Array.from(dt.items) : [];
+  let usedEntries = false;
+  for (const item of items) {
+    const getEntry = (item as unknown as { webkitGetAsEntry?: () => FsEntryLike | null }).webkitGetAsEntry;
+    if (typeof getEntry === 'function') {
+      const entry = getEntry.call(item);
+      if (entry) {
+        usedEntries = true;
+        await traverseFsEntry(entry, '', out);
+      }
+    }
+  }
+  if (!usedEntries && dt.files) {
+    for (const file of Array.from(dt.files)) {
+      const rel = (file as unknown as { webkitRelativePath?: string }).webkitRelativePath || file.name;
+      out.push({ file, relativePath: rel });
+    }
+  }
+  return out;
+}
+
+function readStoredSplitRatio(): number {
+  try {
+    const raw = window.localStorage.getItem('omnia.atelier.splitRatio');
+    const n = raw ? Number.parseFloat(raw) : 54;
+    if (Number.isFinite(n)) return Math.max(28, Math.min(72, n));
+  } catch {
+    // ignore storage errors
+  }
+  return 54;
+}
+
+function readStoredSplitSwapped(): boolean {
+  try {
+    return window.localStorage.getItem('omnia.atelier.splitSwapped') === 'true';
+  } catch {
+    return false;
+  }
+}
 
 type MasteryRating = 'again' | 'hard' | 'good' | 'easy';
 
@@ -977,12 +1089,55 @@ export function AtelierView() {
   const [qaHistory, setQaHistory] = createSignal<QaTurnItem[]>([]);
   const [statusMsg, setStatusMsg] = createSignal('');
 
+  // Split-pane 28%-72% Resizer + Alt+S Swap
+  const [splitRatio, setSplitRatio] = createSignal<number>(readStoredSplitRatio());
+  const [splitSwapped, setSplitSwapped] = createSignal<boolean>(readStoredSplitSwapped());
+  const [isResizingSplit, setIsResizingSplit] = createSignal(false);
+
+  // Drag-and-drop recursive folder upload + Source/Notebook/Artifact management
+  const [isDropActive, setIsDropActive] = createSignal(false);
+  const [uploadBusy, setUploadBusy] = createSignal(false);
+  const [renamingNb, setRenamingNb] = createSignal(false);
+  const [nbRenameInput, setNbRenameInput] = createSignal('');
+  const [confirmDeleteNb, setConfirmDeleteNb] = createSignal(false);
+  const [confirmClearSources, setConfirmClearSources] = createSignal(false);
+  const [renamingArtId, setRenamingArtId] = createSignal<string | null>(null);
+  const [artRenameInput, setArtRenameInput] = createSignal('');
+
+  // Real window.getSelection() Quote+BTW Floating Bar
+  const [selectionMenu, setSelectionMenu] = createSignal<{ text: string; x: number; y: number } | null>(null);
+
+  // Per-Notebook ChatSettings Modal (<= 10,000 chars custom prompt)
+  const [chatSettingsOpen, setChatSettingsOpen] = createSignal(false);
+  const [chatSettingsLoading, setChatSettingsLoading] = createSignal(false);
+  const [chatSettingsSaving, setChatSettingsSaving] = createSignal(false);
+  const [chatSettingsMode, setChatSettingsMode] = createSignal<'default' | 'learning' | 'custom'>('default');
+  const [chatSettingsLength, setChatSettingsLength] = createSignal<'default' | 'longer' | 'shorter'>('default');
+  const [chatSettingsPrompt, setChatSettingsPrompt] = createSignal('');
+  const [chatSettingsError, setChatSettingsError] = createSignal('');
+
+  // Audio Overview HTTP 206 Range media error state
+  const [audioMediaError, setAudioMediaError] = createSignal('');
+
   let audioElRef: HTMLAudioElement | undefined;
   let askInputRef: HTMLInputElement | undefined;
+  let splitContainerRef: HTMLDivElement | undefined;
+  let dropFileInputRef: HTMLInputElement | undefined;
+  let qaStreamRef: HTMLDivElement | undefined;
   let knownSourceIds = new Set<string>();
   let playbackToken = 0;
+  let chatSettingsReqRev = 0;
   let teleprompterTimer: ReturnType<typeof setTimeout> | null = null;
   const inlineCitationLookup = new Map<string, CitationEvidence>();
+
+  createEffect(() => {
+    try {
+      window.localStorage.setItem('omnia.atelier.splitRatio', String(Math.round(splitRatio())));
+      window.localStorage.setItem('omnia.atelier.splitSwapped', String(splitSwapped()));
+    } catch {
+      // ignore storage errors
+    }
+  });
 
   const ttsSupported =
     typeof window !== 'undefined' &&
@@ -1025,7 +1180,11 @@ export function AtelierView() {
       setSources(nextSources);
       const nextIds = nextSources.map(sourceIdOf).filter(Boolean);
       if (resetSelection) {
-        setSelectedSourceIds(nextIds);
+        const persistedChecked = nextSources
+          .filter((s) => s.checked !== false && s.is_checked !== false)
+          .map(sourceIdOf)
+          .filter(Boolean);
+        setSelectedSourceIds(persistedChecked.length > 0 || nextIds.length === 0 ? persistedChecked : nextIds);
         knownSourceIds = new Set(nextIds);
       } else {
         const nextSet = new Set(nextIds);
@@ -1083,10 +1242,18 @@ export function AtelierView() {
   const toggleSourceSelection = (sid: string) => {
     if (!sid) return;
     const cur = selectedSourceIds();
-    if (cur.includes(sid)) {
-      setSelectedSourceIds(cur.filter((id) => id !== sid));
-    } else {
+    const nextChecked = !cur.includes(sid);
+    if (nextChecked) {
       setSelectedSourceIds([...cur, sid]);
+    } else {
+      setSelectedSourceIds(cur.filter((id) => id !== sid));
+    }
+    const nbId = activeNbId();
+    if (nbId) {
+      void api.safeJson(`/api/notebooks/${encodeURIComponent(nbId)}/sources/${encodeURIComponent(sid)}/checked`, {
+        method: 'PATCH',
+        body: JSON.stringify({ checked: nextChecked }),
+      });
     }
   };
 
@@ -1219,7 +1386,35 @@ export function AtelierView() {
       }
     })();
 
+    const onRefreshSources = () => {
+      const id = activeNbId();
+      if (id) void refreshNotebookData(id, false);
+    };
+    window.addEventListener('omnia:atelier-refresh-sources', onRefreshSources);
+
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape') {
+        if (chatSettingsOpen()) {
+          setChatSettingsOpen(false);
+          return;
+        }
+        if (selectionMenu()) {
+          setSelectionMenu(null);
+          return;
+        }
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 's' || e.key === 'S')) {
+        if (layoutMode() === 'ke_nhau') {
+          e.preventDefault();
+          setSplitSwapped((v) => {
+            const next = !v;
+            flashNotice(next ? 'Swapped Atelier split panes (Artifacts ↔ Q&A)' : 'Restored Atelier split panes (Q&A ↔ Artifacts)');
+            return next;
+          });
+        }
+        return;
+      }
       if (selectedArtifactKind() !== 'flashcards' || layoutMode() !== 'ke_nhau') return;
       const activeEl = document.activeElement as HTMLElement | null;
       if (
@@ -1254,6 +1449,7 @@ export function AtelierView() {
     window.addEventListener('keydown', onKeyDown);
     onCleanup(() => {
       window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('omnia:atelier-refresh-sources', onRefreshSources);
       stopPodcastPlayback(false);
     });
   });
@@ -1303,6 +1499,336 @@ export function AtelierView() {
     } else {
       setStatusMsg(`Delete error (${res.error.code}): ${res.error.message}`);
     }
+  };
+
+  const handleRenameNotebook = async () => {
+    const nbId = activeNbId();
+    const title = nbRenameInput().trim();
+    if (!nbId || !title) {
+      setRenamingNb(false);
+      return;
+    }
+    let res = await api.safeJson<Record<string, unknown>>(`/api/notebooks/${encodeURIComponent(nbId)}/rename`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok && (res.error.status === 404 || res.error.status === 405)) {
+      res = await api.safeJson<Record<string, unknown>>('/api/notebooks/rename', {
+        method: 'POST',
+        body: JSON.stringify({ notebook_id: nbId, title }),
+      });
+    }
+    setRenamingNb(false);
+    if (res.ok) {
+      setNotebooks(notebooks().map((nb) => (nbIdOf(nb) === nbId ? { ...nb, title } : nb)));
+      setStatusMsg(`Renamed notebook -> "${title}"`);
+    } else {
+      setStatusMsg(`Rename error (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleDeleteNotebook = async () => {
+    const nbId = activeNbId();
+    if (!nbId) return;
+    if (!confirmDeleteNb()) {
+      setConfirmDeleteNb(true);
+      setTimeout(() => setConfirmDeleteNb(false), 4000);
+      return;
+    }
+    setConfirmDeleteNb(false);
+    let res = await api.safeJson<Record<string, unknown>>('/api/notebooks/delete', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: nbId }),
+    });
+    if (!res.ok && (res.error.status === 404 || res.error.status === 405)) {
+      res = await api.safeJson<Record<string, unknown>>(`/api/notebooks/${encodeURIComponent(nbId)}`, {
+        method: 'DELETE',
+      });
+    }
+    if (res.ok) {
+      const remaining = notebooks().filter((nb) => nbIdOf(nb) !== nbId);
+      setNotebooks(remaining);
+      const nextId = remaining[0] ? nbIdOf(remaining[0]) : '';
+      setActiveNbId(nextId);
+      setSources([]);
+      setArtifacts([]);
+      setSelectedArtifact(null);
+      if (nextId) await refreshNotebookData(nextId, true);
+      setStatusMsg('Deleted notebook');
+    } else {
+      setStatusMsg(`Delete notebook error (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleHealSources = async () => {
+    const nbId = activeNbId();
+    if (!nbId) return;
+    setStatusMsg('Running 5-stage UploadHealer on notebook sources...');
+    const res = await api.safeJson<Record<string, unknown>>('/api/notebooks/sources/heal', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: nbId }),
+    });
+    if (res.ok) {
+      const healed = Number(res.data.healed ?? res.data.healedCount ?? res.data.repaired ?? 0);
+      setStatusMsg(`Healed ${healed} source(s)`);
+      await refreshNotebookData(nbId, false);
+    } else {
+      setStatusMsg(`Heal sources (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleClearSources = async () => {
+    const nbId = activeNbId();
+    if (!nbId) return;
+    if (!confirmClearSources()) {
+      setConfirmClearSources(true);
+      setTimeout(() => setConfirmClearSources(false), 4000);
+      return;
+    }
+    setConfirmClearSources(false);
+    const res = await api.safeJson<Record<string, unknown>>('/api/notebooks/sources/clear', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: nbId }),
+    });
+    if (res.ok) {
+      setStatusMsg('Cleared all sources in active notebook');
+      await refreshNotebookData(nbId, true);
+    } else {
+      setStatusMsg(`Clear sources (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleBatchUploadEntries = async (entries: DroppedFileEntry[]) => {
+    if (entries.length === 0 || uploadBusy()) return;
+    const nbId = await ensureNotebookId();
+    if (!nbId) return;
+    setUploadBusy(true);
+    setStatusMsg(`Ingesting ${entries.length} dropped file(s) (recursive folder walk)...`);
+    try {
+      const payloadFiles: Array<{ filename: string; relative_path: string; mime_type: string; content?: string; bytes_base64?: string }> = [];
+      for (const entry of entries) {
+        const mime = entry.file.type || 'text/plain';
+        const isText =
+          mime.startsWith('text/') ||
+          /\.(md|txt|json|csv|tsv|rs|ts|tsx|js|jsx|py|toml|yaml|yml|xml|html|css|sql|sh|ps1|ipynb)$/i.test(
+            entry.relativePath,
+          );
+        if (isText && entry.file.size <= 4 * 1024 * 1024) {
+          payloadFiles.push({
+            filename: entry.relativePath,
+            relative_path: entry.relativePath,
+            mime_type: mime,
+            content: await entry.file.text(),
+          });
+        } else {
+          const buf = new Uint8Array(await entry.file.arrayBuffer());
+          let bin = '';
+          for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+          payloadFiles.push({
+            filename: entry.relativePath,
+            relative_path: entry.relativePath,
+            mime_type: mime || 'application/octet-stream',
+            bytes_base64: btoa(bin),
+          });
+        }
+      }
+      const batchRes = await api.safeJson<Record<string, unknown>>(
+        `/api/notebooks/${encodeURIComponent(nbId)}/ingest-batch`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ notebook_id: nbId, files: payloadFiles }),
+        },
+      );
+      if (batchRes.ok) {
+        setStatusMsg(`Batch ingested ${payloadFiles.length} file(s) into Atelier`);
+        flashNotice(`Ingested ${payloadFiles.length} file(s)`);
+        await refreshNotebookData(nbId, false);
+        return;
+      }
+      // Clean fallback to individual ingest when batch route unavailable
+      let okCount = 0;
+      for (const f of payloadFiles) {
+        if (typeof f.content === 'string') {
+          const r = await api.ingestSource(nbId, f.filename, f.content);
+          if (r.ok) okCount += 1;
+        }
+      }
+      setStatusMsg(`Ingested ${okCount}/${payloadFiles.length} file(s)`);
+      await refreshNotebookData(nbId, false);
+    } finally {
+      setUploadBusy(false);
+    }
+  };
+
+  const handleRenameArtifact = async (art: Record<string, unknown>) => {
+    const nbId = activeNbId();
+    const aid = String(art.artifact_id ?? art.id ?? '');
+    const title = artRenameInput().trim();
+    if (!nbId || !aid || !title) {
+      setRenamingArtId(null);
+      return;
+    }
+    const res = await api.safeJson<Record<string, unknown>>('/api/notebooks/artifacts/rename', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: nbId, artifact_id: aid, title }),
+    });
+    setRenamingArtId(null);
+    if (res.ok) {
+      setArtifacts(
+        artifacts().map((a) => (String(a.artifact_id ?? a.id ?? '') === aid ? { ...a, title } : a)),
+      );
+      if (selectedArtifact() && String(selectedArtifact()!.artifact_id ?? selectedArtifact()!.id ?? '') === aid) {
+        setSelectedArtifact({ ...selectedArtifact()!, title });
+      }
+      setStatusMsg(`Renamed artifact -> "${title}"`);
+    } else {
+      setStatusMsg(`Rename artifact (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleDeleteArtifact = async (art: Record<string, unknown>) => {
+    const nbId = activeNbId();
+    const aid = String(art.artifact_id ?? art.id ?? '');
+    if (!nbId || !aid) return;
+    const res = await api.safeJson<Record<string, unknown>>('/api/notebooks/artifacts/delete', {
+      method: 'POST',
+      body: JSON.stringify({ notebook_id: nbId, artifact_id: aid }),
+    });
+    if (res.ok) {
+      const next = artifacts().filter((a) => String(a.artifact_id ?? a.id ?? '') !== aid);
+      setArtifacts(next);
+      if (selectedArtifact() && String(selectedArtifact()!.artifact_id ?? selectedArtifact()!.id ?? '') === aid) {
+        setSelectedArtifact(next[0] ?? null);
+      }
+      setStatusMsg('Deleted studio artifact');
+    } else {
+      setStatusMsg(`Delete artifact (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const openChatSettingsModal = async () => {
+    const nbId = await ensureNotebookId();
+    if (!nbId) return;
+    setChatSettingsOpen(true);
+    setChatSettingsError('');
+    setChatSettingsLoading(true);
+    chatSettingsReqRev += 1;
+    const myRev = chatSettingsReqRev;
+    const res = await api.safeJson<Record<string, unknown>>(
+      `/api/notebooks/${encodeURIComponent(nbId)}/chat-settings`,
+    );
+    if (myRev !== chatSettingsReqRev) return;
+    setChatSettingsLoading(false);
+    if (res.ok) {
+      const cfg = (asRecord(res.data.settings) ?? res.data) as Record<string, unknown>;
+      const m = String(cfg.mode ?? 'default');
+      const l = String(cfg.length ?? 'default');
+      setChatSettingsMode(m === 'learning' || m === 'custom' ? m : 'default');
+      setChatSettingsLength(l === 'longer' || l === 'shorter' ? l : 'default');
+      setChatSettingsPrompt(String(cfg.customPrompt ?? cfg.custom_prompt ?? ''));
+    }
+  };
+
+  const saveChatSettingsModal = async () => {
+    const nbId = activeNbId();
+    if (!nbId || chatSettingsSaving()) return;
+    const prompt = chatSettingsPrompt().trim();
+    if (prompt.length > CHAT_SETTINGS_MAX_CHARS) {
+      setChatSettingsError(`Custom prompt exceeds ${CHAT_SETTINGS_MAX_CHARS.toLocaleString()} characters.`);
+      return;
+    }
+    if (chatSettingsMode() === 'custom' && prompt.length === 0) {
+      setChatSettingsError('Custom mode requires a non-empty custom prompt.');
+      return;
+    }
+    setChatSettingsError('');
+    setChatSettingsSaving(true);
+    const res = await api.safeJson<Record<string, unknown>>(
+      `/api/notebooks/${encodeURIComponent(nbId)}/chat-settings`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          mode: chatSettingsMode(),
+          length: chatSettingsLength(),
+          customPrompt: prompt,
+          custom_prompt: prompt,
+        }),
+      },
+    );
+    setChatSettingsSaving(false);
+    if (res.ok) {
+      setChatSettingsOpen(false);
+      setStatusMsg(`Saved ChatSettings (${chatSettingsMode()} / ${chatSettingsLength()})`);
+      flashNotice('Saved Notebook ChatSettings');
+    } else {
+      setChatSettingsError(`Save failed (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const inspectQaSelection = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      setSelectionMenu(null);
+      return;
+    }
+    const text = sel.toString().trim();
+    if (text.length < 3) {
+      setSelectionMenu(null);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (qaStreamRef && !qaStreamRef.contains(range.commonAncestorContainer)) {
+      setSelectionMenu(null);
+      return;
+    }
+    const rect = range.getBoundingClientRect();
+    const x = Math.max(12, Math.min(window.innerWidth - 320, rect.left + rect.width / 2 - 140));
+    const y = Math.max(12, rect.top - 44);
+    setSelectionMenu({ text: text.slice(0, 1200), x, y });
+  };
+
+  const handlePromoteSelectionToSource = async (text: string) => {
+    const nbId = await ensureNotebookId();
+    if (!nbId) return;
+    setSelectionMenu(null);
+    const title = `Quoted Note ${new Date().toISOString().slice(11, 19)}.md`;
+    const res = await api.ingestSource(nbId, title, `> Quoted Excerpt\n\n${text}`);
+    if (res.ok) {
+      setStatusMsg(`Promoted selection -> ${title}`);
+      flashNotice(`Promoted selection to source "${title}"`);
+      await refreshNotebookData(nbId, false);
+    } else {
+      setStatusMsg(`Promote error (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const handleBridgeSelection = async (text: string) => {
+    const nbId = activeNbId();
+    setSelectionMenu(null);
+    const res = await api.safeJson<Record<string, unknown>>('/api/bridge', {
+      method: 'POST',
+      body: JSON.stringify({
+        notebook_id: nbId,
+        source: 'atelier_selection',
+        text,
+      }),
+    });
+    if (res.ok) {
+      setStatusMsg('Bridged selection across Atelier <-> Studio');
+      flashNotice('Selection bridged to Cross-Surface Bridge');
+    } else {
+      setStatusMsg(`Bridge (${res.error.code}): ${res.error.message}`);
+    }
+  };
+
+  const resolveAudioOverviewUrl = (art: Record<string, unknown>): string => {
+    const direct = art.audio_url ?? art.media_url ?? art.stream_url;
+    if (typeof direct === 'string' && direct.trim()) return direct.trim();
+    const mediaId = art.media_id ?? art.audio_media_id;
+    if (typeof mediaId === 'string' && mediaId.trim()) {
+      return `/api/notebooks/media/${encodeURIComponent(mediaId.trim())}`;
+    }
+    return '';
   };
 
   const handleTranscribe = async () => {
@@ -1846,6 +2372,8 @@ export function AtelierView() {
             onChange={(e) => {
               const id = e.currentTarget.value;
               setActiveNbId(id);
+              setConfirmDeleteNb(false);
+              setConfirmClearSources(false);
               void refreshNotebookData(id, true);
             }}
             class="min-w-0 max-w-[180px] rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2 py-1 text-[12px]"
@@ -1854,9 +2382,67 @@ export function AtelierView() {
               {(nb) => <option value={nbIdOf(nb)}>{String(nb.title || nbIdOf(nb))}</option>}
             </For>
           </select>
+          <Show when={renamingNb()}>
+            <div class="flex items-center gap-1">
+              <input
+                type="text"
+                data-testid="atelier-nb-rename-input"
+                value={nbRenameInput()}
+                onInput={(e) => setNbRenameInput(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleRenameNotebook();
+                  if (e.key === 'Escape') setRenamingNb(false);
+                }}
+                class="w-36 rounded border border-[var(--border-accent)] bg-[var(--bg-canvas)] px-2 py-0.5 text-[11.5px] outline-none"
+                placeholder="Notebook title..."
+              />
+              <button type="button" class="omnia-btn omnia-btn-primary px-1.5 py-0.5 text-[10.5px]" onClick={() => void handleRenameNotebook()}>
+                <Check class="w-3 h-3" />
+              </button>
+              <button type="button" class="omnia-btn px-1.5 py-0.5 text-[10.5px]" onClick={() => setRenamingNb(false)}>
+                <X class="w-3 h-3" />
+              </button>
+            </div>
+          </Show>
+          <Show when={!renamingNb() && activeNbId()}>
+            <button
+              type="button"
+              data-testid="atelier-nb-rename-btn"
+              class="omnia-btn px-2 py-1 text-[10.5px] shrink-0"
+              title="Rename active notebook"
+              onClick={() => {
+                const cur = notebooks().find((n) => nbIdOf(n) === activeNbId());
+                setNbRenameInput(String(cur?.title ?? ''));
+                setRenamingNb(true);
+              }}
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              data-testid="atelier-nb-delete-btn"
+              class="omnia-btn px-2 py-1 text-[10.5px] shrink-0"
+              classList={{ 'omnia-btn-danger': confirmDeleteNb() }}
+              title="Delete active notebook (2-click confirm)"
+              onClick={() => void handleDeleteNotebook()}
+            >
+              <Trash2 class="w-3 h-3" />
+              <span>{confirmDeleteNb() ? 'Confirm?' : ''}</span>
+            </button>
+          </Show>
           <button type="button" class="omnia-btn text-[11px] shrink-0" onClick={() => void handleCreateNb()}>
             <Plus class="w-3.5 h-3.5" />
             <span>New Notebook</span>
+          </button>
+          <button
+            type="button"
+            data-testid="atelier-chat-settings-btn"
+            class="omnia-btn text-[11px] shrink-0"
+            title="Configure Per-Notebook ChatSettings (mode, length, <= 10,000 char custom prompt)"
+            onClick={() => void openChatSettingsModal()}
+          >
+            <Sliders class="w-3 h-3 text-[var(--accent-cyan)]" />
+            <span>Chat Settings</span>
           </button>
           <button
             type="button"
@@ -1872,6 +2458,17 @@ export function AtelierView() {
         <div class="flex flex-wrap items-center gap-2 min-w-0">
           <Show when={statusMsg()}>
             <span class="text-[11px] font-mono-num text-[var(--accent-cyan)] truncate max-w-[260px]">{statusMsg()}</span>
+          </Show>
+          <Show when={layoutMode() === 'ke_nhau'}>
+            <button
+              type="button"
+              data-testid="atelier-swap-panes-btn"
+              class="omnia-btn px-2 py-1 text-[10.5px] font-mono-num shrink-0"
+              title="Swap Q&A and Artifacts panes (Alt+S)"
+              onClick={() => setSplitSwapped((v) => !v)}
+            >
+              Swap (Alt+S)
+            </button>
           </Show>
           <div class="omp-segmented text-[11.5px] shrink-0">
             {(
@@ -1889,21 +2486,25 @@ export function AtelierView() {
         </div>
       </div>
 
-      {/* 3-Column Studio Grid */}
-      <div
-        class="flex-1 min-h-0 grid overflow-hidden"
-        classList={{
-          'grid-cols-1 lg:grid-cols-[minmax(195px,240px)_minmax(240px,1fr)_minmax(265px,360px)]':
-            layoutMode() === 'ke_nhau' && !artifactExpanded(),
-          'grid-cols-1 lg:grid-cols-[minmax(185px,215px)_minmax(220px,0.85fr)_minmax(340px,1.25fr)]':
-            layoutMode() === 'ke_nhau' && artifactExpanded(),
-          'grid-cols-1': layoutMode() === 'gemini',
-          'grid-cols-1 lg:grid-cols-[minmax(220px,260px)_minmax(0,1fr)]': layoutMode() === 'notebook',
-        }}
-      >
-        {/* Sources Column with Per-Source Grounding Checkboxes */}
+      {/* 3-Column Studio Shell with 28%-72% Draggable 1px Hairline Split Resizer */}
+      <div class="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
+        {/* Sources Column with Per-Source Grounding Checkboxes + Recursive Folder Drop */}
         <Show when={layoutMode() !== 'gemini'}>
-          <div class="min-w-0 min-h-0 border-r border-[var(--border-subtle)] bg-[var(--bg-rail)] flex flex-col overflow-hidden">
+          <div
+            data-testid="atelier-drop-zone"
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDropActive(true);
+            }}
+            onDragLeave={() => setIsDropActive(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDropActive(false);
+              void collectDroppedFiles(e.dataTransfer).then((entries) => handleBatchUploadEntries(entries));
+            }}
+            class="w-full lg:w-[240px] shrink-0 min-w-0 min-h-0 border-r border-[var(--border-subtle)] bg-[var(--bg-rail)] flex flex-col overflow-hidden"
+            classList={{ 'ring-2 ring-inset ring-[var(--accent-cyan)]': isDropActive() }}
+          >
             <div class="p-2.5 border-b border-[var(--border-subtle)] space-y-1.5">
               <div class="flex items-center justify-between gap-1.5 min-w-0">
                 <div class="flex items-center gap-1.5 min-w-0 text-[12px] font-semibold">
@@ -1921,8 +2522,7 @@ export function AtelierView() {
                   {groundedCountLabel()}
                 </span>
               </div>
-              <div class="flex items-center justify-between gap-1 text-[10.5px]">
-                <span class="text-[var(--ink-muted)] truncate">Grounding scope</span>
+              <div class="flex flex-wrap items-center justify-between gap-1 text-[10.5px]">
                 <div class="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
@@ -1941,7 +2541,55 @@ export function AtelierView() {
                     None
                   </button>
                 </div>
+                <div class="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    data-testid="atelier-sources-heal"
+                    class="omnia-btn px-1.5 py-0.5 text-[10px]"
+                    title="Run 5-stage UploadHealer on errored sources"
+                    onClick={() => void handleHealSources()}
+                  >
+                    Heal
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="atelier-sources-clear"
+                    class="omnia-btn px-1.5 py-0.5 text-[10px]"
+                    classList={{ 'omnia-btn-danger': confirmClearSources() }}
+                    title="Clear all sources (2-click confirm)"
+                    onClick={() => void handleClearSources()}
+                  >
+                    {confirmClearSources() ? 'Sure?' : 'Clear'}
+                  </button>
+                </div>
               </div>
+              <input
+                ref={dropFileInputRef}
+                type="file"
+                multiple
+                class="hidden"
+                onChange={(e) => {
+                  const files = e.currentTarget.files;
+                  if (!files || files.length === 0) return;
+                  const list: DroppedFileEntry[] = Array.from(files).map((file) => ({
+                    file,
+                    relativePath: (file as unknown as { webkitRelativePath?: string }).webkitRelativePath || file.name,
+                  }));
+                  void handleBatchUploadEntries(list);
+                  e.currentTarget.value = '';
+                }}
+              />
+              <button
+                type="button"
+                data-testid="atelier-drop-upload-btn"
+                disabled={uploadBusy()}
+                onClick={() => dropFileInputRef?.click()}
+                class="w-full px-2 py-1 rounded border border-dashed border-[var(--border-strong)] hover:border-[var(--border-accent)] bg-[var(--bg-canvas)] text-[10.5px] font-mono-num text-[var(--ink-secondary)] flex items-center justify-center gap-1.5 cursor-pointer"
+                title="Drop folders/files here (handles >100 Chromium entries recursively) or click to pick files"
+              >
+                <FolderTree class="w-3 h-3 text-[var(--accent-cyan)]" />
+                <span>{uploadBusy() ? 'Uploading...' : isDropActive() ? 'Drop Files/Folders Here' : 'Drop Folder / Upload'}</span>
+              </button>
             </div>
 
             <div class="flex-1 min-h-0 overflow-y-auto p-2.5 space-y-2">
@@ -2076,8 +2724,26 @@ export function AtelierView() {
           </div>
         </Show>
 
+        {/* Split-Resizable Q&A + 11 Studio Artifacts Container */}
+        <div
+          ref={splitContainerRef}
+          class="flex-1 min-w-0 min-h-0 flex flex-col lg:flex-row overflow-hidden relative"
+        >
         {/* Grounded Q&A Column */}
-        <div class="min-w-0 min-h-0 flex flex-col overflow-hidden bg-[var(--bg-canvas)]">
+        <div
+          class="min-w-0 min-h-0 flex flex-col overflow-hidden bg-[var(--bg-canvas)]"
+          classList={{
+            'order-1': !splitSwapped(),
+            'order-3': splitSwapped(),
+            'flex-1': layoutMode() !== 'ke_nhau' || splitSwapped(),
+            'shrink-0': layoutMode() === 'ke_nhau' && !splitSwapped(),
+          }}
+          style={
+            layoutMode() === 'ke_nhau' && !splitSwapped()
+              ? { 'flex-basis': `${artifactExpanded() ? Math.min(44, splitRatio()) : splitRatio()}%` }
+              : undefined
+          }
+        >
           <div class="px-3.5 py-2 border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2 text-[12px] min-w-0">
             <div class="flex items-center gap-2 min-w-0">
               <span class="font-semibold text-[var(--ink-secondary)] truncate">Grounded Synthesis & Citations</span>
@@ -2112,7 +2778,13 @@ export function AtelierView() {
             </div>
           </div>
 
-          <div class="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-3">
+          <div
+            ref={qaStreamRef}
+            data-atelier-qa-stream="true"
+            onMouseUp={inspectQaSelection}
+            onKeyUp={inspectQaSelection}
+            class="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-3"
+          >
             <Show when={qaHistory().length === 0}>
               <div class="omnia-surface-panel rounded-lg p-4 text-[12px] text-[var(--ink-secondary)] space-y-1.5">
                 <div class="font-semibold text-[var(--ink-primary)]">NotebookLM++ Grounded Workspace</div>
@@ -2240,9 +2912,81 @@ export function AtelierView() {
           </div>
         </div>
 
-        {/* 11 Interactive Studio Artifacts Column */}
+        {/* 28%-72% Draggable 1px Hairline Split Resizer (dblclick 50/50, ArrowLeft/Right, Alt+S swap) */}
         <Show when={layoutMode() === 'ke_nhau'}>
-          <div class="min-w-0 min-h-0 border-l border-[var(--border-subtle)] bg-[var(--bg-rail)] flex flex-col overflow-hidden">
+          <div
+            data-testid="atelier-split-divider"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize Q&A and Studio Artifacts split"
+            aria-valuemin={28}
+            aria-valuemax={72}
+            aria-valuenow={Math.round(splitRatio())}
+            tabIndex={0}
+            title="Drag to resize (28%-72%) · Double-click for 50/50 · ArrowLeft/Right ±2% · Alt+S to swap"
+            onDblClick={() => {
+              setArtifactExpanded(false);
+              setSplitRatio(50);
+              flashNotice('Split reset to 50/50');
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                setArtifactExpanded(false);
+                setSplitRatio((r) => Math.max(28, r - 2));
+              } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                setArtifactExpanded(false);
+                setSplitRatio((r) => Math.min(72, r + 2));
+              }
+            }}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              setArtifactExpanded(false);
+              setIsResizingSplit(true);
+              (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!isResizingSplit() || !splitContainerRef) return;
+              const rect = splitContainerRef.getBoundingClientRect();
+              if (rect.width <= 0) return;
+              const pct = ((e.clientX - rect.left) / rect.width) * 100;
+              setSplitRatio(Math.max(28, Math.min(72, pct)));
+            }}
+            onPointerUp={(e) => {
+              if (!isResizingSplit()) return;
+              setIsResizingSplit(false);
+              try {
+                (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+              } catch {
+                // ignore release failure
+              }
+            }}
+            class="order-2 hidden lg:flex w-2 -mx-1 shrink-0 cursor-col-resize items-center justify-center group z-10 select-none focus:outline-none"
+          >
+            <div
+              class="w-px h-full transition-colors"
+              classList={{
+                'bg-[var(--accent-cyan)]': isResizingSplit(),
+                'bg-[var(--border-subtle)] group-hover:bg-[var(--accent-cyan)] group-focus:bg-[var(--accent-cyan)]':
+                  !isResizingSplit(),
+              }}
+            />
+          </div>
+
+          {/* 11 Interactive Studio Artifacts Column */}
+          <div
+            class="min-w-0 min-h-0 bg-[var(--bg-rail)] flex flex-col overflow-hidden"
+            classList={{
+              'order-3 border-l border-[var(--border-subtle)] flex-1': !splitSwapped(),
+              'order-1 border-r border-[var(--border-subtle)] shrink-0': splitSwapped(),
+            }}
+            style={
+              splitSwapped()
+                ? { 'flex-basis': `${artifactExpanded() ? Math.max(56, splitRatio()) : splitRatio()}%` }
+                : undefined
+            }
+          >
             <div class="p-2.5 border-b border-[var(--border-subtle)] flex items-center justify-between gap-2 min-w-0">
               <div class="flex items-center gap-1.5 text-[12px] font-semibold min-w-0">
                 <Layers class="w-3.5 h-3.5 text-[var(--accent-amber)] shrink-0" />
@@ -2288,27 +3032,96 @@ export function AtelierView() {
             <div class="flex-1 min-h-0 overflow-y-auto p-2.5 space-y-2.5">
               {/* Generated Artifacts List */}
               <Show when={artifacts().length > 0}>
-                <div class="space-y-1.5 max-h-36 overflow-y-auto pr-0.5">
+                <div class="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
                   <For each={artifacts()}>
-                    {(art) => (
-                      <button
-                        type="button"
-                        onClick={() => selectArtifactRecord(art)}
-                        class="w-full min-w-0 p-2 rounded border text-left text-[12px] cursor-pointer"
-                        classList={{
-                          'bg-[var(--bg-elevated)] border-[var(--border-accent)]': selectedArtifact() === art,
-                          'bg-[var(--bg-panel)] border-[var(--border-subtle)]': selectedArtifact() !== art,
-                        }}
-                      >
-                        <div class="flex items-center justify-between gap-1.5 min-w-0">
-                          <span class="font-semibold truncate">{maskText(String(art.title || art.kind), privacyMask())}</span>
-                          <CheckCircle2 class="w-3.5 h-3.5 text-[var(--status-emerald)] shrink-0" />
+                    {(art) => {
+                      const aid = String(art.artifact_id ?? art.id ?? '');
+                      const isRenamingThis = () => Boolean(aid) && renamingArtId() === aid;
+                      return (
+                        <div
+                          class="w-full min-w-0 p-2 rounded border text-left text-[12px]"
+                          classList={{
+                            'bg-[var(--bg-elevated)] border-[var(--border-accent)]': selectedArtifact() === art,
+                            'bg-[var(--bg-panel)] border-[var(--border-subtle)]': selectedArtifact() !== art,
+                          }}
+                        >
+                          <Show
+                            when={isRenamingThis()}
+                            fallback={
+                              <div class="flex items-start justify-between gap-1.5 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => selectArtifactRecord(art)}
+                                  class="min-w-0 flex-1 text-left cursor-pointer"
+                                >
+                                  <div class="flex items-center gap-1.5 min-w-0">
+                                    <span class="font-semibold truncate">
+                                      {maskText(String(art.title || art.kind), privacyMask())}
+                                    </span>
+                                    <CheckCircle2 class="w-3.5 h-3.5 text-[var(--status-emerald)] shrink-0" />
+                                  </div>
+                                  <div class="text-[10px] font-mono-num text-[var(--ink-muted)] truncate">
+                                    {normalizeArtifactKind(art.kind)}
+                                  </div>
+                                </button>
+                                <Show when={aid}>
+                                  <div class="flex items-center gap-0.5 shrink-0">
+                                    <button
+                                      type="button"
+                                      data-testid="atelier-art-rename-btn"
+                                      class="px-1 py-0.5 rounded text-[9.5px] font-mono-num text-[var(--ink-muted)] hover:text-[var(--accent-cyan)] cursor-pointer"
+                                      title="Rename artifact"
+                                      onClick={() => {
+                                        setArtRenameInput(String(art.title ?? art.kind ?? ''));
+                                        setRenamingArtId(aid);
+                                      }}
+                                    >
+                                      Ren
+                                    </button>
+                                    <button
+                                      type="button"
+                                      data-testid="atelier-art-delete-btn"
+                                      class="p-0.5 text-[var(--ink-muted)] hover:text-[var(--status-coral)] cursor-pointer"
+                                      title="Delete artifact"
+                                      onClick={() => void handleDeleteArtifact(art)}
+                                    >
+                                      <Trash2 class="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                </Show>
+                              </div>
+                            }
+                          >
+                            <div class="flex items-center gap-1">
+                              <input
+                                type="text"
+                                value={artRenameInput()}
+                                onInput={(e) => setArtRenameInput(e.currentTarget.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void handleRenameArtifact(art);
+                                  if (e.key === 'Escape') setRenamingArtId(null);
+                                }}
+                                class="flex-1 min-w-0 rounded border border-[var(--border-accent)] bg-[var(--bg-canvas)] px-1.5 py-0.5 text-[11px] outline-none"
+                              />
+                              <button
+                                type="button"
+                                class="omnia-btn omnia-btn-primary px-1.5 py-0.5 text-[10px]"
+                                onClick={() => void handleRenameArtifact(art)}
+                              >
+                                <Check class="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                class="omnia-btn px-1.5 py-0.5 text-[10px]"
+                                onClick={() => setRenamingArtId(null)}
+                              >
+                                <X class="w-3 h-3" />
+                              </button>
+                            </div>
+                          </Show>
                         </div>
-                        <div class="text-[10px] font-mono-num text-[var(--ink-muted)] truncate">
-                          {normalizeArtifactKind(art.kind)}
-                        </div>
-                      </button>
-                    )}
+                      );
+                    }}
                   </For>
                 </div>
               </Show>
@@ -3039,14 +3852,42 @@ export function AtelierView() {
                           </div>
                         </Show>
 
-                        {/* Preserve native <audio> element when WAV/audio URL exists */}
-                        <Show when={art().audio_url || art().media_url}>
-                          <audio
-                            ref={audioElRef}
-                            src={String(art().audio_url ?? art().media_url ?? '')}
-                            controls
-                            class="w-full"
-                          />
+                        {/* HTTP 206 Partial Content Range <audio> Player when binary audio stream URL exists */}
+                        <Show when={resolveAudioOverviewUrl(art())}>
+                          {(audioSrc) => (
+                            <div
+                              data-testid="atelier-audio-206-player"
+                              class="p-2 rounded border border-[var(--border-accent)] bg-[var(--bg-canvas)] space-y-1.5"
+                            >
+                              <div class="flex items-center justify-between text-[10px] font-mono-num">
+                                <span class="text-[var(--status-emerald)] font-semibold">
+                                  HTTP 206 Range Audio Stream
+                                </span>
+                                <span class="text-[var(--ink-muted)]">{audioRate()}x</span>
+                              </div>
+                              <audio
+                                ref={audioElRef}
+                                src={audioSrc()}
+                                preload="metadata"
+                                controls
+                                onLoadedMetadata={(e) => {
+                                  setAudioMediaError('');
+                                  e.currentTarget.playbackRate = audioRate();
+                                }}
+                                onError={() => {
+                                  setAudioMediaError(
+                                    'Binary audio stream unavailable — using 2-host TTS teleprompter fallback below.',
+                                  );
+                                }}
+                                class="w-full"
+                              />
+                              <Show when={audioMediaError()}>
+                                <div class="text-[10px] font-mono-num text-[var(--accent-amber)]">
+                                  {audioMediaError()}
+                                </div>
+                              </Show>
+                            </div>
+                          )}
                         </Show>
 
                         {/* 2-Host Dialogue Transcript (Click any turn to jump!) */}
@@ -3350,7 +4191,197 @@ export function AtelierView() {
             </div>
           </div>
         </Show>
+        </div>
       </div>
+
+      {/* Real window.getSelection() Floating Quote + BTW + Promote + Bridge Bar (Opaque Solid Surface) */}
+      <Show when={selectionMenu()}>
+        {(sel) => (
+          <div
+            data-testid="atelier-selection-bar"
+            role="toolbar"
+            aria-label="Text selection actions"
+            style={{
+              left: `${sel().x}px`,
+              top: `${sel().y}px`,
+            }}
+            class="fixed z-50 flex items-center gap-1 px-2 py-1 rounded-md border border-[var(--border-accent)] bg-[var(--bg-elevated)] shadow-[var(--shadow-md)] text-[11px]"
+          >
+            <button
+              type="button"
+              class="omnia-btn px-2 py-0.5 text-[10.5px]"
+              onClick={() => {
+                setAskPrompt(`> ${sel().text}\n\n`);
+                setSelectionMenu(null);
+                askInputRef?.focus();
+              }}
+            >
+              Quote
+            </button>
+            <button
+              type="button"
+              class="omnia-btn omnia-btn-primary px-2 py-0.5 text-[10.5px]"
+              onClick={() => {
+                const txt = sel().text;
+                setSelectionMenu(null);
+                openQuoteBtw({
+                  text: txt,
+                  sourceLabel: `Notebook ${activeNbId()}`,
+                  surface: 'notebook',
+                  notebookId: activeNbId(),
+                });
+              }}
+            >
+              <MessageSquareQuote class="w-3 h-3" />
+              <span>BTW</span>
+            </button>
+            <button
+              type="button"
+              class="omnia-btn px-2 py-0.5 text-[10.5px]"
+              onClick={() => void handlePromoteSelectionToSource(sel().text)}
+            >
+              Promote
+            </button>
+            <button
+              type="button"
+              class="omnia-btn px-2 py-0.5 text-[10.5px]"
+              onClick={() => void handleBridgeSelection(sel().text)}
+            >
+              Bridge
+            </button>
+            <button
+              type="button"
+              class="p-0.5 text-[var(--ink-muted)] hover:text-[var(--ink-primary)] cursor-pointer"
+              onClick={() => setSelectionMenu(null)}
+            >
+              <X class="w-3 h-3" />
+            </button>
+          </div>
+        )}
+      </Show>
+
+      {/* Per-Notebook ChatSettings Modal (<= 10,000 char custom prompt, opaque solid surface) */}
+      <Show when={chatSettingsOpen()}>
+        <div
+          data-testid="atelier-chat-settings-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Notebook Chat Settings"
+          class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setChatSettingsOpen(false);
+          }}
+        >
+          <div class="w-full max-w-lg rounded-lg border border-[var(--border-strong)] bg-[var(--bg-panel)] shadow-[var(--shadow-md)] overflow-hidden text-[12px]">
+            <div class="px-4 py-2.5 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)] flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 font-bold text-[13px]">
+                <Sliders class="w-4 h-4 text-[var(--accent-cyan)]" />
+                <span>Per-Notebook Chat Settings</span>
+              </div>
+              <button
+                type="button"
+                class="omnia-btn px-1.5 py-0.5"
+                onClick={() => setChatSettingsOpen(false)}
+              >
+                <X class="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div class="p-4 space-y-3">
+              <Show when={chatSettingsLoading()}>
+                <div class="text-[11.5px] font-mono-num text-[var(--ink-muted)]">Loading settings...</div>
+              </Show>
+
+              <div class="space-y-1">
+                <div class="font-semibold text-[11.5px] text-[var(--ink-secondary)]">Conversational Goal / Mode</div>
+                <div class="omp-segmented text-[11px]">
+                  {(
+                    [
+                      { id: 'default', label: 'Default' },
+                      { id: 'learning', label: 'Learning Guide' },
+                      { id: 'custom', label: 'Custom Prompt' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      type="button"
+                      aria-pressed={chatSettingsMode() === opt.id}
+                      onClick={() => setChatSettingsMode(opt.id)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div class="space-y-1">
+                <div class="font-semibold text-[11.5px] text-[var(--ink-secondary)]">Response Length</div>
+                <div class="omp-segmented text-[11px]">
+                  {(
+                    [
+                      { id: 'shorter', label: 'Shorter' },
+                      { id: 'default', label: 'Default' },
+                      { id: 'longer', label: 'Longer' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      type="button"
+                      aria-pressed={chatSettingsLength() === opt.id}
+                      onClick={() => setChatSettingsLength(opt.id)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div class="space-y-1">
+                <div class="flex items-center justify-between text-[11.5px]">
+                  <span class="font-semibold text-[var(--ink-secondary)]">Custom System Prompt</span>
+                  <span
+                    class="font-mono-num text-[10.5px]"
+                    classList={{
+                      'text-[var(--status-coral)]': chatSettingsPrompt().length > CHAT_SETTINGS_MAX_CHARS,
+                      'text-[var(--ink-muted)]': chatSettingsPrompt().length <= CHAT_SETTINGS_MAX_CHARS,
+                    }}
+                  >
+                    {chatSettingsPrompt().length.toLocaleString()} / {CHAT_SETTINGS_MAX_CHARS.toLocaleString()} chars
+                  </span>
+                </div>
+                <textarea
+                  rows={5}
+                  maxLength={CHAT_SETTINGS_MAX_CHARS + 50}
+                  value={chatSettingsPrompt()}
+                  onInput={(e) => setChatSettingsPrompt(e.currentTarget.value)}
+                  placeholder="Optional notebook-specific grounding persona, citation rules, or domain instructions (up to 10,000 chars)..."
+                  class="w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-2.5 text-[12px] font-mono-num outline-none focus:border-[var(--border-accent)]"
+                />
+              </div>
+
+              <Show when={chatSettingsError()}>
+                <div class="px-2.5 py-1.5 rounded border border-[var(--status-coral)] bg-[var(--status-coral-dim)] text-[11px] text-[var(--status-coral)]">
+                  {chatSettingsError()}
+                </div>
+              </Show>
+
+              <div class="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
+                <button type="button" class="omnia-btn text-[11.5px]" onClick={() => setChatSettingsOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  data-testid="atelier-chat-settings-save"
+                  disabled={chatSettingsSaving()}
+                  class="omnia-btn omnia-btn-primary text-[11.5px]"
+                  onClick={() => void saveChatSettingsModal()}
+                >
+                  <Check class="w-3.5 h-3.5" />
+                  <span>{chatSettingsSaving() ? 'Saving...' : 'Save Settings'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Show>
     </div>
   );
 }

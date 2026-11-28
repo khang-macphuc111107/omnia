@@ -460,6 +460,14 @@ impl Statement<'_> {
         Ok(())
     }
 
+    /// Bind an optional 64-bit signed integer (`None` -> SQL `NULL`).
+    pub fn bind_opt_int64(&mut self, index: i32, value: Option<i64>) -> Result<(), WinSqliteError> {
+        match value {
+            Some(v) => self.bind_int64(index, v),
+            None => self.bind_null(index),
+        }
+    }
+
     /// Bind a 64-bit float to 1-based parameter `index`.
     pub fn bind_double(&mut self, index: i32, value: f64) -> Result<(), WinSqliteError> {
         // SAFETY: `self.stmt` is valid.

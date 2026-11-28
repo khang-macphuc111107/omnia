@@ -10,9 +10,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::sync::watch;
 use tokio::time;
 
+use crate::engine::JobControl;
 use crate::types::{validate_safe_local_path, DownloaderError};
+
+fn ensure_local_media_target_not_url(path: &Path, label: &str) -> Result<(), DownloaderError> {
+    let raw = path.to_string_lossy();
+    let trimmed = raw.trim();
+    let low = trimmed.to_ascii_lowercase();
+    if low.starts_with("http://") || low.starts_with("https://") || trimmed.contains("://") {
+        return Err(DownloaderError::InvalidInput(format!(
+            "{label} requires a local filesystem path outside workspace_root; remote URLs are rejected for local media inspection/muxing (probe via /api/downloads/probe or download first)"
+        )));
+    }
+    Ok(())
+}
 
 #[cfg(windows)]
 const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -144,10 +158,23 @@ pub struct MediaMuxOutcome {
     pub output_bytes: u64,
     pub verified: bool,
     pub ffprobe: Option<FfprobeReport>,
+    #[serde(default)]
+    pub mux_skipped: bool,
+    #[serde(default)]
+    pub extra_outputs: Vec<PathBuf>,
 }
 
 /// Validates input/output containment and constructs deterministic lossless `-c copy` FFmpeg args.
 pub fn build_ffmpeg_mux_args(req: &MediaMuxRequest) -> Result<Vec<String>, DownloaderError> {
+    ensure_local_media_target_not_url(&req.video_input, "ffmpeg video_input")?;
+    if let Some(ref audio) = req.audio_input {
+        ensure_local_media_target_not_url(audio, "ffmpeg audio_input")?;
+    }
+    if let Some(ref sub) = req.subtitle_input {
+        ensure_local_media_target_not_url(sub, "ffmpeg subtitle_input")?;
+    }
+    ensure_local_media_target_not_url(&req.output_path, "ffmpeg output_path")?;
+
     let ws = req.workspace_root.as_deref();
     let safe_video = validate_safe_local_path(&req.video_input, ws)?;
     let safe_output = validate_safe_local_path(&req.output_path, ws)?;
@@ -220,13 +247,26 @@ pub fn build_ffmpeg_mux_args(req: &MediaMuxRequest) -> Result<Vec<String>, Downl
     args.push("-c".to_string());
     args.push("copy".to_string());
 
+    let out_ext = safe_output
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let in_ts_or_aac = [&req.video_input]
+        .into_iter()
+        .chain(req.audio_input.iter())
+        .any(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("ts") || e.eq_ignore_ascii_case("aac"))
+        });
+    if in_ts_or_aac && matches!(out_ext.as_str(), "mp4" | "m4v" | "mov") {
+        args.push("-bsf:a".to_string());
+        args.push("aac_adtstoasc".to_string());
+    }
+
     if sub_idx.is_some() {
-        let ext = safe_output
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_default();
-        if ext == "mp4" || ext == "m4v" || ext == "mov" {
+        if matches!(out_ext.as_str(), "mp4" | "m4v" | "mov") {
             args.push("-c:s".to_string());
             args.push("mov_text".to_string());
         }
@@ -254,6 +294,7 @@ pub async fn run_ffprobe(
     path: &Path,
     workspace_root: Option<&Path>,
 ) -> Result<FfprobeReport, DownloaderError> {
+    ensure_local_media_target_not_url(path, "ffprobe")?;
     let safe_path = validate_safe_local_path(path, workspace_root)?;
     let bin = find_media_binary("ffprobe").ok_or_else(|| {
         DownloaderError::InvalidInput("ffprobe binary unavailable on host PATH/tools".into())
@@ -337,6 +378,14 @@ pub fn parse_ffprobe_json(path: &Path, val: &Value) -> Result<FfprobeReport, Dow
 
 /// Executes FFmpeg `-c copy` mux/clip/soft-sub conversion and optional `ffprobe` verification.
 pub async fn convert_or_clip_media(req: MediaMuxRequest) -> Result<MediaMuxOutcome, DownloaderError> {
+    convert_or_clip_media_cancellable(req, None).await
+}
+
+/// Executes cancellable FFmpeg `-c copy` muxing with `kill_on_drop` + partial output cleanup.
+pub async fn convert_or_clip_media_cancellable(
+    req: MediaMuxRequest,
+    control_rx: Option<watch::Receiver<JobControl>>,
+) -> Result<MediaMuxOutcome, DownloaderError> {
     let args = build_ffmpeg_mux_args(&req)?;
     let bin = find_media_binary("ffmpeg").ok_or_else(|| {
         DownloaderError::InvalidInput("ffmpeg binary unavailable on host PATH/tools".into())
@@ -351,9 +400,13 @@ pub async fn convert_or_clip_media(req: MediaMuxRequest) -> Result<MediaMuxOutco
             .unwrap_or(DEFAULT_MEDIA_TIMEOUT_SECS)
             .clamp(5, 600),
     );
-    let _ = run_bounded_media_cmd(&bin, &args, timeout).await?;
+    if let Err(err) = run_bounded_media_cmd_cancellable(&bin, &args, timeout, control_rx).await {
+        let _ = std::fs::remove_file(&safe_output);
+        return Err(err);
+    }
     let output_bytes = std::fs::metadata(&safe_output).map(|m| m.len()).unwrap_or(0);
     if output_bytes == 0 {
+        let _ = std::fs::remove_file(&safe_output);
         return Err(DownloaderError::InvalidInput(
             "ffmpeg completed but produced an empty output file".into(),
         ));
@@ -374,13 +427,53 @@ pub async fn convert_or_clip_media(req: MediaMuxRequest) -> Result<MediaMuxOutco
         output_bytes,
         verified,
         ffprobe,
+        mux_skipped: false,
+        extra_outputs: Vec::new(),
     })
+}
+
+/// Auto-muxes streams via FFmpeg if `ffmpeg` is present on host, or gracefully returns
+/// `mux_skipped = true` while preserving separate video/audio paths cleanly.
+pub async fn mux_or_skip_if_missing_cancellable(
+    req: MediaMuxRequest,
+    control_rx: Option<watch::Receiver<JobControl>>,
+) -> Result<MediaMuxOutcome, DownloaderError> {
+    let args = build_ffmpeg_mux_args(&req)?;
+    if find_media_binary("ffmpeg").is_none() {
+        let fallback_video = validate_safe_local_path(&req.video_input, req.workspace_root.as_deref())?;
+        let output_bytes = std::fs::metadata(&fallback_video).map(|m| m.len()).unwrap_or(0);
+        let mut extra_outputs = Vec::new();
+        if let Some(ref audio) = req.audio_input {
+            if let Ok(safe_audio) = validate_safe_local_path(audio, req.workspace_root.as_deref()) {
+                extra_outputs.push(safe_audio);
+            }
+        }
+        return Ok(MediaMuxOutcome {
+            output_path: fallback_video,
+            ffmpeg_args: args,
+            output_bytes,
+            verified: false,
+            ffprobe: None,
+            mux_skipped: true,
+            extra_outputs,
+        });
+    }
+    convert_or_clip_media_cancellable(req, control_rx).await
 }
 
 async fn run_bounded_media_cmd(
     bin: &Path,
     args: &[String],
     timeout: Duration,
+) -> Result<Vec<u8>, DownloaderError> {
+    run_bounded_media_cmd_cancellable(bin, args, timeout, None).await
+}
+
+async fn run_bounded_media_cmd_cancellable(
+    bin: &Path,
+    args: &[String],
+    timeout: Duration,
+    mut control_rx: Option<watch::Receiver<JobControl>>,
 ) -> Result<Vec<u8>, DownloaderError> {
     let mut cmd = Command::new(bin);
     cmd.args(args)
@@ -395,7 +488,16 @@ async fn run_bounded_media_cmd(
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
 
-    let res = time::timeout(timeout, async move {
+    if let Some(rx) = control_rx.as_ref() {
+        if !matches!(*rx.borrow(), JobControl::Run) {
+            let _ = child.kill().await;
+            return Err(DownloaderError::Cancelled {
+                job_id: "media_mux".into(),
+            });
+        }
+    }
+
+    let collect_and_wait = async {
         let mut out_buf = Vec::new();
         let mut err_buf = Vec::new();
         if let Some(ref mut so) = stdout_pipe {
@@ -408,8 +510,37 @@ async fn run_bounded_media_cmd(
         }
         let status = child.wait().await?;
         Ok::<_, std::io::Error>((status, out_buf, err_buf))
-    })
-    .await;
+    };
+
+    let res = match control_rx.as_mut() {
+        Some(rx) => {
+            let cancelled = {
+                tokio::select! {
+                    out = time::timeout(timeout, collect_and_wait) => Ok(out),
+                    _ = async {
+                        loop {
+                            if rx.changed().await.is_err() {
+                                std::future::pending::<()>().await;
+                            }
+                            if !matches!(*rx.borrow(), JobControl::Run) {
+                                break;
+                            }
+                        }
+                    } => Err(()),
+                }
+            };
+            match cancelled {
+                Ok(out) => out,
+                Err(()) => {
+                    let _ = child.kill().await;
+                    return Err(DownloaderError::Cancelled {
+                        job_id: "media_mux".into(),
+                    });
+                }
+            }
+        }
+        None => time::timeout(timeout, collect_and_wait).await,
+    };
 
     match res {
         Ok(Ok((status, out_buf, err_buf))) => {
@@ -502,5 +633,31 @@ mod tests {
         assert_eq!(rep.streams.len(), 2);
         assert_eq!(rep.streams[0].codec_name, "h264");
         assert_eq!(rep.size_bytes, 1_048_576);
+    }
+
+    #[tokio::test]
+    async fn run_ffprobe_rejects_http_urls_cleanly_before_spawning() {
+        let err = run_ffprobe(Path::new("https://example.test/video.mp4"), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DownloaderError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn build_ffmpeg_args_appends_aac_adtstoasc_when_muxing_ts_to_mp4() {
+        let req = MediaMuxRequest {
+            video_input: PathBuf::from(r"D:\OmniaData\tmp\video.ts"),
+            audio_input: Some(PathBuf::from(r"D:\OmniaData\tmp\audio.aac")),
+            subtitle_input: None,
+            subtitle_lang: None,
+            output_path: PathBuf::from(r"D:\OmniaData\tmp\out.mp4"),
+            clip_in_secs: None,
+            clip_out_secs: None,
+            workspace_root: None,
+            verify_with_ffprobe: false,
+            timeout_secs: None,
+        };
+        let args = build_ffmpeg_mux_args(&req).unwrap();
+        assert!(args.windows(2).any(|w| w == ["-bsf:a", "aac_adtstoasc"]));
     }
 }

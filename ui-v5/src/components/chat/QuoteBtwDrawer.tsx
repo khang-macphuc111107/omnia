@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createSignal } from 'solid-js';
-import { ArrowUpRight, MessageSquareQuote, Plus, Send, X } from 'lucide-solid';
+import { ArrowUpRight, BookPlus, MessageSquareQuote, Plus, Send, Trash2, X } from 'lucide-solid';
 import { api } from '@/api/client';
 import {
   activeBtwQuote,
@@ -84,6 +84,7 @@ export function QuoteBtwDrawer() {
           id: `btw-${Date.now()}`,
           surface: quote.surface,
           session_id: activeSessionId(),
+          notebook_id: quote.notebookId,
           quote: { text: quote.text, source_label: quote.sourceLabel },
           messages: [
             { id: `bu-${Date.now()}`, role: 'user', content: qText },
@@ -104,12 +105,66 @@ export function QuoteBtwDrawer() {
     setLoading(false);
   };
 
-  const handlePromote = async (thread: BtwThread) => {
-    const res = await api.promoteBtw(thread.id, thread.quote.source_label);
+  const handlePromoteToSource = async (thread: BtwThread) => {
+    const title = `BTW: ${thread.quote.source_label || thread.quote.text.slice(0, 42)}`;
+    const notebookId = thread.notebook_id || activeBtwQuote()?.notebookId;
+    let res = await api.safeJson<Record<string, unknown>>(
+      `/api/btw/${encodeURIComponent(thread.id)}/promote`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ btw_id: thread.id, notebook_id: notebookId, title }),
+      },
+    );
+    if (!res.ok && (res.error.status === 404 || res.error.status === 405)) {
+      res = await api.promoteBtw(thread.id, title);
+    }
+    if (!res.ok && notebookId) {
+      const bodyMd = `> ${thread.quote.text}\n\n${thread.messages
+        .map((m) => `**${m.role.toUpperCase()}**: ${m.content}`)
+        .join('\n\n')}`;
+      const fallback = await api.ingestSource(notebookId, `${title.replace(/[^a-zA-Z0-9._ -]/g, '_')}.md`, bodyMd);
+      if (fallback.ok) {
+        res = { ok: true, data: fallback.data as Record<string, unknown> };
+      }
+    }
+    if (res.ok) {
+      setBtwThreads(btwThreads.map((t) => (t.id === thread.id ? { ...t, promoted: true } : t)));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('omnia:atelier-refresh-sources', { detail: { notebookId, btwId: thread.id } }),
+        );
+      }
+      flashNotice('Promoted BTW side-thread to permanent Notebook Source');
+      setStatusNote('');
+    } else {
+      setStatusNote(`Promote to Source note (${res.error.code}): ${res.error.message}`);
+      flashNotice(`Promote note (${res.error.code})`);
+    }
+  };
+
+  const handlePromoteToComposer = (thread: BtwThread) => {
     const summary = thread.messages.map((m) => `**${m.role.toUpperCase()}**: ${m.content}`).join('\n');
     setComposerDraft(`> ${thread.quote.text}\n\n[Promoted BTW]\n${summary}\n`);
     setBtwDrawerOpen(false);
-    flashNotice(res.ok ? 'Promoted BTW side-thread to composer' : `Promoted locally (${res.error.code})`);
+    flashNotice('Inserted BTW side-thread into Composer');
+  };
+
+  const handleDeleteThread = async (thread: BtwThread) => {
+    let res = await api.safeJson<Record<string, unknown>>(`/api/btw/${encodeURIComponent(thread.id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok && (res.error.status === 404 || res.error.status === 405)) {
+      res = await api.safeJson<Record<string, unknown>>('/api/btw/delete', {
+        method: 'POST',
+        body: JSON.stringify({ btw_id: thread.id, id: thread.id }),
+      });
+    }
+    const next = btwThreads.filter((t) => t.id !== thread.id);
+    setBtwThreads(next);
+    if (activeBtwThreadId() === thread.id) {
+      setActiveBtwThreadId(next[0]?.id ?? null);
+    }
+    flashNotice(res.ok ? 'Deleted BTW side-thread' : 'Removed BTW side-thread locally');
   };
 
   return (
@@ -191,12 +246,40 @@ export function QuoteBtwDrawer() {
           >
             {(t) => (
               <>
-                <div class="flex items-center justify-between">
-                  <span class="text-[11px] font-mono-num text-[var(--ink-muted)]">Thread {t().id.slice(0, 10)}</span>
-                  <button type="button" class="omnia-btn text-[11px]" onClick={() => void handlePromote(t())}>
-                    <ArrowUpRight class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
-                    <span>Promote to Main</span>
-                  </button>
+                <div class="flex flex-wrap items-center justify-between gap-1.5">
+                  <span class="text-[11px] font-mono-num text-[var(--ink-muted)]">
+                    Thread {t().id.slice(0, 10)} {t().promoted ? '· Promoted' : ''}
+                  </span>
+                  <div class="flex items-center gap-1">
+                    <button
+                      type="button"
+                      data-testid="btw-promote-source"
+                      class="omnia-btn text-[10.5px] px-2 py-1"
+                      title="Promote side-thread discovery to permanent Notebook Source (POST /api/btw/:id/promote)"
+                      onClick={() => void handlePromoteToSource(t())}
+                    >
+                      <BookPlus class="w-3.5 h-3.5 text-[var(--status-emerald)]" />
+                      <span>Promote to Source</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="omnia-btn text-[10.5px] px-2 py-1"
+                      title="Copy summary to Main Chat Composer"
+                      onClick={() => handlePromoteToComposer(t())}
+                    >
+                      <ArrowUpRight class="w-3.5 h-3.5 text-[var(--accent-cyan)]" />
+                      <span>Composer</span>
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="btw-delete-thread"
+                      class="omnia-btn omnia-btn-danger px-1.5 py-1 text-[10.5px]"
+                      title="Delete BTW side-thread (DELETE /api/btw/:id)"
+                      onClick={() => void handleDeleteThread(t())}
+                    >
+                      <Trash2 class="w-3 h-3" />
+                    </button>
+                  </div>
                 </div>
                 <For each={t().messages}>
                   {(m) => (

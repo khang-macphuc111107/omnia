@@ -11,6 +11,8 @@ globalThis.document = globalThis.document || { documentElement: { lang: 'vi', ge
 const { t, setLang } = await import('../app/core/i18n.js');
 await import('../app/views/settings/strings.js');
 const h = await import('../app/views/settings/helpers.js');
+const { capabilityMatrixHtml } = await import('../app/views/settings/capabilities.js');
+const { ApiError } = await import('../app/api.js');
 
 const chat = (n, extra = {}) => JSON.stringify({ v: 1, messages: Array.from({ length: n }, (_, i) => ({ id: `m${i}`, role: 'user', markdown: 'xin chào' })), ...extra });
 
@@ -110,7 +112,7 @@ const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'app',
 
 function usedKeys() {
   const keys = new Set();
-  for (const file of ['index.js', 'helpers.js']) {
+  for (const file of ['index.js', 'helpers.js', 'capabilities.js']) {
     const source = readFileSync(path.join(dir, file), 'utf8');
     for (const match of source.matchAll(/['"`](settings\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)['"`]/g)) keys.add(match[1]);
   }
@@ -123,7 +125,17 @@ const DYNAMIC = [
   ...h.diagnosticRows({}, 'h').map((r) => `settings.diag.${r.id}`),
   ...h.THEMES.map((id) => `settings.theme${id[0].toUpperCase()}${id.slice(1)}`),
   'settings.densityComfortable',
-  'settings.densityCompact'
+  'settings.densityCompact',
+  'settings.healthHealthy',
+  'settings.healthDegraded',
+  'settings.healthUnhealthy',
+  'settings.healthUnknown',
+  'settings.capStatusReady',
+  'settings.capStatusDegraded',
+  'settings.capStatusUnavailable',
+  'settings.capStatusDisabled',
+  'settings.capRemediateRuntime',
+  'settings.capRemediateGeneric'
 ];
 
 for (const lang of ['vi', 'en']) {
@@ -131,7 +143,7 @@ for (const lang of ['vi', 'en']) {
     setLang(lang);
     const missing = [];
     for (const key of new Set([...usedKeys(), ...DYNAMIC])) {
-      if (t(key, { n: 1, sessions: 1, messages: 1, size: 'x', name: 'x' }) === key) missing.push(key);
+      if (t(key, { n: 1, sessions: 1, messages: 1, size: 'x', name: 'x', ready: 1, total: 2, source: 'v1' }) === key) missing.push(key);
     }
     assert.deepEqual(missing, []);
   });
@@ -143,4 +155,73 @@ test('local summary string interpolates all parts in both languages', () => {
     const text = t('settings.localSummary', { sessions: 3, messages: 6, size: '18 KB' });
     assert.ok(text.includes('3') && text.includes('6') && text.includes('18 KB'), text);
   }
+});
+
+// ---------------------------------------------------------------------------
+// AUD-25: separate transport vs service health and live Capability Matrix
+// ---------------------------------------------------------------------------
+
+test('AUD-25: serviceHealthMeta separates transport reachability from service health', () => {
+  assert.equal(h.serviceHealthMeta({ status: 'online', serviceHealth: 'healthy' }).state, 'healthy');
+  assert.equal(h.serviceHealthMeta({ status: 'online', serviceHealth: 'unhealthy' }).state, 'unhealthy');
+  assert.equal(h.serviceHealthMeta({ status: 'online', serviceHealth: 'unhealthy' }).variant, 'danger');
+  assert.equal(h.serviceHealthMeta({ status: 'online', serviceHealth: 'degraded' }).state, 'degraded');
+  assert.equal(h.serviceHealthMeta({ status: 'offline', serviceHealth: 'healthy' }).state, 'unknown');
+});
+
+test('AUD-25: normalizeCapabilityRows normalizes omnia.capabilities.v1 with remediation and summary', () => {
+  const payload = {
+    ok: true,
+    schema: 'omnia.capabilities.v1',
+    capabilities: [
+      { id: 'sessions', enabled: true, endpoint: '/api/sessions', backend: 'winsqlite3' },
+      { id: 'runtime_proxy', enabled: false, timeoutMs: 3000 },
+      { id: 'media_capture', status: 'degraded', endpoint: '/api/media/capabilities', remediation: 'Enable desktop capture host' }
+    ]
+  };
+  const rows = h.normalizeCapabilityRows(payload, 1700000000000);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].status, 'ready');
+  assert.equal(rows[0].detail, 'winsqlite3');
+  assert.equal(rows[0].remediationKey, '');
+  assert.equal(rows[1].status, 'unavailable');
+  assert.equal(rows[1].remediationKey, 'settings.capRemediateRuntime');
+  assert.equal(rows[2].status, 'degraded');
+  assert.equal(rows[2].remediation, 'Enable desktop capture host');
+  assert.deepEqual(h.summarizeCapabilities(rows), { total: 3, ready: 1, degraded: 1, unavailable: 1 });
+});
+
+test('AUD-25: capabilityMatrixHtml renders table, remediation, error state and escapes HTML', () => {
+  setLang('en');
+  const rows = h.normalizeCapabilityRows({
+    schema: 'omnia.capabilities.v1',
+    capabilities: [
+      { id: 'sessions', enabled: true, endpoint: '/api/sessions', backend: 'winsqlite3' },
+      { id: 'runtime_proxy', enabled: false, remediation: '<script>alert(1)</script>Start omnia-runtime' }
+    ]
+  }, Date.UTC(2026, 10, 28, 10, 0, 0));
+  const out = String(capabilityMatrixHtml({
+    status: 'ready',
+    schema: 'omnia.capabilities.v1',
+    rows,
+    error: null,
+    fetchedAt: Date.UTC(2026, 10, 28, 10, 0, 0)
+  }));
+  assert.match(out, /data-role="capability-matrix"/);
+  assert.match(out, /1\/2 ready/);
+  assert.match(out, /data-cap-status="ready"/);
+  assert.match(out, /data-cap-status="unavailable"/);
+  assert.match(out, /\/api\/sessions/);
+  assert.equal(out.includes('<script>'), false);
+  assert.match(out, /&lt;script&gt;alert\(1\)&lt;\/script&gt;Start omnia-runtime/);
+
+  const errOut = String(capabilityMatrixHtml({
+    status: 'error',
+    schema: '',
+    rows: [],
+    error: new ApiError({ status: 503, code: 'unavailable', path: '/api/capabilities' }),
+    fetchedAt: 0
+  }));
+  assert.match(errOut, /Could not read GET \/api\/capabilities/);
+  setLang('vi');
 });

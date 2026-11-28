@@ -969,6 +969,7 @@ pub fn builtin_deferred_semantic_tools() -> Vec<ToolSpec> {
     specs.extend(crate::memory_engine::memory_tool_specs());
     specs.extend(crate::swarm_runtime::swarm_tool_specs());
     specs.extend(crate::test_time_scaling::test_time_scaling_tool_specs());
+    specs.push(crate::builtin_stem::stem_verify_tool_spec());
     specs
 }
 

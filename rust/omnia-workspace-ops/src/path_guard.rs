@@ -351,7 +351,23 @@ fn validate_normal_segment(seg: &OsStr, full_raw: &str) -> Result<(), WorkspaceO
             });
         }
         let stem = s.split('.').next().unwrap_or("");
-        let upper = stem.to_ascii_uppercase();
+        // Defend against Windows compatibility mapping of Unicode superscript, subscript,
+        // and fullwidth digits/letters (e.g. `COM¹`, `LPT²`, `ｃｏｍ³`) to DOS devices.
+        let upper: String = stem
+            .chars()
+            .map(|c| match c {
+                '\u{00B9}' => '1',
+                '\u{00B2}' => '2',
+                '\u{00B3}' => '3',
+                '\u{2070}' | '\u{2080}' => '0',
+                '\u{2074}'..='\u{2079}' => char::from(b'4' + (c as u32 - 0x2074) as u8),
+                '\u{2081}'..='\u{2089}' => char::from(b'1' + (c as u32 - 0x2081) as u8),
+                '\u{FF10}'..='\u{FF19}' => char::from(b'0' + (c as u32 - 0xFF10) as u8),
+                '\u{FF21}'..='\u{FF3A}' => char::from(b'A' + (c as u32 - 0xFF21) as u8),
+                '\u{FF41}'..='\u{FF5A}' => char::from(b'A' + (c as u32 - 0xFF41) as u8),
+                _ => c.to_ascii_uppercase(),
+            })
+            .collect();
         if matches!(
             upper.as_str(),
             "CON"
@@ -638,6 +654,15 @@ mod tests {
                 err_con,
                 WorkspaceOpsError::ForbiddenPathSegment { .. }
             ));
+
+            for dos_alias in ["COM\u{00B9}.txt", "sub/COM\u{00B2}.log", "LPT\u{00B3}.md", "COM\u{2074}.txt", "\u{FF23}\u{FF2F}\u{FF2D}\u{FF15}.txt"] {
+                let err_sup = resolve_contained_path(&sb.root, dos_alias)
+                    .expect_err(&format!("must reject Unicode DOS alias `{dos_alias}`"));
+                assert!(
+                    matches!(err_sup, WorkspaceOpsError::ForbiddenPathSegment { .. }),
+                    "unexpected error for `{dos_alias}`: {err_sup:?}"
+                );
+            }
 
             let err_dot = resolve_contained_path(&sb.root, "file.txt.")
                 .expect_err("must reject trailing dot");

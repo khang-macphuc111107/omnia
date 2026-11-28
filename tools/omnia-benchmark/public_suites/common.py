@@ -21,6 +21,8 @@ BENCH_DIR = Path(__file__).resolve().parent.parent
 if str(BENCH_DIR) not in sys.path:
     sys.path.insert(0, str(BENCH_DIR))
 
+FINAL_ASSISTANT_TEXT_CAP: int = 8000
+
 from bench_telemetry_proxy import BenchTelemetryProxy
 from cleanroom import assert_clean_ancestors, audit_non_loopback_sockets, prepare_harness_launch
 from proc_monitor import ProcessTreeMonitor, get_process_tree_pids, terminate_process_tree

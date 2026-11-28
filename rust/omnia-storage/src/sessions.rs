@@ -48,12 +48,14 @@ impl ProviderProfileRepository {
     /// Open an existing SQLite database read-only without running recovery or writes.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open_read_only(path)?;
+        crate::apply_connection_security_pragmas(&conn)?;
         Ok(Self { conn })
     }
 
     /// Open (or create) a read-write provider repository and ensure `provider_profiles` exists.
     pub fn open_read_write(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open_read_write(path)?;
+        crate::apply_connection_security_pragmas(&conn)?;
         conn.exec_batch(PROVIDER_PROFILE_DDL)?;
         Ok(Self { conn })
     }
@@ -61,6 +63,7 @@ impl ProviderProfileRepository {
     /// Create an isolated in-memory provider repository for tests.
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
+        crate::apply_connection_security_pragmas(&conn)?;
         conn.exec_batch(PROVIDER_PROFILE_DDL)?;
         Ok(Self { conn })
     }

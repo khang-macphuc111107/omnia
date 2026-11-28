@@ -9,6 +9,8 @@ import {
   GitBranch,
   Globe,
   ListOrdered,
+  MessageCircle,
+  MessageSquareQuote,
   Mic,
   MicOff,
   Paperclip,
@@ -41,6 +43,7 @@ import {
   modelCatalog,
   modelConfig,
   modelPickerTriggerSeq,
+  openQuoteBtw,
   openWorkbench,
   pendingPasteChoice,
   ragScope,
@@ -111,7 +114,11 @@ const FOCUS_PILLS: Array<{ id: FocusMode | 'arena'; label: string; title: string
 export function Composer() {
   let textareaRef: HTMLTextAreaElement | undefined;
   let fileInputRef: HTMLInputElement | undefined;
+  let whisperAudioInputRef: HTMLInputElement | undefined;
   let recognitionRef: { stop: () => void } | null = null;
+  let mediaRecorderRef: MediaRecorder | null = null;
+  let mediaStreamRef: MediaStream | null = null;
+  let recordedChunks: Blob[] = [];
 
   const [isComposing, setIsComposing] = createSignal(false);
   const [latexOpen, setLatexOpen] = createSignal(false);
@@ -119,12 +126,23 @@ export function Composer() {
   const [slashIndex, setSlashIndex] = createSignal(0);
   const [attachMode, setAttachMode] = createSignal<'tray' | 'inline'>('tray');
   const [listening, setListening] = createSignal(false);
+  const [voiceEngine, setVoiceEngine] = createSignal<'browser' | 'whisper'>('browser');
+  const [whisperBusy, setWhisperBusy] = createSignal(false);
+  const [composerLane, setComposerLane] = createSignal<'default' | 'queue' | 'steer' | 'btw' | 'discuss'>('default');
 
   onCleanup(() => {
     try {
       recognitionRef?.stop();
     } catch {
       // ignore speech cleanup errors
+    }
+    try {
+      if (mediaRecorderRef && mediaRecorderRef.state !== 'inactive') {
+        mediaRecorderRef.stop();
+      }
+      mediaStreamRef?.getTracks().forEach((t) => t.stop());
+    } catch {
+      // ignore media recorder cleanup errors
     }
   });
 
@@ -248,7 +266,94 @@ export function Composer() {
     }
   };
 
+  const transcribeAudioBytesOffline = async (bytes: Uint8Array, filename: string, mimeType: string) => {
+    setWhisperBusy(true);
+    try {
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const audioBase64 = btoa(binary);
+      let res = await api.safeJson<{ transcript?: string; text?: string }>('/api/audio/transcribe', {
+        method: 'POST',
+        body: JSON.stringify({ filename, mimeType, audioBase64, engine: 'whisper' }),
+      });
+      if (!res.ok) {
+        res = await api.safeJson<{ transcript?: string; text?: string }>('/api/notebooks/transcribe', {
+          method: 'POST',
+          body: JSON.stringify({ filename, mimeType, audioBase64, engine: 'whisper' }),
+        });
+      }
+      if (res.ok) {
+        const transcript = String(res.data.transcript ?? res.data.text ?? '').trim();
+        if (transcript) {
+          insertAtCaret(`${transcript} `);
+          flashNotice(`Offline Whisper transcribed ${filename}`);
+        } else {
+          flashNotice('Offline Whisper returned empty transcript');
+        }
+      } else {
+        flashNotice(`Offline Whisper (${res.error.code}): ${res.error.message}`);
+      }
+    } finally {
+      setWhisperBusy(false);
+    }
+  };
+
+  const handleWhisperFilePick = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    await transcribeAudioBytesOffline(buf, file.name, file.type || 'audio/wav');
+  };
+
   const toggleVoiceDictation = () => {
+    if (voiceEngine() === 'whisper') {
+      if (listening() && mediaRecorderRef) {
+        try {
+          mediaRecorderRef.stop();
+        } catch {
+          // ignore stop error
+        }
+        setListening(false);
+        return;
+      }
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined') {
+        void navigator.mediaDevices
+          .getUserMedia({ audio: true })
+          .then((stream) => {
+            mediaStreamRef = stream;
+            recordedChunks = [];
+            const rec = new MediaRecorder(stream);
+            rec.ondataavailable = (ev) => {
+              if (ev.data.size > 0) recordedChunks.push(ev.data);
+            };
+            rec.onstop = () => {
+              stream.getTracks().forEach((t) => t.stop());
+              mediaStreamRef = null;
+              mediaRecorderRef = null;
+              setListening(false);
+              if (recordedChunks.length === 0) return;
+              const blob = new Blob(recordedChunks, { type: rec.mimeType || 'audio/webm' });
+              void blob.arrayBuffer().then((ab) =>
+                transcribeAudioBytesOffline(new Uint8Array(ab), `whisper-${Date.now()}.webm`, blob.type),
+              );
+            };
+            mediaRecorderRef = rec;
+            setListening(true);
+            rec.start();
+            flashNotice('Offline Whisper recording... click Mic again to transcribe');
+          })
+          .catch(() => {
+            setListening(false);
+            flashNotice('Mic unavailable — select an audio file for Offline Whisper transcription');
+            whisperAudioInputRef?.click();
+          });
+        return;
+      }
+      flashNotice('Select an audio file for Offline Whisper transcription');
+      whisperAudioInputRef?.click();
+      return;
+    }
+
     if (listening()) {
       try {
         recognitionRef?.stop();
@@ -272,7 +377,7 @@ export function Composer() {
         })
       | undefined;
     if (!SpeechRec) {
-      flashNotice('Offline voice dictation unavailable in this browser runtime');
+      flashNotice('Browser SpeechRecognition unavailable — switch to Offline Whisper toggle');
       return;
     }
     try {
@@ -299,6 +404,47 @@ export function Composer() {
       setListening(false);
       flashNotice('Voice dictation could not start');
     }
+  };
+
+  const submitComposerAction = async () => {
+    const lane = composerLane();
+    const raw = composerDraft().trim();
+    if (lane === 'btw') {
+      openQuoteBtw({
+        text: raw || 'Quick /btw side-thread',
+        sourceLabel: 'Composer /btw',
+        surface: 'chat',
+      });
+      if (raw) setComposerDraft('');
+      setComposerLane('default');
+      return;
+    }
+    if (!raw && attachments.length === 0) return;
+    if (lane === 'queue') {
+      if (!raw) return;
+      setComposerDraft('');
+      await enqueueAdditiveSteer(raw, 'queue');
+      setSteerDrawerOpen(true);
+      setComposerLane('default');
+      return;
+    }
+    if (lane === 'steer') {
+      if (!raw) return;
+      setComposerDraft('');
+      await enqueueAdditiveSteer(raw, 'steer');
+      flashNotice('Additive steer queued (token_budget: NULL)');
+      setComposerLane('default');
+      return;
+    }
+    if (lane === 'discuss') {
+      if (raw && !raw.startsWith('[DISCUSS')) {
+        setComposerDraft(`[DISCUSS — read-only architectural analysis, no file edits]\n\n${raw}`);
+      }
+      setComposerLane('default');
+      await sendComposerMessage();
+      return;
+    }
+    await sendComposerMessage();
   };
 
   const activeMainModel = createMemo(
@@ -755,11 +901,78 @@ export function Composer() {
                 if (chosen) void handleSlashCommand(chosen.cmd);
                 return;
               }
-              void sendComposerMessage();
+              void submitComposerAction();
             }
           }}
           class="w-full bg-transparent px-3.5 py-2.5 text-[13.5px] leading-relaxed text-[var(--ink-primary)] placeholder-[var(--ink-muted)] resize-none outline-none"
         />
+
+        {/* 4-Lane Quick Tabs: Queue | Steer | Btw | Discuss (Zero-Interference w/ SOLO YOLO Default) */}
+        <div
+          data-testid="composer-4lane-tabs"
+          class="px-3 py-1 border-t border-[var(--border-subtle)] bg-[var(--bg-canvas)]/60 flex flex-wrap items-center justify-between gap-2 text-[10.5px]"
+        >
+          <div class="flex flex-wrap items-center gap-1">
+            <span class="font-mono-num text-[var(--ink-muted)] mr-1">Lane:</span>
+            {(
+              [
+                { id: 'queue', label: 'Queue', title: 'ADDITIVE_INTAKE queue (appends without interrupting active task)' },
+                { id: 'steer', label: 'Steer', title: 'Mid-run additive steer (token_budget: NULL)' },
+                { id: 'btw', label: 'Btw', title: 'Isolated /btw side-thread drawer (keeps main transcript clean)' },
+                { id: 'discuss', label: 'Discuss', title: 'Read-only architectural discussion turn (preserves SOLO YOLO default)' },
+              ] as const
+            ).map((tab) => {
+              const active = () => composerLane() === tab.id;
+              return (
+                <button
+                  type="button"
+                  data-testid={`composer-lane-${tab.id}`}
+                  aria-pressed={active()}
+                  title={tab.title}
+                  onClick={() => {
+                    if (tab.id === 'btw') {
+                      const draft = composerDraft().trim();
+                      openQuoteBtw({
+                        text: draft || 'Quick /btw side-thread',
+                        sourceLabel: 'Composer /btw',
+                        surface: 'chat',
+                      });
+                      if (draft) setComposerDraft('');
+                      setComposerLane('default');
+                      return;
+                    }
+                    setComposerLane(active() ? 'default' : tab.id);
+                    textareaRef?.focus();
+                  }}
+                  class="px-2 py-0.5 rounded border cursor-pointer font-medium inline-flex items-center gap-1"
+                  classList={{
+                    'border-[var(--border-accent)] bg-[var(--accent-dim)] text-[var(--accent-cyan)] font-semibold': active(),
+                    'border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]': !active(),
+                  }}
+                >
+                  <Show when={tab.id === 'queue'}>
+                    <ListOrdered class="w-2.5 h-2.5 text-[var(--accent-amber)]" />
+                  </Show>
+                  <Show when={tab.id === 'steer'}>
+                    <Zap class="w-2.5 h-2.5 text-[var(--accent-cyan)]" />
+                  </Show>
+                  <Show when={tab.id === 'btw'}>
+                    <MessageSquareQuote class="w-2.5 h-2.5 text-[var(--accent-amber)]" />
+                  </Show>
+                  <Show when={tab.id === 'discuss'}>
+                    <MessageCircle class="w-2.5 h-2.5 text-[var(--status-emerald)]" />
+                  </Show>
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <Show when={composerLane() !== 'default'}>
+            <span class="font-mono-num text-[10px] text-[var(--accent-cyan)]">
+              Active lane: {composerLane().toUpperCase()} (Enter to dispatch · click pill to reset)
+            </span>
+          </Show>
+        </div>
 
         {/* Composer Bottom Toolbar */}
         <div class="px-3 py-2 border-t border-[var(--border-subtle)] bg-[var(--bg-rail)] flex flex-wrap items-center justify-between gap-2">
@@ -853,18 +1066,48 @@ export function Composer() {
               {attachMode() === 'tray' ? <Plus class="w-3 h-3" /> : <FilePlus2 class="w-3 h-3" />}
             </button>
 
-            {/* Voice Dictation (SpeechRecognition with graceful offline fallback) */}
+            {/* Voice Dictation (SpeechRecognition + Offline Whisper Toggle) */}
+            <input
+              ref={whisperAudioInputRef}
+              type="file"
+              accept="audio/*"
+              class="hidden"
+              onChange={(e) => void handleWhisperFilePick(e.currentTarget.files)}
+            />
             <button
               type="button"
               data-testid="composer-voice-btn"
+              disabled={whisperBusy()}
               onClick={toggleVoiceDictation}
               class="omnia-btn px-2 py-1 text-[10.5px]"
               classList={{
                 'border-[var(--status-coral)] text-[var(--status-coral)] bg-[var(--status-coral-dim)]': listening(),
               }}
-              title="Voice Dictation (browser SpeechRecognition with offline fallback)"
+              title={
+                voiceEngine() === 'whisper'
+                  ? 'Offline Whisper Voice Transcription (record or pick audio file)'
+                  : 'Voice Dictation (browser SpeechRecognition)'
+              }
             >
               {listening() ? <MicOff class="w-3.5 h-3.5" /> : <Mic class="w-3.5 h-3.5" />}
+            </button>
+            <button
+              type="button"
+              data-testid="composer-whisper-toggle"
+              aria-pressed={voiceEngine() === 'whisper'}
+              onClick={() => {
+                const next = voiceEngine() === 'browser' ? 'whisper' : 'browser';
+                setVoiceEngine(next);
+                flashNotice(next === 'whisper' ? 'Voice engine: Offline Whisper' : 'Voice engine: Browser Speech');
+              }}
+              class="omnia-btn px-1.5 py-1 text-[10px] font-mono-num"
+              classList={{
+                'border-[var(--accent-cyan)] text-[var(--accent-cyan)] bg-[var(--accent-dim)]':
+                  voiceEngine() === 'whisper',
+              }}
+              title="Toggle Voice Engine: Browser SpeechRecognition vs Offline Whisper"
+            >
+              {whisperBusy() ? 'Whisper...' : voiceEngine() === 'whisper' ? 'Whisper' : 'Speech'}
             </button>
 
             {/* Default-ON Adaptive Intelligence Toggles: Research, Deep Think, Persistent RAG & Sources */}
@@ -957,10 +1200,16 @@ export function Composer() {
               type="button"
               data-testid="composer-send"
               class="omnia-btn omnia-btn-primary text-[12px]"
-              onClick={() => void sendComposerMessage()}
+              onClick={() => void submitComposerAction()}
             >
-              {isStreaming() ? <Zap class="w-3.5 h-3.5" /> : <Send class="w-3.5 h-3.5" />}
-              <span>{isStreaming() ? 'Steer' : 'Send'}</span>
+              {isStreaming() || composerLane() === 'steer' ? <Zap class="w-3.5 h-3.5" /> : <Send class="w-3.5 h-3.5" />}
+              <span>
+                {composerLane() !== 'default'
+                  ? composerLane().charAt(0).toUpperCase() + composerLane().slice(1)
+                  : isStreaming()
+                    ? 'Steer'
+                    : 'Send'}
+              </span>
             </button>
           </div>
         </div>

@@ -331,6 +331,17 @@ impl InteractionService {
             .collect()
     }
 
+    /// Delete one isolated BTW side-thread by `btw_id` (`DELETE /api/btw/:id`).
+    pub fn delete_btw_thread(&self, btw_id: &str) -> Result<bool, NotebookError> {
+        let trimmed = btw_id.trim();
+        if trimmed.is_empty() {
+            return Err(NotebookError::InvalidInput(
+                "btw_id cannot be empty".to_string(),
+            ));
+        }
+        self.store.delete_btw_thread(trimmed)
+    }
+
     /// Promote an isolated BTW side-thread into a durable, indexed, SHA-256-deduped Notebook source
     /// (`POST /api/btw/:btwId/promote`), updating `thread.status = Promoted` and `promoted_source_id`.
     pub fn promote_btw_to_source(

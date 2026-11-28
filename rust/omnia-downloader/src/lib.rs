@@ -14,9 +14,11 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+pub mod blob;
 pub mod capture_bundle;
 pub mod chunker;
 pub mod crawlers;
+pub mod detect;
 pub mod drive;
 pub mod engine;
 pub mod handoff;
@@ -42,6 +44,7 @@ pub use batch::{
     BatchPlanner, DownloadCategory, DownloadScheduler, Ef2Entry, ScheduleWindow, SchedulerConfig,
     SitePolicyRegistry, SiteRule, MAX_BATCH_EXPANSION,
 };
+pub use blob::{BlobAssembler, BLOB_READER_JS, MAX_BLOB_CHUNKS, MAX_BLOB_CHUNK_BYTES};
 pub use capture_bundle::{
     open_wire_value, seal_wire_value, CaptureBundle, CaptureBundleEntry, CasBlobMeta,
     ContentAddressableBlobStore, WireCodecKind, DEFAULT_MAX_CAS_ENTRIES, DEFAULT_MAX_INFLATE_BYTES,
@@ -56,20 +59,22 @@ pub use crawlers::{
     DiscoveredCrawlResource, SafeFilterPattern, YouTubeFormatOption, YouTubeInspectResult,
     YouTubePlaylistEntry,
 };
+pub use detect::{classify_captured_media, media_dedupe_key, DetectedMediaCandidate, DetectedMediaKind};
 pub use drive::{
     extract_drive_confirm_url, is_valid_drive_id, parse_drive_url, resolve_workspace_export,
     DriveAuth, DriveFileMetadata, DriveResolver, DriveResourceKind, DriveResourceRef,
     WorkspaceExportFormat, WorkspaceExportTarget, DEFAULT_DRIVE_API_BASE, MAX_DRIVE_API_BODY_BYTES,
 };
-pub use engine::{DownloadEngine, DownloadManager, JobControl};
+pub use engine::{AimdTelemetrySnapshot, DownloadEngine, DownloadManager, JobControl};
 pub use handoff::{
     classify_http_response, HandoffReason, HandoffStatus, HttpGateClassification,
     VisibleHandoffManager, VisibleHandoffTicket, AUTO_SOLVE_PERMITTED,
     EXECUTION_MODE_MANUAL_VISIBLE_BROWSER,
 };
 pub use integrity::{
-    crc32c_base64, crc32c_bytes, decode_crc32c_base64, hash_file_streaming, parse_x_goog_hash,
-    verify_file_integrity, Crc32cHasher, GoogleHashHeader, IntegrityReport,
+    crc32c_base64, crc32c_bytes, decode_crc32c_base64, hash_file_streaming,
+    hash_file_streaming_full, md5_bytes, parse_x_goog_hash, verify_file_integrity,
+    verify_file_integrity_with_md5, Crc32cHasher, GoogleHashHeader, IntegrityReport, Md5Hasher,
 };
 pub use journal::{
     omnf_journal_path_for, part_meta_path_for, OmnfJournal, OmnfRecord, OmnfReplayState,
@@ -77,21 +82,22 @@ pub use journal::{
     PART_META_VERSION,
 };
 pub use media_box::{
-    inspect_media_bytes, inspect_media_file, AdtsInfo, ContainerFormat, DrmBoxMetadata,
-    IsoBmffBoxInfo, MediaBoxReport, MpegTsInfo, WebmInfo,
+    extract_moof_tfdt_timestamps, inspect_media_bytes, inspect_media_file, AdtsInfo,
+    ContainerFormat, DrmBoxMetadata, IsoBmffBoxInfo, MediaBoxReport, MpegTsInfo, WebmInfo,
 };
 pub use media_ops::{
-    build_ffmpeg_mux_args, convert_or_clip_media, find_media_binary, parse_ffprobe_json,
-    run_ffprobe, slice_segments_for_clip_range, FfprobeReport, FfprobeStreamSummary,
-    MediaMuxOutcome, MediaMuxRequest,
+    build_ffmpeg_mux_args, convert_or_clip_media, convert_or_clip_media_cancellable,
+    find_media_binary, mux_or_skip_if_missing_cancellable, parse_ffprobe_json, run_ffprobe,
+    slice_segments_for_clip_range, FfprobeReport, FfprobeStreamSummary, MediaMuxOutcome,
+    MediaMuxRequest,
 };
 pub use pacing::{
     parse_retry_after, parse_retry_after_now, AimdBdpController, CongestionMetrics, PacingMode,
     TokenBucketLimiter, MAX_RETRY_AFTER_SECS,
 };
 pub use privacy::{
-    PrivacyShield, ProviderCategory, ProviderDefinition, ProviderRegistry, ScopedCookie,
-    ScopedCookieJar,
+    PrivacyShield, ProviderCategory, ProviderDefinition, ProviderRegistry, SameSiteContext,
+    SameSitePolicy, ScopedCookie, ScopedCookieJar,
 };
 pub use schema_drift::{
     build_gram_multiset, compare_schema_snapshots, compute_multiset_overlap, diff_required_keys,
@@ -101,16 +107,19 @@ pub use schema_drift::{
 };
 pub use store::DownloadStore;
 pub use streaming::{
-    decrypt_hls_aes128_cbc, hls_sequence_iv, parse_dash_manifest, parse_hls_manifest,
+    decrypt_hls_aes128_cbc, hls_audio_rendition_for, hls_sequence_iv, parse_dash_manifest,
+    parse_hls_manifest, select_dash_tracks, select_hls_variant, substitute_dash_vars,
     DashAdaptationSet, DashManifest, DashRepresentation, DashSegment, HlsAes128Key, HlsByteRange,
-    HlsManifest, HlsSegment, HlsVariant,
+    HlsManifest, HlsMediaRendition, HlsSegment, HlsVariant, StreamQuality,
 };
 pub use types::{
-    safe_output_filename, validate_safe_local_path, ChunkRange, CompletedDownload, DownloadConfig,
-    DownloadJobSnapshot, DownloadProgressEvent, DownloadRequest, DownloadStatus, DownloaderError,
-    ProbeInfo, SecurityPolicy, DEFAULT_MIN_SPLIT_BYTES, DRM_SUPPORTED, MAX_STREAMS, MIN_STREAMS,
+    check_redirect_https_downgrade, is_public_unicast_ip, safe_output_filename,
+    validate_and_resolve_addrs, validate_safe_local_path, ChunkRange, CompletedDownload,
+    DownloadConfig, DownloadJobSnapshot, DownloadProgressEvent, DownloadRequest, DownloadStatus,
+    DownloaderError, ProbeInfo, SecurityPolicy, DEFAULT_MIN_SPLIT_BYTES, DRM_SUPPORTED, MAX_STREAMS,
+    MIN_STREAMS,
 };
-pub use writer::PositionalWriter;
+pub use writer::{CoalescedDiskWriter, PositionalWriter, DEFAULT_COALESCE_BYTES};
 
 #[cfg(test)]
 mod tests {

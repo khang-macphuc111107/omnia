@@ -1102,6 +1102,78 @@ fn record_from_row(row: StoredArtifactRow) -> StudioArtifactRecord {
     }
 }
 
+/// Synthesize (or decode) a valid RIFF/WAVE 8 kHz 16-bit mono PCM audio stream for an
+/// [`StudioArtifactKind::AudioOverview`] artifact so HTTP Range (`206`/`416`) streaming serves
+/// real playable `audio/wav` bytes.
+pub fn synthesize_audio_overview_wav(
+    artifact: &StudioArtifactRecord,
+) -> Result<Vec<u8>, NotebookError> {
+    if artifact.kind != StudioArtifactKind::AudioOverview {
+        return Err(NotebookError::InvalidInput(format!(
+            "artifact '{}' has kind '{}'; audio streaming requires 'audio_overview'",
+            artifact.artifact_id,
+            artifact.kind.as_str()
+        )));
+    }
+    if let Some(raw_b64) = artifact
+        .structured_json
+        .get("audio_bytes_base64")
+        .or_else(|| artifact.structured_json.get("audioBase64"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Ok(bytes) = omnia_core::base64_decode(raw_b64) {
+            if !bytes.is_empty() {
+                return Ok(bytes);
+            }
+        }
+    }
+
+    const SAMPLE_RATE: u32 = 8_000;
+    const CHANNELS: u16 = 1;
+    const BITS_PER_SAMPLE: u16 = 16;
+
+    let turn_count = artifact
+        .structured_json
+        .get("turns")
+        .and_then(Value::as_array)
+        .map_or(2usize, Vec::len)
+        .clamp(1, 12);
+    // 0.25 s per turn segment (2,000 samples each) -> 4 KiB..48 KiB deterministic playable WAV.
+    let total_samples = (turn_count * 2_000).clamp(4_000, 24_000);
+    let data_bytes = (total_samples * 2) as u32;
+    let riff_size = 36u32.saturating_add(data_bytes);
+    let byte_rate = SAMPLE_RATE * u32::from(CHANNELS) * u32::from(BITS_PER_SAMPLE) / 8;
+    let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
+
+    let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&riff_size.to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+    wav.extend_from_slice(&1u16.to_le_bytes()); // AudioFormat = PCM
+    wav.extend_from_slice(&CHANNELS.to_le_bytes());
+    wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+
+    for i in 0..total_samples {
+        let seg = i / 2_000;
+        let freq = if seg % 2 == 0 { 440.0_f64 } else { 523.25_f64 };
+        let t = (i as f64) / (SAMPLE_RATE as f64);
+        let env = ((i % 2_000) as f64 / 200.0).min(1.0)
+            * (((2_000 - (i % 2_000)) as f64) / 200.0).min(1.0);
+        let sample = ((2.0 * std::f64::consts::PI * freq * t).sin() * 6_000.0 * env) as i16;
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    Ok(wav)
+}
+
 #[cfg(test)]
 mod steer23_artifact_schema_tests {
     use super::*;
@@ -1125,6 +1197,8 @@ mod steer23_artifact_schema_tests {
             provenance: "local".to_string(),
             metadata: json!({}),
             created_at_ms: 1_000,
+            checked: true,
+            status: "ready".to_string(),
         };
         let c1 = vec![
             SourceChunkRecord {
@@ -1167,6 +1241,8 @@ mod steer23_artifact_schema_tests {
             provenance: "local".to_string(),
             metadata: json!({}),
             created_at_ms: 2_000,
+            checked: true,
+            status: "ready".to_string(),
         };
         let c2 = vec![SourceChunkRecord {
             chunk_id: "chk_3".to_string(),

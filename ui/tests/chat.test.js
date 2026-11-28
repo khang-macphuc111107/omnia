@@ -8,8 +8,9 @@ import '../app/views/chat/strings.js';
 import { t } from '../app/core/i18n.js';
 import {
   emptyChat, sanitizeChat, buildPolicy, estimateTokens, routeFromResponse, routeFromError, receiptMessage,
-  selectedScore, rejectedScores, scoreShares, trimMessages, MAX_MESSAGES, chatKey, pendingRoute
+  selectedScore, rejectedScores, scoreShares, trimMessages, MAX_MESSAGES, chatKey, pendingRoute, cancelledRoute
 } from '../app/views/chat/local-store.js';
+import { createRunTracker } from '../app/views/chat/run-control.js';
 import {
   diffEdit, insertAtCaret, wrapInline, toggleLinePrefix, insertBlock, tableSnippet, insertToken, removeToken
 } from '../app/views/chat/format.js';
@@ -385,4 +386,121 @@ test('english strings resolve through t()', () => {
   assert.equal(t('chat.noteLocal'), 'Không gửi tới provider — chưa có runtime hội thoại.');
   assert.equal(t('chat.tplCount', { count: 1 }), '1 mẫu');
   assert.equal(t('chat.tplCount', { count: 4 }), '4 mẫu');
+});
+
+// ---------------------------------------------------------------------------
+// AUD-24: explicit run cancellation, AbortController & clean interrupted card
+// ---------------------------------------------------------------------------
+
+test('AUD-24: aborted route produces cancelled state (never error/routed) and survives reload', () => {
+  const policy = buildPolicy('cancel me');
+  const aborted = routeFromError({ code: 'aborted' }, policy);
+  assert.equal(aborted.state, 'cancelled');
+  assert.equal(aborted.errorCode, 'aborted');
+  assert.equal(aborted.status, 'CANCELLED_BY_USER');
+
+  const stored = sanitizeChat({
+    v: 1,
+    messages: [{ id: 'm-cancel', role: 'user', markdown: 'x', createdAt: 100, attachments: [], route: cancelledRoute(policy, { chatStopped: true, routerCancelled: true }) }],
+    draft: { text: '', rev: 0, attachments: [] }
+  });
+  assert.equal(stored.messages[0].route.state, 'cancelled');
+  assert.equal(stored.messages[0].route.cancelAck.routerCancelled, true);
+});
+
+test('AUD-24: thread renders live Cancel button while pending and clean cancelled card with Retry', () => {
+  const policy = buildPolicy('x');
+  const chat = {
+    messages: [
+      message('p1', pendingRoute(policy)),
+      message('c1', cancelledRoute(policy, { chatStopped: true, routerCancelled: true }))
+    ],
+    draft: { text: '', rev: 0, attachments: [] }
+  };
+  const out = String(threadHtml({ sessionState: 'ready', sessionId: 's1', error: null, chat, bannerHidden: true, stagger: false }));
+  assert.match(out, /data-action="cancel-route" data-id="p1"/);
+  assert.match(out, /data-state="cancelled"/);
+  assert.match(out, /Đã huỷ yêu cầu định tuyến theo lệnh của bạn/);
+  assert.match(out, /Đã xác nhận huỷ trên server/);
+  assert.match(out, /data-action="retry-route" data-id="c1"/);
+
+  const insp = String(inspectorHtml({
+    chat: { messages: [chat.messages[1]], draft: { text: '', rev: 0, attachments: [] } },
+    steer: { status: 'ready', tokenBudget: null, error: null, updatedAt: 1, items: [] },
+    steerForm: { mode: 'additive', busy: false, error: '' },
+    sections: { receipt: true, steer: false, atts: false },
+    receiptFocus: null
+  }));
+  assert.match(insp, /Đã huỷ/);
+  assert.match(insp, /Đã huỷ yêu cầu định tuyến theo lệnh của bạn/);
+});
+
+test('AUD-24: createRunTracker aborts AbortController, calls /api/chat/stop + /api/router/cancel, and allows retry', async () => {
+  const stopCalls = [];
+  const cancelCalls = [];
+  const updates = [];
+  let decideAttempt = 0;
+  let capturedSignal = null;
+
+  const client = {
+    router: {
+      decide(policy, { signal } = {}) {
+        decideAttempt += 1;
+        capturedSignal = signal;
+        if (decideAttempt === 1) {
+          return new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => reject({ code: 'aborted' }), { once: true });
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          selectedCandidateId: 'omnia-primary',
+          status: 'ROUTED_DETERMINISTIC',
+          receipt: { receiptId: 'rdec-retry-1', reservedTokens: 1024 }
+        });
+      },
+      async cancel(body) {
+        cancelCalls.push(body);
+        return { ok: true, cancelled: true };
+      }
+    },
+    chat: {
+      async stop(body) {
+        stopCalls.push(body);
+        return { ok: true, aborted: true };
+      }
+    }
+  };
+
+  const tracker = createRunTracker({ client });
+  const policy = { ...buildPolicy('solve x'), idempotencyKey: 'chat:sess-1:msg-1' };
+  const runPromise = tracker.runDecide('sess-1', 'msg-1', policy, {
+    onUpdate: (sid, mid, route) => updates.push({ sid, mid, route })
+  });
+
+  assert.equal(tracker.isInflight('sess-1', 'msg-1'), true);
+  assert.equal(capturedSignal.aborted, false);
+
+  const finalCancelled = await tracker.cancelRoute('sess-1', 'msg-1', {
+    onUpdate: (sid, mid, route) => updates.push({ sid, mid, route })
+  });
+  await runPromise;
+
+  assert.equal(capturedSignal.aborted, true);
+  assert.equal(tracker.isInflight('sess-1', 'msg-1'), false);
+  assert.equal(stopCalls.length, 1);
+  assert.equal(cancelCalls.length, 1);
+  assert.equal(stopCalls[0].sessionId, 'sess-1');
+  assert.equal(stopCalls[0].messageId, 'msg-1');
+  assert.equal(cancelCalls[0].idempotencyKey, 'chat:sess-1:msg-1');
+  assert.equal(finalCancelled.state, 'cancelled');
+  assert.deepEqual(finalCancelled.cancelAck, { pendingReconcile: false, chatStopped: true, routerCancelled: true });
+  assert.equal(updates.every((u) => u.route.state === 'cancelled'), true);
+
+  // Retry after cancellation succeeds cleanly and transitions to routed.
+  const retried = await tracker.runDecide('sess-1', 'msg-1', policy, {
+    onUpdate: (sid, mid, route) => updates.push({ sid, mid, route })
+  });
+  assert.equal(retried.state, 'routed');
+  assert.equal(retried.selectedCandidateId, 'omnia-primary');
 });

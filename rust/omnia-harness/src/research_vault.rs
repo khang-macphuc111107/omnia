@@ -1358,6 +1358,52 @@ impl ResearchVault {
         })
     }
 
+    /// Runs the 4-layer deterministic EN+VN Citation Verifier against all persisted sources
+    /// in this [`ResearchVault`], returning a structured [`CitationVerificationReport`].
+    pub fn verify_citations_report(
+        &self,
+        draft: &str,
+        strict: bool,
+    ) -> Result<CitationVerificationReport, String> {
+        let snapshots = {
+            let conn = self.conn.lock().map_err(|_| "vault lock poisoned".to_string())?;
+            list_citation_snapshots_locked(&conn)?
+        };
+        Ok(verify_citations_against_sources(draft, &snapshots, strict))
+    }
+
+    /// Runs the 4-layer deterministic EN+VN Citation Verifier against all persisted sources
+    /// in this [`ResearchVault`] and returns a JSON payload (`{ ok, valid, passed, ... }`)
+    /// matching Studio `/api/v5/research/verify-citations`.
+    #[must_use]
+    pub fn verify_citations_text(&self, draft: &str, strict: bool) -> Value {
+        match self.verify_citations_report(draft, strict) {
+            Ok(rep) => json!({
+                "ok": true,
+                "valid": rep.passed,
+                "passed": rep.passed,
+                "strict": rep.strict,
+                "totalClaimSentences": rep.total_claim_sentences,
+                "citedClaimSentences": rep.cited_claim_sentences,
+                "citationCoveragePct": rep.citation_coverage_pct,
+                "groundingPassRate": rep.grounding_pass_rate,
+                "citedIds": rep.cited_ids,
+                "unlinkedBareCitations": rep.unlinked_bare_citations,
+                "brokenCitations": rep.broken_citations,
+                "fabricatedMetrics": rep.fabricated_metrics,
+                "orphans": rep.orphans,
+                "remediationHints": rep.remediation_hints,
+            }),
+            Err(err) => json!({
+                "ok": false,
+                "valid": false,
+                "passed": false,
+                "strict": strict,
+                "error": err,
+            }),
+        }
+    }
+
     /// `keenable-select` cached `result_set_id` structured table extraction over persisted RAG
     /// without re-fetching network pages, flagging single-source rows honestly.
     pub fn extract_structured_table(
@@ -2212,6 +2258,1084 @@ fn collapse_markdown_whitespace(raw: &str) -> String {
     out.join("\n").trim().to_string()
 }
 
+// =========================================================================
+// W3C Text-Fragment (`#:~:text=`), Local File Anchors & 4-Layer Citation Verifier
+// =========================================================================
+
+/// Snapshot of a persisted or in-memory source used by [`verify_citations_against_sources`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationSourceSnapshot {
+    pub citation_id: String,
+    pub canonical_url: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// An uncited EN/VN factual declarative claim detected in a draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationOrphanClaim {
+    pub line: usize,
+    pub sentence: String,
+    pub reason: String,
+}
+
+/// A broken, hallucinated, unlinked, or URL-spoofed citation marker detected in a draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokenCitationRef {
+    pub line: usize,
+    pub citation_id: String,
+    pub issue: String,
+    pub linked_url: Option<String>,
+}
+
+/// An emphasized or signed numeric metric not supported by any cited source on the same line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FabricatedMetricIssue {
+    pub line: usize,
+    pub token: String,
+    pub cited_ids: Vec<String>,
+    pub reason: String,
+}
+
+/// Full 4-layer deterministic citation audit report emitted by [`ResearchVault::verify_citations_text`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationVerificationReport {
+    pub passed: bool,
+    pub strict: bool,
+    pub total_claim_sentences: usize,
+    pub cited_claim_sentences: usize,
+    pub citation_coverage_pct: f64,
+    pub grounding_pass_rate: f64,
+    pub cited_ids: Vec<String>,
+    pub unlinked_bare_citations: Vec<BrokenCitationRef>,
+    pub broken_citations: Vec<BrokenCitationRef>,
+    pub fabricated_metrics: Vec<FabricatedMetricIssue>,
+    pub orphans: Vec<CitationOrphanClaim>,
+    pub remediation_hints: Vec<String>,
+}
+
+/// Percent-encodes a quote fragment for W3C Scroll-To-Text-Fragment (`#:~:text=`),
+/// escaping `-` (`%2D`), `,` (`%2C`), `&` (`%26`), spaces (`%20`), and all non-unreserved bytes.
+#[must_use]
+pub fn percent_encode_text_fragment(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(text.len().saturating_mul(2));
+    for &b in text.as_bytes() {
+        let unreserved = b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~');
+        if unreserved {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0F) as usize] as char);
+        }
+    }
+    out
+}
+
+/// Cleans Markdown syntax from a quote before building a W3C `#:~:text=` fragment:
+/// strips images `![alt](url)`, unwraps links `[label](url)` -> `label`, removes bold/italic/code
+/// wrappers (`**`, `*`, `` ` ``, `~~`, and boundary-delimited `__bold__`), while preserving
+/// snake_case/dunder identifiers such as `foo__bar`.
+#[must_use]
+pub fn sanitize_quote_for_text_fragment(quote: &str) -> String {
+    let unwrapped = unwrap_markdown_links_and_images(quote);
+    let mut stripped_delims = String::with_capacity(unwrapped.len());
+    let chars: Vec<char> = unwrapped.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '*' || ch == '`' || ch == '~' {
+            i += 1;
+            continue;
+        }
+        if ch == '_' && i + 1 < chars.len() && chars[i + 1] == '_' {
+            let prev_is_ident = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+            let next_is_ident =
+                i + 2 < chars.len() && (chars[i + 2].is_alphanumeric() || chars[i + 2] == '_');
+            // Preserve internal snake_case/dunder identifiers like `foo__bar` (ident on BOTH sides).
+            if prev_is_ident && next_is_ident {
+                stripped_delims.push('_');
+                stripped_delims.push('_');
+            }
+            i += 2;
+            continue;
+        }
+        stripped_delims.push(ch);
+        i += 1;
+    }
+
+    let mut collapsed = String::with_capacity(stripped_delims.len());
+    let mut prev_ws = true;
+    for ch in stripped_delims.chars() {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                collapsed.push(' ');
+                prev_ws = true;
+            }
+        } else {
+            collapsed.push(ch);
+            prev_ws = false;
+        }
+    }
+    collapsed.trim().to_string()
+}
+
+/// Builds a W3C Text-Fragment deep link (`<base_url>#:~:text=<start>[,<end>]`), stripping any
+/// existing `#...` fragment and encoding reserved characters safely.
+#[must_use]
+pub fn build_text_fragment_url(base_url: &str, quote: &str) -> String {
+    let base = base_url.trim().split('#').next().unwrap_or("").trim();
+    if base.is_empty() {
+        return String::new();
+    }
+    let clean = sanitize_quote_for_text_fragment(quote);
+    if clean.is_empty() {
+        return base.to_string();
+    }
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    if words.len() <= 8 {
+        format!("{base}#:~:text={}", percent_encode_text_fragment(&clean))
+    } else {
+        let start = words[..4].join(" ");
+        let end = words[words.len() - 4..].join(" ");
+        format!(
+            "{base}#:~:text={},{}",
+            percent_encode_text_fragment(&start),
+            percent_encode_text_fragment(&end)
+        )
+    }
+}
+
+/// Builds a clickable `file:///...#L<start>[-L<end>]` local code anchor URL.
+#[must_use]
+pub fn build_local_file_anchor_url(
+    path_or_url: &str,
+    line_start: usize,
+    line_end: Option<usize>,
+) -> String {
+    let raw = path_or_url.trim().split('#').next().unwrap_or("").trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let normalized = raw.replace('\\', "/");
+    let base = if normalized.starts_with("file://") {
+        normalized
+    } else if normalized.starts_with('/') {
+        format!("file://{normalized}")
+    } else {
+        format!("file:///{normalized}")
+    };
+    let start = line_start.max(1);
+    match line_end {
+        Some(end) if end > start => format!("{base}#L{start}-L{end}"),
+        _ => format!("{base}#L{start}"),
+    }
+}
+
+/// Formats a NotebookLM/Perplexity-style clickable inline citation badge (`[[S001]](<url>)`).
+#[must_use]
+pub fn format_inline_citation_badge(citation_id: &str, anchor_url: &str) -> String {
+    let cid = normalize_citation_id(citation_id);
+    let url = anchor_url.trim();
+    if url.is_empty() {
+        format!("[{cid}]")
+    } else {
+        format!("[[{cid}]]({url})")
+    }
+}
+
+/// Pure, deterministic 4-layer EN+VN citation verifier over a draft and explicit source snapshots.
+#[must_use]
+pub fn verify_citations_against_sources(
+    draft: &str,
+    sources: &[CitationSourceSnapshot],
+    strict: bool,
+) -> CitationVerificationReport {
+    let mut source_map: HashMap<String, &CitationSourceSnapshot> =
+        HashMap::with_capacity(sources.len());
+    for src in sources {
+        source_map.insert(normalize_citation_id(&src.citation_id), src);
+    }
+
+    let normalized_draft = draft.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized_draft.lines().collect();
+
+    let mut cited_ids_set: BTreeSet<String> = BTreeSet::new();
+    let mut unlinked_bare_citations: Vec<BrokenCitationRef> = Vec::new();
+    let mut broken_citations: Vec<BrokenCitationRef> = Vec::new();
+    let mut fabricated_metrics: Vec<FabricatedMetricIssue> = Vec::new();
+    let mut orphans: Vec<CitationOrphanClaim> = Vec::new();
+    let mut total_claim_sentences = 0usize;
+    let mut cited_claim_sentences = 0usize;
+
+    let mut in_frontmatter = false;
+    let mut in_fence = false;
+    let mut fence_marker: Option<&str> = None;
+
+    for (idx, &raw_line) in lines.iter().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = raw_line.trim();
+
+        // Skip YAML frontmatter starting on line 1.
+        if idx == 0 && trimmed == "---" {
+            in_frontmatter = true;
+            continue;
+        }
+        if in_frontmatter {
+            if trimmed == "---" || trimmed == "..." {
+                in_frontmatter = false;
+            }
+            continue;
+        }
+
+        // Skip fenced code blocks.
+        if let Some(m) = fence_marker {
+            if trimmed.starts_with(m) {
+                in_fence = false;
+                fence_marker = None;
+            }
+            continue;
+        } else if trimmed.starts_with("```") {
+            in_fence = true;
+            fence_marker = Some("```");
+            continue;
+        } else if trimmed.starts_with("~~~") {
+            in_fence = true;
+            fence_marker = Some("~~~");
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+
+        if trimmed.is_empty() || is_horizontal_rule(trimmed) {
+            continue;
+        }
+
+        // Headings: stop ONLY on true bibliography/sources footer headings, NOT body headings
+        // such as `## Sources of Latency` or `## References in Rust`.
+        if trimmed.starts_with('#') {
+            if is_true_sources_footer_heading(trimmed) {
+                break;
+            }
+            continue;
+        }
+
+        // Skip Markdown table separator rows and header rows directly preceding a separator.
+        if is_markdown_table_separator(trimmed) {
+            continue;
+        }
+        if trimmed.starts_with('|')
+            && lines
+                .get(idx + 1)
+                .map(|next| is_markdown_table_separator(next.trim()))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Layer 1: Extract & audit inline citations on this line.
+        let parsed_refs = parse_citation_refs_on_line(trimmed);
+        let mut valid_line_sources: Vec<&CitationSourceSnapshot> = Vec::new();
+        let mut valid_line_ids: Vec<String> = Vec::new();
+
+        for cref in &parsed_refs {
+            cited_ids_set.insert(cref.citation_id.clone());
+            if let Some(&src) = source_map.get(&cref.citation_id) {
+                valid_line_sources.push(src);
+                if !valid_line_ids.contains(&cref.citation_id) {
+                    valid_line_ids.push(cref.citation_id.clone());
+                }
+                if cref.is_linked {
+                    if let Some(ref linked_url) = cref.linked_url {
+                        if !urls_match_canonical_source(linked_url, &src.canonical_url) {
+                            broken_citations.push(BrokenCitationRef {
+                                line: line_no,
+                                citation_id: cref.citation_id.clone(),
+                                issue: "url_spoof_or_mismatch".to_string(),
+                                linked_url: Some(linked_url.clone()),
+                            });
+                        } else if !text_fragment_matches_source(linked_url, src) {
+                            broken_citations.push(BrokenCitationRef {
+                                line: line_no,
+                                citation_id: cref.citation_id.clone(),
+                                issue: "verbatim_fragment_mismatch".to_string(),
+                                linked_url: Some(linked_url.clone()),
+                            });
+                        }
+                    }
+                } else if strict {
+                    unlinked_bare_citations.push(BrokenCitationRef {
+                        line: line_no,
+                        citation_id: cref.citation_id.clone(),
+                        issue: "unlinked_bare_citation".to_string(),
+                        linked_url: None,
+                    });
+                }
+            } else {
+                broken_citations.push(BrokenCitationRef {
+                    line: line_no,
+                    citation_id: cref.citation_id.clone(),
+                    issue: "unknown_citation_id".to_string(),
+                    linked_url: cref.linked_url.clone(),
+                });
+            }
+        }
+
+        // Layer 2: Verify emphasized / signed numeric metrics against cited sources.
+        if !valid_line_sources.is_empty() {
+            let combined_corpus = valid_line_sources
+                .iter()
+                .map(|s| format!("{} {}", s.title, s.body))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let corpus_norm = normalize_numeric_corpus(&combined_corpus);
+            let line_without_urls = strip_markdown_link_targets(trimmed);
+            for metric in extract_claim_numeric_tokens(&line_without_urls) {
+                if !numeric_token_supported_in_corpus(&metric, &corpus_norm) {
+                    fabricated_metrics.push(FabricatedMetricIssue {
+                        line: line_no,
+                        token: metric.raw,
+                        cited_ids: valid_line_ids.clone(),
+                        reason: "numeric claim not supported by cited source body".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Layer 3: EN + VN orphan uncited factual declarative claims.
+        let clean_prose = strip_bullet_prefix(trimmed);
+        let sentences = split_prose_sentences(clean_prose);
+        let line_has_any_ref = !parsed_refs.is_empty();
+        let multi_sentence = sentences.len() > 1;
+        for sent in sentences {
+            let sent_refs = parse_citation_refs_on_line(&sent);
+            let sent_plain = strip_citation_markers_and_urls(&sent);
+            if !is_factual_declarative_claim_en_vn(&sent_plain) {
+                continue;
+            }
+            total_claim_sentences += 1;
+            let is_cited = !sent_refs.is_empty() || (!multi_sentence && line_has_any_ref);
+            if is_cited {
+                cited_claim_sentences += 1;
+            } else {
+                orphans.push(CitationOrphanClaim {
+                    line: line_no,
+                    sentence: truncate_utf8_word_safe(sent_plain.trim(), 180),
+                    reason: "uncited factual declarative claim (EN/VN)".to_string(),
+                });
+            }
+        }
+    }
+
+    // Layer 4: Aggregate metrics & actionable remediation hints.
+    let citation_coverage_pct = if total_claim_sentences == 0 {
+        100.0
+    } else {
+        ((cited_claim_sentences as f64) * 100.0 / (total_claim_sentences as f64) * 100.0).round()
+            / 100.0
+    };
+    let total_checked = total_claim_sentences
+        .saturating_add(cited_ids_set.len())
+        .saturating_add(fabricated_metrics.len());
+    let total_issues = broken_citations.len()
+        + fabricated_metrics.len()
+        + orphans.len()
+        + if strict {
+            unlinked_bare_citations.len()
+        } else {
+            0
+        };
+    let grounding_pass_rate = if total_checked == 0 {
+        if total_issues == 0 {
+            100.0
+        } else {
+            0.0
+        }
+    } else {
+        let good = total_checked.saturating_sub(total_issues);
+        ((good as f64) * 100.0 / (total_checked as f64) * 100.0).round() / 100.0
+    };
+
+    let mut remediation_hints = Vec::new();
+    if !broken_citations.is_empty() {
+        remediation_hints.push(format!(
+            "Fix {} broken/unknown/spoofed citation link(s) to match verified vault canonical URLs and exact quotes.",
+            broken_citations.len()
+        ));
+    }
+    if strict && !unlinked_bare_citations.is_empty() {
+        remediation_hints.push(format!(
+            "Convert {} bare [S###]/[G###] marker(s) into clickable [[S###]](<url>#:~:text=...) badges.",
+            unlinked_bare_citations.len()
+        ));
+    }
+    if !fabricated_metrics.is_empty() {
+        remediation_hints.push(format!(
+            "Verify or remove {} numeric/metric claim(s) not backed by their cited source bodies.",
+            fabricated_metrics.len()
+        ));
+    }
+    if !orphans.is_empty() {
+        remediation_hints.push(format!(
+            "Attach verified inline citations to {} uncited factual declarative claim(s).",
+            orphans.len()
+        ));
+    }
+
+    let passed = broken_citations.is_empty()
+        && fabricated_metrics.is_empty()
+        && orphans.is_empty()
+        && (!strict || unlinked_bare_citations.is_empty());
+
+    CitationVerificationReport {
+        passed,
+        strict,
+        total_claim_sentences,
+        cited_claim_sentences,
+        citation_coverage_pct,
+        grounding_pass_rate,
+        cited_ids: cited_ids_set.into_iter().collect(),
+        unlinked_bare_citations,
+        broken_citations,
+        fabricated_metrics,
+        orphans,
+        remediation_hints,
+    }
+}
+
+fn list_citation_snapshots_locked(conn: &Connection) -> Result<Vec<CitationSourceSnapshot>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT citation_id, canonical_url, title, markdown_excerpt, markdown_body
+             FROM rv_sources ORDER BY fetched_at_ms DESC LIMIT 2000;",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    while stmt.step_row().map_err(|e| e.to_string())? {
+        let excerpt = stmt.column_text(3).unwrap_or_default();
+        let body = stmt.column_text(4).unwrap_or_default();
+        let combined = if body.is_empty() {
+            excerpt
+        } else if excerpt.is_empty() || body.contains(&excerpt) {
+            body
+        } else {
+            format!("{excerpt}\n{body}")
+        };
+        out.push(CitationSourceSnapshot {
+            citation_id: stmt.column_text(0).unwrap_or_default(),
+            canonical_url: stmt.column_text(1).unwrap_or_default(),
+            title: stmt.column_text(2).unwrap_or_default(),
+            body: combined,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone)]
+struct ParsedCitationRef {
+    citation_id: String,
+    is_linked: bool,
+    linked_url: Option<String>,
+}
+
+fn parse_citation_refs_on_line(line: &str) -> Vec<ParsedCitationRef> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+        // Case 1: `[[S001]](url)`
+        if bytes[i] == b'[' && bytes.get(i + 1) == Some(&b'[') {
+            if let Some((cid, close_inner)) = match_cid_bracket(line, i + 1) {
+                if bytes.get(close_inner + 1) == Some(&b']')
+                    && bytes.get(close_inner + 2) == Some(&b'(')
+                {
+                    if let Some((url, close_paren)) = extract_balanced_paren(line, close_inner + 2)
+                    {
+                        out.push(ParsedCitationRef {
+                            citation_id: cid,
+                            is_linked: true,
+                            linked_url: Some(url),
+                        });
+                        i = close_paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        // Case 2: `[S001](url)` or bare `[S001]`
+        if bytes[i] == b'[' {
+            if let Some((cid, close_b)) = match_cid_bracket(line, i) {
+                if bytes.get(close_b + 1) == Some(&b'(') {
+                    if let Some((url, close_paren)) = extract_balanced_paren(line, close_b + 1) {
+                        out.push(ParsedCitationRef {
+                            citation_id: cid,
+                            is_linked: true,
+                            linked_url: Some(url),
+                        });
+                        i = close_paren + 1;
+                        continue;
+                    }
+                }
+                out.push(ParsedCitationRef {
+                    citation_id: cid,
+                    is_linked: false,
+                    linked_url: None,
+                });
+                i = close_b + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn match_cid_bracket(text: &str, open_idx: usize) -> Option<(String, usize)> {
+    let b = text.as_bytes();
+    if b.get(open_idx) != Some(&b'[') {
+        return None;
+    }
+    let prefix = *b.get(open_idx + 1)?;
+    if !matches!(prefix, b'S' | b'G') {
+        return None;
+    }
+    let mut j = open_idx + 2;
+    while j < b.len() && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    let digit_count = j - (open_idx + 2);
+    if (1..=6).contains(&digit_count) && b.get(j) == Some(&b']') {
+        Some((text[open_idx + 1..j].to_string(), j))
+    } else {
+        None
+    }
+}
+
+fn extract_balanced_paren(text: &str, open_paren_idx: usize) -> Option<(String, usize)> {
+    let b = text.as_bytes();
+    if b.get(open_paren_idx) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut i = open_paren_idx;
+    while i < b.len() {
+        match b[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = text[open_paren_idx + 1..i].trim();
+                    if inner.is_empty() {
+                        return None;
+                    }
+                    return Some((inner.to_string(), i));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn unwrap_markdown_links_and_images(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Strip Markdown images: `![alt](url)`
+        if bytes[i] == b'!' && bytes.get(i + 1) == Some(&b'[') {
+            if let Some(close_b) = input[i + 2..].find(']') {
+                let close_idx = i + 2 + close_b;
+                if bytes.get(close_idx + 1) == Some(&b'(') {
+                    if let Some((_, close_p)) = extract_balanced_paren(input, close_idx + 1) {
+                        i = close_p + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        // Unwrap Markdown links: `[label](url)` -> `label`
+        if bytes[i] == b'[' {
+            if let Some(close_b) = input[i + 1..].find(']') {
+                let close_idx = i + 1 + close_b;
+                if bytes.get(close_idx + 1) == Some(&b'(') {
+                    if let Some((_, close_p)) = extract_balanced_paren(input, close_idx + 1) {
+                        out.push_str(&input[i + 1..close_idx]);
+                        i = close_p + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        let ch = input[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn strip_markdown_link_targets(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b']' && bytes.get(i + 1) == Some(&b'(') {
+            if let Some((_, close_p)) = extract_balanced_paren(input, i + 1) {
+                out.push(']');
+                i = close_p + 1;
+                continue;
+            }
+        }
+        let ch = input[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn urls_match_canonical_source(linked_url: &str, canonical_url: &str) -> bool {
+    let linked_base = linked_url.trim().split('#').next().unwrap_or("").trim();
+    let canon_base = canonical_url.trim().split('#').next().unwrap_or("").trim();
+    if linked_base.is_empty() || canon_base.is_empty() {
+        return false;
+    }
+    if linked_base.eq_ignore_ascii_case(canon_base) {
+        return true;
+    }
+    let (Ok(lu), Ok(cu)) = (Url::parse(linked_base), Url::parse(canon_base)) else {
+        return false;
+    };
+    if lu.scheme() == "file" && cu.scheme() == "file" {
+        return lu
+            .path()
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case(cu.path().trim_end_matches('/'));
+    }
+    let lhost = lu
+        .host_str()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let chost = cu
+        .host_str()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let lhost_norm = lhost.strip_prefix("www.").unwrap_or(&lhost);
+    let chost_norm = chost.strip_prefix("www.").unwrap_or(&chost);
+    if lhost_norm.is_empty() || lhost_norm != chost_norm {
+        return false;
+    }
+    let lpath = lu.path().trim_end_matches('/').to_ascii_lowercase();
+    let cpath = cu.path().trim_end_matches('/').to_ascii_lowercase();
+    if cpath.is_empty() || lpath == cpath {
+        return true;
+    }
+    let prefix_ok = |parent: &str, child: &str| -> bool {
+        child.starts_with(parent) && matches!(child.as_bytes().get(parent.len()), None | Some(&b'/'))
+    };
+    prefix_ok(&cpath, &lpath) || (!lpath.is_empty() && prefix_ok(&lpath, &cpath))
+}
+
+fn percent_decode_lossy(input: &str) -> String {
+    let b = input.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0usize;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(hex_str) = std::str::from_utf8(&b[i + 1..i + 3]) {
+                if let Ok(val) = u8::from_str_radix(hex_str, 16) {
+                    out.push(val);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn text_fragment_matches_source(linked_url: &str, src: &CitationSourceSnapshot) -> bool {
+    let Some(pos) = linked_url.find("#:~:text=") else {
+        return true;
+    };
+    let frag = &linked_url[pos + "#:~:text=".len()..];
+    let first_part = frag.split(',').next().unwrap_or(frag);
+    let decoded = percent_decode_lossy(first_part);
+    let words: Vec<String> = split_folded_words(&decoded)
+        .into_iter()
+        .filter(|w| w.len() >= 3)
+        .collect();
+    if words.len() < 2 {
+        return true;
+    }
+    let corpus = fold_vietnamese_ascii(&format!("{} {}", src.title, src.body));
+    let matched = words.iter().filter(|w| corpus.contains(w.as_str())).count();
+    matched * 2 >= words.len()
+}
+
+fn is_horizontal_rule(trimmed: &str) -> bool {
+    trimmed.len() >= 3
+        && (trimmed.bytes().all(|b| b == b'-' || b == b' ')
+            || trimmed.bytes().all(|b| b == b'*' || b == b' ')
+            || trimmed.bytes().all(|b| b == b'_' || b == b' '))
+        && trimmed.bytes().filter(|&b| b != b' ').count() >= 3
+}
+
+fn is_markdown_table_separator(trimmed: &str) -> bool {
+    trimmed.contains('-')
+        && trimmed.contains('|')
+        && trimmed
+            .bytes()
+            .all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'))
+}
+
+fn is_true_sources_footer_heading(trimmed_heading: &str) -> bool {
+    let text = trimmed_heading.trim_start_matches('#').trim();
+    let without_paren = match text.find('(') {
+        Some(p) if text.ends_with(')') => text[..p].trim(),
+        _ => text,
+    };
+    let clean = fold_vietnamese_ascii(without_paren.trim_end_matches(':').trim());
+    matches!(
+        clean.as_str(),
+        "sources"
+            | "references"
+            | "bibliography"
+            | "citations"
+            | "works cited"
+            | "tai lieu tham khao"
+            | "nguon tham khao"
+            | "nguon trich dan"
+    )
+}
+
+#[derive(Debug, Clone)]
+struct ExtractedMetricToken {
+    raw: String,
+    numeric_core: String,
+    signed_core: Option<String>,
+}
+
+fn extract_claim_numeric_tokens(line: &str) -> Vec<ExtractedMetricToken> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    // 1. Emphasized spans (`**...**` and `*...*`) containing digits.
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'*' {
+            let delim_len = if bytes.get(i + 1) == Some(&b'*') { 2 } else { 1 };
+            let start = i + delim_len;
+            let delim = if delim_len == 2 { "**" } else { "*" };
+            if let Some(rel_end) = line[start..].find(delim) {
+                let inner = line[start..start + rel_end].trim();
+                if inner.chars().any(|c| c.is_ascii_digit()) && inner.len() <= 48 {
+                    push_numeric_tokens_from_span(inner, true, &mut seen, &mut out);
+                }
+                i = start + rel_end + delim_len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // 2. Standalone signed/currency/unit metrics anywhere on the line.
+    for word in line.split_whitespace() {
+        let trimmed = word.trim_matches(|c: char| {
+            matches!(c, '(' | ')' | '[' | ']' | ',' | ';' | ':' | '"' | '\'' | '*' | '`')
+        });
+        if trimmed.is_empty()
+            || trimmed.starts_with("S0")
+            || trimmed.starts_with("G0")
+            || trimmed.contains("http")
+        {
+            continue;
+        }
+        let has_signal = trimmed.starts_with('$')
+            || trimmed.starts_with('-')
+            || trimmed.starts_with('+')
+            || trimmed.ends_with('%')
+            || trimmed.ends_with("ms")
+            || trimmed.ends_with("us")
+            || trimmed.ends_with("ns")
+            || trimmed.ends_with("MB")
+            || trimmed.ends_with("MiB")
+            || trimmed.ends_with("GB")
+            || trimmed.ends_with("GiB")
+            || trimmed.ends_with("KB");
+        if has_signal && trimmed.chars().any(|c| c.is_ascii_digit()) {
+            push_numeric_tokens_from_span(trimmed, false, &mut seen, &mut out);
+        }
+    }
+    out
+}
+
+fn push_numeric_tokens_from_span(
+    span: &str,
+    from_emphasis: bool,
+    seen: &mut BTreeSet<String>,
+    out: &mut Vec<ExtractedMetricToken>,
+) {
+    let chars: Vec<char> = span.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let is_sign = matches!(chars[i], '-' | '+')
+            && i + 1 < chars.len()
+            && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '$');
+        if chars[i].is_ascii_digit() || is_sign || (chars[i] == '$' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()) {
+            let start = i;
+            if matches!(chars[i], '-' | '+' | '$') {
+                i += 1;
+            }
+            if i < chars.len() && chars[i] == '$' {
+                i += 1;
+            }
+            let num_start = i;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == ',' || chars[i] == '.') {
+                i += 1;
+            }
+            let num_end = i;
+            while i < chars.len() && (chars[i].is_ascii_alphabetic() || chars[i] == '%') {
+                i += 1;
+            }
+            let raw: String = chars[start..i].iter().collect();
+            let raw_clean = raw.trim_end_matches('.').to_string();
+            let digits_raw: String = chars[num_start..num_end]
+                .iter()
+                .filter(|&&c| c != ',')
+                .collect();
+            let digits_clean = digits_raw.trim_end_matches('.').to_string();
+            if digits_clean.is_empty() || !digits_clean.chars().any(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            // Spare plain 4-digit calendar years (1900..=2099) without currency/unit suffixes.
+            let has_unit_or_currency = raw_clean.contains('$')
+                || raw_clean.contains('%')
+                || raw_clean.chars().any(|c| c.is_ascii_alphabetic());
+            if !has_unit_or_currency {
+                if let Ok(year) = digits_clean.parse::<u32>() {
+                    if (1900..=2099).contains(&year) && !from_emphasis {
+                        continue;
+                    }
+                }
+            }
+            let signed_core = if raw_clean.starts_with('-') {
+                Some(format!("-{digits_clean}"))
+            } else {
+                None
+            };
+            if seen.insert(raw_clean.clone()) {
+                out.push(ExtractedMetricToken {
+                    raw: raw_clean,
+                    numeric_core: digits_clean,
+                    signed_core,
+                });
+            }
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn normalize_numeric_corpus(corpus: &str) -> String {
+    // Remove thousands commas between digits (`1,234` -> `1234`) while preserving spacing/signs.
+    let chars: Vec<char> = corpus.chars().collect();
+    let mut out = String::with_capacity(corpus.len());
+    for i in 0..chars.len() {
+        if chars[i] == ','
+            && i > 0
+            && i + 1 < chars.len()
+            && chars[i - 1].is_ascii_digit()
+            && chars[i + 1].is_ascii_digit()
+        {
+            continue;
+        }
+        out.push(chars[i]);
+    }
+    out
+}
+
+fn numeric_token_supported_in_corpus(tok: &ExtractedMetricToken, corpus_norm: &str) -> bool {
+    if let Some(ref signed) = tok.signed_core {
+        if contains_digit_bounded(corpus_norm, signed) {
+            return true;
+        }
+    }
+    contains_digit_bounded(corpus_norm, &tok.numeric_core)
+}
+
+fn contains_digit_bounded(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
+    let mut start = 0usize;
+    while let Some(pos) = haystack[start..].find(needle) {
+        let abs = start + pos;
+        let before_ok = abs == 0
+            || (!hb[abs - 1].is_ascii_digit() && hb[abs - 1] != b'.');
+        let end = abs + nb.len();
+        let after_ok = end >= hb.len()
+            || (!hb[end].is_ascii_digit()
+                && !(hb[end] == b'.' && hb.get(end + 1).is_some_and(u8::is_ascii_digit)));
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
+}
+
+fn strip_bullet_prefix(line: &str) -> &str {
+    let t = line.trim();
+    for pfx in ["- ", "* ", "+ ", "> "] {
+        if let Some(rest) = t.strip_prefix(pfx) {
+            return rest.trim();
+        }
+    }
+    let b = t.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 && matches!(b.get(i), Some(&b'.' | &b')')) && b.get(i + 1) == Some(&b' ') {
+        return t[i + 2..].trim();
+    }
+    t
+}
+
+fn split_prose_sentences(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let mut paren_depth = 0usize;
+    for idx in 0..chars.len() {
+        let (byte_pos, ch) = chars[idx];
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '.' | '!' | '?' if paren_depth == 0 => {
+                let prev_digit = idx > 0 && chars[idx - 1].1.is_ascii_digit();
+                let next_char = chars.get(idx + 1).map(|&(_, c)| c);
+                let next_digit = next_char.is_some_and(|c| c.is_ascii_digit());
+                if ch == '.' && prev_digit && next_digit {
+                    continue;
+                }
+                if next_char.is_none() || next_char.is_some_and(char::is_whitespace) {
+                    let end = byte_pos + ch.len_utf8();
+                    let seg = line[start..end].trim();
+                    if !seg.is_empty() {
+                        out.push(seg.to_string());
+                    }
+                    start = end;
+                }
+            }
+            _ => {}
+        }
+    }
+    if start < line.len() {
+        let tail = line[start..].trim();
+        if !tail.is_empty() {
+            out.push(tail.to_string());
+        }
+    }
+    out
+}
+
+fn strip_citation_markers_and_urls(sentence: &str) -> String {
+    let mut cleaned = strip_markdown_link_targets(sentence);
+    // Remove `[[S###]]` and `[S###]` / `[G###]` tokens.
+    for cref in parse_citation_refs_on_line(sentence) {
+        cleaned = cleaned.replace(&format!("[[{}]]", cref.citation_id), "");
+        cleaned = cleaned.replace(&format!("[{}]", cref.citation_id), "");
+    }
+    cleaned.trim().to_string()
+}
+
+fn is_factual_declarative_claim_en_vn(sentence: &str) -> bool {
+    let trimmed = sentence.trim();
+    if trimmed.is_empty() || trimmed.ends_with('?') {
+        return false;
+    }
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.len() < 4 {
+        return false;
+    }
+    let folded = format!(" {} ", fold_vietnamese_ascii(trimmed));
+    for skip_prefix in [
+        " note:",
+        " summary:",
+        " tl;dr",
+        " in this section",
+        " let us ",
+        " lets ",
+        " tom tat:",
+        " luu y:",
+    ] {
+        if folded.starts_with(skip_prefix) {
+            return false;
+        }
+    }
+    if trimmed.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    const FACTUAL_VERBS: &[&str] = &[
+        " is ",
+        " are ",
+        " was ",
+        " were ",
+        " has ",
+        " have ",
+        " uses ",
+        " supports ",
+        " achieves ",
+        " reduces ",
+        " increases ",
+        " requires ",
+        " contains ",
+        " runs ",
+        " provides ",
+        " implements ",
+        " measures ",
+        " reports ",
+        " outperforms ",
+        " exceeds ",
+        " consumes ",
+        " reaches ",
+        " claims ",
+        " delivers ",
+        " la ",
+        " co ",
+        " dat ",
+        " giam ",
+        " tang ",
+        " su dung ",
+        " ho tro ",
+        " yeu cau ",
+        " chay ",
+        " cung cap ",
+        " trien khai ",
+        " vuot ",
+        " bao cao ",
+        " do duoc ",
+        " tieu thu ",
+        " chiem ",
+        " gom ",
+    ];
+    FACTUAL_VERBS.iter().any(|v| folded.contains(v))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2338,6 +3462,130 @@ mod tests {
                 "https://accounts.google.com/ServiceLogin"
             ),
             Some(FetchErrorKind::NeedLogin)
+        );
+    }
+
+    #[test]
+    fn w3c_text_fragment_and_local_file_anchor_builders_preserve_identifiers_and_encode_safely() {
+        let quote = "Check [Omnia __fast__](https://example.test/x) on `foo__bar` with a-b, c&d!";
+        let url = build_text_fragment_url("https://docs.rs/omnia#old-anchor", quote);
+        assert!(url.starts_with("https://docs.rs/omnia#:~:text="));
+        assert!(url.contains("foo__bar"), "snake_case double underscore must stay intact: {url}");
+        assert!(!url.contains("__fast__"), "markdown __bold__ delimiters should strip cleanly: {url}");
+        assert!(url.contains("a%2Db%2C%20c%26d"), "W3C reserved chars (- , &) must percent-encode: {url}");
+
+        let long_quote = "one two three four five six seven eight nine ten eleven twelve";
+        let range_url = build_text_fragment_url("https://example.test/spec", long_quote);
+        assert_eq!(
+            range_url,
+            "https://example.test/spec#:~:text=one%20two%20three%20four,nine%20ten%20eleven%20twelve"
+        );
+
+        assert_eq!(
+            build_local_file_anchor_url(r"D:\Omnia\rust\omnia-harness\src\lib.rs", 10, Some(25)),
+            "file:///D:/Omnia/rust/omnia-harness/src/lib.rs#L10-L25"
+        );
+        assert_eq!(
+            build_local_file_anchor_url("file:///D:/Omnia/README.md#L1", 42, None),
+            "file:///D:/Omnia/README.md#L42"
+        );
+        assert_eq!(
+            format_inline_citation_badge("s001", "https://docs.rs/omnia#:~:text=WAL"),
+            "[[S001]](https://docs.rs/omnia#:~:text=WAL)"
+        );
+    }
+
+    #[test]
+    fn citation_verifier_4layer_catches_hallucinations_spoofs_metrics_orphans_en_vn_and_spares_years_and_body_headings() {
+        let vault = ResearchVault::open_in_memory().unwrap();
+        vault
+            .ingest_document(
+                VaultTier::Local,
+                "https://docs.rs/omnia-wal/guide",
+                None,
+                Some("Omnia WAL Guide"),
+                "Omnia achieves 12ms cold start and uses cooperative WAL leases in 2026. Throughput reaches 95% efficiency with -15ms tail reduction.",
+                "text/markdown",
+                Some(200),
+                "omnia wal",
+            )
+            .unwrap();
+
+        // 1. Clean strict draft (EN + VN + year [2026] + body heading "## Sources of Latency" + true footer "## Sources").
+        let clean_draft = concat!(
+            "---\ntitle: Audit\n---\n\n",
+            "## Sources of Latency\n\n",
+            "Omnia achieves **12ms** cold start in [2026] [[S001]](https://docs.rs/omnia-wal/guide#:~:text=Omnia%20achieves%2012ms).\n",
+            "Hệ thống đạt hiệu năng **95%** với mức giảm **-15ms** [[S001]](https://docs.rs/omnia-wal/guide).\n",
+            "```rust\nlet x = 9999;\n```\n\n",
+            "## Sources\n",
+            "- S001: Omnia WAL Guide.\n"
+        );
+        let clean_rep = vault.verify_citations_report(clean_draft, true).unwrap();
+        assert!(clean_rep.passed, "expected clean strict report to pass: {clean_rep:?}");
+        assert!(clean_rep.broken_citations.is_empty());
+        assert!(clean_rep.unlinked_bare_citations.is_empty());
+        assert!(clean_rep.fabricated_metrics.is_empty());
+        assert!(clean_rep.orphans.is_empty());
+        let clean_json = vault.verify_citations_text(clean_draft, true);
+        assert_eq!(clean_json["ok"], Value::Bool(true));
+        assert_eq!(clean_json["valid"], Value::Bool(true));
+
+        // 2. Dirty draft exercising all 4 failure layers + ensuring "## Sources of Latency" is NOT skipped!
+        let dirty_draft = concat!(
+            "## Sources of Latency\n",
+            "The runtime requires 88ms overhead in production.\n",
+            "Hệ thống tiêu thụ 512MB RAM mỗi tiến trình.\n",
+            "Omnia achieves **420ms** latency and **50%** drop [S001].\n",
+            "Fake source claims **$999** savings [[S999]](https://example.test/fake).\n",
+            "Spoofed link claims **12ms** [[S001]](https://spoofed.example.test/evil).\n"
+        );
+        let dirty_rep = vault.verify_citations_report(dirty_draft, true).unwrap();
+        assert!(!dirty_rep.passed);
+        let dirty_json = vault.verify_citations_text(dirty_draft, true);
+        assert_eq!(dirty_json["ok"], Value::Bool(true));
+        assert_eq!(dirty_json["valid"], Value::Bool(false));
+        assert!(
+            dirty_rep.orphans.len() >= 2,
+            "expected EN & VN orphan claims under '## Sources of Latency', got {:?}",
+            dirty_rep.orphans
+        );
+        assert!(
+            dirty_rep
+                .unlinked_bare_citations
+                .iter()
+                .any(|b| b.citation_id == "S001"),
+            "strict mode must flag bare [S001]"
+        );
+        assert!(
+            dirty_rep
+                .broken_citations
+                .iter()
+                .any(|b| b.citation_id == "S999" && b.issue == "unknown_citation_id"),
+            "must flag hallucinated S999"
+        );
+        assert!(
+            dirty_rep
+                .broken_citations
+                .iter()
+                .any(|b| b.citation_id == "S001" && b.issue == "url_spoof_or_mismatch"),
+            "must flag URL domain spoof for S001"
+        );
+        assert!(
+            dirty_rep
+                .fabricated_metrics
+                .iter()
+                .any(|m| m.token.contains("420ms")),
+            "must flag fabricated **420ms** metric: {:?}",
+            dirty_rep.fabricated_metrics
+        );
+        assert!(
+            dirty_rep
+                .fabricated_metrics
+                .iter()
+                .any(|m| m.token.contains("50%")),
+            "must flag fabricated **50%** metric: {:?}",
+            dirty_rep.fabricated_metrics
         );
     }
 }

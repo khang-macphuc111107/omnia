@@ -6,14 +6,104 @@ use base64::Engine as _;
 use omnia_core::SecretRedactor;
 use omnia_downloader::PrivacyShield;
 use omnia_notebook::{
-    BridgeDirection, BridgeTransferRequest, CreateNotebookRequest, CreateQuoteCardRequest,
-    EffortLevel, GenerateArtifactRequest, IngestSourceRequest, InteractionSurface, NotebookError,
-    QuoteRef, RecordTurnRequest, SourceFilter, StudioArtifactKind,
+    is_streamable_media_mime, parse_http_byte_range, sanitize_transport_filename,
+    strip_local_path_fields, BridgeDirection, BridgeTransferRequest, ChatSettings,
+    CreateNotebookRequest, CreateQuoteCardRequest, EffortLevel, GenerateArtifactRequest,
+    HttpByteRangeError, IngestSourceRequest, InteractionSurface, NotebookError, QuoteRef,
+    RecordTurnRequest, RepoPackageConfig, SourceFilter, StudioArtifactKind,
 };
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 const MAX_INGEST_DECODED_BYTES: usize = 4 * 1024 * 1024;
+const MAX_BATCH_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DynamicNotebookRoute {
+    IngestRepo { notebook_id: String },
+    IngestBatch { notebook_id: String },
+    RenameNotebook { notebook_id: String },
+    SourceChecked { notebook_id: String, source_id: String },
+    ChatSettings { notebook_id: String },
+    AudioStream { notebook_id: String, artifact_id: String },
+    BtwItem { btw_id: String },
+}
+
+fn is_safe_path_segment(seg: &str) -> bool {
+    !seg.is_empty()
+        && seg.len() <= 160
+        && !seg.contains("..")
+        && !seg.contains('/')
+        && !seg.contains('\\')
+        && !seg.bytes().any(|b| b < 0x20 || b == 0x7f)
+}
+
+fn parse_dynamic_notebook_route(path: &str) -> Option<DynamicNotebookRoute> {
+    let segs: Vec<&str> = path.trim_matches('/').split('/').collect();
+    match segs.as_slice() {
+        ["api", "notebooks", id, "ingest-repo"] if is_safe_path_segment(id) => {
+            Some(DynamicNotebookRoute::IngestRepo {
+                notebook_id: (*id).to_string(),
+            })
+        }
+        ["api", "notebooks", id, "ingest-batch"] if is_safe_path_segment(id) => {
+            Some(DynamicNotebookRoute::IngestBatch {
+                notebook_id: (*id).to_string(),
+            })
+        }
+        ["api", "notebooks", id, "rename"] if is_safe_path_segment(id) => {
+            Some(DynamicNotebookRoute::RenameNotebook {
+                notebook_id: (*id).to_string(),
+            })
+        }
+        ["api", "notebooks", id, "chat-settings"] if is_safe_path_segment(id) => {
+            Some(DynamicNotebookRoute::ChatSettings {
+                notebook_id: (*id).to_string(),
+            })
+        }
+        ["api", "notebooks", id, "sources", sid, "checked"]
+            if is_safe_path_segment(id) && is_safe_path_segment(sid) =>
+        {
+            Some(DynamicNotebookRoute::SourceChecked {
+                notebook_id: (*id).to_string(),
+                source_id: (*sid).to_string(),
+            })
+        }
+        ["api", "notebooks", id, "artifacts", aid, "audio"]
+        | ["api", "notebooks", id, "media", aid]
+            if is_safe_path_segment(id) && is_safe_path_segment(aid) =>
+        {
+            Some(DynamicNotebookRoute::AudioStream {
+                notebook_id: (*id).to_string(),
+                artifact_id: (*aid).to_string(),
+            })
+        }
+        ["api", "btw", btw_id]
+            if is_safe_path_segment(btw_id)
+                && !matches!(
+                    *btw_id,
+                    "quote-card" | "create" | "append" | "list" | "promote" | "delete" | "ask"
+                ) =>
+        {
+            Some(DynamicNotebookRoute::BtwItem {
+                btw_id: (*btw_id).to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Returns `true` when `path` matches a dynamic `/api/notebooks/:id/*` or `/api/btw/:id` route.
+#[must_use]
+pub(crate) fn is_dynamic_notebook_route(path: &str) -> bool {
+    parse_dynamic_notebook_route(path).is_some()
+}
+
+pub(crate) fn ok_sanitized(mut payload: Value) -> HttpResponse {
+    strip_local_path_fields(&mut payload);
+    HttpResponse::ok(payload)
+}
 
 /// Dispatches `/api/notebooks/*`, `/api/btw/*`, and `/api/bridge` routes.
 pub async fn dispatch_notebook_route(
@@ -26,16 +116,38 @@ pub async fn dispatch_notebook_route(
         ("POST", "/api/notebooks") => Some(handle_notebooks_create(state, req)),
         ("GET", "/api/notebooks/get") => Some(handle_notebooks_get(state, req)),
         ("POST", "/api/notebooks/delete") => Some(handle_notebooks_delete(state, req)),
+        ("POST", "/api/notebooks/rename") | ("PATCH", "/api/notebooks/rename") => {
+            Some(handle_notebooks_rename(state, req, None))
+        }
         ("POST", "/api/notebooks/model") => Some(handle_notebooks_model(state, req)),
+        ("GET", "/api/notebooks/chat-settings") => {
+            Some(handle_chat_settings_get(state, req, None))
+        }
+        ("PUT", "/api/notebooks/chat-settings")
+        | ("PATCH", "/api/notebooks/chat-settings")
+        | ("POST", "/api/notebooks/chat-settings") => {
+            Some(handle_chat_settings_put(state, req, None))
+        }
 
+        ("POST", "/api/notebooks/ingest-repo") => Some(handle_ingest_repo(state, req, None).await),
         ("POST", "/api/notebooks/sources/ingest") => {
             Some(handle_sources_ingest(state, req).await)
+        }
+        ("POST", "/api/notebooks/sources/ingest-batch") => {
+            Some(handle_ingest_batch(state, req, None).await)
+        }
+        ("POST", "/api/notebooks/sources/checked")
+        | ("PATCH", "/api/notebooks/sources/checked") => {
+            Some(handle_source_checked(state, req, None, None))
         }
         ("GET", "/api/notebooks/sources") => Some(handle_sources_list(state, req)),
         ("GET", "/api/notebooks/sources/content") => Some(handle_source_content(state, req)),
         ("POST", "/api/notebooks/sources/clear") => Some(handle_sources_clear(state, req)),
         ("POST", "/api/notebooks/sources/heal") => Some(handle_sources_heal(state, req).await),
         ("POST", "/api/notebooks/preview") => Some(handle_preview(state, req).await),
+        ("GET", "/api/notebooks/audio") => {
+            Some(handle_audio_range_stream(state, req, None, None))
+        }
 
         ("POST", "/api/notebooks/grounded-prompt") => {
             Some(handle_grounded_prompt(state, req).await)
@@ -55,6 +167,9 @@ pub async fn dispatch_notebook_route(
         ("POST", "/api/btw/append") => Some(handle_btw_append(state, req)),
         ("GET", "/api/btw/list") => Some(handle_btw_list(state, req)),
         ("POST", "/api/btw/promote") => Some(handle_btw_promote(state, req)),
+        ("POST", "/api/btw/delete") | ("DELETE", "/api/btw/delete") => {
+            Some(handle_btw_delete(state, req, None))
+        }
 
         ("POST", "/api/bridge") => Some(handle_bridge_transfer(state, req)),
         ("GET", "/api/bridge") => Some(handle_bridge_list(state, req)),
@@ -65,13 +180,19 @@ pub async fn dispatch_notebook_route(
             | "/api/notebooks"
             | "/api/notebooks/get"
             | "/api/notebooks/delete"
+            | "/api/notebooks/rename"
             | "/api/notebooks/model"
+            | "/api/notebooks/chat-settings"
+            | "/api/notebooks/ingest-repo"
             | "/api/notebooks/sources/ingest"
+            | "/api/notebooks/sources/ingest-batch"
+            | "/api/notebooks/sources/checked"
             | "/api/notebooks/sources"
             | "/api/notebooks/sources/content"
             | "/api/notebooks/sources/clear"
             | "/api/notebooks/sources/heal"
             | "/api/notebooks/preview"
+            | "/api/notebooks/audio"
             | "/api/notebooks/grounded-prompt"
             | "/api/notebooks/verify-citations"
             | "/api/notebooks/turns"
@@ -84,6 +205,7 @@ pub async fn dispatch_notebook_route(
             | "/api/btw/append"
             | "/api/btw/list"
             | "/api/btw/promote"
+            | "/api/btw/delete"
             | "/api/bridge",
         ) => Some(HttpResponse::error(
             405,
@@ -91,7 +213,58 @@ pub async fn dispatch_notebook_route(
             "HTTP method not allowed for notebook route.",
         )),
 
-        _ => None,
+        _ => {
+            let dyn_route = parse_dynamic_notebook_route(req.path.as_str())?;
+            match (req.method.as_str(), dyn_route) {
+                ("POST", DynamicNotebookRoute::IngestRepo { notebook_id }) => {
+                    Some(handle_ingest_repo(state, req, Some(notebook_id)).await)
+                }
+                ("POST", DynamicNotebookRoute::IngestBatch { notebook_id }) => {
+                    Some(handle_ingest_batch(state, req, Some(notebook_id)).await)
+                }
+                ("PATCH" | "POST" | "PUT", DynamicNotebookRoute::RenameNotebook { notebook_id }) => {
+                    Some(handle_notebooks_rename(state, req, Some(notebook_id)))
+                }
+                (
+                    "PATCH" | "POST" | "PUT",
+                    DynamicNotebookRoute::SourceChecked {
+                        notebook_id,
+                        source_id,
+                    },
+                ) => Some(handle_source_checked(
+                    state,
+                    req,
+                    Some(notebook_id),
+                    Some(source_id),
+                )),
+                ("GET", DynamicNotebookRoute::ChatSettings { notebook_id }) => {
+                    Some(handle_chat_settings_get(state, req, Some(notebook_id)))
+                }
+                ("PUT" | "PATCH" | "POST", DynamicNotebookRoute::ChatSettings { notebook_id }) => {
+                    Some(handle_chat_settings_put(state, req, Some(notebook_id)))
+                }
+                (
+                    "GET",
+                    DynamicNotebookRoute::AudioStream {
+                        notebook_id,
+                        artifact_id,
+                    },
+                ) => Some(handle_audio_range_stream(
+                    state,
+                    req,
+                    Some(notebook_id),
+                    Some(artifact_id),
+                )),
+                ("DELETE", DynamicNotebookRoute::BtwItem { btw_id }) => {
+                    Some(handle_btw_delete(state, req, Some(btw_id)))
+                }
+                _ => Some(HttpResponse::error(
+                    405,
+                    "method_not_allowed",
+                    "HTTP method not allowed for notebook route.",
+                )),
+            }
+        }
     }
 }
 
@@ -153,19 +326,16 @@ fn required_str(
 }
 
 fn parse_effort(raw: &str) -> Result<EffortLevel, HttpResponse> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "minimal" => Ok(EffortLevel::Minimal),
-        "low" => Ok(EffortLevel::Low),
-        "medium" => Ok(EffortLevel::Medium),
-        "high" => Ok(EffortLevel::High),
-        "xhigh" => Ok(EffortLevel::XHigh),
-        "max" => Ok(EffortLevel::Max),
-        other => Err(HttpResponse::error(
+    EffortLevel::parse_bilingual(raw).map_err(|_| {
+        HttpResponse::error(
             400,
             "invalid_effort",
-            &format!("Unsupported effort '{other}'; expected minimal, low, medium, high, xhigh, or max."),
-        )),
-    }
+            &format!(
+                "Unsupported effort '{}'; expected minimal, low, medium, high, xhigh, or max.",
+                raw.trim()
+            ),
+        )
+    })
 }
 
 fn parse_surface(raw: &str) -> Result<InteractionSurface, HttpResponse> {
@@ -445,7 +615,7 @@ async fn handle_sources_ingest(state: &Arc<StudioState>, req: &HttpRequest) -> H
 
     let nb = Arc::clone(&state.notebooks);
     match tokio::task::spawn_blocking(move || nb.ingest_source(ingest_req)).await {
-        Ok(Ok(outcome)) => HttpResponse::ok(json!({
+        Ok(Ok(outcome)) => ok_sanitized(json!({
             "ok": true,
             "outcome": outcome,
         })),
@@ -467,6 +637,17 @@ fn handle_sources_list(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRespo
             "Query parameter 'notebook_id' is required.",
         );
     };
+    let source_ids = req
+        .query_param("source_ids")
+        .or_else(|| req.query_param("sourceIds"))
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty());
     let filter = SourceFilter {
         exclude_videos: parse_bool_query(req, "exclude_videos"),
         pure_documents_only: parse_bool_query(req, "pure_documents_only"),
@@ -476,9 +657,11 @@ fn handle_sources_list(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRespo
             .or_else(|| req.query_param("q"))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        source_ids,
+        only_checked: parse_bool_query(req, "only_checked") || parse_bool_query(req, "onlyChecked"),
     };
     match state.notebooks.list_sources(&notebook_id, &filter) {
-        Ok(sources) => HttpResponse::ok(json!({
+        Ok(sources) => ok_sanitized(json!({
             "ok": true,
             "count": sources.len(),
             "sources": sources,
@@ -522,7 +705,7 @@ fn handle_source_content(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRes
                 };
                 r
             } else {
-                HttpResponse::ok(json!({
+                ok_sanitized(json!({
                     "ok": true,
                     "source": source,
                     "content": content,
@@ -650,17 +833,38 @@ async fn handle_grounded_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> 
         .and_then(Value::as_u64)
         .map(|n| usize::try_from(n).unwrap_or(8).clamp(1, 32))
         .unwrap_or(8);
+    let source_ids = obj
+        .get("source_ids")
+        .or_else(|| obj.get("sourceIds"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty());
     let filter = SourceFilter {
         exclude_videos: obj
             .get("exclude_videos")
+            .or_else(|| obj.get("excludeVideos"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
         pure_documents_only: obj
             .get("pure_documents_only")
+            .or_else(|| obj.get("pureDocumentsOnly"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
         source_kinds: None,
         query: None,
+        source_ids,
+        only_checked: obj
+            .get("only_checked")
+            .or_else(|| obj.get("onlyChecked"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     };
     let nb = Arc::clone(&state.notebooks);
     match tokio::task::spawn_blocking(move || {
@@ -668,7 +872,7 @@ async fn handle_grounded_prompt(state: &Arc<StudioState>, req: &HttpRequest) -> 
     })
     .await
     {
-        Ok(Ok(pack)) => HttpResponse::ok(json!({
+        Ok(Ok(pack)) => ok_sanitized(json!({
             "ok": true,
             "pack": pack,
         })),
@@ -963,6 +1167,18 @@ pub(crate) fn build_notebook_llm_config(
         .filter(|s| !s.is_empty())
     {
         cfg.wire_api_override = Some(w.to_string());
+    }
+    if let Some(eff_raw) = obj
+        .get("effort")
+        .or_else(|| obj.get("effort_level"))
+        .or_else(|| obj.get("effortLevel"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Ok(parsed) = EffortLevel::parse_bilingual(eff_raw) {
+            cfg.effort = Some(parsed);
+        }
     }
     if obj
         .get("allowLoopback")
@@ -1277,11 +1493,615 @@ fn handle_bridge_list(state: &Arc<StudioState>, req: &HttpRequest) -> HttpRespon
         );
     };
     match state.notebooks.list_bridge_events(&notebook_id) {
-        Ok(events) => HttpResponse::ok(json!({
+        Ok(events) => ok_sanitized(json!({
             "ok": true,
             "count": events.len(),
             "events": events,
         })),
         Err(err) => map_notebook_error(err),
+    }
+}
+
+fn handle_notebooks_rename(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_notebook_id: Option<String>,
+) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let notebook_id = match path_notebook_id {
+        Some(id) => id,
+        None => match required_str(&obj, &["notebook_id", "notebookId", "id"], "notebook_id") {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        },
+    };
+    let title = match required_str(&obj, &["title", "new_title", "newTitle", "name"], "title") {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    match state.notebooks.rename_notebook(&notebook_id, &title) {
+        Ok(notebook) => ok_sanitized(json!({
+            "ok": true,
+            "notebook": notebook,
+        })),
+        Err(err) => map_notebook_error(err),
+    }
+}
+
+fn handle_source_checked(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_notebook_id: Option<String>,
+    path_source_id: Option<String>,
+) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let notebook_id = match path_notebook_id {
+        Some(id) => id,
+        None => match required_str(&obj, &["notebook_id", "notebookId"], "notebook_id") {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        },
+    };
+    let source_id = match path_source_id {
+        Some(id) => id,
+        None => match required_str(
+            &obj,
+            &["source_id", "sourceId", "remote_id", "remoteId"],
+            "source_id",
+        ) {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        },
+    };
+    let Some(checked) = obj
+        .get("checked")
+        .or_else(|| obj.get("selected"))
+        .and_then(Value::as_bool)
+    else {
+        return HttpResponse::error(
+            400,
+            "missing_field",
+            "Boolean field 'checked' is required.",
+        );
+    };
+    match state
+        .notebooks
+        .set_source_checked(&notebook_id, &source_id, checked)
+    {
+        Ok(source) => ok_sanitized(json!({
+            "ok": true,
+            "source": source,
+        })),
+        Err(err) => map_notebook_error(err),
+    }
+}
+
+fn handle_chat_settings_get(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_notebook_id: Option<String>,
+) -> HttpResponse {
+    let notebook_id = match path_notebook_id {
+        Some(id) => id,
+        None => match req
+            .query_param("notebook_id")
+            .or_else(|| req.query_param("notebookId"))
+            .or_else(|| req.query_param("id"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(v) => v,
+            None => {
+                return HttpResponse::error(
+                    400,
+                    "missing_notebook_id",
+                    "Query parameter 'notebook_id' is required.",
+                );
+            }
+        },
+    };
+    match state.notebooks.get_chat_settings(&notebook_id) {
+        Ok(settings) => ok_sanitized(json!({
+            "ok": true,
+            "notebook_id": notebook_id,
+            "settings": settings,
+        })),
+        Err(err) => map_notebook_error(err),
+    }
+}
+
+fn handle_chat_settings_put(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_notebook_id: Option<String>,
+) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let notebook_id = match path_notebook_id {
+        Some(id) => id,
+        None => match required_str(&obj, &["notebook_id", "notebookId", "id"], "notebook_id") {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        },
+    };
+    let settings = ChatSettings {
+        mode: obj
+            .get("mode")
+            .or_else(|| obj.get("chat_mode"))
+            .or_else(|| obj.get("chatMode"))
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_string(),
+        length: obj
+            .get("length")
+            .or_else(|| obj.get("chat_length"))
+            .or_else(|| obj.get("chatLength"))
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_string(),
+        custom_prompt: obj
+            .get("customPrompt")
+            .or_else(|| obj.get("custom_prompt"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    };
+    match state.notebooks.set_chat_settings(&notebook_id, settings) {
+        Ok(saved) => ok_sanitized(json!({
+            "ok": true,
+            "notebook_id": notebook_id,
+            "settings": saved,
+        })),
+        Err(err) => map_notebook_error(err),
+    }
+}
+
+fn handle_btw_delete(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_btw_id: Option<String>,
+) -> HttpResponse {
+    let btw_id = match path_btw_id {
+        Some(id) => id,
+        None => {
+            if let Some(qid) = req
+                .query_param("btw_id")
+                .or_else(|| req.query_param("btwId"))
+                .or_else(|| req.query_param("id"))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            {
+                qid
+            } else {
+                let obj = match req.json_object() {
+                    Ok(m) => m,
+                    Err(resp) => return resp,
+                };
+                match required_str(&obj, &["btw_id", "btwId", "id"], "btw_id") {
+                    Ok(v) => v,
+                    Err(resp) => return resp,
+                }
+            }
+        }
+    };
+    match state.notebooks.delete_btw_thread(&btw_id) {
+        Ok(deleted) => ok_sanitized(json!({
+            "ok": true,
+            "btw_id": btw_id,
+            "deleted": deleted,
+        })),
+        Err(err) => map_notebook_error(err),
+    }
+}
+
+async fn handle_ingest_repo(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_notebook_id: Option<String>,
+) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let notebook_id = match path_notebook_id {
+        Some(id) => id,
+        None => match required_str(&obj, &["notebook_id", "notebookId"], "notebook_id") {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        },
+    };
+    let raw_repo = match required_str(
+        &obj,
+        &["repo_path", "repoPath", "root_dir", "rootDir", "path"],
+        "repo_path",
+    ) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if is_unc_or_smb_path(&raw_repo) {
+        return unc_blocked_response();
+    }
+    let candidate = PathBuf::from(&raw_repo);
+    let root_dir = if candidate.is_absolute() {
+        candidate
+    } else {
+        state.config.workspace_root.join(candidate)
+    };
+    let title = obj
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let mut cfg = RepoPackageConfig::for_workspace_root(&state.config.workspace_root);
+    if let Some(mf) = obj
+        .get("max_files")
+        .or_else(|| obj.get("maxFiles"))
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+    {
+        cfg.max_files = mf.clamp(1, 500);
+    }
+    if let Some(respect) = obj
+        .get("respect_gitignore")
+        .or_else(|| obj.get("respectGitignore"))
+        .and_then(Value::as_bool)
+    {
+        cfg.respect_gitignore = respect;
+    }
+
+    let nb = Arc::clone(&state.notebooks);
+    match tokio::task::spawn_blocking(move || {
+        nb.ingest_code_repository(&notebook_id, &root_dir, title, &cfg)
+    })
+    .await
+    {
+        Ok(Ok((outcome, packaged))) => ok_sanitized(json!({
+            "ok": true,
+            "outcome": outcome,
+            "packaged": {
+                "root_name": packaged.root_name,
+                "included_files": packaged.included_files,
+                "skipped_binary_files": packaged.skipped_binary_files,
+                "skipped_oversize_files": packaged.skipped_oversize_files,
+                "skipped_reparse_entries": packaged.skipped_reparse_entries,
+            }
+        })),
+        Ok(Err(err)) => map_notebook_error(err),
+        Err(err) => HttpResponse::error(500, "ingest_repo_task_failed", &err.to_string()),
+    }
+}
+
+async fn handle_ingest_batch(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_notebook_id: Option<String>,
+) -> HttpResponse {
+    let obj = match req.json_object() {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    let notebook_id = match path_notebook_id {
+        Some(id) => id,
+        None => match required_str(&obj, &["notebook_id", "notebookId"], "notebook_id") {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        },
+    };
+    let Some(raw_parts) = obj
+        .get("parts")
+        .or_else(|| obj.get("files"))
+        .or_else(|| obj.get("sources"))
+        .and_then(Value::as_array)
+    else {
+        return HttpResponse::error(
+            400,
+            "missing_parts",
+            "Array field 'parts' is required for batch ingestion.",
+        );
+    };
+    if raw_parts.is_empty() {
+        return HttpResponse::error(400, "empty_parts", "Batch 'parts' array cannot be empty.");
+    }
+
+    let mut total_bytes = 0usize;
+    let mut parts = Vec::with_capacity(raw_parts.len());
+    for (idx, item) in raw_parts.iter().enumerate() {
+        let Some(part_obj) = item.as_object() else {
+            return HttpResponse::error(
+                400,
+                "invalid_part",
+                &format!("Batch item at index {idx} must be a JSON object."),
+            );
+        };
+        let filename = match required_str(part_obj, &["filename", "name"], "filename") {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+        if is_unc_or_smb_path(&filename) {
+            return unc_blocked_response();
+        }
+        let bytes = match decode_text_or_base64(part_obj) {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        };
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        if total_bytes > MAX_BATCH_TOTAL_BYTES {
+            return HttpResponse::error(
+                413,
+                "payload_too_large",
+                "Total decoded batch payload exceeds 16 MiB limit.",
+            );
+        }
+        parts.push(IngestSourceRequest {
+            notebook_id: notebook_id.clone(),
+            title: part_obj
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string),
+            filename,
+            mime_type: part_obj
+                .get("mime_type")
+                .or_else(|| part_obj.get("mimeType"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string),
+            remote_id: part_obj
+                .get("remote_id")
+                .or_else(|| part_obj.get("remoteId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string),
+            bytes,
+            copied_text_fallback: part_obj
+                .get("copied_text_fallback")
+                .or_else(|| part_obj.get("copiedTextFallback"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            max_chunk_bytes: part_obj
+                .get("max_chunk_bytes")
+                .or_else(|| part_obj.get("maxChunkBytes"))
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok()),
+            metadata: part_obj
+                .get("metadata")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        });
+    }
+
+    let nb = Arc::clone(&state.notebooks);
+    match tokio::task::spawn_blocking(move || nb.ingest_multipart_with_rollback(&notebook_id, parts))
+        .await
+    {
+        Ok(Ok(outcome)) => ok_sanitized(json!({
+            "ok": true,
+            "outcome": outcome,
+        })),
+        Ok(Err(err)) => map_notebook_error(err),
+        Err(err) => HttpResponse::error(500, "ingest_batch_task_failed", &err.to_string()),
+    }
+}
+
+fn handle_audio_range_stream(
+    state: &Arc<StudioState>,
+    req: &HttpRequest,
+    path_notebook_id: Option<String>,
+    path_artifact_id: Option<String>,
+) -> HttpResponse {
+    if let Some(requested_mime) = req
+        .query_param("mime")
+        .or_else(|| req.query_param("content_type"))
+    {
+        if !is_streamable_media_mime(&requested_mime) {
+            return HttpResponse::error(
+                415,
+                "unsupported_media_type",
+                "Requested media MIME is not allowlisted for inline Range streaming.",
+            );
+        }
+    }
+
+    let notebook_id = match path_notebook_id {
+        Some(id) => id,
+        None => match req
+            .query_param("notebook_id")
+            .or_else(|| req.query_param("notebookId"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(v) => v,
+            None => {
+                return HttpResponse::error(
+                    400,
+                    "missing_notebook_id",
+                    "Parameter 'notebook_id' is required.",
+                );
+            }
+        },
+    };
+    let artifact_id = match path_artifact_id {
+        Some(id) => id,
+        None => match req
+            .query_param("artifact_id")
+            .or_else(|| req.query_param("artifactId"))
+            .or_else(|| req.query_param("id"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(v) => v,
+            None => {
+                return HttpResponse::error(
+                    400,
+                    "missing_artifact_id",
+                    "Parameter 'artifact_id' is required.",
+                );
+            }
+        },
+    };
+
+    let artifact = match state.notebooks.get_artifact(&artifact_id) {
+        Ok(a) if a.notebook_id == notebook_id => a,
+        Ok(_) => {
+            return HttpResponse::error(404, "NOT_FOUND", "Audio artifact not found in notebook.");
+        }
+        Err(err) => return map_notebook_error(err),
+    };
+    if artifact.kind != StudioArtifactKind::AudioOverview {
+        return HttpResponse::error(
+            415,
+            "unsupported_media_type",
+            "HTTP Range audio streaming is restricted to audio_overview artifacts.",
+        );
+    }
+
+    let (_, wav) = match state
+        .notebooks
+        .render_audio_overview_wav(&notebook_id, &artifact_id)
+    {
+        Ok(pair) => pair,
+        Err(err) => return map_notebook_error(err),
+    };
+    let safe_wav_name = sanitize_transport_filename(&format!("{}.wav", artifact.artifact_id), 72);
+
+    if let Some(range_header) = req.header("range") {
+        return match parse_http_byte_range(range_header, wav.len()) {
+            Ok(range) => {
+                let mut resp = HttpResponse::bytes(206, "audio/wav", range.slice(&wav).to_vec());
+                resp.headers
+                    .push(("Accept-Ranges".to_string(), "bytes".to_string()));
+                resp.headers
+                    .push(("Content-Range".to_string(), range.content_range_header()));
+                resp.headers.push((
+                    "Content-Disposition".to_string(),
+                    format!("inline; filename=\"{safe_wav_name}\""),
+                ));
+                resp
+            }
+            Err(HttpByteRangeError::Unsatisfiable { total_len }) => {
+                let mut resp = HttpResponse::error(
+                    416,
+                    "range_not_satisfiable",
+                    "Requested byte range is outside the audio overview stream bounds.",
+                );
+                resp.headers
+                    .push(("Accept-Ranges".to_string(), "bytes".to_string()));
+                resp.headers
+                    .push(("Content-Range".to_string(), format!("bytes */{total_len}")));
+                resp
+            }
+            Err(HttpByteRangeError::InvalidHeader) => HttpResponse::error(
+                400,
+                "invalid_range",
+                "Malformed HTTP Range header (expected 'bytes=start-end').",
+            ),
+        };
+    }
+
+    let mut resp = HttpResponse::bytes(200, "audio/wav", wav);
+    resp.headers
+        .push(("Accept-Ranges".to_string(), "bytes".to_string()));
+    resp.headers.push((
+        "Content-Disposition".to_string(),
+        format!("inline; filename=\"{safe_wav_name}\""),
+    ));
+    resp
+}
+
+#[cfg(test)]
+mod p0_notebook_route_tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_notebook_route_parser_handles_all_p0_routes_and_rejects_traversal() {
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/notebooks/nb_123/ingest-repo"),
+            Some(DynamicNotebookRoute::IngestRepo {
+                notebook_id: "nb_123".to_string()
+            })
+        );
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/notebooks/nb_123/ingest-batch"),
+            Some(DynamicNotebookRoute::IngestBatch {
+                notebook_id: "nb_123".to_string()
+            })
+        );
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/notebooks/nb_123/rename"),
+            Some(DynamicNotebookRoute::RenameNotebook {
+                notebook_id: "nb_123".to_string()
+            })
+        );
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/notebooks/nb_123/sources/src_9/checked"),
+            Some(DynamicNotebookRoute::SourceChecked {
+                notebook_id: "nb_123".to_string(),
+                source_id: "src_9".to_string()
+            })
+        );
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/notebooks/nb_123/chat-settings"),
+            Some(DynamicNotebookRoute::ChatSettings {
+                notebook_id: "nb_123".to_string()
+            })
+        );
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/notebooks/nb_123/artifacts/art_7/audio"),
+            Some(DynamicNotebookRoute::AudioStream {
+                notebook_id: "nb_123".to_string(),
+                artifact_id: "art_7".to_string()
+            })
+        );
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/btw/btw_abc"),
+            Some(DynamicNotebookRoute::BtwItem {
+                btw_id: "btw_abc".to_string()
+            })
+        );
+        // Reserved static `/api/btw/*` routes and path traversal must never match dynamic routes.
+        assert_eq!(parse_dynamic_notebook_route("/api/btw/create"), None);
+        assert_eq!(parse_dynamic_notebook_route("/api/btw/list"), None);
+        assert_eq!(
+            parse_dynamic_notebook_route("/api/notebooks/../evil/rename"),
+            None
+        );
+    }
+
+    #[test]
+    fn effort_bilingual_parser_and_ok_sanitized_strip_local_paths() {
+        assert_eq!(parse_effort("low").unwrap(), EffortLevel::Low);
+        assert_eq!(parse_effort("xhigh").unwrap(), EffortLevel::XHigh);
+        assert_eq!(parse_effort("max").unwrap(), EffortLevel::Max);
+        assert_eq!(parse_effort("thấp").unwrap(), EffortLevel::Low);
+        assert_eq!(parse_effort("trung bình").unwrap(), EffortLevel::Medium);
+        assert_eq!(parse_effort("cao").unwrap(), EffortLevel::High);
+        assert_eq!(parse_effort("rất cao").unwrap(), EffortLevel::XHigh);
+        assert_eq!(parse_effort("tối đa").unwrap(), EffortLevel::Max);
+        assert!(parse_effort("invalid-effort").is_err());
+
+        let resp = ok_sanitized(json!({
+            "ok": true,
+            "localPath": "C:\\Users\\example\\secret.pdf",
+            "nested": {
+                "local_path": "/tmp/hidden.txt",
+                "title": "Safe Title"
+            }
+        }));
+        let parsed: Value = serde_json::from_slice(&resp.body).expect("json body");
+        assert!(parsed.get("localPath").is_none());
+        assert!(parsed["nested"].get("local_path").is_none());
+        assert_eq!(parsed["nested"]["title"], "Safe Title");
     }
 }

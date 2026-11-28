@@ -10,6 +10,7 @@ use omnia_connector_gateway::artifact_intake::HttpValidatorStrength;
 use omnia_winsqlite::{Connection, StepStatus};
 use parking_lot::Mutex;
 
+use crate::batch::{ScheduleWindow, SchedulerConfig, SitePolicyRegistry, SiteRule};
 use crate::pacing::PacingMode;
 use crate::types::{
     current_epoch_ms, validate_safe_local_path, ChunkRange, DownloadJobSnapshot, DownloadStatus,
@@ -54,6 +55,22 @@ CREATE TABLE IF NOT EXISTS download_segments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status, updated_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS download_scheduler_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    max_concurrent_jobs INTEGER NOT NULL,
+    start_hour_utc INTEGER,
+    end_hour_utc INTEGER,
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS download_site_policies (
+    host_pattern TEXT PRIMARY KEY,
+    max_connections_per_host INTEGER NOT NULL,
+    default_pacing TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    updated_at_ms INTEGER NOT NULL
+);
 "#;
 
 /// Thread-safe `omnia-winsqlite` repository for download jobs and per-segment progress.
@@ -255,6 +272,103 @@ impl DownloadStore {
         let _ = stmt.step()?;
         Ok(conn.changes() > 0)
     }
+
+    /// Persists [`SchedulerConfig`] in WAL SQLite (`download_scheduler_config`).
+    pub fn save_scheduler_config(&self, cfg: &SchedulerConfig) -> Result<(), DownloaderError> {
+        let conn = self.conn.lock();
+        let now = current_epoch_ms() as i64;
+        let mut stmt = conn.prepare(
+            "INSERT INTO download_scheduler_config (
+                id, max_concurrent_jobs, start_hour_utc, end_hour_utc, updated_at_ms
+             ) VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                max_concurrent_jobs = excluded.max_concurrent_jobs,
+                start_hour_utc = excluded.start_hour_utc,
+                end_hour_utc = excluded.end_hour_utc,
+                updated_at_ms = excluded.updated_at_ms",
+        )?;
+        stmt.bind_int64(1, cfg.max_concurrent_jobs.clamp(1, 32) as i64)?;
+        stmt.bind_opt_int64(2, cfg.window.map(|w| i64::from(w.start_hour_utc.min(23))))?;
+        stmt.bind_opt_int64(3, cfg.window.map(|w| i64::from(w.end_hour_utc.min(23))))?;
+        stmt.bind_int64(4, now)?;
+        let _ = stmt.step()?;
+        Ok(())
+    }
+
+    /// Loads persisted [`SchedulerConfig`] if previously saved.
+    pub fn load_scheduler_config(&self) -> Result<Option<SchedulerConfig>, DownloaderError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT max_concurrent_jobs, start_hour_utc, end_hour_utc
+             FROM download_scheduler_config WHERE id = 1",
+        )?;
+        match stmt.step()? {
+            StepStatus::Row => {
+                let max_jobs = (stmt.column_int64(0)?.max(1) as usize).clamp(1, 32);
+                let start_opt = stmt.column_opt_int64(1)?;
+                let end_opt = stmt.column_opt_int64(2)?;
+                let window = match (start_opt, end_opt) {
+                    (Some(s), Some(e)) => Some(ScheduleWindow {
+                        start_hour_utc: s.clamp(0, 23) as u32,
+                        end_hour_utc: e.clamp(0, 23) as u32,
+                    }),
+                    _ => None,
+                };
+                Ok(Some(SchedulerConfig {
+                    max_concurrent_jobs: max_jobs,
+                    window,
+                }))
+            }
+            StepStatus::Done => Ok(None),
+        }
+    }
+
+    /// Atomically replaces all site policy rules in WAL SQLite (`download_site_policies`).
+    pub fn replace_site_policies(&self, reg: &SitePolicyRegistry) -> Result<(), DownloaderError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.begin_immediate()?;
+        tx.exec_batch("DELETE FROM download_site_policies")?;
+        let now = current_epoch_ms() as i64;
+        {
+            let mut ins = tx.prepare(
+                "INSERT INTO download_site_policies (
+                    host_pattern, max_connections_per_host, default_pacing, note, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for rule in reg.list_rules() {
+                ins.reset()?;
+                ins.clear_bindings()?;
+                ins.bind_text(1, &rule.host_pattern)?;
+                ins.bind_int64(2, rule.max_connections_per_host.clamp(1, 128) as i64)?;
+                ins.bind_opt_text(3, rule.default_pacing.as_deref())?;
+                ins.bind_text(4, &rule.note)?;
+                ins.bind_int64(5, now)?;
+                let _ = ins.step()?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Loads persisted [`SitePolicyRegistry`] rules from WAL SQLite.
+    pub fn load_site_policies(&self) -> Result<SitePolicyRegistry, DownloaderError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT host_pattern, max_connections_per_host, default_pacing, note
+             FROM download_site_policies ORDER BY host_pattern ASC",
+        )?;
+        let mut reg = SitePolicyRegistry::new();
+        while stmt.step_row()? {
+            let rule = SiteRule {
+                host_pattern: stmt.column_text(0)?,
+                max_connections_per_host: (stmt.column_int64(1)?.max(1) as usize).clamp(1, 128),
+                default_pacing: stmt.column_opt_text(2)?,
+                note: stmt.column_text(3)?,
+            };
+            let _ = reg.upsert_rule(rule);
+        }
+        Ok(reg)
+    }
 }
 
 fn read_job_row(stmt: &omnia_winsqlite::Statement<'_>) -> Result<DownloadJobSnapshot, DownloaderError> {
@@ -350,5 +464,50 @@ mod tests {
         assert!(store.delete_job("job-sql-1").unwrap());
         assert!(store.get_job("job-sql-1").unwrap().is_none());
         assert!(store.get_segments("job-sql-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn sqlite_store_persists_scheduler_config_and_site_policies() {
+        let dir = std::env::temp_dir().join(format!(
+            "omnia-dl-store-sched-{}",
+            omnia_core::uuid_v4_simple()
+        ));
+        let db_path = dir.join("downloads.db");
+        {
+            let store = DownloadStore::open(&db_path, None).unwrap();
+            let cfg = SchedulerConfig {
+                max_concurrent_jobs: 6,
+                window: Some(ScheduleWindow {
+                    start_hour_utc: 2,
+                    end_hour_utc: 9,
+                }),
+            };
+            store.save_scheduler_config(&cfg).unwrap();
+            let mut reg = SitePolicyRegistry::new();
+            reg.upsert_rule(SiteRule {
+                host_pattern: "*.example.org".into(),
+                max_connections_per_host: 4,
+                default_pacing: Some("polite".into()),
+                note: "throttled cdn".into(),
+            })
+            .unwrap();
+            store.replace_site_policies(&reg).unwrap();
+        }
+
+        // Reopen WAL DB and verify durability.
+        let reopened = DownloadStore::open(&db_path, None).unwrap();
+        let loaded_cfg = reopened.load_scheduler_config().unwrap().unwrap();
+        assert_eq!(loaded_cfg.max_concurrent_jobs, 6);
+        assert_eq!(loaded_cfg.window.unwrap().end_hour_utc, 9);
+        let loaded_reg = reopened.load_site_policies().unwrap();
+        assert_eq!(
+            loaded_reg
+                .resolve_for_host("media.example.org")
+                .unwrap()
+                .max_connections_per_host,
+            4
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
