@@ -1,6 +1,6 @@
 # Omnia — Lessons Learned & Engineering Anti-Patterns
 
-This postmortem handbook distills **23 costly failure modes and architectural lessons caught across Omnia's Codex, Antigravity (App, IDE & CLI), and Claude histories (including Wave 5 Full Native Rust migration & Steer #15–#21)** into concrete, enforceable rules so collaborator **HTMusTC** and future AI agents never repeat them.
+This postmortem handbook distills **24 costly failure modes and architectural lessons caught across Omnia's Codex, Antigravity (App, IDE & CLI), and Claude histories (including Wave 5 Full Native Rust migration & Steer #15–#23)** into concrete, enforceable rules so collaborator **HTMusTC** and future AI agents never repeat them.
 
 ---
 
@@ -26,6 +26,7 @@ This postmortem handbook distills **23 costly failure modes and architectural le
 | 16 | Running `qa-*.ps1` under PS 5.1, CRLF drift, stripping AdGuard cookies naively, or mixing short probe vs chat timeouts | Always run QA under PowerShell 7 (`pwsh`); enforce `text eol=lf` in `.gitattributes`; coalesce RFC 9110 multi-`Cookie` headers cleanly (`; `) while preserving smuggling checks; keep short `~3s` probes separate from `65,000 ms` chat timeouts. |
 | 17 | Assuming generic Cold-Vault JSON keys or leaving `targets.json` flat after JS modularization | Inspect exact external catalog keys (`skills_catalog[]` `focus_en`/`description_vi` + `categories_100[]`) verified by `golden-eval` (`16/16` `100%`), and update `platform/targets.json` to recursive `**/*.js` globs whenever flat UI trees modularize (`TRK-06` `1a1e423`). |
 | 18 | Unchecked JSON integer casts, loose loopback port checks, silent `..` path drops, un-rolled-back SQLite `COMMIT`, or FTS active-ID leaks | Validate JSON integers before mutating state (`AUD-29`), bind loopback `Host`/`Origin` to the exact bound listener port (`AUD-02`), reject `..`/absolute/mid-wildcard paths & non-recipient replies (`AUD-26`/`28`), `ROLLBACK` failed SQLite `COMMIT`, and fence `excluded_ids` + SHA-256 `omnia_fts_revisions` before FTS rebuilds (`AUD-30`/`31`). |
+| 19 | Using bare `.NET` `Process.MainWindowHandle` with Windows 11 IME active, toggling conditional `<Show when={open && artifact}>` drawers with `null` state, or coupling Merkle/search tests to empty `default_rules()` | Resolve Win32 QA HWNDs via `EnumWindows` filtering for `OmniaNativeShellClass` and skipping `UAC_InputIndicatorOverlayWnd`/`IME`/`MSCTFIME UI` + `PostMessageW(WM_CLOSE)` (`a41c4d6`); seed a starter artifact inside `toggleCanvasDrawer()` when `activeCanvasArtifact()` is `null` (`2f61380`); test default empty `PermissionsEngine::default_rules()` separately from opt-in `strict_safety_rules()` (`05eafbb`). |
 
 ---
 
@@ -235,3 +236,16 @@ This postmortem handbook distills **23 costly failure modes and architectural le
 - **What Went Wrong**: Across audit items `AUD-01..32`, subtle defensive holes appeared when converting inputs or mutating state: failed SQLite `COMMIT` left connections mid-transaction without `ROLLBACK`; unchecked JSON numeric coercion admitted floats/`1e100`/`u64::MAX` after mutating circuit state (`AUD-29`); loopback `Host`/`Origin` checks accepted arbitrary unrelated local ports (`AUD-02`); `PeerMeshGraph::normalize_repo_path` silently dropped `../` escapes instead of rejecting them and `reply()` skipped recipient/epoch validation (`AUD-26`/`AUD-28`); `simulate: true` mutated reservations unless fenced (`AUD-09`), and non-excluded FTS backfills leaked active conversations or left growing trajectories stale (`AUD-30`/`AUD-31`).
 - **Permanent Rule**:
   - Execute explicit `ROLLBACK` when a SQLite `COMMIT` fails; validate checked JSON integers (`try_i64`/`try_u64`), pagination cursors/limits (`AUD-32`), and `simulate` zero-mutation fences *before* any state change; bind loopback `Host`/`Origin` authorities to the **actual bound listener port** (`AUD-02`, verified in `omnia-runtime`; tracked as `PARTIAL_IN_RUST` for `omnia-studio/src/http.rs` alternate-port tightening); reject `../`/absolute/mid-wildcard paths, overlap-on-reactivation, and non-recipient/stale-epoch replies in `PeerMeshGraph` (`AUD-26..28`); and pass `excluded_ids` + SHA-256 `omnia_fts_revisions` into transactional FTS refreshes (`AUD-30`/`AUD-31`, `7/7` tests PASS).
+
+---
+
+### 24. Windows 11 IME `UAC_InputIndicatorOverlayWnd` Window Collision, Conditional Drawer Toggle Seeding & Opt-In Strict Rule Tests (`05eafbb`, `2f61380`, `a41c4d6`)
+- **Provenance**: Steer #22 + #23 commits `05eafbb` (`rust/omnia-agent/src/{merkle,search,permissions}.rs`), `2f61380` (`ui-v5/src/{state/studio.ts,components/shell/CommandPalette.tsx}`, `native/qa-capture{.ps1,.tests.ps1}`), and `a41c4d6` (`native/qa-{smoke,session,paging,guard,ownership}.ps1`).
+- **What Went Wrong**:
+  1. On Windows 11 with Vietnamese IME active, `.NET` `Process.MainWindowHandle` and `CloseMainWindow()` resolved the process's visible `0x0` `UAC_InputIndicatorOverlayWnd` IME overlay instead of `OmniaNativeShellClass` (`Omnia Studio`), causing `qa-capture`/`qa-smoke`/`qa-session`/`qa-paging`/`qa-ownership` to capture `0x0` bounds or time out on clean close.
+  2. `ArtifactCanvasDrawer.tsx` rendered `<Show when={props.open && props.artifact}>`, while `CommandPalette.tsx` only flipped `setCanvasDrawerOpen(true)` without seeding a starter artifact on fresh sessions (turning `Ctrl+K` into a silent no-op).
+  3. Making `PermissionsEngine::default_rules()` empty for Steer #22 default `ApprovalMode::Yolo` broke legacy Merkle/hybrid-search tests that assumed `.env`/`.ssh` were denied by default.
+- **Permanent Rule**:
+  - In Windows 11 Win32 QA scripts, NEVER rely on bare `$process.MainWindowHandle` / `$process.CloseMainWindow()` — resolve the target HWND via `Find-OmniaQaMainWindow` (`EnumWindows` matching `OmniaNativeShellClass` while skipping `UAC_InputIndicatorOverlayWnd`/`IME`/`MSCTFIME UI`) and close via `Close-OmniaQaWindow` (`PostMessageW(WM_CLOSE)` + fallback).
+  - Any command-palette or slash-command toggle for a conditional `<Show when={open && item}>` drawer must use a unified `toggle*()` helper that seeds a clean starter artifact when `item` is `null`.
+  - When a harness defaults to unrestricted `ApprovalMode::Yolo` (`PermissionsEngine::default_rules()` empty), keep explicit opt-in `PermissionsEngine::strict_safety_rules()` tests distinct from default-unrestricted tests.
