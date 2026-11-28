@@ -352,6 +352,15 @@ async fn server_tolerates_adguard_18_cookies_multispace_request_line_and_blocks_
     assert_eq!(wrong_origin.status, 403);
     assert_eq!(wrong_origin.json()["code"], "forbidden_origin");
 
+    // AUD-02 WebSocket parity: wrong-port Origin on `/ws` upgrade must be rejected with 403.
+    let ws_wrong_origin_req = format!(
+        "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {wrong_origin_hdr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        addr.port()
+    );
+    let ws_wrong_origin = send_raw_http(addr, &ws_wrong_origin_req).await;
+    assert_eq!(ws_wrong_origin.status, 403);
+    assert_eq!(ws_wrong_origin.json()["code"], "forbidden_origin");
+
     // 3. Static asset serving & path traversal rejection
     let index_resp = http_request(addr, "GET", "/", &[], None).await;
     assert_eq!(index_resp.status, 200);

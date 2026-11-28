@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 /// Embedding dimensionality of `potion-multilingual-128M` binary tables.
 pub const M2V_DIM: usize = 256;
 
-/// Default local path for pre-compiled `potion-multilingual-128M` seek binaries.
-pub const DEFAULT_M2V_MODEL_DIR: &str =
-    r"C:\Users\khang\.gemini\config\plugins\agy-fast\models\potion-multilingual-128M";
+/// Relative home-directory path for pre-compiled `potion-multilingual-128M` seek binaries.
+pub const DEFAULT_M2V_MODEL_REL_PATH: &str =
+    ".gemini/config/plugins/agy-fast/models/potion-multilingual-128M";
 
 /// Secondary external Omnia data model location.
 pub const OMNIA_DATA_M2V_MODEL_DIR: &str = r"D:\OmniaData\models\potion-multilingual-128M";
@@ -101,10 +101,7 @@ pub fn discover_m2v_model_dir() -> Option<PathBuf> {
         }
     }
 
-    let mut candidates = vec![
-        PathBuf::from(OMNIA_DATA_M2V_MODEL_DIR),
-        PathBuf::from(DEFAULT_M2V_MODEL_DIR),
-    ];
+    let mut candidates = vec![PathBuf::from(OMNIA_DATA_M2V_MODEL_DIR)];
     if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
         candidates.push(
             PathBuf::from(home)

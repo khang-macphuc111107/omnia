@@ -116,7 +116,7 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
     reachable: false,
     httpStatus: 0,
     latencyMs: null,
-    listener: typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:4242',
+    listener: typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8787',
     schema: 'omnia.capabilities.v1',
     checkedAtIso: '',
     error: '',
@@ -158,7 +158,7 @@ export function SystemHardwarePanel(props: { refreshSeq: number }) {
       httpStatus: capFetch.status,
       latencyMs: capFetch.latencyMs,
       listener: String(
-        capFetch.data.listener ?? (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:4242'),
+        capFetch.data.listener ?? (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8787'),
       ),
       schema: String(capFetch.data.schema ?? 'omnia.capabilities.v1'),
       checkedAtIso,

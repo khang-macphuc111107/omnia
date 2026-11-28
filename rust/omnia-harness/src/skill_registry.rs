@@ -18,8 +18,24 @@ const MAX_DESCRIPTION_CODEPOINTS: usize = 1024;
 /// Default read-only Cold Vault catalog locations (never dumped as stub files into tracked repo).
 pub const DEFAULT_COLD_VAULT_PATHS: &[&str] = &[
     r"D:\OmniaData\research\omnia-clean-2026-11-12\omni-deep-1000-catalog.json",
-    r"C:\Users\khang\.gemini\config\plugins\agy-fast\omni-vault",
 ];
+
+/// Resolves default external Cold Vault paths including dynamic `USERPROFILE`/`HOME` plugin vaults.
+#[must_use]
+pub fn default_cold_vault_paths() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = DEFAULT_COLD_VAULT_PATHS.iter().map(PathBuf::from).collect();
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        out.push(
+            PathBuf::from(home)
+                .join(".gemini")
+                .join("config")
+                .join("plugins")
+                .join("agy-fast")
+                .join("omni-vault"),
+        );
+    }
+    out
+}
 
 /// Errors returned while validating or loading skill manifests and packages.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -585,7 +601,8 @@ impl SkillRegistry {
 
     /// Loads default external cold vault catalogs if present on disk.
     pub fn load_default_cold_vault(&self) -> usize {
-        let paths: Vec<&Path> = DEFAULT_COLD_VAULT_PATHS.iter().map(Path::new).collect();
+        let owned = default_cold_vault_paths();
+        let paths: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
         self.load_cold_vault_catalog(&paths)
     }
 

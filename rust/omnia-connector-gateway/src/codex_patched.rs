@@ -1273,14 +1273,14 @@ mod tests {
         let sk_tok = format!("{}-{}-{}", "sk", "proj", "abcdef1234567890abcdef");
         let jsonl = format!(
             "{}\n{}\n{{\"timestamp\":\"2026-11-14T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"item_completed\",\"item\":{{\"type\":\"UserMessage\",\"content\":[{{\"type\":\"text\",\"text\":\"Use key {sk_tok} and mail me at alice@example.com\"}}]}}}}}}\n{}\n",
-            "{\"timestamp\":\"2026-11-14T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sess-1\",\"thread_id\":\"thr-1\",\"cwd\":\"C:\\\\Users\\\\khang\\\\proj\"}}",
+            "{\"timestamp\":\"2026-11-14T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sess-1\",\"thread_id\":\"thr-1\",\"cwd\":\"C:\\\\Users\\\\example\\\\proj\"}}",
             "{\"timestamp\":\"2026-11-14T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"input_tokens\":120,\"output_tokens\":45}}}",
             "{not valid json}"
         );
         let parsed = parse_codex_rollout_jsonl(&jsonl).expect("rollout parsed");
         assert_eq!(parsed.session_id.as_deref(), Some("sess-1"));
         let cwd = parsed.cwd.as_deref().expect("cwd present");
-        assert!(!cwd.contains("khang"));
+        assert!(!cwd.contains("example"));
         assert_eq!(cwd, format!("{}\\proj", crate::REDACTED_USER_PROFILE));
         assert_eq!(parsed.token_usage_summary.get("input_tokens"), Some(&120));
         assert_eq!(parsed.messages.len(), 1);

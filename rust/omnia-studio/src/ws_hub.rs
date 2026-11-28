@@ -15,8 +15,19 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::WebSocketStream;
 
-use crate::http::{is_allowed_loopback_origin, HttpRequest, HttpResponse};
+use crate::http::{is_allowed_loopback_origin_for_port, HttpRequest, HttpResponse};
 use crate::routes_legacy::StudioState;
+
+fn extract_host_port(host: &str) -> Option<u16> {
+    let trimmed = host.trim();
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let (_, after) = rest.split_once("]:")?;
+        after.parse::<u16>().ok()
+    } else {
+        let (_, port_str) = trimmed.rsplit_once(':')?;
+        port_str.parse::<u16>().ok()
+    }
+}
 
 /// Validates WebSocket upgrade headers and prepares an upgrade response for `/ws`.
 pub fn prepare_websocket_upgrade(state: Arc<StudioState>, req: HttpRequest) -> HttpResponse {
@@ -38,12 +49,25 @@ pub fn prepare_websocket_upgrade(state: Arc<StudioState>, req: HttpRequest) -> H
         );
     }
 
+    let expected_port = req
+        .header("host")
+        .and_then(extract_host_port)
+        .or_else(|| (state.config.port != 0).then_some(state.config.port));
+    let origin = match req.header("origin").map(str::trim).filter(|o| !o.is_empty()) {
+        Some(raw_origin) => {
+            if !is_allowed_loopback_origin_for_port(raw_origin, expected_port) {
+                return HttpResponse::error(
+                    403,
+                    "forbidden_origin",
+                    "WebSocket Origin header must match the bound Studio loopback port.",
+                );
+            }
+            Some(raw_origin.to_string())
+        }
+        None => None,
+    };
+
     let accept_key = derive_accept_key(ws_key.as_bytes());
-    let origin = req
-        .header("origin")
-        .map(str::trim)
-        .filter(|o| !o.is_empty() && is_allowed_loopback_origin(o))
-        .map(ToString::to_string);
     let pinned_pty = req.query_param("ptyId").or_else(|| req.query_param("id"));
     let channels_param = req.query_param("channel").or_else(|| req.query_param("channels"));
 
@@ -62,13 +86,15 @@ async fn serve_websocket(
     pinned_pty: Option<String>,
     channels_param: Option<String>,
 ) {
+    let bound_port = stream.local_addr().ok().map(|addr| addr.port());
+    let verified_origin = origin.filter(|o| is_allowed_loopback_origin_for_port(o, bound_port));
     let mut head = format!(
         "HTTP/1.1 101 Switching Protocols\r\n\
          Upgrade: websocket\r\n\
          Connection: Upgrade\r\n\
          Sec-WebSocket-Accept: {accept_key}\r\n"
     );
-    if let Some(org) = origin {
+    if let Some(org) = verified_origin {
         head.push_str(&format!("Access-Control-Allow-Origin: {org}\r\nVary: Origin\r\n"));
     }
     head.push_str("\r\n");

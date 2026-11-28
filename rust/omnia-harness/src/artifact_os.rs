@@ -27,9 +27,24 @@ use crate::research_vault::{atomic_write_with_retry, ResearchVault};
 /// Default external Global Lessons directory (never inside tracked repository tree).
 pub const DEFAULT_GLOBAL_MEMORY_DIR: &str = r"D:\OmniaData\memory";
 
-/// Canonical Antigravity global lessons mirror path synchronized by [`sync_global_lessons`].
-pub const DEFAULT_AGY_GLOBAL_LESSONS_PATH: &str =
-    r"C:\Users\khang\.gemini\config\skills\global-lessons\references\lessons.md";
+/// Relative home-directory path of the Antigravity global lessons mirror synchronized by [`sync_global_lessons`].
+pub const DEFAULT_AGY_GLOBAL_LESSONS_REL_PATH: &str =
+    ".gemini/config/skills/global-lessons/references/lessons.md";
+
+/// Resolves the canonical Antigravity global lessons mirror path dynamically from `USERPROFILE` / `HOME`.
+#[must_use]
+pub fn default_agy_global_lessons_path() -> PathBuf {
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        return PathBuf::from(home)
+            .join(".gemini")
+            .join("config")
+            .join("skills")
+            .join("global-lessons")
+            .join("references")
+            .join("lessons.md");
+    }
+    PathBuf::from(DEFAULT_GLOBAL_MEMORY_DIR).join("agy_global_lessons.md")
+}
 
 /// Default LRU cap for unified 2-tier global lessons.
 pub const GLOBAL_LESSONS_CAP: usize = 100;
@@ -1467,7 +1482,7 @@ pub struct GlobalLessonsSyncReport {
 }
 
 /// Synchronizes `D:\OmniaData\memory\global_lessons.md` `<->`
-/// `C:\Users\khang\.gemini\config\skills\global-lessons\references\lessons.md` atomically,
+/// `~/.gemini/config/skills/global-lessons/references/lessons.md` atomically,
 /// draining `<workspace_root>/.agents/memory/pending-global-lessons.md`, redacting secrets,
 /// deduplicating lexically, and enforcing the cap-100 LRU ceiling. Returns a JSON receipt
 /// (`{ ok, syncedCount, globalPath, agyPath, ... }`) for Studio/CLI routes.
@@ -1492,7 +1507,7 @@ pub fn sync_global_lessons(workspace_root: &Path) -> Result<Value, String> {
 /// Typed-report variant of [`sync_global_lessons`].
 pub fn sync_global_lessons_report(workspace_root: &Path) -> Result<GlobalLessonsSyncReport, String> {
     let omnia_path = PathBuf::from(DEFAULT_GLOBAL_MEMORY_DIR).join("global_lessons.md");
-    let agy_path = PathBuf::from(DEFAULT_AGY_GLOBAL_LESSONS_PATH);
+    let agy_path = default_agy_global_lessons_path();
     sync_global_lessons_with_paths(workspace_root, &omnia_path, &agy_path, GLOBAL_LESSONS_CAP)
 }
 

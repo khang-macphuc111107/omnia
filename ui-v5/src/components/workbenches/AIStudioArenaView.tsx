@@ -143,7 +143,7 @@ function resolveStudioOrigin(): string {
   if (typeof window !== 'undefined' && window.location?.origin && /^https?:\/\//i.test(window.location.origin)) {
     return window.location.origin.replace(/\/$/, '');
   }
-  return 'http://127.0.0.1:4242';
+  return 'http://127.0.0.1:8787';
 }
 
 const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -1139,10 +1139,8 @@ export function AIStudioArenaView() {
       fetchJsonSafe<Record<string, unknown>>('/api/router/cancel', {
         method: 'POST',
         body: JSON.stringify({
-          reservationId: runId,
-          requestId: runId,
+          sessionId: runId,
           runId,
-          cancelAllActive: true,
           note: 'arena_user_cancelled',
         }),
       }),

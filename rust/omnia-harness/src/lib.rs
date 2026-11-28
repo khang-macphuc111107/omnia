@@ -17,12 +17,12 @@ pub mod skill_registry;
 pub mod steer_queue;
 
 pub use artifact_os::{
-    evaluate_session_admission_gates, sync_global_lessons, sync_global_lessons_report,
-    sync_global_lessons_with_paths, validate_no_proto_pollution, verify_artifact_content,
-    wcag_contrast_ratio, ArtifactKind, ArtifactLink, ArtifactOs, ArtifactVerifyReport,
-    GlobalLessonsSyncReport, LessonRecord, LifecycleArtifact, LinkRelation,
+    default_agy_global_lessons_path, evaluate_session_admission_gates, sync_global_lessons,
+    sync_global_lessons_report, sync_global_lessons_with_paths, validate_no_proto_pollution,
+    verify_artifact_content, wcag_contrast_ratio, ArtifactKind, ArtifactLink, ArtifactOs,
+    ArtifactVerifyReport, GlobalLessonsSyncReport, LessonRecord, LifecycleArtifact, LinkRelation,
     SessionAdmissionEvalInput, SessionAdmissionGateStatus, SessionAdmissionReport, SixStateReceipt,
-    SuperWorkflowState, DEFAULT_AGY_GLOBAL_LESSONS_PATH, DEFAULT_GLOBAL_MEMORY_DIR,
+    SuperWorkflowState, DEFAULT_AGY_GLOBAL_LESSONS_REL_PATH, DEFAULT_GLOBAL_MEMORY_DIR,
     GLOBAL_LESSONS_CAP, REQUIRED_SESSION_GATE_IDS,
 };
 pub use composer_model::{
@@ -37,7 +37,7 @@ pub use deep_think::{
 };
 pub use m2v_router::{
     compose_vn_nfc, discover_m2v_model_dir, piece_hashes, rrf_fuse_ranks, M2vSeekEngine,
-    M2vSkillHit, DEFAULT_M2V_MODEL_DIR, M2V_DIM, OMNIA_DATA_M2V_MODEL_DIR,
+    M2vSkillHit, DEFAULT_M2V_MODEL_REL_PATH, M2V_DIM, OMNIA_DATA_M2V_MODEL_DIR,
 };
 pub use memory_graph::{
     detect_asi06_injection_taint, extract_entities, is_valid_key, is_valid_namespace,
@@ -75,8 +75,9 @@ pub use rich_composer::{
     SymbolPaletteItem, TextStyle, TrayAttachmentRef, UploadManifestEntry, WireBlock, WireMessage,
 };
 pub use skill_registry::{
-    resolve_skill_alias, CodifySkillRequest, ColdVaultEntry, ExecutionDagStage, GapRadarRecord,
-    HybridSkillMatch, OpenAiSkillInterface, PipelineSpec, SkillDoctorReport, SkillError,
-    SkillLoadReport, SkillMatch, SkillMetadata, SkillRegistry, DEFAULT_COLD_VAULT_PATHS,
+    default_cold_vault_paths, resolve_skill_alias, CodifySkillRequest, ColdVaultEntry,
+    ExecutionDagStage, GapRadarRecord, HybridSkillMatch, OpenAiSkillInterface, PipelineSpec,
+    SkillDoctorReport, SkillError, SkillLoadReport, SkillMatch, SkillMetadata, SkillRegistry,
+    DEFAULT_COLD_VAULT_PATHS,
 };
 pub use steer_queue::{SteerItem, SteerMode, SteerQueue, SteerStatus};

@@ -1071,7 +1071,17 @@ async fn handle_arena_compare(state: &Arc<StudioState>, req: &HttpRequest) -> Ht
         .unwrap_or_else(|| format!("arn_{}", uuid_v4()));
 
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
-    active_arena_runs().lock().insert(run_id.clone(), cancel_tx);
+    {
+        let mut guard = active_arena_runs().lock();
+        if guard.contains_key(&run_id) {
+            return HttpResponse::error(
+                409,
+                "arena_run_id_conflict",
+                "An Arena comparison with this runId is already active.",
+            );
+        }
+        guard.insert(run_id.clone(), cancel_tx);
+    }
     let _cleanup_guard = ArenaRunCleanupGuard {
         run_id: run_id.clone(),
     };

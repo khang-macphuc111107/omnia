@@ -54,6 +54,15 @@ pub fn find_media_binary(tool_name: &str) -> Option<PathBuf> {
         }
     }
 
+    if let Ok(raw_dir) = env::var("OMNIA_FFMPEG_DIR") {
+        let dir = PathBuf::from(raw_dir.trim());
+        for candidate in [dir.join(&exe_name), dir.join("bin").join(&exe_name)] {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
     if let Some(paths) = env::var_os("PATH") {
         for dir in env::split_paths(&paths) {
             let candidate = dir.join(&exe_name);
@@ -63,11 +72,7 @@ pub fn find_media_binary(tool_name: &str) -> Option<PathBuf> {
         }
     }
 
-    let extra_candidates = [
-        PathBuf::from(r"E:\Users\khang\Documents\ChatGPT\Gemini Notebook\tools\ffmpeg\ffmpeg-9.0.2-essentials_build\bin")
-            .join(&exe_name),
-        PathBuf::from(r"D:\OmniaData\tools\ffmpeg\bin").join(&exe_name),
-    ];
+    let extra_candidates = [PathBuf::from(r"D:\OmniaData\tools\ffmpeg\bin").join(&exe_name)];
     extra_candidates.into_iter().find(|p| p.is_file())
 }
 
